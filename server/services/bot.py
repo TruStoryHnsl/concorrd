@@ -51,7 +51,7 @@ async def init_bot() -> None:
                 "type": "m.login.password",
                 "identifier": {"type": "m.id.user", "user": BOT_USERNAME},
                 "password": password,
-                "initial_device_display_name": "Concorrd Bot",
+                "initial_device_display_name": "Concord Bot",
             },
         )
         if resp.status_code != 200:

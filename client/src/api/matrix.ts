@@ -24,7 +24,7 @@ export async function loginWithPassword(
   const response = await tempClient.login("m.login.password", {
     user: username,
     password,
-    initial_device_display_name: "Concorrd Web",
+    initial_device_display_name: "Concord Web",
   });
   return {
     accessToken: response.access_token,
@@ -64,7 +64,7 @@ export async function registerWithToken(
       token: registrationToken,
       session: sessionId!,
     },
-    initial_device_display_name: "Concorrd Web",
+    initial_device_display_name: "Concord Web",
   });
 
   return {

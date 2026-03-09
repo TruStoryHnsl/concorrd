@@ -708,6 +708,23 @@ export async function respondToDirectInvite(
   );
 }
 
+// --- Instance ---
+
+export async function getInstanceInfo(): Promise<{ name: string }> {
+  return apiFetch("/instance");
+}
+
+export async function updateInstanceName(
+  name: string,
+  accessToken: string,
+): Promise<{ name: string }> {
+  return apiFetch(
+    "/admin/instance",
+    { method: "PATCH", body: JSON.stringify({ name }) },
+    accessToken,
+  );
+}
+
 // --- Admin ---
 
 export async function checkAdmin(

@@ -34,6 +34,10 @@ ADMIN_USER_IDS: set[str] = {
     if uid.strip()
 }
 
+# Instance name (configurable by admin, default from env or "Concord")
+INSTANCE_NAME_DEFAULT = os.getenv("INSTANCE_NAME", "Concord")
+INSTANCE_SETTINGS_FILE = DATA_DIR / "instance.json"
+
 # Ensure directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 SOUNDBOARD_DIR.mkdir(parents=True, exist_ok=True)

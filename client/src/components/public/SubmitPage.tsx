@@ -151,7 +151,7 @@ export function SubmitPage({ webhookId }: Props) {
         )}
 
         <p className="text-xs text-zinc-600 mt-6 text-center">
-          Powered by Concorrd
+          Powered by Concord
         </p>
       </div>
     </div>

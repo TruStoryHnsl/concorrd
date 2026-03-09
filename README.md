@@ -1,4 +1,4 @@
-# Concorrd
+# Concord
 
 A Discord replacement built on the [Matrix](https://matrix.org/) protocol. Self-hosted, open-source, designed for small communities.
 
@@ -21,7 +21,7 @@ Four Docker services behind Nginx:
 | Service | Purpose |
 |---------|---------|
 | **Tuwunel** | Matrix homeserver (auth, rooms, messages, presence) |
-| **Concorrd API** | FastAPI backend (servers, invites, soundboard, admin) |
+| **Concord API** | FastAPI backend (servers, invites, soundboard, admin) |
 | **LiveKit** | WebRTC SFU (voice/video routing, soundboard injection) |
 | **Nginx** | Reverse proxy, static file serving |
 
@@ -88,7 +88,7 @@ All configuration is in the `.env` file. Key settings:
 concorrd/
 ├── client/           # React + TypeScript + Vite
 │   └── src/
-│       ├── api/          # REST clients (Matrix, Concorrd API, LiveKit)
+│       ├── api/          # REST clients (Matrix, Concord API, LiveKit)
 │       ├── components/   # UI components
 │       ├── hooks/        # React hooks
 │       └── stores/       # Zustand state management
@@ -108,7 +108,7 @@ concorrd/
 |------|---------|
 | `/` | Static React app (Nginx) |
 | `/_matrix/` | Tuwunel (Matrix homeserver) |
-| `/api/` | Concorrd API (FastAPI) |
+| `/api/` | Concord API (FastAPI) |
 | `/livekit/` | LiveKit (WebRTC signaling) |
 
 ## Management

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { loginWithPassword } from "../../api/matrix";
-import { registerUser, validateInvite } from "../../api/concorrd";
+import { registerUser, validateInvite, getInstanceInfo } from "../../api/concorrd";
 import { useAuthStore } from "../../stores/auth";
 import { INVITE_STORAGE_KEY } from "../../App";
 
@@ -14,6 +14,17 @@ export function LoginForm() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [validatingInvite, setValidatingInvite] = useState(false);
+  const [instanceName, setInstanceName] = useState("Concord");
+
+  // Fetch instance name
+  useEffect(() => {
+    getInstanceInfo()
+      .then((info) => {
+        setInstanceName(info.name);
+        document.title = info.name;
+      })
+      .catch(() => {});
+  }, []);
 
   // Check URL and sessionStorage for invite token
   useEffect(() => {
@@ -77,7 +88,7 @@ export function LoginForm() {
     <div className="min-h-screen bg-zinc-900 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         <h1 className="text-3xl font-bold text-white text-center mb-2">
-          Concorrd
+          {instanceName}
         </h1>
 
         {validatingInvite && (
@@ -156,21 +167,21 @@ export function LoginForm() {
 
         <div className="mt-8 flex justify-center gap-4 text-sm">
           <a
-            href="/downloads/Concorrd Setup.exe"
+            href="/downloads/Concord Setup.exe"
             className="text-zinc-500 hover:text-zinc-300 transition-colors"
           >
             Windows
           </a>
           <span className="text-zinc-700">|</span>
           <a
-            href="/downloads/Concorrd.AppImage"
+            href="/downloads/Concord.AppImage"
             className="text-zinc-500 hover:text-zinc-300 transition-colors"
           >
             Linux
           </a>
           <span className="text-zinc-700">|</span>
           <a
-            href="/downloads/Concorrd-mac.zip"
+            href="/downloads/Concord-mac.zip"
             className="text-zinc-500 hover:text-zinc-300 transition-colors"
           >
             macOS

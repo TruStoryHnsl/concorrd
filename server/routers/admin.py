@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import MATRIX_HOMESERVER_URL, ADMIN_USER_IDS
+from config import MATRIX_HOMESERVER_URL, ADMIN_USER_IDS, INSTANCE_SETTINGS_FILE, INSTANCE_NAME_DEFAULT
 from database import get_db
 from models import (
     Server, Channel, ServerMember, InviteToken,
@@ -28,6 +28,27 @@ router = APIRouter(tags=["admin"])
 def require_admin(user_id: str) -> None:
     if user_id not in ADMIN_USER_IDS:
         raise HTTPException(403, "Admin access required")
+
+
+def _read_instance_settings() -> dict:
+    if INSTANCE_SETTINGS_FILE.exists():
+        return json.loads(INSTANCE_SETTINGS_FILE.read_text())
+    return {}
+
+
+def _write_instance_settings(settings: dict) -> None:
+    INSTANCE_SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Instance info (public, no auth)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/instance")
+async def get_instance():
+    """Return public instance metadata (name, etc)."""
+    settings = _read_instance_settings()
+    return {"name": settings.get("name", INSTANCE_NAME_DEFAULT)}
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +148,27 @@ async def submit_bug_report(
 async def admin_check(user_id: str = Depends(get_user_id)):
     """Check if the current user is a global admin."""
     return {"is_admin": user_id in ADMIN_USER_IDS}
+
+
+# ---------------------------------------------------------------------------
+# Admin: instance settings
+# ---------------------------------------------------------------------------
+
+class InstanceUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+@router.patch("/api/admin/instance")
+async def admin_update_instance(
+    body: InstanceUpdate,
+    user_id: str = Depends(get_user_id),
+):
+    """Update instance settings (admin only)."""
+    require_admin(user_id)
+    settings = _read_instance_settings()
+    settings["name"] = body.name
+    _write_instance_settings(settings)
+    return {"name": body.name}
 
 
 # ---------------------------------------------------------------------------

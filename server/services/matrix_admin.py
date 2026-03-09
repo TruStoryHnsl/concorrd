@@ -34,7 +34,7 @@ async def register_matrix_user(
                     "token": MATRIX_REGISTRATION_TOKEN,
                     "session": session_id,
                 },
-                "initial_device_display_name": "Concorrd Web",
+                "initial_device_display_name": "Concord Web",
             },
         )
 
@@ -69,7 +69,7 @@ async def create_matrix_room(access_token: str, name: str) -> str:
     """Create a Matrix room and return the room ID.
 
     Uses public_chat preset so anyone with the room ID can join without
-    needing an explicit invite. Access control is handled at the Concorrd
+    needing an explicit invite. Access control is handled at the Concord
     server/invite layer instead.
     """
     async with httpx.AsyncClient() as client:

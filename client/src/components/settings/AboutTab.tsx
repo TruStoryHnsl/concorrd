@@ -14,7 +14,7 @@ export function AboutTab() {
         </div>
         <div className="flex items-center justify-between py-2">
           <span className="text-sm text-zinc-400">Project</span>
-          <span className="text-sm text-zinc-300">Concorrd</span>
+          <span className="text-sm text-zinc-300">Concord</span>
         </div>
         <div className="flex items-center justify-between py-2">
           <span className="text-sm text-zinc-400">Protocol</span>
@@ -27,23 +27,23 @@ export function AboutTab() {
           Desktop App
         </h4>
         <p className="text-xs text-zinc-500 mb-3">
-          Use Concorrd as a standalone desktop application.
+          Use Concord as a standalone desktop application.
         </p>
         <div className="flex gap-2 flex-wrap">
           <a
-            href="/downloads/Concorrd Setup.exe"
+            href="/downloads/Concord Setup.exe"
             className="inline-block px-4 py-2 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 text-sm rounded-md transition-colors"
           >
             Windows
           </a>
           <a
-            href="/downloads/Concorrd.AppImage"
+            href="/downloads/Concord.AppImage"
             className="inline-block px-4 py-2 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 text-sm rounded-md transition-colors"
           >
             Linux
           </a>
           <a
-            href="/downloads/Concorrd-mac.zip"
+            href="/downloads/Concord-mac.zip"
             className="inline-block px-4 py-2 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 text-sm rounded-md transition-colors"
           >
             macOS

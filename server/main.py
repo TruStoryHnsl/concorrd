@@ -101,7 +101,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Concorrd API", lifespan=lifespan)
+app = FastAPI(title="Concord API", lifespan=lifespan)
 
 _default_origins = "http://localhost:5173,http://localhost:8080"
 allowed_origins = os.getenv("CORS_ORIGINS", _default_origins).split(",")

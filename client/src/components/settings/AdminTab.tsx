@@ -7,13 +7,15 @@ import {
   getAdminUsers,
   getAdminReports,
   updateAdminReport,
+  getInstanceInfo,
+  updateInstanceName,
   type AdminStats,
   type AdminServer,
   type AdminUser,
   type AdminBugReport,
 } from "../../api/concorrd";
 
-type Section = "overview" | "servers" | "users" | "reports";
+type Section = "overview" | "instance" | "servers" | "users" | "reports";
 
 export function AdminTab() {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -24,7 +26,7 @@ export function AdminTab() {
       <h3 className="text-xl font-semibold text-white">Admin Dashboard</h3>
 
       <div className="flex gap-1 border-b border-zinc-700 pb-2">
-        {(["overview", "servers", "users", "reports"] as Section[]).map(
+        {(["overview", "instance", "servers", "users", "reports"] as Section[]).map(
           (s) => (
             <button
               key={s}
@@ -42,6 +44,7 @@ export function AdminTab() {
       </div>
 
       {section === "overview" && <OverviewSection token={accessToken} />}
+      {section === "instance" && <InstanceSection token={accessToken} />}
       {section === "servers" && <ServersSection token={accessToken} />}
       {section === "users" && <UsersSection token={accessToken} />}
       {section === "reports" && <ReportsSection token={accessToken} />}
@@ -92,6 +95,63 @@ function OverviewSection({ token }: { token: string | null }) {
           </p>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Instance
+// ---------------------------------------------------------------------------
+
+function InstanceSection({ token }: { token: string | null }) {
+  const addToast = useToastStore((s) => s.addToast);
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getInstanceInfo().then((info) => setName(info.name)).catch(() => {});
+  }, []);
+
+  const handleSave = async () => {
+    if (!token || !name.trim()) return;
+    setSaving(true);
+    try {
+      const result = await updateInstanceName(name.trim(), token);
+      setName(result.name);
+      document.title = result.name;
+      addToast("Instance name updated", "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to update", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="text-sm text-zinc-400 block mb-1">Instance Name</label>
+        <p className="text-xs text-zinc-500 mb-2">
+          Displayed on the login page, browser tab, and emails. This is your instance's brand name.
+        </p>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={64}
+            className="flex-1 px-3 py-2 bg-zinc-800 border border-zinc-600 rounded text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-indigo-500"
+            placeholder="Concord"
+          />
+          <button
+            onClick={handleSave}
+            disabled={saving || !name.trim()}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white text-sm rounded transition-colors"
+          >
+            {saving ? "..." : "Save"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
