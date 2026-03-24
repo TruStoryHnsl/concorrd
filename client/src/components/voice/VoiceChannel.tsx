@@ -232,6 +232,10 @@ function VoiceRoomUI({
   const cameraTracks = allCameraTracks.filter(
     (t) => t.publication && !t.publication.isMuted && t.publication.track,
   );
+  const allScreenTracks = useTracks([Track.Source.ScreenShare]);
+  const screenTracks = allScreenTracks.filter(
+    (t) => t.publication && !t.publication.isMuted && t.publication.track,
+  );
   const disconnect = useVoiceStore((s) => s.disconnect);
   const [micError, setMicError] = useState<string | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -335,6 +339,7 @@ function VoiceRoomUI({
 
   const isMicEnabled = localParticipant.isMicrophoneEnabled;
   const isCameraEnabled = localParticipant.isCameraEnabled;
+  const isScreenShareEnabled = localParticipant.isScreenShareEnabled;
   const preferredInputDeviceId = useSettingsStore((s) => s.preferredInputDeviceId);
 
   // Detect speaking while self-muted (local-only reminder)
@@ -364,6 +369,23 @@ function VoiceRoomUI({
       setCameraLoading(false);
     }
   }, [localParticipant, isCameraEnabled]);
+
+  const [screenShareError, setScreenShareError] = useState<string | null>(null);
+
+  const toggleScreenShare = useCallback(async () => {
+    setScreenShareError(null);
+    try {
+      await localParticipant.setScreenShareEnabled(!isScreenShareEnabled);
+    } catch (err) {
+      console.error("Screen share toggle failed:", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Permission") || msg.includes("NotAllowed")) {
+        setScreenShareError("Screen share was cancelled or denied.");
+      } else {
+        setScreenShareError(msg);
+      }
+    }
+  }, [localParticipant, isScreenShareEnabled]);
 
   const toggleMic = useCallback(async () => {
     setMicError(null);
@@ -447,6 +469,20 @@ function VoiceRoomUI({
               )}
               {cameraLoading ? "Starting…" : isCameraEnabled ? "Camera On" : "Camera"}
             </button>
+            <button
+              onClick={toggleScreenShare}
+              className={`btn-press px-3 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${
+                isScreenShareEnabled
+                  ? "bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400"
+                  : "bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+              }`}
+              title={isScreenShareEnabled ? "Stop Sharing" : "Share Screen"}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+              {isScreenShareEnabled ? "Sharing" : "Screen"}
+            </button>
             {isLockOwner && activeChannel && (
               <button
                 onClick={() => {
@@ -489,6 +525,9 @@ function VoiceRoomUI({
         )}
         {cameraError && (
           <p className="text-red-400 text-xs mt-2">{cameraError}</p>
+        )}
+        {screenShareError && (
+          <p className="text-red-400 text-xs mt-2">{screenShareError}</p>
         )}
         {!window.isSecureContext && (
           <p className="text-yellow-500 text-xs mt-2">
@@ -533,6 +572,28 @@ function VoiceRoomUI({
                 }
               }}
             />
+          ))}
+        </div>
+      )}
+
+      {/* Screen share — prominent display above participant grid */}
+      {screenTracks.length > 0 && (
+        <div className="flex-shrink-0 p-2 border-b border-zinc-700">
+          {screenTracks.map((track) => (
+            <div key={track.participant.identity + "-screen"} className="relative rounded-lg overflow-hidden bg-black">
+              <VideoTrack
+                trackRef={track}
+                className="w-full max-h-[60vh] object-contain"
+              />
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2">
+                <span className="text-xs text-zinc-300 flex items-center gap-1.5">
+                  <svg className="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                  {track.participant.identity.split(":")[0].replace("@", "")}'s screen
+                </span>
+              </div>
+            </div>
           ))}
         </div>
       )}
