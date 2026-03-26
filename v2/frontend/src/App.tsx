@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Routes, Route } from "react-router-dom";
 import AppShell from "@/components/layout/AppShell";
+import ErrorBoundary from "@/components/ui/ErrorBoundary";
 import DashboardPage from "@/components/dashboard/DashboardPage";
 import FriendsPage from "@/components/friends/FriendsPage";
 import NodeMapPage from "@/components/mesh/NodeMapPage";
@@ -37,20 +38,22 @@ function App() {
   }, []);
 
   return (
-    <AppShell>
-      <Routes>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/server/:id" element={<ServerPage />} />
-        <Route path="/friends" element={<FriendsPage />} />
-        <Route path="/map" element={<NodeMapPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/profile" element={<ProfilePage />} />
-        <Route path="/health" element={<HealthPage />} />
-        <Route path="/host" element={<HostSessionPage />} />
-        <Route path="/dm/:peerId" element={<DmPage />} />
-        <Route path="/guest" element={<GuestAuthPage />} />
-      </Routes>
-    </AppShell>
+    <ErrorBoundary>
+      <AppShell>
+        <Routes>
+          <Route path="/" element={<DashboardPage />} />
+          <Route path="/server/:id" element={<ServerPage />} />
+          <Route path="/friends" element={<FriendsPage />} />
+          <Route path="/map" element={<NodeMapPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/health" element={<HealthPage />} />
+          <Route path="/host" element={<HostSessionPage />} />
+          <Route path="/dm/:peerId" element={<DmPage />} />
+          <Route path="/guest" element={<GuestAuthPage />} />
+        </Routes>
+      </AppShell>
+    </ErrorBoundary>
   );
 }
 

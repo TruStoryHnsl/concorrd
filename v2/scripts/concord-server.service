@@ -1,0 +1,16 @@
+[Unit]
+Description=Concord P2P Mesh Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/concord-server start --config /etc/concord/concord-server.toml
+Restart=on-failure
+RestartSec=5
+User=concord
+Group=concord
+WorkingDirectory=/var/lib/concord
+
+[Install]
+WantedBy=multi-user.target

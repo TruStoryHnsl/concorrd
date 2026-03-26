@@ -87,6 +87,39 @@
   }
 }
 
+/* Skeleton shimmer animation */
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(35, 38, 42, 0.6) 25%,
+    rgba(55, 58, 62, 0.6) 50%,
+    rgba(35, 38, 42, 0.6) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Toast slide-in animation */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 /* Material Symbols base settings */
 .material-symbols-outlined {
   font-variation-settings:

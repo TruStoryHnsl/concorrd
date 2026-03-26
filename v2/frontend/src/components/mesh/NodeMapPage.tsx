@@ -4,6 +4,7 @@ import { getNearbyPeers, getTunnels } from "@/api/tauri";
 import type { TunnelInfo, PeerInfo } from "@/api/tauri";
 import { shortenPeerId, formatRelativeTime } from "@/utils/format";
 import GlassPanel from "@/components/ui/GlassPanel";
+import Skeleton from "@/components/ui/Skeleton";
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -325,6 +326,7 @@ function NodeMapPage() {
   const [mapSize, setMapSize] = useState({ width: 800, height: 600 });
   const [selectedNode, setSelectedNode] = useState<NodePosition | null>(null);
   const [searchValue, setSearchValue] = useState("");
+  const [initialLoading, setInitialLoading] = useState(true);
 
   // Fetch data on mount + poll every 5s
   const fetchData = useCallback(async () => {
@@ -337,6 +339,8 @@ function NodeMapPage() {
       setTunnels(tunnelData);
     } catch (err) {
       console.warn("Failed to fetch mesh data:", err);
+    } finally {
+      setInitialLoading(false);
     }
   }, [setNearbyPeers, setTunnels]);
 
@@ -422,6 +426,27 @@ function NodeMapPage() {
     },
     [mapSize.width, mapSize.height],
   );
+
+  if (initialLoading) {
+    return (
+      <main className="relative flex-grow w-full h-full overflow-hidden bg-surface">
+        <div className="absolute inset-0 mesh-background" />
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="text-center space-y-4 relative z-10">
+            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto">
+              <span className="material-symbols-outlined text-4xl text-primary/40 animate-pulse">
+                map
+              </span>
+            </div>
+            <div className="space-y-2">
+              <Skeleton className="h-5 w-40 mx-auto" />
+              <Skeleton className="h-3 w-56 mx-auto" />
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="relative flex-grow w-full h-full overflow-hidden">

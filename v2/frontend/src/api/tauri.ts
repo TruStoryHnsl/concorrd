@@ -164,6 +164,44 @@ const MOCK_RESPONSES: Record<string, (args?: Record<string, unknown>) => unknown
     isInVoice: false, channelId: null, serverId: null,
     isMuted: false, isDeafened: false, participants: [],
   }),
+  get_system_health: () => {
+    const jitter = (base: number, range: number) =>
+      +(base + (Math.random() - 0.5) * range).toFixed(1);
+
+    const bandwidthIn: number[] = [];
+    const bandwidthOut: number[] = [];
+    for (let i = 0; i < 14; i++) {
+      bandwidthIn.push(Math.round(300 + Math.random() * 500));
+      bandwidthOut.push(Math.round(200 + Math.random() * 600));
+    }
+
+    const events: { timestamp: string; level: string; message: string }[] = [
+      { timestamp: "14:22:01", level: "OK", message: "Protocol handshake successful: peer_id=8x2f1..." },
+      { timestamp: "14:21:44", level: "INFO", message: "Updating local ledger shards (delta 0.04s)" },
+      { timestamp: "14:21:30", level: "OK", message: "Broadcasted 14 encrypted packets to swarm" },
+      { timestamp: "14:20:55", level: "WARN", message: "Latency spike detected in Frankfurt relay node" },
+      { timestamp: "14:20:12", level: "OK", message: "Heartbeat signal acknowledged by gateway" },
+      { timestamp: "14:19:40", level: "INFO", message: "DHT route table optimized (7 new nodes added)" },
+      { timestamp: "14:18:55", level: "OK", message: "TLS certificate rotation completed" },
+      { timestamp: "14:18:10", level: "INFO", message: "Peer discovery sweep complete (3 new peers)" },
+    ];
+
+    return {
+      stabilityIndex: jitter(99.4, 0.6),
+      bandwidthIn,
+      bandwidthOut,
+      latencyMs: Math.round(jitter(24, 10)),
+      activePeers: Math.round(jitter(1402, 50)),
+      cpuPercent: jitter(12.4, 5),
+      ramUsedGb: jitter(4.2, 0.6),
+      ramTotalGb: 16,
+      diskIoMbps: jitter(0.8, 0.4),
+      uptime: "342d 12h",
+      encryptedTrafficTb: jitter(4.2, 0.1),
+      reputation: "A++",
+      events,
+    };
+  },
   start_webhost: () => ({
     url: "http://192.168.1.152:8080",
     pin: "482917",
@@ -465,6 +503,30 @@ export async function isTotpEnabled(): Promise<boolean> {
   return safeInvoke<boolean>("is_totp_enabled");
 }
 
+/* ── System Health Types ─────────────────────────────────────── */
+
+export interface HealthEvent {
+  timestamp: string;
+  level: "OK" | "INFO" | "WARN";
+  message: string;
+}
+
+export interface SystemHealth {
+  stabilityIndex: number;
+  bandwidthIn: number[];
+  bandwidthOut: number[];
+  latencyMs: number;
+  activePeers: number;
+  cpuPercent: number;
+  ramUsedGb: number;
+  ramTotalGb: number;
+  diskIoMbps: number;
+  uptime: string;
+  encryptedTrafficTb: number;
+  reputation: string;
+  events: HealthEvent[];
+}
+
 /* ── Webhost Types ───────────────────────────────────────────── */
 
 export interface WebhostInfo {
@@ -486,6 +548,12 @@ export async function stopWebhost(): Promise<void> {
 
 export async function getWebhostStatus(): Promise<WebhostInfo | null> {
   return safeInvoke<WebhostInfo | null>("get_webhost_status");
+}
+
+/* ── System Health Commands ──────────────────────────────────── */
+
+export async function getSystemHealth(): Promise<SystemHealth> {
+  return safeInvoke<SystemHealth>("get_system_health");
 }
 
 /* ── Event Listener ───────────────────────────────────────────── */

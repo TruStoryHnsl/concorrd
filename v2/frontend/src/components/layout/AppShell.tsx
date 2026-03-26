@@ -5,6 +5,7 @@ import BottomNav from "./BottomNav";
 import TopBar from "./TopBar";
 import WidgetView from "./WidgetView";
 import VoiceConnectionBar from "@/components/voice/VoiceConnectionBar";
+import ToastContainer from "@/components/ui/Toast";
 
 interface AppShellProps {
   children: ReactNode;
@@ -54,6 +55,9 @@ function AppShell({ children }: AppShellProps) {
 
       {/* Mobile bottom nav -- only in mobile tier (500-768px) */}
       <BottomNav visible={showBottomNav} />
+
+      {/* Toast notifications */}
+      <ToastContainer />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import GlassPanel from "@/components/ui/GlassPanel";
 import Button from "@/components/ui/Button";
 import TrustBadge from "@/components/ui/TrustBadge";
 import NodeChip from "@/components/ui/NodeChip";
+import Skeleton from "@/components/ui/Skeleton";
 import { useMeshStore } from "@/stores/mesh";
 import { useAuthStore } from "@/stores/auth";
 import { getPeerTrust, getNearbyPeers } from "@/api/tauri";
@@ -26,6 +27,7 @@ function FriendsPage() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [trustMap, setTrustMap] = useState<Record<string, TrustInfo>>({});
+  const [loading, setLoading] = useState(true);
 
   // Load peers and their trust info
   useEffect(() => {
@@ -52,6 +54,8 @@ function FriendsPage() {
         setTrustMap(map);
       } catch (err) {
         console.warn("Failed to load friends data:", err);
+      } finally {
+        setLoading(false);
       }
     }
     void loadData();
@@ -89,6 +93,35 @@ function FriendsPage() {
     { id: "req1", name: "Nova_Node", peerId: "12D3KooWReq1xxxxxxxxxxxxxx", direction: "incoming" as const },
     { id: "req2", name: "Echo_Runner", peerId: "12D3KooWReq2xxxxxxxxxxxxxx", direction: "incoming" as const },
   ];
+
+  if (loading) {
+    return (
+      <div className="mesh-background min-h-full p-6">
+        <div className="relative z-10 max-w-5xl mx-auto space-y-6">
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-48" />
+            <Skeleton className="h-4 w-80" />
+          </div>
+          <Skeleton className="h-10 w-full" />
+          <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6">
+            <div className="space-y-5">
+              <GlassPanel className="p-4 space-y-3">
+                <Skeleton className="h-4 w-32" />
+                {[1, 2].map((i) => (
+                  <Skeleton key={i} className="h-12 w-full" />
+                ))}
+              </GlassPanel>
+            </div>
+            <div className="space-y-3">
+              {[1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-16 w-full" />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mesh-background min-h-full p-6">
@@ -232,15 +265,30 @@ function FriendsPage() {
             )}
 
             {filtered.length === 0 && (
-              <GlassPanel className="p-8 flex flex-col items-center justify-center text-center space-y-3">
-                <span className="material-symbols-outlined text-5xl text-on-surface-variant/40">
-                  {searchQuery ? "search_off" : "group_off"}
-                </span>
-                <p className="text-on-surface-variant font-body">
-                  {searchQuery
-                    ? "No friends matching your search."
-                    : "No friends yet. Add someone to get started."}
-                </p>
+              <GlassPanel className="p-8 flex flex-col items-center justify-center text-center space-y-4">
+                <div className="flex items-center justify-center w-16 h-16 rounded-full bg-primary/10">
+                  <span className="material-symbols-outlined text-4xl text-primary/40">
+                    {searchQuery ? "search_off" : "group"}
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  <p className="font-headline font-semibold text-on-surface">
+                    {searchQuery
+                      ? "No results found"
+                      : "No friends yet"}
+                  </p>
+                  <p className="text-sm text-on-surface-variant font-body max-w-xs mx-auto">
+                    {searchQuery
+                      ? "No friends matching your search. Try a different query."
+                      : "Add friends via the mesh to start chatting and join nodes together."}
+                  </p>
+                </div>
+                {!searchQuery && (
+                  <Button variant="primary">
+                    <span className="material-symbols-outlined text-lg">person_add</span>
+                    Add Friend
+                  </Button>
+                )}
               </GlassPanel>
             )}
           </div>

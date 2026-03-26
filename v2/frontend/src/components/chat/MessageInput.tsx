@@ -1,6 +1,6 @@
 import { useState, useCallback, type FormEvent, type KeyboardEvent } from "react";
 import { sendMessage } from "@/api/tauri";
-import { MESH_GENERAL_CHANNEL } from "@/stores/servers";
+import { useServersStore, MESH_GENERAL_CHANNEL } from "@/stores/servers";
 
 interface MessageInputProps {
   channelId?: string;
@@ -24,7 +24,8 @@ function MessageInput({
 
       setSending(true);
       try {
-        await sendMessage(channelId, trimmed, serverId);
+        const msg = await sendMessage(channelId, trimmed, serverId);
+        useServersStore.getState().addMessage(msg);
         setContent("");
       } catch (err) {
         console.error("Failed to send message:", err);

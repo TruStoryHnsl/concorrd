@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import GlassPanel from "@/components/ui/GlassPanel";
 import NodeChip from "@/components/ui/NodeChip";
+import Skeleton from "@/components/ui/Skeleton";
 import MessageList from "@/components/chat/MessageList";
 import MessageInput from "@/components/chat/MessageInput";
 import JoinServerModal from "@/components/server/JoinServerModal";
 import { useWindowSize } from "@/hooks/useWindowSize";
 import { useMeshStore } from "@/stores/mesh";
-import { useServersStore, MESH_GENERAL_CHANNEL } from "@/stores/servers";
+import { useServersStore, MESH_GENERAL_CHANNEL, MESH_GENERAL_TOPIC } from "@/stores/servers";
 import { useAuthStore } from "@/stores/auth";
 import {
   getNodeStatus,
@@ -31,6 +32,7 @@ function DashboardPage() {
   const peerId = useAuthStore((s) => s.peerId);
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [serversCollapsed, setServersCollapsed] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     // Clear any active server when returning to dashboard
@@ -46,9 +48,11 @@ function DashboardPage() {
         setNodeStatus(status);
         setNearbyPeers(peers);
         setMessages(history);
-        await subscribeChannel(MESH_GENERAL_CHANNEL);
+        await subscribeChannel(MESH_GENERAL_TOPIC);
       } catch (err) {
         console.warn("Dashboard init failed (backend not ready?):", err);
+      } finally {
+        setLoading(false);
       }
     }
     void init();
@@ -64,6 +68,40 @@ function DashboardPage() {
   const isMobile = tier === "mobile";
   const isDesktop = tier === "desktop";
   const showServers = !isCompact;
+
+  if (loading) {
+    return (
+      <div className="mesh-background h-full flex flex-col overflow-hidden">
+        <div className="relative z-10 flex flex-col flex-1 min-h-0 overflow-hidden">
+          <div className="px-4 pt-3 pb-2 space-y-2 shrink-0">
+            <GlassPanel className="rounded-xl p-3">
+              <div className="flex items-center gap-2 mb-1">
+                <Skeleton className="w-5 h-5" circle />
+                <Skeleton className="h-5 w-32" />
+              </div>
+              <Skeleton className="h-3 w-48 ml-7" />
+            </GlassPanel>
+            <div className="grid grid-cols-2 gap-2">
+              <GlassPanel className="rounded-xl p-3 space-y-2">
+                <Skeleton className="h-3 w-16" />
+                <Skeleton className="h-5 w-20" />
+              </GlassPanel>
+              <GlassPanel className="rounded-xl p-3 space-y-2">
+                <Skeleton className="h-3 w-16" />
+                <Skeleton className="h-7 w-10" />
+              </GlassPanel>
+            </div>
+          </div>
+          <div className="flex-1 px-4 space-y-3 pt-4">
+            <Skeleton className="h-4 w-24" />
+            {[1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-12 w-full" />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mesh-background h-full flex flex-col overflow-hidden">
@@ -190,6 +228,18 @@ function DashboardPage() {
 
             {!serversCollapsed && (
               <div className="space-y-1.5">
+                {servers.length === 0 && (
+                  <div className="flex items-center gap-3 px-3 py-4 rounded-xl bg-surface-container-low/50 text-center">
+                    <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-container-high shrink-0">
+                      <span className="material-symbols-outlined text-on-surface-variant/40 text-lg">
+                        dns
+                      </span>
+                    </div>
+                    <p className="text-xs text-on-surface-variant font-body">
+                      No servers yet. Create your first one below.
+                    </p>
+                  </div>
+                )}
                 {servers.map((server) => (
                   <ServerCard key={server.id} server={server} />
                 ))}

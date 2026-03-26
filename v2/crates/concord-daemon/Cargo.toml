@@ -4,14 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "concord-server"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
 concord-core = { path = "../concord-core" }
 concord-net = { path = "../concord-net" }
 concord-store = { path = "../concord-store" }
+concord-webhost = { path = "../concord-webhost" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
-serde = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }

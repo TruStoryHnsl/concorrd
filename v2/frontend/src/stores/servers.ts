@@ -13,7 +13,10 @@ import {
   subscribeChannel,
 } from "@/api/tauri";
 
-export const MESH_GENERAL_CHANNEL = "concord/mesh/general";
+/** The channel ID for the global mesh chat. Used in send_message/get_messages. */
+export const MESH_GENERAL_CHANNEL = "general";
+/** The full GossipSub topic for subscribe calls. */
+export const MESH_GENERAL_TOPIC = "concord/mesh/general";
 
 interface ServersState {
   /* Server list */

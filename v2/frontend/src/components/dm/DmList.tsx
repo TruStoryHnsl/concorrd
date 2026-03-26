@@ -15,13 +15,20 @@ function DmList({ trustLevels }: DmListProps) {
 
   if (conversations.length === 0) {
     return (
-      <GlassPanel className="p-6 text-center space-y-2">
-        <span className="material-symbols-outlined text-3xl text-on-surface-variant/40">
-          chat_bubble_outline
-        </span>
-        <p className="text-xs text-on-surface-variant font-body">
-          No conversations yet
-        </p>
+      <GlassPanel className="p-6 flex flex-col items-center text-center space-y-3">
+        <div className="flex items-center justify-center w-12 h-12 rounded-full bg-primary/10">
+          <span className="material-symbols-outlined text-2xl text-primary/40">
+            chat_bubble_outline
+          </span>
+        </div>
+        <div className="space-y-1">
+          <p className="text-sm font-label font-medium text-on-surface">
+            No conversations yet
+          </p>
+          <p className="text-xs text-on-surface-variant font-body">
+            Start a conversation from the Friends page.
+          </p>
+        </div>
       </GlassPanel>
     );
   }
