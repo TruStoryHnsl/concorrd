@@ -1,6 +1,7 @@
 import { type ReactNode } from "react";
 import { useLocation, Link } from "react-router-dom";
 import { useWindowSize } from "@/hooks/useWindowSize";
+import { usePlatform } from "@/hooks/usePlatform";
 import BottomNav from "./BottomNav";
 import TopBar from "./TopBar";
 import WidgetView from "./WidgetView";
@@ -13,20 +14,26 @@ interface AppShellProps {
 
 function AppShell({ children }: AppShellProps) {
   const { tier } = useWindowSize();
+  const { isMobile: isMobileDevice } = usePlatform();
 
   // Widget mode: render only the compact status widget
   if (tier === "widget") {
     return <WidgetView />;
   }
 
-  const showSidebar = tier === "desktop";
-  const showBottomNav = tier === "mobile";
-  const compactTopBar = tier === "compact";
+  // On mobile devices (iOS/Android), always use mobile layout regardless of
+  // screen size tier — the device IS a phone/tablet.
+  const forceMobileLayout = isMobileDevice;
+  const showSidebar = !forceMobileLayout && tier === "desktop";
+  const showBottomNav = forceMobileLayout || tier === "mobile";
+  const compactTopBar = forceMobileLayout || tier === "compact";
 
   return (
     <div className="flex h-screen w-screen flex-col bg-background text-on-surface overflow-hidden">
-      {/* Top bar */}
-      <TopBar compact={compactTopBar} />
+      {/* Top bar — safe-top adds padding for iOS notch */}
+      <div className={isMobileDevice ? "safe-top bg-surface-container-low" : ""}>
+        <TopBar compact={compactTopBar} />
+      </div>
 
       {/* Main content area */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -46,17 +53,19 @@ function AppShell({ children }: AppShellProps) {
           </aside>
         )}
 
-        {/* Page content */}
-        <main className="flex-1 min-h-0 min-w-0 overflow-y-auto">
+        {/* Page content — safe-x for landscape orientation on mobile */}
+        <main className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${isMobileDevice ? "safe-x" : ""}`}>
           {children}
         </main>
       </div>
 
       {/* Voice connection bar -- visible on all pages when connected */}
-      <VoiceConnectionBar compact={tier === "compact"} />
+      <VoiceConnectionBar compact={tier === "compact" || isMobileDevice} />
 
-      {/* Mobile bottom nav -- only in mobile tier (500-768px) */}
-      <BottomNav visible={showBottomNav} />
+      {/* Bottom nav — safe-bottom adds padding for iOS home indicator */}
+      <div className={isMobileDevice ? "safe-bottom bg-surface-container-low" : ""}>
+        <BottomNav visible={showBottomNav} />
+      </div>
 
       {/* Toast notifications */}
       <ToastContainer />

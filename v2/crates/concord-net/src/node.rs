@@ -6,7 +6,7 @@ use tracing::{debug, error, info, warn};
 
 use concord_core::config::NodeConfig;
 use concord_core::trust::TrustAttestation;
-use concord_core::types::{AliasAnnouncement, DmSignal, ForumPost, FriendSignal, PresenceStatus, VoiceSignal};
+use concord_core::types::{AliasAnnouncement, DmSignal, ForumPost, FriendSignal, PresenceStatus, ServerSignal, VoiceSignal};
 
 use crate::behaviour::{ConcordBehaviour, ConcordBehaviourEvent};
 use crate::discovery::{DiscoveryState, PeerInfo};
@@ -81,6 +81,11 @@ pub enum NodeCommand {
     SendFriendSignal {
         peer_id: String,
         signal: FriendSignal,
+    },
+    /// Send a server key exchange signal.
+    SendServerSignal {
+        server_id: String,
+        signal: ServerSignal,
     },
     /// Shut down the node.
     Shutdown,
@@ -264,6 +269,18 @@ impl NodeHandle {
         self.command_tx
             .send(NodeCommand::SendFriendSignal {
                 peer_id: peer_id.to_string(),
+                signal,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("node event loop has shut down"))?;
+        Ok(())
+    }
+
+    /// Send a server key exchange signal.
+    pub async fn send_server_signal(&self, server_id: &str, signal: ServerSignal) -> Result<()> {
+        self.command_tx
+            .send(NodeCommand::SendServerSignal {
+                server_id: server_id.to_string(),
                 signal,
             })
             .await
@@ -607,6 +624,22 @@ impl Node {
                         self.emit(NetworkEvent::FriendSignalReceived { signal });
                     } else {
                         warn!(%topic, "failed to decode friend signal from gossipsub message");
+                    }
+                } else if topic.contains("/key-exchange") {
+                    // Server key exchange signals
+                    if let Ok(signal) = concord_core::wire::decode::<ServerSignal>(&message.data) {
+                        // Extract server_id from topic: "concord/{server_id}/key-exchange"
+                        let server_id = topic
+                            .strip_prefix("concord/")
+                            .and_then(|s| s.strip_suffix("/key-exchange"))
+                            .unwrap_or("unknown")
+                            .to_string();
+                        self.emit(NetworkEvent::ServerSignalReceived {
+                            server_id,
+                            signal,
+                        });
+                    } else {
+                        warn!(%topic, "failed to decode server signal");
                     }
                 } else {
                     // Try to decode as a Concord Message
@@ -1166,6 +1199,33 @@ impl Node {
                     }
                     Err(e) => {
                         error!(%e, "failed to encode friend signal");
+                    }
+                }
+            }
+
+            NodeCommand::SendServerSignal { server_id, signal } => {
+                let topic_str = format!("concord/{}/key-exchange", server_id);
+                match concord_core::wire::encode(&signal) {
+                    Ok(data) => {
+                        // Subscribe, publish, then we leave subscribed for responses
+                        let topic = gossipsub::IdentTopic::new(&topic_str);
+                        let _ = self.swarm.behaviour_mut().gossipsub.subscribe(&topic);
+                        match self
+                            .swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .publish(topic, data)
+                        {
+                            Ok(msg_id) => {
+                                info!(%topic_str, %msg_id, "published server signal");
+                            }
+                            Err(e) => {
+                                error!(%topic_str, %e, "failed to publish server signal");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!(%e, "failed to encode server signal");
                     }
                 }
             }

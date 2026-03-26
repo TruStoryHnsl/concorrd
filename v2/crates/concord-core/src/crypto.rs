@@ -248,6 +248,59 @@ pub fn decrypt_storage(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, CryptoErr
         .map_err(|_| CryptoError::DecryptionFailed)
 }
 
+// ─── Peer-to-Peer Key Encryption ──────────────────────────────
+
+/// An encrypted envelope for transmitting secrets to a specific peer.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EncryptedEnvelope {
+    pub sender_public_key: Vec<u8>,
+    pub ciphertext: Vec<u8>,
+    pub nonce: Vec<u8>,
+}
+
+/// Encrypt data for a specific peer using an ephemeral X25519 key exchange.
+/// The sender generates a one-time keypair and includes the public key in the envelope.
+pub fn encrypt_for_peer(
+    their_public_bytes: &[u8; 32],
+    plaintext: &[u8],
+) -> Result<EncryptedEnvelope, CryptoError> {
+    let their_public = PublicKey::from(*their_public_bytes);
+    let (ephemeral_secret, ephemeral_public) = generate_x25519_keypair();
+    let shared = compute_shared_secret(&ephemeral_secret, &their_public);
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(&shared).map_err(|_| CryptoError::EncryptionFailed)?;
+    let nonce_bytes = generate_random_nonce();
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|_| CryptoError::EncryptionFailed)?;
+    Ok(EncryptedEnvelope {
+        sender_public_key: ephemeral_public.as_bytes().to_vec(),
+        ciphertext,
+        nonce: nonce_bytes.to_vec(),
+    })
+}
+
+/// Decrypt an envelope received from another peer using our X25519 secret key.
+pub fn decrypt_from_peer(
+    our_secret: &StaticSecret,
+    envelope: &EncryptedEnvelope,
+) -> Result<Vec<u8>, CryptoError> {
+    if envelope.sender_public_key.len() != 32 || envelope.nonce.len() != 12 {
+        return Err(CryptoError::DecryptionFailed);
+    }
+    let mut pub_bytes = [0u8; 32];
+    pub_bytes.copy_from_slice(&envelope.sender_public_key);
+    let their_public = PublicKey::from(pub_bytes);
+    let shared = compute_shared_secret(our_secret, &their_public);
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(&shared).map_err(|_| CryptoError::DecryptionFailed)?;
+    let nonce = Nonce::from_slice(&envelope.nonce);
+    cipher
+        .decrypt(nonce, envelope.ciphertext.as_ref())
+        .map_err(|_| CryptoError::DecryptionFailed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,5 +479,26 @@ mod tests {
         let k1 = generate_random_key();
         let k2 = generate_random_key();
         assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn encrypt_for_peer_roundtrip() {
+        let (recipient_secret, recipient_public) = generate_x25519_keypair();
+        let plaintext = b"server-secret-key-32-bytes-here!";
+        let envelope =
+            encrypt_for_peer(recipient_public.as_bytes(), plaintext).unwrap();
+        let decrypted = decrypt_from_peer(&recipient_secret, &envelope).unwrap();
+        assert_eq!(&decrypted, plaintext);
+    }
+
+    #[test]
+    fn encrypt_for_peer_wrong_recipient_fails() {
+        let (_recipient_secret, recipient_public) = generate_x25519_keypair();
+        let (wrong_secret, _wrong_public) = generate_x25519_keypair();
+        let plaintext = b"secret data";
+        let envelope =
+            encrypt_for_peer(recipient_public.as_bytes(), plaintext).unwrap();
+        let result = decrypt_from_peer(&wrong_secret, &envelope);
+        assert!(result.is_err());
     }
 }

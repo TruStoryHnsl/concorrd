@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::params;
 use tracing::debug;
@@ -104,6 +106,45 @@ impl Database {
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![pattern, limit], row_to_message)?;
+        let messages: Vec<Message> = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(messages)
+    }
+
+    /// Get the latest message timestamp per channel (for building a vector clock).
+    /// Returns a map of channel_id to the latest message timestamp in unix millis.
+    pub fn get_vector_clock(&self) -> Result<HashMap<String, i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT channel_id, MAX(timestamp) FROM messages GROUP BY channel_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let channel_id: String = row.get(0)?;
+            let timestamp: i64 = row.get(1)?;
+            Ok((channel_id, timestamp))
+        })?;
+        let mut clock = HashMap::new();
+        for row in rows {
+            let (channel_id, timestamp) = row?;
+            clock.insert(channel_id, timestamp);
+        }
+        Ok(clock)
+    }
+
+    /// Get messages in a channel with timestamps strictly after the given value.
+    /// Results are ordered by timestamp ascending and capped at `limit`.
+    pub fn get_messages_after(
+        &self,
+        channel_id: &str,
+        after_timestamp: i64,
+        limit: u32,
+    ) -> Result<Vec<Message>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, channel_id, sender_id, content, timestamp, signature, alias_id, alias_name
+             FROM messages
+             WHERE channel_id = ?1 AND timestamp > ?2
+             ORDER BY timestamp ASC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![channel_id, after_timestamp, limit], row_to_message)?;
         let messages: Vec<Message> = rows.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(messages)
     }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use concord_core::trust::TrustAttestation;
-use concord_core::types::{AliasAnnouncement, DmSignal, ForumPost, FriendSignal, Message, PresenceStatus, VoiceSignal};
+use concord_core::types::{AliasAnnouncement, DmSignal, ForumPost, FriendSignal, Message, PresenceStatus, ServerSignal, VoiceSignal};
 
 /// Events emitted by the network layer to the application.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,5 +89,11 @@ pub enum NetworkEvent {
     PresenceUpdate {
         peer_id: String,
         status: PresenceStatus,
+    },
+
+    /// A server key exchange signal was received.
+    ServerSignalReceived {
+        server_id: String,
+        signal: ServerSignal,
     },
 }

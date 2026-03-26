@@ -56,7 +56,10 @@ function MessageInput({
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           disabled={sending}
-          className="flex-1 min-w-0 px-3 py-2 rounded-xl bg-surface-container border-none text-on-surface placeholder:text-on-surface-variant/50 font-body text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 transition-colors"
+          enterKeyHint="send"
+          autoComplete="off"
+          autoCorrect="on"
+          className="selectable flex-1 min-w-0 px-3 py-2 rounded-xl bg-surface-container border-none text-on-surface placeholder:text-on-surface-variant/50 font-body text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 transition-colors"
         />
         <button
           type="submit"

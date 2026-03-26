@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -262,4 +264,38 @@ pub struct EncryptedEnvelope {
     pub nonce: Vec<u8>,
     /// X25519 ephemeral public key of the sender.
     pub sender_public_key: Vec<u8>,
+}
+
+// ─── Sync Protocol Types ────────────────────────────────────────────
+
+/// Sync protocol messages exchanged between peers to synchronize
+/// message history after reconnection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SyncMessage {
+    /// Request: "Here's what I have, send me what I'm missing."
+    SyncRequest {
+        peer_id: String,
+        /// channel_id → newest message timestamp (unix millis).
+        vector_clock: HashMap<String, i64>,
+    },
+    /// Response: "Here are the messages you're missing."
+    SyncResponse {
+        peer_id: String,
+        messages: Vec<Message>,
+    },
+}
+
+/// Server key exchange signals for distributing encryption keys to joining members.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ServerSignal {
+    /// A newly joined member requests the server encryption key.
+    KeyRequest {
+        peer_id: String,
+        x25519_public_key: Vec<u8>,
+    },
+    /// A member responds with the server key encrypted to the requester.
+    KeyResponse {
+        to_peer: String,
+        encrypted_key: crate::crypto::EncryptedEnvelope,
+    },
 }

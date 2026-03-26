@@ -46,11 +46,15 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle().clone();
 
-            // Resolve data directory using Tauri's path API.
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("./concord-data"));
+            // Resolve data directory. CONCORD_DATA_DIR env var overrides
+            // Tauri's default, enabling multiple instances with separate data.
+            let data_dir = match std::env::var("CONCORD_DATA_DIR") {
+                Ok(dir) => std::path::PathBuf::from(dir),
+                Err(_) => app
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("./concord-data")),
+            };
 
             std::fs::create_dir_all(&data_dir)?;
 
@@ -200,7 +204,14 @@ pub fn run() {
 
             // 7. Spawn the event forwarding task.
             let db_for_events = Arc::clone(&db);
-            spawn_event_forwarder(app_handle, event_rx, db_for_events);
+            spawn_event_forwarder(
+                app_handle,
+                event_rx,
+                db_for_events,
+                handle.clone(),
+                peer_id.clone(),
+                keypair.clone(),
+            );
 
             // 7b. Subscribe to forum topics.
             {
@@ -364,6 +375,9 @@ fn spawn_event_forwarder(
     app_handle: tauri::AppHandle,
     mut event_rx: tokio::sync::broadcast::Receiver<NetworkEvent>,
     db: Arc<Mutex<Database>>,
+    node: concord_net::NodeHandle,
+    peer_id: String,
+    keypair: concord_core::identity::Keypair,
 ) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -478,10 +492,12 @@ fn spawn_event_forwarder(
                             );
                         }
                         NetworkEvent::AttestationReceived { attestation } => {
-                            // Store the attestation locally
+                            // Verify signature and store only if valid
                             if let Ok(db) = db.lock() {
-                                if let Err(e) = db.store_attestation(attestation) {
-                                    warn!(%e, "failed to store received attestation");
+                                match db.store_verified_attestation(attestation) {
+                                    Ok(true) => { /* attestation verified and stored */ }
+                                    Ok(false) => warn!("forged attestation rejected"),
+                                    Err(e) => warn!(%e, "failed to store attestation"),
                                 }
                             }
                             let _ = app_handle.emit(
@@ -660,6 +676,53 @@ fn spawn_event_forwarder(
                                     "status": status_str,
                                 }),
                             );
+                        }
+                        NetworkEvent::ServerSignalReceived { server_id, signal } => {
+                            use concord_core::types::ServerSignal;
+                            match signal {
+                                ServerSignal::KeyRequest { peer_id: requester_id, x25519_public_key } => {
+                                    // Someone joined our server and needs the key
+                                    if let Ok(db) = db.lock() {
+                                        if let Ok(Some(server_key)) = db.get_server_key(&server_id) {
+                                            // Encrypt server key to the requester's X25519 public key
+                                            if x25519_public_key.len() == 32 {
+                                                let mut pub_bytes = [0u8; 32];
+                                                pub_bytes.copy_from_slice(&x25519_public_key);
+                                                if let Ok(envelope) = concord_core::crypto::encrypt_for_peer(&pub_bytes, &server_key) {
+                                                    let response = ServerSignal::KeyResponse {
+                                                        to_peer: requester_id.clone(),
+                                                        encrypted_key: envelope,
+                                                    };
+                                                    let node = node.clone();
+                                                    let sid = server_id.clone();
+                                                    tauri::async_runtime::spawn(async move {
+                                                        let _ = node.send_server_signal(&sid, response).await;
+                                                    });
+                                                    info!(%requester_id, %server_id, "sent server key to joining member");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                ServerSignal::KeyResponse { to_peer, encrypted_key } => {
+                                    // We received a server key — decrypt and store it
+                                    if *to_peer == peer_id {
+                                        // We need our X25519 secret key. For now, derive one from
+                                        // our Ed25519 signing key (deterministic derivation).
+                                        let x_secret = x25519_dalek::StaticSecret::from(keypair.to_bytes());
+                                        if let Ok(key_bytes) = concord_core::crypto::decrypt_from_peer(&x_secret, &encrypted_key) {
+                                            if key_bytes.len() == 32 {
+                                                let mut key_arr = [0u8; 32];
+                                                key_arr.copy_from_slice(&key_bytes);
+                                                if let Ok(db) = db.lock() {
+                                                    let _ = db.store_server_key(&server_id, &key_arr);
+                                                    info!(%server_id, "received and stored server encryption key");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         _ => {}
                     }

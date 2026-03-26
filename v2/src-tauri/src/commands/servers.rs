@@ -273,6 +273,20 @@ pub async fn join_server(
     // Subscribe to all channel topics
     subscribe_to_server_channels(&state.node, &server.id, &channels).await?;
 
+    // Request the server encryption key from existing members.
+    // We derive an X25519 public key from our Ed25519 signing key for the key exchange.
+    let x_secret = x25519_dalek::StaticSecret::from(state.keypair.to_bytes());
+    let x_public = x25519_dalek::PublicKey::from(&x_secret);
+    let key_request = concord_core::types::ServerSignal::KeyRequest {
+        peer_id: state.peer_id.clone(),
+        x25519_public_key: x_public.as_bytes().to_vec(),
+    };
+    let _ = state.node.send_server_signal(&server.id, key_request).await;
+
+    // Subscribe to the key-exchange topic to receive the response
+    let key_topic = format!("concord/{}/key-exchange", server.id);
+    let _ = state.node.subscribe(&key_topic).await;
+
     // Build payload
     let db = state.db.lock().map_err(|e| e.to_string())?;
     build_server_payload(&db, &server)

@@ -1,6 +1,7 @@
 use rusqlite::params;
-use tracing::debug;
+use tracing::{debug, warn};
 
+use concord_core::identity::verify_attestation_signature;
 use concord_core::trust::{
     compute_net_trust, compute_trust_level, compute_trust_with_bleed,
     AttestationType, TrustAttestation, TrustScore,
@@ -45,6 +46,38 @@ impl Database {
             "attestation stored"
         );
         Ok(())
+    }
+
+    /// Store an attestation ONLY if its Ed25519 signature is valid.
+    /// Returns Ok(true) if stored, Ok(false) if signature verification failed.
+    pub fn store_verified_attestation(&self, att: &TrustAttestation) -> Result<bool> {
+        match verify_attestation_signature(
+            &att.attester_id,
+            &att.subject_id,
+            att.since_timestamp,
+            &att.signature,
+        ) {
+            Ok(true) => {
+                self.store_attestation(att)?;
+                Ok(true)
+            }
+            Ok(false) => {
+                warn!(
+                    attester = %att.attester_id,
+                    subject = %att.subject_id,
+                    "attestation signature verification FAILED — rejecting forged attestation"
+                );
+                Ok(false)
+            }
+            Err(e) => {
+                warn!(
+                    attester = %att.attester_id,
+                    error = %e,
+                    "attestation verification error (malformed key?) — rejecting"
+                );
+                Ok(false)
+            }
+        }
     }
 
     /// Get all attestations for a given subject peer.
@@ -481,5 +514,44 @@ mod tests {
     fn get_trust_score_returns_none_for_unknown() {
         let db = Database::open_in_memory().unwrap();
         assert!(db.get_trust_score("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn verified_attestation_stores_valid_signature() {
+        let db = Database::open_in_memory().unwrap();
+        let kp = concord_core::identity::Keypair::generate();
+        let tm = concord_core::trust::TrustManager::new(&kp);
+        let att = tm.create_attestation("subject_peer", 1000);
+        assert!(db.store_verified_attestation(&att).unwrap());
+        assert_eq!(db.get_attestation_count("subject_peer").unwrap(), 1);
+    }
+
+    #[test]
+    fn verified_attestation_rejects_forged_signature() {
+        use concord_core::trust::{AttestationType, TrustAttestation};
+        let db = Database::open_in_memory().unwrap();
+        let kp = concord_core::identity::Keypair::generate();
+        let forged = TrustAttestation {
+            attester_id: kp.peer_id(),
+            subject_id: "victim".to_string(),
+            attestation_type: AttestationType::Negative,
+            since_timestamp: 1000,
+            reason: Some("forged".to_string()),
+            signature: vec![0u8; 64], // garbage signature
+            attester_trust_weight: 1.0,
+        };
+        assert!(!db.store_verified_attestation(&forged).unwrap());
+        assert_eq!(db.get_attestation_count("victim").unwrap(), 0);
+    }
+
+    #[test]
+    fn verified_attestation_rejects_tampered_subject() {
+        let db = Database::open_in_memory().unwrap();
+        let kp = concord_core::identity::Keypair::generate();
+        let tm = concord_core::trust::TrustManager::new(&kp);
+        let mut att = tm.create_attestation("real_subject", 1000);
+        att.subject_id = "tampered_subject".to_string(); // tamper after signing
+        assert!(!db.store_verified_attestation(&att).unwrap());
+        assert_eq!(db.get_attestation_count("tampered_subject").unwrap(), 0);
     }
 }
