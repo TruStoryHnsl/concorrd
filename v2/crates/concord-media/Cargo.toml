@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 str0m = "0.7"
+cpal = "0.17"
+audiopus = "0.3.0-rc.0"
 concord-core = { path = "../concord-core" }
 concord-net = { path = "../concord-net" }
 tokio = { workspace = true }
