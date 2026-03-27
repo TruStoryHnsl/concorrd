@@ -37,7 +37,7 @@ pub async fn initiate_dm_session(
     // receive the peer's public key. For now, store the raw secret as a placeholder.
     {
         let db = state.db.lock().map_err(|e| e.to_string())?;
-        db.save_dm_session(&peer_id, secret.as_bytes().as_slice(), 0, 0)
+        db.save_dm_session_encrypted(&state.device_key, &peer_id, secret.as_bytes().as_slice(), 0, 0)
             .map_err(|e| e.to_string())?;
     }
 
@@ -76,10 +76,10 @@ pub async fn send_dm(
 ) -> Result<DmPayload, String> {
     let local_peer_id = state.peer_id.clone();
 
-    // Load the DM session
+    // Load the DM session (decrypted)
     let session_record = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
-        db.get_dm_session(&peer_id)
+        db.get_dm_session_decrypted(&state.device_key, &peer_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "no DM session with this peer — initiate first".to_string())?
     };
@@ -124,7 +124,8 @@ pub async fn send_dm(
         )
         .map_err(|e| e.to_string())?;
 
-        db.save_dm_session(
+        db.save_dm_session_encrypted(
+            &state.device_key,
             &peer_id,
             &session_record.shared_secret,
             e2e.send_count(),
@@ -163,8 +164,8 @@ pub fn get_dm_history(
         .get_dm_history(&peer_id, limit.unwrap_or(50))
         .map_err(|e| e.to_string())?;
 
-    // Try to load the session for decryption
-    let session_opt = db.get_dm_session(&peer_id).map_err(|e| e.to_string())?;
+    // Try to load the session for decryption (using device key)
+    let session_opt = db.get_dm_session_decrypted(&state.device_key, &peer_id).map_err(|e| e.to_string())?;
 
     let payloads: Vec<DmPayload> = records
         .iter()

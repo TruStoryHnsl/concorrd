@@ -217,6 +217,31 @@ pub fn derive_storage_key(signing_key_bytes: &[u8; 32]) -> [u8; 32] {
     key
 }
 
+/// Generate a random device key for local storage encryption.
+pub fn generate_device_key() -> [u8; 32] {
+    generate_random_key()
+}
+
+/// Encrypt identity key bytes for storage using a device key.
+pub fn encrypt_identity(device_key: &[u8; 32], signing_key: &[u8; 32]) -> Result<Vec<u8>, CryptoError> {
+    encrypt_storage(device_key, signing_key)
+}
+
+/// Decrypt identity key bytes from storage using a device key.
+pub fn decrypt_identity(device_key: &[u8; 32], encrypted: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    decrypt_storage(device_key, encrypted)
+}
+
+/// Encrypt DM session secrets for storage using a device key.
+pub fn encrypt_dm_secret(device_key: &[u8; 32], secret: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    encrypt_storage(device_key, secret)
+}
+
+/// Decrypt DM session secrets from storage using a device key.
+pub fn decrypt_dm_secret(device_key: &[u8; 32], encrypted: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    decrypt_storage(device_key, encrypted)
+}
+
 /// Encrypt data for local storage using a device key.
 pub fn encrypt_storage(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let cipher =
@@ -500,5 +525,50 @@ mod tests {
             encrypt_for_peer(recipient_public.as_bytes(), plaintext).unwrap();
         let result = decrypt_from_peer(&wrong_secret, &envelope);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn device_key_generation() {
+        let k1 = generate_device_key();
+        let k2 = generate_device_key();
+        assert_ne!(k1, k2);
+        assert_eq!(k1.len(), 32);
+    }
+
+    #[test]
+    fn encrypt_identity_roundtrip() {
+        let device_key = generate_device_key();
+        let signing_key = [42u8; 32];
+        let encrypted = encrypt_identity(&device_key, &signing_key).unwrap();
+        assert_ne!(&encrypted[12..], &signing_key[..]);
+        let decrypted = decrypt_identity(&device_key, &encrypted).unwrap();
+        assert_eq!(decrypted.as_slice(), &signing_key);
+    }
+
+    #[test]
+    fn encrypt_identity_wrong_key_fails() {
+        let device_key1 = generate_device_key();
+        let device_key2 = generate_device_key();
+        let signing_key = [42u8; 32];
+        let encrypted = encrypt_identity(&device_key1, &signing_key).unwrap();
+        assert!(decrypt_identity(&device_key2, &encrypted).is_err());
+    }
+
+    #[test]
+    fn encrypt_dm_secret_roundtrip() {
+        let device_key = generate_device_key();
+        let shared_secret = [99u8; 32];
+        let encrypted = encrypt_dm_secret(&device_key, &shared_secret).unwrap();
+        let decrypted = decrypt_dm_secret(&device_key, &encrypted).unwrap();
+        assert_eq!(decrypted.as_slice(), &shared_secret);
+    }
+
+    #[test]
+    fn encrypt_dm_secret_wrong_key_fails() {
+        let device_key1 = generate_device_key();
+        let device_key2 = generate_device_key();
+        let shared_secret = [99u8; 32];
+        let encrypted = encrypt_dm_secret(&device_key1, &shared_secret).unwrap();
+        assert!(decrypt_dm_secret(&device_key2, &encrypted).is_err());
     }
 }

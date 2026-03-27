@@ -24,6 +24,7 @@ uuid = { version = "1", features = ["v4"] }
 concord-core = { path = "../crates/concord-core" }
 concord-net = { path = "../crates/concord-net" }
 concord-store = { path = "../crates/concord-store" }
+concord-media = { path = "../crates/concord-media" }
 concord-webhost = { path = "../crates/concord-webhost" }
 rand = "0.8"
 x25519-dalek = { version = "2", features = ["static_secrets"] }

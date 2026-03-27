@@ -8,6 +8,7 @@ use std::time::Duration;
 use concord_core::config::NodeConfig;
 use concord_core::identity::Keypair;
 use concord_core::types::NodeType;
+use concord_media::{VoiceEngine, VoiceEngineHandle};
 use concord_net::events::NetworkEvent;
 use concord_net::node::{Node, NodeHandle};
 use concord_store::Database;
@@ -24,6 +25,8 @@ pub struct AppState {
     pub display_name: String,
     pub keypair: Keypair,
     pub event_sender: broadcast::Sender<NetworkEvent>,
+    pub voice: VoiceEngineHandle,
+    pub device_key: [u8; 32],
 }
 
 /// State for the optional webhost server.
@@ -61,15 +64,44 @@ pub fn run() {
 
             info!(?data_dir, "using data directory");
 
+            // 0. Load or generate device key for local storage encryption.
+            let device_key_path = data_dir.join("device.key");
+            let device_key: [u8; 32] = if device_key_path.exists() {
+                let bytes = std::fs::read(&device_key_path)
+                    .map_err(|e| anyhow::anyhow!("failed to read device key: {e}"))?;
+                if bytes.len() != 32 {
+                    return Err(anyhow::anyhow!("device.key is corrupt (expected 32 bytes, got {})", bytes.len()).into());
+                }
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                info!("loaded device key");
+                key
+            } else {
+                let key = concord_core::crypto::generate_device_key();
+                std::fs::write(&device_key_path, &key)
+                    .map_err(|e| anyhow::anyhow!("failed to write device key: {e}"))?;
+                info!("generated new device key");
+                key
+            };
+
             // 1. Open the SQLite database.
             let db_path = data_dir.join("concord.db");
             let db = Database::open(&db_path)
                 .map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?;
 
-            // 2. Load or generate identity.
-            let (display_name, keypair) = match db.load_identity() {
+            // 2. Load or generate identity (encrypted with device key).
+            let (display_name, keypair) = match db.load_identity_encrypted(&device_key) {
                 Ok(Some((name, kp))) => {
                     info!(%name, "loaded existing identity");
+                    // Re-encrypt if it was loaded from unencrypted format (migration)
+                    // We detect this by trying to load with the old method -- if both work,
+                    // the old format was still stored. Re-save encrypted.
+                    if db.load_identity().is_ok() {
+                        if let Ok(Some(_)) = db.load_identity() {
+                            let _ = db.save_identity_encrypted(&name, &kp, &device_key);
+                            info!("migrated identity to encrypted storage");
+                        }
+                    }
                     // Ensure at least one alias exists (migration for existing identities)
                     let aliases = db.get_aliases(&kp.peer_id())
                         .map_err(|e| anyhow::anyhow!("failed to get aliases: {e}"))?;
@@ -91,7 +123,7 @@ pub fn run() {
                 Ok(None) => {
                     let kp = Keypair::generate();
                     let name = format!("Node-{}", &kp.peer_id()[..8]);
-                    db.save_identity(&name, &kp)
+                    db.save_identity_encrypted(&name, &kp, &device_key)
                         .map_err(|e| anyhow::anyhow!("failed to save identity: {e}"))?;
                     // Auto-create a default alias for the new identity
                     let default_alias = concord_core::types::Alias {
@@ -203,16 +235,27 @@ pub fn run() {
                 node.run().await;
             });
 
+            // 6b. Create the VoiceEngine and spawn its event loop.
+            let (voice_engine, voice_handle, voice_event_rx) =
+                VoiceEngine::new(handle.clone(), peer_id.clone());
+            tauri::async_runtime::spawn(async move {
+                voice_engine.run().await;
+            });
+
             // 7. Spawn the event forwarding task.
             let db_for_events = Arc::clone(&db);
             spawn_event_forwarder(
-                app_handle,
+                app_handle.clone(),
                 event_rx,
                 db_for_events,
                 handle.clone(),
                 peer_id.clone(),
                 keypair.clone(),
+                voice_handle.clone(),
             );
+
+            // 7a. Spawn voice event forwarder (VoiceEvents -> Tauri event bus).
+            spawn_voice_event_forwarder(app_handle, voice_event_rx);
 
             // 7b. Subscribe to forum topics.
             {
@@ -291,6 +334,8 @@ pub fn run() {
                 display_name,
                 keypair,
                 event_sender,
+                voice: voice_handle,
+                device_key,
             };
             app.manage(state);
 
@@ -379,6 +424,7 @@ fn spawn_event_forwarder(
     node: concord_net::NodeHandle,
     peer_id: String,
     keypair: concord_core::identity::Keypair,
+    voice: VoiceEngineHandle,
 ) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -836,6 +882,9 @@ fn spawn_event_forwarder(
                                 }
                             }
                         }
+                        NetworkEvent::VoiceSignalReceived { signal } => {
+                            voice.handle_signal(signal.clone());
+                        }
                         _ => {}
                     }
                 }
@@ -844,6 +893,115 @@ fn spawn_event_forwarder(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     info!("event channel closed, forwarder stopping");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// Spawn a background task that reads VoiceEvents from the voice engine
+/// and forwards them to the Tauri frontend via the app handle's event system.
+fn spawn_voice_event_forwarder(
+    app_handle: tauri::AppHandle,
+    mut voice_event_rx: broadcast::Receiver<concord_media::VoiceEvent>,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match voice_event_rx.recv().await {
+                Ok(event) => {
+                    match &event {
+                        concord_media::VoiceEvent::Joined { channel_id, server_id } => {
+                            let _ = app_handle.emit(
+                                events::VOICE_STATE_CHANGED,
+                                serde_json::json!({
+                                    "type": "joined",
+                                    "channelId": channel_id,
+                                    "serverId": server_id,
+                                }),
+                            );
+                        }
+                        concord_media::VoiceEvent::Left { channel_id } => {
+                            let _ = app_handle.emit(
+                                events::VOICE_STATE_CHANGED,
+                                serde_json::json!({
+                                    "type": "left",
+                                    "channelId": channel_id,
+                                }),
+                            );
+                        }
+                        concord_media::VoiceEvent::ParticipantJoined { peer_id, channel_id } => {
+                            let _ = app_handle.emit(
+                                events::VOICE_PARTICIPANT_JOINED,
+                                serde_json::json!({
+                                    "peerId": peer_id,
+                                    "channelId": channel_id,
+                                }),
+                            );
+                        }
+                        concord_media::VoiceEvent::ParticipantLeft { peer_id, channel_id } => {
+                            let _ = app_handle.emit(
+                                events::VOICE_PARTICIPANT_LEFT,
+                                serde_json::json!({
+                                    "peerId": peer_id,
+                                    "channelId": channel_id,
+                                }),
+                            );
+                        }
+                        concord_media::VoiceEvent::MuteChanged { is_muted } => {
+                            let _ = app_handle.emit(
+                                events::VOICE_STATE_CHANGED,
+                                serde_json::json!({
+                                    "type": "muteChanged",
+                                    "isMuted": is_muted,
+                                }),
+                            );
+                        }
+                        concord_media::VoiceEvent::DeafenChanged { is_deafened } => {
+                            let _ = app_handle.emit(
+                                events::VOICE_STATE_CHANGED,
+                                serde_json::json!({
+                                    "type": "deafenChanged",
+                                    "isDeafened": is_deafened,
+                                }),
+                            );
+                        }
+                        concord_media::VoiceEvent::StateChanged { state } => {
+                            let _ = app_handle.emit(
+                                events::VOICE_STATE_CHANGED,
+                                serde_json::json!({
+                                    "type": "stateChanged",
+                                    "state": state,
+                                }),
+                            );
+                        }
+                        concord_media::VoiceEvent::ParticipantMuteChanged { peer_id, is_muted } => {
+                            let _ = app_handle.emit(
+                                events::VOICE_STATE_CHANGED,
+                                serde_json::json!({
+                                    "type": "participantMuteChanged",
+                                    "peerId": peer_id,
+                                    "isMuted": is_muted,
+                                }),
+                            );
+                        }
+                        concord_media::VoiceEvent::ParticipantSpeaking { peer_id, is_speaking } => {
+                            let _ = app_handle.emit(
+                                events::VOICE_STATE_CHANGED,
+                                serde_json::json!({
+                                    "type": "participantSpeaking",
+                                    "peerId": peer_id,
+                                    "isSpeaking": is_speaking,
+                                }),
+                            );
+                        }
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(n, "voice event forwarder lagged, dropped events");
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    info!("voice event channel closed, forwarder stopping");
                     break;
                 }
             }

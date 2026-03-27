@@ -909,6 +909,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "concord-core",
+ "concord-media",
  "concord-net",
  "concord-store",
  "concord-webhost",

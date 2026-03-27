@@ -24,6 +24,27 @@ pub struct ParticipantPayload {
     pub is_speaking: bool,
 }
 
+impl From<concord_media::VoiceStateSnapshot> for VoiceStatePayload {
+    fn from(s: concord_media::VoiceStateSnapshot) -> Self {
+        Self {
+            is_in_voice: s.is_in_voice,
+            channel_id: s.channel_id,
+            server_id: s.server_id,
+            is_muted: s.is_muted,
+            is_deafened: s.is_deafened,
+            participants: s
+                .participants
+                .into_iter()
+                .map(|p| ParticipantPayload {
+                    peer_id: p.peer_id,
+                    is_muted: p.is_muted,
+                    is_speaking: p.is_speaking,
+                })
+                .collect(),
+        }
+    }
+}
+
 /* ── Commands ────────────────────────────────────────────────── */
 
 /// Join a voice channel. The media engine establishes a WebRTC session
@@ -34,66 +55,67 @@ pub async fn join_voice(
     server_id: String,
     channel_id: String,
 ) -> Result<VoiceStatePayload, String> {
-    let peer_id = state.peer_id.clone();
+    state
+        .voice
+        .join_channel(&server_id, &channel_id)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    // TODO: Wire to VoiceEngineHandle once concord-media is integrated.
-    // For now return a synthetic "connected" state so the frontend can
-    // be developed in parallel.
-    Ok(VoiceStatePayload {
-        is_in_voice: true,
-        channel_id: Some(channel_id),
-        server_id: Some(server_id),
-        is_muted: false,
-        is_deafened: false,
-        participants: vec![ParticipantPayload {
-            peer_id,
-            is_muted: false,
-            is_speaking: false,
-        }],
-    })
+    let snapshot = state
+        .voice
+        .get_state()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(VoiceStatePayload::from(snapshot))
 }
 
 /// Leave the currently connected voice channel.
 #[tauri::command]
 pub async fn leave_voice(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> Result<(), String> {
-    // TODO: Wire to VoiceEngineHandle.
-    Ok(())
+    state
+        .voice
+        .leave_channel()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Toggle local microphone mute. Returns the new muted state.
 #[tauri::command]
 pub async fn toggle_mute(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    // TODO: Wire to VoiceEngineHandle to actually mute the capture track.
-    // For now toggle is handled purely in the frontend store; this command
-    // will later synchronize with the media engine.
-    Ok(true)
+    state
+        .voice
+        .toggle_mute()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Toggle deafen (mute all incoming audio). Returns the new deafened state.
 #[tauri::command]
 pub async fn toggle_deafen(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    // TODO: Wire to VoiceEngineHandle.
-    Ok(false)
+    state
+        .voice
+        .toggle_deafen()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Query the current voice connection state.
 #[tauri::command]
 pub async fn get_voice_state(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> Result<VoiceStatePayload, String> {
-    // TODO: Read from VoiceEngineHandle.
-    Ok(VoiceStatePayload {
-        is_in_voice: false,
-        channel_id: None,
-        server_id: None,
-        is_muted: false,
-        is_deafened: false,
-        participants: vec![],
-    })
+    let snapshot = state
+        .voice
+        .get_state()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(VoiceStatePayload::from(snapshot))
 }
