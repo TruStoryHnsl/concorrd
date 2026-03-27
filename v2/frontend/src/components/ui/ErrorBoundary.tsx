@@ -66,7 +66,12 @@ class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error("ErrorBoundary caught:", error, errorInfo);
+    const count = this.state.retryCount + 1;
+    console.error(
+      `[ErrorBoundary] CAUGHT (attempt ${count}/${MAX_AUTO_RETRIES}):`,
+      error.message,
+      "\n  Component stack:", errorInfo.componentStack?.split("\n").slice(0, 3).join(" > "),
+    );
     this.scheduleAutoRetry();
   }
 
@@ -86,9 +91,15 @@ class ErrorBoundary extends Component<Props, State> {
     const nextCount = retryCount + 1;
 
     if (nextCount > MAX_AUTO_RETRIES) {
+      const diag = diagnoseError(error, nextCount);
+      console.warn(
+        `[ErrorBoundary] MAX RETRIES HIT (${MAX_AUTO_RETRIES}). Stopping auto-retry.`,
+        "\n  Diagnosis:", diag,
+        "\n  Last error:", error?.message,
+      );
       this.setState({
         maxRetriesHit: true,
-        diagnosis: diagnoseError(error, nextCount),
+        diagnosis: diag,
         nextRetryIn: null,
         isRetrying: false,
       });
@@ -96,6 +107,10 @@ class ErrorBoundary extends Component<Props, State> {
     }
 
     const backoff = getBackoffSeconds(retryCount);
+    console.info(
+      `[ErrorBoundary] Auto-retry ${nextCount}/${MAX_AUTO_RETRIES} in ${backoff}s`,
+      `(error: ${error?.message?.slice(0, 80)})`,
+    );
     this.setState({ nextRetryIn: backoff, retryCount: nextCount });
 
     // Countdown timer (updates every second)
@@ -121,6 +136,7 @@ class ErrorBoundary extends Component<Props, State> {
   }
 
   handleManualRetry = () => {
+    console.info("[ErrorBoundary] Manual retry — resetting retry counter");
     this.clearTimers();
     this.setState({
       hasError: false,
