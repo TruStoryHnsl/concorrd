@@ -11,8 +11,20 @@ export WEBKIT_DISABLE_DMABUF_RENDERER=1
 
 mkdir -p "$CONCORD_DATA_DIR"
 
-echo "Starting second Concord instance (data: $CONCORD_DATA_DIR)"
-echo "Make sure 'cargo tauri dev' is running in another terminal first."
+echo "=== Concord Instance 2 ==="
+echo "Data: $CONCORD_DATA_DIR"
 echo ""
 
-cargo run -p concord-app -- "$@"
+# Check if Vite is running
+if ! curl -s --max-time 1 "http://localhost:1420" >/dev/null 2>&1; then
+    echo "ERROR: Vite not running on port 1420."
+    echo "Start the first instance with 'cargo tauri dev' first."
+    exit 1
+fi
+
+echo "Vite detected on :1420 — launching second node..."
+echo ""
+
+# Use cargo tauri dev — the start-frontend.sh script will detect Vite
+# is already running and skip starting a second one.
+cargo tauri dev "$@"
