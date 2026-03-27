@@ -6,6 +6,7 @@ use tracing::{debug, info, warn};
 use concord_core::types::VoiceSignal;
 use concord_net::NodeHandle;
 
+use crate::audio::{AudioCapture, AudioPlayback};
 use crate::session::VoiceSession;
 use crate::signaling::SignalingManager;
 
@@ -204,6 +205,12 @@ pub struct VoiceEngine {
     event_tx: broadcast::Sender<VoiceEvent>,
     node_handle: NodeHandle,
     local_peer_id: String,
+    /// Audio capture (microphone -> Opus frames). None if no input device available.
+    audio_capture: Option<AudioCapture>,
+    /// Audio playback (Opus frames -> speakers). None if no output device available.
+    audio_playback: Option<AudioPlayback>,
+    /// Handle to the spawned task that forwards captured audio frames to the network.
+    audio_forward_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl VoiceEngine {
@@ -227,6 +234,9 @@ impl VoiceEngine {
             event_tx,
             node_handle,
             local_peer_id,
+            audio_capture: None,
+            audio_playback: None,
+            audio_forward_task: None,
         };
 
         (engine, handle, event_rx)
@@ -240,6 +250,8 @@ impl VoiceEngine {
             self.handle_command(cmd).await;
         }
 
+        // Clean up audio on shutdown
+        self.stop_audio();
         info!("voice engine stopped");
     }
 
@@ -280,6 +292,111 @@ impl VoiceEngine {
         }
     }
 
+    /// Start audio capture and playback for a voice session.
+    ///
+    /// Creates AudioCapture and AudioPlayback, starts both streams, and spawns
+    /// a task that reads encoded Opus frames from capture and publishes them
+    /// to the voice channel's GossipSub topic.
+    ///
+    /// If audio devices are unavailable, logs a warning and continues without audio.
+    fn start_audio(&mut self, server_id: &str, channel_id: &str) {
+        // Create the channel for captured audio frames (std::sync::mpsc, used from cpal callback)
+        let (frame_tx, frame_rx) = std::sync::mpsc::channel();
+
+        // --- Audio Capture (microphone) ---
+        match AudioCapture::new(frame_tx) {
+            Ok(capture) => {
+                if let Err(e) = capture.start() {
+                    warn!(%e, "failed to start audio capture — continuing without microphone");
+                } else {
+                    self.audio_capture = Some(capture);
+                }
+            }
+            Err(e) => {
+                warn!(%e, "audio capture unavailable — continuing without microphone");
+            }
+        }
+
+        // --- Audio Playback (speakers) ---
+        match AudioPlayback::new() {
+            Ok(playback) => {
+                if let Err(e) = playback.start() {
+                    warn!(%e, "failed to start audio playback — continuing without speakers");
+                } else {
+                    self.audio_playback = Some(playback);
+                }
+            }
+            Err(e) => {
+                warn!(%e, "audio playback unavailable — continuing without speakers");
+            }
+        }
+
+        // --- Frame forwarding task ---
+        // Reads from the std::sync::mpsc receiver (fed by cpal capture callback)
+        // and publishes each frame as a VoiceSignal::AudioFrame via GossipSub.
+        let node_handle = self.node_handle.clone();
+        let peer_id = self.local_peer_id.clone();
+        let server_id = server_id.to_string();
+        let channel_id = channel_id.to_string();
+
+        let task = tokio::task::spawn(async move {
+            loop {
+                // Use try_recv in a yield-friendly loop to avoid blocking the async runtime
+                match frame_rx.try_recv() {
+                    Ok(audio_frame) => {
+                        let signal = VoiceSignal::AudioFrame {
+                            peer_id: peer_id.clone(),
+                            data: audio_frame.data,
+                        };
+                        if let Err(e) = node_handle
+                            .send_voice_signal(&server_id, &channel_id, signal)
+                            .await
+                        {
+                            // Don't spam logs — this can happen if no peers are subscribed
+                            debug!(%e, "failed to publish audio frame");
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        // No frame ready — yield briefly (5ms ~ quarter of a 20ms Opus frame)
+                        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        // Capture was stopped/dropped
+                        debug!("audio frame channel disconnected, stopping forward task");
+                        break;
+                    }
+                }
+            }
+        });
+        self.audio_forward_task = Some(task);
+
+        info!("audio pipeline started");
+    }
+
+    /// Stop audio capture, playback, and the frame forwarding task.
+    fn stop_audio(&mut self) {
+        // Stop capture first (this closes the frame sender, which will terminate the forward task)
+        if let Some(capture) = self.audio_capture.take() {
+            if let Err(e) = capture.stop() {
+                warn!(%e, "error stopping audio capture");
+            }
+        }
+
+        // Stop playback
+        if let Some(playback) = self.audio_playback.take() {
+            if let Err(e) = playback.stop() {
+                warn!(%e, "error stopping audio playback");
+            }
+        }
+
+        // Abort the forward task if it's still running
+        if let Some(task) = self.audio_forward_task.take() {
+            task.abort();
+        }
+
+        info!("audio pipeline stopped");
+    }
+
     async fn do_join(&mut self, server_id: &str, channel_id: &str) -> Result<()> {
         // If already in a channel, leave first
         if self.session.is_some() {
@@ -300,6 +417,9 @@ impl VoiceEngine {
         );
         session.join();
         self.session = Some(session);
+
+        // Start audio capture and playback
+        self.start_audio(server_id, channel_id);
 
         // Broadcast Join signal to peers
         let signal = VoiceSignal::Join {
@@ -336,6 +456,9 @@ impl VoiceEngine {
             channel_id = %session.channel_id,
             "leaving voice channel"
         );
+
+        // Stop audio capture and playback
+        self.stop_audio();
 
         // Send Leave signal to peers
         let signal = VoiceSignal::Leave {
@@ -383,6 +506,11 @@ impl VoiceEngine {
         let new_mute = !session.is_muted;
         session.set_muted(new_mute);
 
+        // Update audio capture mute state
+        if let Some(capture) = &self.audio_capture {
+            capture.set_muted(new_mute);
+        }
+
         // Broadcast mute state to peers
         let signal = VoiceSignal::MuteState {
             peer_id: self.local_peer_id.clone(),
@@ -415,6 +543,11 @@ impl VoiceEngine {
 
         // If deafening also muted, broadcast that too
         if new_deafen {
+            // Mute capture when deafened
+            if let Some(capture) = &self.audio_capture {
+                capture.set_muted(true);
+            }
+
             let signal = VoiceSignal::MuteState {
                 peer_id: self.local_peer_id.clone(),
                 is_muted: true,
@@ -614,6 +747,31 @@ impl VoiceEngine {
                         is_speaking,
                     });
                     // Don't emit full state change for speaking — it's too frequent
+                }
+            }
+
+            VoiceSignal::AudioFrame { peer_id, data } => {
+                // Ignore our own audio frames
+                if peer_id == self.local_peer_id {
+                    return;
+                }
+
+                // Only play audio if we're in a session and not deafened
+                let is_deafened = self
+                    .session
+                    .as_ref()
+                    .map(|s| s.is_deafened)
+                    .unwrap_or(true);
+
+                if is_deafened {
+                    return;
+                }
+
+                // Decode and queue for playback
+                if let Some(playback) = &self.audio_playback {
+                    if let Err(e) = playback.queue_frame(&data) {
+                        debug!(%peer_id, %e, "failed to decode audio frame from peer");
+                    }
                 }
             }
         }

@@ -168,6 +168,11 @@ pub enum VoiceSignal {
         peer_id: String,
         is_speaking: bool,
     },
+    /// Encoded audio frame from a peer (Opus-encoded data).
+    AudioFrame {
+        peer_id: String,
+        data: Vec<u8>,
+    },
 }
 
 /// An encrypted direct message between two peers.
