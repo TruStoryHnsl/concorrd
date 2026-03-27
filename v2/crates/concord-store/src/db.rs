@@ -43,8 +43,39 @@ impl Database {
         Ok(db)
     }
 
-    /// Create all required tables if they don't already exist.
+    /// Current schema version. Increment when adding migrations.
+    const SCHEMA_VERSION: u32 = 1;
+
+    /// Create all required tables and run migrations if needed.
     fn initialize(&self) -> Result<()> {
+        // Schema version tracking
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER NOT NULL
+            )",
+        )?;
+        let current_version: u32 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if current_version < Self::SCHEMA_VERSION {
+            self.run_migrations(current_version)?;
+            self.conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                rusqlite::params![Self::SCHEMA_VERSION],
+            )?;
+            info!(
+                from = current_version,
+                to = Self::SCHEMA_VERSION,
+                "database schema migrated"
+            );
+        }
+
         self.conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS messages (
@@ -241,6 +272,21 @@ impl Database {
             ",
         )?;
         info!("database schema initialized");
+        Ok(())
+    }
+
+    /// Run schema migrations from `from_version` to `SCHEMA_VERSION`.
+    fn run_migrations(&self, from_version: u32) -> Result<()> {
+        // Migration 0 → 1: initial schema (handled by CREATE TABLE IF NOT EXISTS above)
+        if from_version < 1 {
+            // No additional SQL needed — the CREATE TABLE statements handle v1
+            info!("migration 0→1: initial schema");
+        }
+        // Future migrations go here:
+        // if from_version < 2 {
+        //     self.conn.execute_batch("ALTER TABLE messages ADD COLUMN reactions TEXT DEFAULT '[]';")?;
+        //     info!("migration 1→2: added reactions column");
+        // }
         Ok(())
     }
 }

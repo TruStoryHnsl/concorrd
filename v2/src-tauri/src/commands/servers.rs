@@ -131,6 +131,23 @@ async fn subscribe_to_server_channels(
 
 // ── Commands ────────────────────────────────────────────────────────
 
+/// Validate a user-provided name (server or channel).
+fn validate_name(name: &str, kind: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{kind} name cannot be empty"));
+    }
+    if trimmed.len() > 64 {
+        return Err(format!("{kind} name cannot exceed 64 characters"));
+    }
+    // Strip control characters
+    let clean: String = trimmed.chars().filter(|c| !c.is_control()).collect();
+    if clean.is_empty() {
+        return Err(format!("{kind} name must contain visible characters"));
+    }
+    Ok(clean)
+}
+
 /// Creates a new server with default channels and adds the creator as owner.
 #[tauri::command]
 pub async fn create_server(
@@ -138,6 +155,7 @@ pub async fn create_server(
     name: String,
     visibility: Option<String>,
 ) -> Result<ServerPayload, String> {
+    let name = validate_name(&name, "Server")?;
     let server_id = Uuid::new_v4().to_string();
     let vis = visibility_from_str(&visibility.unwrap_or_else(|| "private".into()));
 

@@ -4,6 +4,7 @@
 //! Audio is captured at 48kHz mono (Opus native rate), encoded into frames,
 //! and sent to the voice engine for transmission.
 
+use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -178,7 +179,7 @@ pub struct AudioPlayback {
     stream: Option<cpal::Stream>,
     decoder: Arc<Mutex<audiopus::coder::Decoder>>,
     /// Ring buffer for decoded PCM samples waiting to be played.
-    playback_buffer: Arc<Mutex<Vec<f32>>>,
+    playback_buffer: Arc<Mutex<VecDeque<f32>>>,
 }
 
 impl AudioPlayback {
@@ -204,7 +205,7 @@ impl AudioPlayback {
         .map_err(|e| AudioError::OpusDecodeError(e.to_string()))?;
         let decoder = Arc::new(Mutex::new(decoder));
 
-        let playback_buffer = Arc::new(Mutex::new(Vec::<f32>::with_capacity(OPUS_FRAME_SIZE * 10)));
+        let playback_buffer = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(OPUS_FRAME_SIZE * 10)));
         let buf = Arc::clone(&playback_buffer);
 
         let stream = device
@@ -213,11 +214,7 @@ impl AudioPlayback {
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     let mut buffer = buf.lock().unwrap();
                     for sample in data.iter_mut() {
-                        *sample = if buffer.is_empty() {
-                            0.0 // silence when no audio available
-                        } else {
-                            buffer.remove(0)
-                        };
+                        *sample = buffer.pop_front().unwrap_or(0.0);
                     }
                 },
                 |err| {

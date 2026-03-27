@@ -187,15 +187,9 @@ impl VoiceEngineHandle {
         });
     }
 
-    /// Subscribe to voice events.
-    pub fn subscribe_events(&self) -> broadcast::Receiver<VoiceEvent> {
-        // This is a convenience, but the actual subscribe is done via the engine.
-        // We need a separate channel for this — handled by keeping a reference
-        // to the broadcast sender. For now, callers should use the receiver
-        // returned from VoiceEngine::new().
-        unimplemented!("use the broadcast::Receiver returned from VoiceEngine::new()")
-    }
 }
+// NOTE: To subscribe to voice events, use the broadcast::Receiver
+// returned from VoiceEngine::new(). There is no separate subscribe method.
 
 /// The voice engine. Runs as an async task, processing commands and network signals.
 pub struct VoiceEngine {

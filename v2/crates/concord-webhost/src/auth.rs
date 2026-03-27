@@ -69,9 +69,19 @@ impl GuestAuthManager {
         Ok((token, guest_id))
     }
 
-    /// Validate a session token. Returns a clone of the session if valid.
+    /// Validate a session token. Returns a clone of the session if valid and not expired.
+    /// Sessions expire after 24 hours.
     pub async fn validate_session(&self, token: &str) -> Option<GuestSession> {
-        self.sessions.read().await.get(token).cloned()
+        const SESSION_TTL_MS: i64 = 24 * 60 * 60 * 1000; // 24 hours
+        let sessions = self.sessions.read().await;
+        let session = sessions.get(token)?;
+        let now = chrono_now_millis();
+        if now - session.authenticated_at > SESSION_TTL_MS {
+            drop(sessions);
+            self.sessions.write().await.remove(token);
+            return None;
+        }
+        Some(session.clone())
     }
 
     /// Revoke a session by token.

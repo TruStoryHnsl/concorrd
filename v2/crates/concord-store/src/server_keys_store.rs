@@ -43,6 +43,63 @@ impl Database {
         }
     }
 
+    /// Store a server key encrypted with the device key.
+    pub fn store_server_key_encrypted(
+        &self,
+        server_id: &str,
+        key: &[u8; 32],
+        device_key: &[u8; 32],
+    ) -> Result<()> {
+        let encrypted = concord_core::crypto::encrypt_storage(device_key, key)
+            .map_err(|e| crate::db::StoreError::InvalidData(format!("encrypt server key: {e}")))?;
+        let now = chrono::Utc::now().timestamp_millis();
+        self.conn.execute(
+            "INSERT INTO server_keys (server_id, secret_key, created_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(server_id) DO UPDATE SET secret_key = ?2, created_at = ?3",
+            params![server_id, encrypted, now],
+        )?;
+        debug!(server_id, "server key stored (encrypted)");
+        Ok(())
+    }
+
+    /// Retrieve and decrypt a server key. Falls back to plaintext for migration.
+    pub fn get_server_key_decrypted(
+        &self,
+        server_id: &str,
+        device_key: &[u8; 32],
+    ) -> Result<Option<[u8; 32]>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT secret_key FROM server_keys WHERE server_id = ?1")?;
+        let mut rows = stmt.query_map(params![server_id], |row| {
+            let blob: Vec<u8> = row.get(0)?;
+            Ok(blob)
+        })?;
+        match rows.next() {
+            Some(row) => {
+                let blob = row?;
+                // Try decrypt first, fall back to plaintext (migration)
+                if let Ok(decrypted) = concord_core::crypto::decrypt_storage(device_key, &blob) {
+                    if decrypted.len() == 32 {
+                        let mut key = [0u8; 32];
+                        key.copy_from_slice(&decrypted);
+                        return Ok(Some(key));
+                    }
+                }
+                // Fallback: raw 32-byte key (pre-encryption migration)
+                if blob.len() == 32 {
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&blob);
+                    Ok(Some(key))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Delete a server encryption key.
     pub fn delete_server_key(&self, server_id: &str) -> Result<bool> {
         let deleted = self.conn.execute(
