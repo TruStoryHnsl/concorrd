@@ -261,4 +261,41 @@ Ordered by priority and impact:
 
 ---
 
+## 10. Remediation Log
+
+Tracking fixes applied since the initial audit.
+
+| Date | Issue | Status | Commit |
+|------|-------|--------|--------|
+| 2026-03-27 | CB-1: Voice commands mock → real VoiceEngine | **FIXED** | d877727 |
+| 2026-03-27 | CB-2: No LICENSE file | **FIXED** | d877727 |
+| 2026-03-27 | CB-3: Identity key unencrypted at rest | **FIXED** (device key encryption) | d877727 |
+| 2026-03-27 | CB-4: DM secrets unencrypted at rest | **FIXED** (device key encryption) | d877727 |
+| 2026-03-27 | HP-4: Guest session expiration | **FIXED** (24h TTL) | 1e41a66 |
+| 2026-03-27 | HP-7: No input validation on names | **FIXED** (64 char limit, control char strip) | 1e41a66 |
+| 2026-03-27 | MP-1: Audio buffer O(n) drain | **FIXED** (VecDeque) | 1e41a66 |
+| 2026-03-27 | MP-3: Server keys unencrypted | **FIXED** (device key encryption) | 1e41a66 |
+| 2026-03-27 | MP-4: No DB migration system | **FIXED** (schema_version table + run_migrations) | 1e41a66 |
+| 2026-03-27 | MP-6: unimplemented!() trap method | **FIXED** (removed) | 1e41a66 |
+| 2026-03-27 | LP-6: No graceful shutdown | Already implemented (ctrl_c + node shutdown) | — |
+
+### Revised Score
+
+After fixing all critical blockers and 6 high/medium items:
+
+| Category | Weight | Score (1-5) | Weighted |
+|----------|--------|-------------|----------|
+| **Functionality** | 30% | 3.5 | 1.05 |
+| **Security** | 25% | 4.5 | 1.13 |
+| **Reliability** | 20% | 3.5 | 0.70 |
+| **Code Quality** | 15% | 4 | 0.60 |
+| **Deployment Readiness** | 10% | 3 | 0.30 |
+| **TOTAL** | 100% | | **3.78/5.00** |
+
+**Revised Deployment Readiness Score: 58%** (up from 46%)
+
+Status: Alpha/developer preview. All critical blockers resolved. Remaining gaps: WebRTC media transport (using GossipSub as interim), video/SFU stubs, no CI pipeline, no frontend tests, BLE/WiFi Direct transports.
+
+---
+
 *End of audit.*
