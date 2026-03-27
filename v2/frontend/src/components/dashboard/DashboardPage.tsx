@@ -189,14 +189,14 @@ function DashboardPage() {
         {nearbyPeers.length > 0 && (
           <div className="flex items-center gap-2 px-1">
             <div className="flex -space-x-2">
-              {nearbyPeers.slice(0, 5).map((peer) => (
+              {nearbyPeers.filter(p => p?.peerId).slice(0, 5).map((peer) => (
                 <div
                   key={peer.peerId}
                   className="w-7 h-7 rounded-full bg-primary/15 border-2 border-surface flex items-center justify-center"
-                  title={peer.displayName ?? peer.peerId}
+                  title={peer.displayName ?? peer.peerId ?? "unknown"}
                 >
                   <span className="text-[9px] font-bold text-primary">
-                    {(peer.displayName ?? peer.peerId).slice(0, 2).toUpperCase()}
+                    {(peer.displayName ?? peer.peerId ?? "??").slice(0, 2).toUpperCase()}
                   </span>
                 </div>
               ))}

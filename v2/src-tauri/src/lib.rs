@@ -398,7 +398,15 @@ fn spawn_event_forwarder(
                                     addresses,
                                 );
                             }
-                            let _ = app_handle.emit(events::PEER_DISCOVERED, &event);
+                            // Emit with camelCase for the frontend
+                            let _ = app_handle.emit(
+                                events::PEER_DISCOVERED,
+                                serde_json::json!({
+                                    "peerId": peer_id,
+                                    "addresses": addresses,
+                                    "displayName": display_name,
+                                }),
+                            );
 
                             // Auto-trigger sync with newly discovered peer after a short delay
                             let sync_db = Arc::clone(&db);
@@ -420,8 +428,11 @@ fn spawn_event_forwarder(
                                 }
                             }
                         }
-                        NetworkEvent::PeerDeparted { peer_id: _ } => {
-                            let _ = app_handle.emit(events::PEER_DEPARTED, &event);
+                        NetworkEvent::PeerDeparted { peer_id: departed_id } => {
+                            let _ = app_handle.emit(
+                                events::PEER_DEPARTED,
+                                serde_json::json!({ "peerId": departed_id }),
+                            );
                         }
                         NetworkEvent::ConcordMessageReceived { message } => {
                             // Decrypt the message if it has encrypted content.

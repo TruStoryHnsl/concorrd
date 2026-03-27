@@ -25,6 +25,7 @@ export const useMeshStore = create<MeshState>((set) => ({
 
   addPeer: (peer) =>
     set((state) => {
+      if (!peer?.peerId) return state; // guard against malformed events
       const exists = state.nearbyPeers.some((p) => p.peerId === peer.peerId);
       if (exists) {
         return {

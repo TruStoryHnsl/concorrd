@@ -859,11 +859,13 @@ impl Node {
             }
 
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                warn!(?peer_id, %error, "outgoing connection error");
+                // Downgrade to debug — these are expected when Kademlia discovers
+                // unreachable peers or when connecting to stale DHT entries.
+                debug!(?peer_id, %error, "outgoing connection error (peer unreachable)");
             }
 
             SwarmEvent::IncomingConnectionError { error, .. } => {
-                warn!(%error, "incoming connection error");
+                debug!(%error, "incoming connection error");
             }
 
             _ => {
