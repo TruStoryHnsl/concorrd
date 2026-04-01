@@ -12,6 +12,7 @@
   "dependencies": {
     "@livekit/components-react": "^2.9.20",
     "@livekit/components-styles": "^1.2.0",
+    "@tauri-apps/api": "^2.10.1",
     "livekit-client": "^2.17.2",
     "matrix-js-sdk": "^41.0.0-rc.0",
     "react": "^19.2.0",

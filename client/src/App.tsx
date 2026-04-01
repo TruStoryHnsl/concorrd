@@ -1,13 +1,15 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { LiveKitRoom } from "@livekit/components-react";
 import { useAuthStore } from "./stores/auth";
 import { useServerStore } from "./stores/server";
 import { useToastStore } from "./stores/toast";
 import { useVoiceStore, getPendingVoiceSession, clearPendingVoiceSession } from "./stores/voice";
 import { useSettingsStore } from "./stores/settings";
+import { isDesktopMode, hasServerUrl } from "./api/serverUrl";
 import { redeemInvite } from "./api/concord";
 import { getVoiceToken } from "./api/livekit";
 import { LoginForm } from "./components/auth/LoginForm";
+import { ServerConnect } from "./components/auth/ServerConnect";
 import { SubmitPage } from "./components/public/SubmitPage";
 import { ChatLayout } from "./components/layout/ChatLayout";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -28,6 +30,9 @@ if (initialInviteToken) {
 export { INVITE_STORAGE_KEY };
 
 export default function App() {
+  // Desktop mode: require server URL before anything else
+  const [serverConnected, setServerConnected] = useState(!isDesktopMode() || hasServerUrl());
+
   const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
   const isLoading = useAuthStore((s) => s.isLoading);
   const restoreSession = useAuthStore((s) => s.restoreSession);
@@ -160,6 +165,11 @@ export default function App() {
       }
     })();
   }, [isLoggedIn, accessToken, voiceConnected, voiceConnect]);
+
+  // Desktop mode: show server connection screen if no URL configured
+  if (!serverConnected) {
+    return <ServerConnect onConnected={() => setServerConnected(true)} />;
+  }
 
   // Public submit page — no auth required
   const path = window.location.pathname;

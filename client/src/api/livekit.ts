@@ -1,4 +1,4 @@
-const API_BASE = "/api";
+import { getApiBase } from "./serverUrl";
 
 interface IceServer {
   urls: string | string[];
@@ -16,7 +16,7 @@ export async function getVoiceToken(
   roomName: string,
   accessToken: string,
 ): Promise<VoiceTokenResponse> {
-  const resp = await fetch(`${API_BASE}/voice/token`, {
+  const resp = await fetch(`${getApiBase()}/voice/token`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

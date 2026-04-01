@@ -1,4 +1,6 @@
-const API_BASE = "/api";
+import { getApiBase } from "./serverUrl";
+
+function getBase() { return getApiBase(); }
 
 export interface Channel {
   id: number;
@@ -93,7 +95,7 @@ async function apiFetch<T>(
   };
   if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
 
-  const resp = await fetch(`${API_BASE}${path}`, {
+  const resp = await fetch(`${getBase()}${path}`, {
     ...options,
     headers,
   });
@@ -271,7 +273,7 @@ export async function uploadSoundboardClip(
   formData.append("name", name);
   formData.append("file", file);
 
-  const resp = await fetch(`${API_BASE}/soundboard/${serverId}`, {
+  const resp = await fetch(`${getBase()}/soundboard/${serverId}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}` },
     body: formData,

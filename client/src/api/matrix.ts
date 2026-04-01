@@ -1,6 +1,5 @@
 import * as sdk from "matrix-js-sdk";
-
-const HOMESERVER_URL = window.location.origin;
+import { getHomeserverUrl } from "./serverUrl";
 
 export function createMatrixClient(
   accessToken: string,
@@ -8,7 +7,7 @@ export function createMatrixClient(
   deviceId: string,
 ): sdk.MatrixClient {
   const client = sdk.createClient({
-    baseUrl: HOMESERVER_URL,
+    baseUrl: getHomeserverUrl(),
     accessToken,
     userId,
     deviceId,
@@ -20,7 +19,7 @@ export async function loginWithPassword(
   username: string,
   password: string,
 ): Promise<{ accessToken: string; userId: string; deviceId: string }> {
-  const tempClient = sdk.createClient({ baseUrl: HOMESERVER_URL });
+  const tempClient = sdk.createClient({ baseUrl: getHomeserverUrl() });
   const response = await tempClient.login("m.login.password", {
     user: username,
     password,
@@ -38,7 +37,7 @@ export async function registerWithToken(
   password: string,
   registrationToken: string,
 ): Promise<{ accessToken: string; userId: string; deviceId: string }> {
-  const tempClient = sdk.createClient({ baseUrl: HOMESERVER_URL });
+  const tempClient = sdk.createClient({ baseUrl: getHomeserverUrl() });
 
   // Step 1: Initiate registration to get UIAA session
   let sessionId: string;

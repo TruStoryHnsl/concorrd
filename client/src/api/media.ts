@@ -7,6 +7,8 @@
  * exposure to same-origin internal proxy routes only.
  */
 
+import { getApiBase } from "./serverUrl";
+
 const MXC_REGEX = /^mxc:\/\/([^/]+)\/(.+)$/;
 
 /**
@@ -21,7 +23,7 @@ export function mxcToHttp(
   const match = mxcUrl.match(MXC_REGEX);
   if (!match) return null;
   const [, serverName, mediaId] = match;
-  return `/api/media/download/${encodeURIComponent(serverName)}/${encodeURIComponent(mediaId)}?token=${encodeURIComponent(accessToken)}`;
+  return `${getApiBase()}/media/download/${encodeURIComponent(serverName)}/${encodeURIComponent(mediaId)}?token=${encodeURIComponent(accessToken)}`;
 }
 
 /**
@@ -44,5 +46,5 @@ export function mxcToThumbnail(
     method,
     token: accessToken,
   });
-  return `/api/media/thumbnail/${encodeURIComponent(serverName)}/${encodeURIComponent(mediaId)}?${params}`;
+  return `${getApiBase()}/media/thumbnail/${encodeURIComponent(serverName)}/${encodeURIComponent(mediaId)}?${params}`;
 }
