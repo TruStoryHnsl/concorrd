@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicco-io/tauri-v2/main/crates/tauri-config-schema/schema.json",
   "productName": "Concord",
   "version": "0.1.0",
-  "identifier": "com.concorrd.app",
+  "identifier": "com.concord.mesh",
   "build": {
     "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:1420",
@@ -28,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["deb", "rpm", "appimage"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -36,8 +36,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "iOS": {
-      "minimumSystemVersion": "15.0"
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      }
     }
   }
 }
