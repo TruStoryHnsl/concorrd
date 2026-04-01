@@ -367,3 +367,72 @@ async def admin_update_report(
     report.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return {"status": "updated"}
+
+
+# ---------------------------------------------------------------------------
+# Admin: federation management
+# ---------------------------------------------------------------------------
+
+@router.get("/api/admin/federation")
+async def admin_get_federation(
+    user_id: str = Depends(get_user_id),
+):
+    """Get current federation configuration."""
+    require_admin(user_id)
+    settings = _read_instance_settings()
+    import os
+
+    # Read live env config
+    allow_federation = os.getenv("CONDUWUIT_ALLOW_FEDERATION", "true").lower() == "true"
+
+    return {
+        "enabled": allow_federation,
+        "server_name": os.getenv("CONDUWUIT_SERVER_NAME", "unknown"),
+        "allowed_servers": settings.get("federation_allowlist", []),
+    }
+
+
+class FederationAllowlistUpdate(BaseModel):
+    allowed_servers: list[str]  # server names (not regex — we escape them)
+
+
+@router.put("/api/admin/federation/allowlist")
+async def admin_update_federation_allowlist(
+    body: FederationAllowlistUpdate,
+    user_id: str = Depends(get_user_id),
+):
+    """Update the federation allowlist.
+
+    Stores the list in instance settings. The actual Conduwuit env var
+    (CONDUWUIT_ALLOWED_REMOTE_SERVER_NAMES) must be regenerated from
+    this list on container restart. A future version will hot-reload
+    via the Conduwuit admin API.
+    """
+    require_admin(user_id)
+
+    # Validate: server names should look like domains
+    cleaned = []
+    for name in body.allowed_servers:
+        name = name.strip().lower()
+        if not name or len(name) > 253:
+            continue
+        cleaned.append(name)
+
+    settings = _read_instance_settings()
+    settings["federation_allowlist"] = cleaned
+    _write_instance_settings(settings)
+
+    # Build the regex patterns for Conduwuit env var
+    import re
+    regex_patterns = [re.escape(s) + "$" for s in cleaned]
+
+    logger.info(
+        "Federation allowlist updated by %s: %s (restart required for Conduwuit to pick up changes)",
+        user_id, cleaned,
+    )
+
+    return {
+        "allowed_servers": cleaned,
+        "env_value": json.dumps(regex_patterns),
+        "restart_required": True,
+    }

@@ -1028,3 +1028,28 @@ export async function createDM(
     accessToken,
   );
 }
+
+// --- Federation ---
+
+export interface FederationStatus {
+  enabled: boolean;
+  server_name: string;
+  allowed_servers: string[];
+}
+
+export async function getFederationStatus(
+  accessToken: string,
+): Promise<FederationStatus> {
+  return apiFetch("/admin/federation", {}, accessToken);
+}
+
+export async function updateFederationAllowlist(
+  allowedServers: string[],
+  accessToken: string,
+): Promise<{ allowed_servers: string[]; env_value: string; restart_required: boolean }> {
+  return apiFetch(
+    "/admin/federation/allowlist",
+    { method: "PUT", body: JSON.stringify({ allowed_servers: allowedServers }) },
+    accessToken,
+  );
+}

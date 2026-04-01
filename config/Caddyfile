@@ -27,8 +27,20 @@
         }
     }
 
-    # Matrix server well-known (client discovery)
+    # Matrix server well-known (client + server discovery)
     handle /.well-known/matrix/* {
+        reverse_proxy conduwuit:6167
+    }
+
+    # Matrix Server-Server (federation) API
+    handle /_matrix/federation/* {
+        reverse_proxy conduwuit:6167 {
+            flush_interval -1
+        }
+    }
+
+    # Matrix key endpoints (required for federation key exchange)
+    handle /_matrix/key/* {
         reverse_proxy conduwuit:6167
     }
 

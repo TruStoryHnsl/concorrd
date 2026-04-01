@@ -13,7 +13,13 @@ services:
       CONDUWUIT_ALLOW_REGISTRATION: "true"
       CONDUWUIT_REGISTRATION_TOKEN: ${CONDUWUIT_REGISTRATION_TOKEN}
       CONDUWUIT_ALLOW_PRESENCE: "true"
-      CONDUWUIT_ALLOW_FEDERATION: "false"
+      # Federation: enabled with allowlist-only mode.
+      # forbidden_remote_server_names blocks ALL servers by default.
+      # allowed_remote_server_names overrides the block for approved instances.
+      CONDUWUIT_ALLOW_FEDERATION: ${CONDUWUIT_ALLOW_FEDERATION:-true}
+      CONDUWUIT_FORBIDDEN_REMOTE_SERVER_NAMES: ${CONDUWUIT_FORBIDDEN_REMOTE_SERVER_NAMES:-'[".*"]'}
+      CONDUWUIT_ALLOWED_REMOTE_SERVER_NAMES: ${CONDUWUIT_ALLOWED_REMOTE_SERVER_NAMES:-'[]'}
+      CONDUWUIT_ALLOW_PUBLIC_ROOM_DIRECTORY_OVER_FEDERATION: "false"
       CONDUWUIT_TRUSTED_SERVERS: '["matrix.org"]'
       CONDUWUIT_LOG: "info"
     healthcheck:

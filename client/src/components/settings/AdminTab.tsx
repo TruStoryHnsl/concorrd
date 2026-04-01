@@ -9,13 +9,16 @@ import {
   updateAdminReport,
   getInstanceInfo,
   updateInstanceSettings,
+  getFederationStatus,
+  updateFederationAllowlist,
   type AdminStats,
   type AdminServer,
   type AdminUser,
   type AdminBugReport,
+  type FederationStatus,
 } from "../../api/concord";
 
-type Section = "overview" | "instance" | "servers" | "users" | "reports";
+type Section = "overview" | "instance" | "federation" | "servers" | "users" | "reports";
 
 export function AdminTab() {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -25,8 +28,8 @@ export function AdminTab() {
     <div className="space-y-4">
       <h3 className="text-xl font-semibold text-on-surface">Admin Dashboard</h3>
 
-      <div className="flex gap-1 border-b border-outline-variant/15 pb-2">
-        {(["overview", "instance", "servers", "users", "reports"] as Section[]).map(
+      <div className="flex gap-1 border-b border-outline-variant/15 pb-2 flex-wrap">
+        {(["overview", "instance", "federation", "servers", "users", "reports"] as Section[]).map(
           (s) => (
             <button
               key={s}
@@ -45,6 +48,7 @@ export function AdminTab() {
 
       {section === "overview" && <OverviewSection token={accessToken} />}
       {section === "instance" && <InstanceSection token={accessToken} />}
+      {section === "federation" && <FederationSection token={accessToken} />}
       {section === "servers" && <ServersSection token={accessToken} />}
       {section === "users" && <UsersSection token={accessToken} />}
       {section === "reports" && <ReportsSection token={accessToken} />}
@@ -195,6 +199,169 @@ function InstanceSection({ token }: { token: string | null }) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Federation
+// ---------------------------------------------------------------------------
+
+function FederationSection({ token }: { token: string | null }) {
+  const addToast = useToastStore((s) => s.addToast);
+  const [status, setStatus] = useState<FederationStatus | null>(null);
+  const [newServer, setNewServer] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!token) return;
+    getFederationStatus(token).then(setStatus).catch(() => {});
+  }, [token]);
+
+  const handleAdd = async () => {
+    if (!token || !newServer.trim() || !status) return;
+    const name = newServer.trim().toLowerCase();
+    if (status.allowed_servers.includes(name)) {
+      addToast("Server already in allowlist", "info");
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await updateFederationAllowlist(
+        [...status.allowed_servers, name],
+        token,
+      );
+      setStatus((s) => s ? { ...s, allowed_servers: result.allowed_servers } : s);
+      setNewServer("");
+      addToast(`Added ${name} — restart Conduwuit to apply`, "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to update");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemove = async (name: string) => {
+    if (!token || !status) return;
+    setSaving(true);
+    try {
+      const result = await updateFederationAllowlist(
+        status.allowed_servers.filter((s) => s !== name),
+        token,
+      );
+      setStatus((s) => s ? { ...s, allowed_servers: result.allowed_servers } : s);
+      addToast(`Removed ${name} — restart Conduwuit to apply`, "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to update");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!status)
+    return <p className="text-on-surface-variant text-sm">Loading federation status...</p>;
+
+  return (
+    <div className="space-y-6">
+      {/* Status */}
+      <div className="flex items-center gap-3">
+        <div className={`w-3 h-3 rounded-full ${status.enabled ? "bg-secondary" : "bg-on-surface-variant/50"}`} />
+        <div>
+          <p className="text-sm text-on-surface font-medium">
+            Federation {status.enabled ? "Enabled" : "Disabled"}
+          </p>
+          <p className="text-xs text-on-surface-variant">
+            This instance: <span className="font-mono text-on-surface">{status.server_name}</span>
+          </p>
+        </div>
+      </div>
+
+      {!status.enabled && (
+        <div className="bg-surface-container rounded-lg p-3 border border-outline-variant/15">
+          <p className="text-sm text-on-surface-variant">
+            Federation is disabled. Set <code className="text-on-surface bg-surface-container-highest px-1 rounded text-xs">CONDUWUIT_ALLOW_FEDERATION=true</code> in your <code className="text-on-surface bg-surface-container-highest px-1 rounded text-xs">.env</code> and restart to enable.
+          </p>
+        </div>
+      )}
+
+      {status.enabled && (
+        <>
+          {/* Allowlist explanation */}
+          <div className="bg-surface-container rounded-lg p-3 border border-outline-variant/15">
+            <p className="text-xs text-on-surface-variant leading-relaxed">
+              <strong className="text-on-surface">Allowlist-only mode:</strong> All remote servers are blocked by default.
+              Only instances listed below can exchange messages with this server.
+              Both instances must add each other to federate.
+            </p>
+          </div>
+
+          {/* Add server */}
+          <div>
+            <label className="text-sm text-on-surface-variant block mb-1">
+              Add Concord Instance
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newServer}
+                onChange={(e) => setNewServer(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+                placeholder="friend.example.com"
+                className="flex-1 px-3 py-2 bg-surface border border-outline-variant rounded text-sm text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30 font-mono"
+              />
+              <button
+                onClick={handleAdd}
+                disabled={saving || !newServer.trim()}
+                className="px-4 py-2 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface text-sm rounded transition-colors"
+              >
+                {saving ? "..." : "Add"}
+              </button>
+            </div>
+          </div>
+
+          {/* Current allowlist */}
+          <div>
+            <label className="text-sm text-on-surface-variant block mb-2">
+              Allowed Instances ({status.allowed_servers.length})
+            </label>
+            {status.allowed_servers.length === 0 ? (
+              <p className="text-on-surface-variant/50 text-sm">
+                No instances allowed yet. Add one above to start federating.
+              </p>
+            ) : (
+              <div className="space-y-1">
+                {status.allowed_servers.map((server) => (
+                  <div
+                    key={server}
+                    className="flex items-center justify-between px-3 py-2 rounded bg-surface-container"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-secondary text-base">dns</span>
+                      <span className="text-sm text-on-surface font-mono">{server}</span>
+                    </div>
+                    <button
+                      onClick={() => handleRemove(server)}
+                      disabled={saving}
+                      className="text-on-surface-variant hover:text-primary text-xs transition-colors disabled:opacity-40"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Restart notice */}
+          <div className="bg-primary/5 rounded-lg p-3 border border-primary/20">
+            <p className="text-xs text-on-surface-variant">
+              <span className="material-symbols-outlined text-primary text-sm align-middle mr-1">info</span>
+              Changes to the allowlist require a Conduwuit restart to take effect.
+              Run <code className="text-on-surface bg-surface-container-highest px-1 rounded">docker compose restart conduwuit</code> after making changes.
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 }
