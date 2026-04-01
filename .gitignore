@@ -24,8 +24,10 @@ __pycache__/
 *.pyc
 v1/server/.venv/
 
-# v2 specifics (handled by v2/.gitignore too)
+# v2 specifics
 v2/target/
+v2/venv/
+v2/frontend/dist/
 
 # IDE
 .vscode/
