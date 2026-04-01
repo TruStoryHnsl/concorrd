@@ -2,12 +2,12 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Concord",
   "version": "0.1.0",
-  "identifier": "com.concord.app",
+  "identifier": "com.concord.chat",
   "build": {
     "frontendDist": "../client/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "cd client && npm run dev",
-    "beforeBuildCommand": "cd client && npm run build"
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
   },
   "app": {
     "windows": [
