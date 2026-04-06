@@ -227,17 +227,6 @@ export default function App() {
                 autoGainControl,
                 ...(preferredInputDeviceId && { deviceId: preferredInputDeviceId }),
               },
-              // Privacy: when the user mutes themselves, fully release the
-              // underlying MediaStreamTrack instead of leaving it alive
-              // publishing silence (LiveKit's default for fast unmute).
-              // Without this, the OS shows mic-in-use any time the user
-              // is connected to a voice channel — even when muted — which
-              // is not what users expect from "I'm muted, I'm not using
-              // mic". Tradeoff: unmute now has to re-acquire the device,
-              // adding ~100-300ms before audio resumes.
-              publishDefaults: {
-                stopMicTrackOnMute: true,
-              },
             }}
             onDisconnected={handleVoiceDisconnect}
             style={{ display: "contents" }}
