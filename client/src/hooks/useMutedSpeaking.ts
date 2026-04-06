@@ -26,13 +26,16 @@ export function useMutedSpeaking(
     let cancelled = false;
 
     async function start() {
+      let stream: MediaStream | null = null;
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        stream = await navigator.mediaDevices.getUserMedia({
           audio: preferredDeviceId
             ? { deviceId: { ideal: preferredDeviceId } }
             : true,
         });
 
+        // Bail-out checkpoint #1: cleanup may have run while getUserMedia
+        // was in flight. Release the freshly-acquired stream and exit.
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop());
           return;
@@ -56,15 +59,31 @@ export function useMutedSpeaking(
           setSpeaking(avg > THRESHOLD);
         }, 100);
 
-        cleanupRef.current = () => {
+        const fullCleanup = () => {
           clearInterval(interval);
-          source.disconnect();
-          ctx.close();
-          stream.getTracks().forEach((t) => t.stop());
+          try { source.disconnect(); } catch {}
+          ctx.close().catch(() => {});
+          stream?.getTracks().forEach((t) => t.stop());
           setSpeaking(false);
         };
+
+        // Bail-out checkpoint #2: between acquiring the stream and
+        // assigning cleanupRef, the outer cleanup may have run with a
+        // null cleanupRef and then walked away. The race window is small
+        // but real (cleanup runs after `cancelled = true` but before we
+        // got here). Detect it and immediately tear down everything we
+        // just built — otherwise the stream would leak indefinitely
+        // because nothing else holds a reference to it.
+        if (cancelled) {
+          fullCleanup();
+          return;
+        }
+
+        cleanupRef.current = fullCleanup;
       } catch {
-        // Mic not available — no monitoring
+        // Mic not available — no monitoring. Defensive: release the
+        // stream if it was acquired before the catch fired.
+        stream?.getTracks().forEach((t) => t.stop());
       }
     }
 
