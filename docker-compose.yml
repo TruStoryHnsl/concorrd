@@ -133,9 +133,16 @@ services:
     ports:
       - "${BIND_HOST:-0.0.0.0}:${HTTP_PORT:-8080}:8080"
     volumes:
-      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Mount the whole config dir (NOT a single file). Single-file bind
+      # mounts pin a specific inode at container start; when the host file
+      # is rewritten by `git pull` or by an admin tool that uses
+      # tmp-file-then-rename semantics, the new inode is invisible inside
+      # the container until restart. Follows the same pattern as the
+      # conduwuit and concord-api services (see commit a40fbb3).
+      - ./config:/etc/concord-config:ro
       - ./data/caddy:/data
       - ./downloads:/srv/downloads:ro
+    command: caddy run --config /etc/concord-config/Caddyfile --adapter caddyfile
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-:8080}
     depends_on:
