@@ -7,6 +7,7 @@ members = [
     "crates/concord-store",
     "crates/concord-webhost",
     "crates/concord-daemon",
+    "crates/concord-poc",
     "src-tauri",
 ]
 

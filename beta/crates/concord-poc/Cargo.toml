@@ -1,0 +1,21 @@
+[package]
+name = "concord-poc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "concord-poc"
+path = "src/main.rs"
+
+[dependencies]
+concord-core = { path = "../concord-core" }
+concord-net = { path = "../concord-net" }
+concord-store = { path = "../concord-store" }
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+# Only need the identity/PeerId types (available in base crate)
+libp2p = { version = "0.54", features = ["ed25519"] }
