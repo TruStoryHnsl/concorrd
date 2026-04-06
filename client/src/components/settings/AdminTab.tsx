@@ -11,6 +11,7 @@ import {
   updateInstanceSettings,
   getFederationStatus,
   updateFederationAllowlist,
+  applyFederationChanges,
   type AdminStats,
   type AdminServer,
   type AdminUser,
@@ -212,10 +213,22 @@ function FederationSection({ token }: { token: string | null }) {
   const [status, setStatus] = useState<FederationStatus | null>(null);
   const [newServer, setNewServer] = useState("");
   const [saving, setSaving] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const refreshStatus = async () => {
+    if (!token) return;
+    try {
+      const s = await getFederationStatus(token);
+      setStatus(s);
+    } catch {
+      /* ignore transient errors during restart polling */
+    }
+  };
 
   useEffect(() => {
-    if (!token) return;
-    getFederationStatus(token).then(setStatus).catch(() => {});
+    void refreshStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   const handleAdd = async () => {
@@ -231,9 +244,18 @@ function FederationSection({ token }: { token: string | null }) {
         [...status.allowed_servers, name],
         token,
       );
-      setStatus((s) => s ? { ...s, allowed_servers: result.allowed_servers } : s);
+      setStatus((s) =>
+        s
+          ? {
+              ...s,
+              allowed_servers: result.allowed_servers,
+              raw_allowed_patterns: result.raw_allowed_patterns,
+              pending_apply: true,
+            }
+          : s,
+      );
       setNewServer("");
-      addToast(`Added ${name} — restart Conduwuit to apply`, "success");
+      addToast(`Added ${name} — click Apply to activate`, "success");
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Failed to update");
     } finally {
@@ -249,12 +271,41 @@ function FederationSection({ token }: { token: string | null }) {
         status.allowed_servers.filter((s) => s !== name),
         token,
       );
-      setStatus((s) => s ? { ...s, allowed_servers: result.allowed_servers } : s);
-      addToast(`Removed ${name} — restart Conduwuit to apply`, "success");
+      setStatus((s) =>
+        s
+          ? {
+              ...s,
+              allowed_servers: result.allowed_servers,
+              raw_allowed_patterns: result.raw_allowed_patterns,
+              pending_apply: true,
+            }
+          : s,
+      );
+      addToast(`Removed ${name} — click Apply to activate`, "success");
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Failed to update");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleApply = async () => {
+    if (!token) return;
+    setConfirmOpen(false);
+    setApplying(true);
+    try {
+      const result = await applyFederationChanges(token);
+      addToast(
+        `Federation active — restart took ${result.elapsed_seconds.toFixed(1)}s`,
+        "success",
+      );
+      await refreshStatus();
+    } catch (err) {
+      addToast(
+        err instanceof Error ? err.message : "Apply failed — check server logs",
+      );
+    } finally {
+      setApplying(false);
     }
   };
 
@@ -279,7 +330,7 @@ function FederationSection({ token }: { token: string | null }) {
       {!status.enabled && (
         <div className="bg-surface-container rounded-lg p-3 border border-outline-variant/15">
           <p className="text-sm text-on-surface-variant">
-            Federation is disabled. Set <code className="text-on-surface bg-surface-container-highest px-1 rounded text-xs">CONDUWUIT_ALLOW_FEDERATION=true</code> in your <code className="text-on-surface bg-surface-container-highest px-1 rounded text-xs">.env</code> and restart to enable.
+            Federation is disabled. Set <code className="text-on-surface bg-surface-container-highest px-1 rounded text-xs">allow_federation = true</code> in <code className="text-on-surface bg-surface-container-highest px-1 rounded text-xs">config/tuwunel.toml</code> and apply changes to enable.
           </p>
         </div>
       )}
@@ -307,11 +358,12 @@ function FederationSection({ token }: { token: string | null }) {
                 onChange={(e) => setNewServer(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
                 placeholder="friend.example.com"
-                className="flex-1 px-3 py-2 bg-surface border border-outline-variant rounded text-sm text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30 font-mono"
+                disabled={saving || applying}
+                className="flex-1 px-3 py-2 bg-surface border border-outline-variant rounded text-sm text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30 font-mono disabled:opacity-40"
               />
               <button
                 onClick={handleAdd}
-                disabled={saving || !newServer.trim()}
+                disabled={saving || applying || !newServer.trim()}
                 className="px-4 py-2 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface text-sm rounded transition-colors"
               >
                 {saving ? "..." : "Add"}
@@ -341,7 +393,7 @@ function FederationSection({ token }: { token: string | null }) {
                     </div>
                     <button
                       onClick={() => handleRemove(server)}
-                      disabled={saving}
+                      disabled={saving || applying}
                       className="text-on-surface-variant hover:text-primary text-xs transition-colors disabled:opacity-40"
                     >
                       Remove
@@ -352,15 +404,98 @@ function FederationSection({ token }: { token: string | null }) {
             )}
           </div>
 
-          {/* Restart notice */}
-          <div className="bg-primary/5 rounded-lg p-3 border border-primary/20">
-            <p className="text-xs text-on-surface-variant">
-              <span className="material-symbols-outlined text-primary text-sm align-middle mr-1">info</span>
-              Changes to the allowlist require a Conduwuit restart to take effect.
-              Run <code className="text-on-surface bg-surface-container-highest px-1 rounded">docker compose restart conduwuit</code> after making changes.
-            </p>
+          {/* Apply-changes card: replaces the old "restart required" notice.
+              Appears dimmed when no changes are pending, glows when they are,
+              and shows a spinner while a restart is in progress. */}
+          <div
+            className={`rounded-lg p-3 border transition-colors ${
+              status.pending_apply
+                ? "bg-tertiary/10 border-tertiary/40"
+                : "bg-surface-container border-outline-variant/15"
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <span
+                className={`material-symbols-outlined text-base mt-0.5 ${
+                  status.pending_apply ? "text-tertiary" : "text-on-surface-variant"
+                }`}
+              >
+                {status.pending_apply ? "sync_problem" : "check_circle"}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-on-surface font-medium">
+                  {applying
+                    ? "Restarting Matrix server..."
+                    : status.pending_apply
+                      ? "Unapplied changes"
+                      : "All changes applied"}
+                </p>
+                <p className="text-xs text-on-surface-variant leading-relaxed mt-0.5">
+                  {applying
+                    ? "Please wait — the Matrix server is restarting. Users may see a brief disconnect."
+                    : status.pending_apply
+                      ? "Your allowlist edits are saved but not yet active. Clicking Apply will briefly restart the Matrix server (~10–15s)."
+                      : "The running server matches your saved allowlist."}
+                </p>
+              </div>
+              <button
+                onClick={() => setConfirmOpen(true)}
+                disabled={applying || !status.pending_apply}
+                className="shrink-0 px-4 py-1.5 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface text-sm rounded transition-colors"
+              >
+                {applying ? "Applying..." : "Apply Changes"}
+              </button>
+            </div>
           </div>
         </>
+      )}
+
+      {/* Confirmation modal — enforces the "admin confirms before downtime"
+          rule. Matches the bg-black/60 + bg-surface-container pattern used
+          by NewServerModal and BugReportModal for consistency. */}
+      {confirmOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
+          onClick={() => setConfirmOpen(false)}
+        >
+          <div
+            className="bg-surface-container rounded-lg p-6 max-w-md w-full space-y-4 border border-outline-variant/15 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <span className="material-symbols-outlined text-tertiary text-2xl mt-0.5">
+                warning
+              </span>
+              <div className="flex-1">
+                <h4 className="text-base font-semibold text-on-surface">
+                  Restart the Matrix server?
+                </h4>
+                <p className="text-sm text-on-surface-variant mt-2 leading-relaxed">
+                  Applying federation changes requires restarting the Tuwunel homeserver container.
+                  All connected users will see a brief disconnect — typically 10–15 seconds.
+                  Clients will auto-reconnect.
+                </p>
+                <p className="text-xs text-on-surface-variant mt-2">
+                  Consider applying during a quiet period.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setConfirmOpen(false)}
+                className="px-4 py-2 text-sm text-on-surface-variant hover:text-on-surface transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleApply}
+                className="px-4 py-2 primary-glow hover:brightness-110 text-on-surface text-sm rounded transition-colors"
+              >
+                Restart Now
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

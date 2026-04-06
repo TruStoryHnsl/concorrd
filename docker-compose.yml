@@ -4,6 +4,9 @@ services:
     restart: unless-stopped
     volumes:
       - ./data/conduwuit:/var/lib/conduwuit
+      # Federation settings live here and are hot-swapped by the admin UI.
+      # concord-api mounts this same file RW; tuwunel reads it on (re)start.
+      - ./config/tuwunel.toml:/etc/tuwunel.toml:ro
     environment:
       CONDUWUIT_SERVER_NAME: ${CONDUWUIT_SERVER_NAME}
       CONDUWUIT_DATABASE_PATH: /var/lib/conduwuit
@@ -13,12 +16,11 @@ services:
       CONDUWUIT_ALLOW_REGISTRATION: "true"
       CONDUWUIT_REGISTRATION_TOKEN: ${CONDUWUIT_REGISTRATION_TOKEN}
       CONDUWUIT_ALLOW_PRESENCE: "true"
-      # Federation: enabled with allowlist-only mode.
-      # forbidden_remote_server_names blocks ALL servers by default.
-      # allowed_remote_server_names overrides the block for approved instances.
-      CONDUWUIT_ALLOW_FEDERATION: ${CONDUWUIT_ALLOW_FEDERATION:-true}
-      CONDUWUIT_FORBIDDEN_REMOTE_SERVER_NAMES: ${CONDUWUIT_FORBIDDEN_REMOTE_SERVER_NAMES:-'[".*"]'}
-      CONDUWUIT_ALLOWED_REMOTE_SERVER_NAMES: ${CONDUWUIT_ALLOWED_REMOTE_SERVER_NAMES:-'[]'}
+      # Federation keys (allow_federation, forbidden_remote_server_names,
+      # allowed_remote_server_names) are now managed in /etc/tuwunel.toml
+      # by the Concord admin UI. Do NOT add them as env vars here — that
+      # would shadow the runtime-managed values.
+      TUWUNEL_CONFIG: /etc/tuwunel.toml
       CONDUWUIT_ALLOW_PUBLIC_ROOM_DIRECTORY_OVER_FEDERATION: "false"
       CONDUWUIT_TRUSTED_SERVERS: '["matrix.org"]'
       CONDUWUIT_LOG: "info"
@@ -27,11 +29,31 @@ services:
     networks:
       - concord
 
+  # Minimal-privilege proxy that lets concord-api restart the conduwuit
+  # container when the federation allowlist changes. Only CONTAINERS list
+  # and POST (restart) are enabled — no image, volume, or network access.
+  # This avoids mounting the host's /var/run/docker.sock directly into
+  # concord-api, shrinking the blast radius if concord-api is compromised.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      POST: "1"
+      # Everything else stays at its secure default (disabled).
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - concord
+
   concord-api:
     build: ./server
     restart: unless-stopped
     volumes:
       - ./data/concord:/data
+      # RW so the admin UI can rewrite federation settings atomically.
+      # Conduwuit gets the same file RO; both see the same bytes.
+      - ./config/tuwunel.toml:/etc/tuwunel.toml:rw
     environment:
       CONCORD_DATA_DIR: /data
       MATRIX_HOMESERVER_URL: http://conduwuit:${CONDUWUIT_PORT}
@@ -48,11 +70,18 @@ services:
       ADMIN_USER_IDS: ${ADMIN_USER_IDS:-}
       FREESOUND_API_KEY: ${FREESOUND_API_KEY:-}
       INSTANCE_NAME: ${INSTANCE_NAME:-${CONDUWUIT_SERVER_NAME}}
+      # Path where we read/write the Tuwunel federation config inside
+      # this container. Matches the bind mount target above.
+      TUWUNEL_CONFIG_PATH: /etc/tuwunel.toml
+      # docker-socket-proxy endpoint for the restart-on-apply flow.
+      DOCKER_PROXY_URL: http://docker-socket-proxy:2375
     depends_on:
       conduwuit:
         condition: service_started
       livekit:
         condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')\""]
       interval: 10s

@@ -372,28 +372,111 @@ async def admin_update_report(
 # ---------------------------------------------------------------------------
 # Admin: federation management
 # ---------------------------------------------------------------------------
+#
+# Source of truth for federation keys is `/etc/tuwunel.toml`, bind-mounted
+# into both the conduwuit container (RO) and the concord-api container (RW).
+# The flow is:
+#   1. Admin edits allowlist in the UI.
+#   2. PUT /api/admin/federation/allowlist rewrites the TOML file and marks
+#      the config as "pending" (dirty vs running).
+#   3. Admin confirms in a modal, frontend calls POST /api/admin/federation/apply.
+#   4. concord-api asks docker-socket-proxy to restart the conduwuit service,
+#      which reads the new tuwunel.toml on startup.
+#
+# See services/tuwunel_config.py and services/docker_control.py.
+
+from services.tuwunel_config import (
+    FederationSettings,
+    is_valid_server_name,
+    read_federation,
+    server_names_to_regex_patterns,
+    write_federation,
+)
+from services.docker_control import DockerControlError, restart_compose_service
+
+
+def _server_names_from_regex_patterns(patterns: list[str]) -> list[str]:
+    """Best-effort inverse of server_names_to_regex_patterns.
+
+    The admin UI shows plain server names, but the TOML stores anchored
+    regex patterns (``^example\\.com$``). For each pattern that looks like
+    our own ``^escaped-name$`` format, unescape it back to a plain name;
+    patterns we can't decode are returned unchanged so hand-edited advanced
+    regexes are preserved through round-trips.
+    """
+    import re as _re
+    out: list[str] = []
+    for p in patterns:
+        m = _re.fullmatch(r"\^(.+)\$", p)
+        if not m:
+            out.append(p)
+            continue
+        inner = m.group(1)
+        # Inverse of re.escape for alnum . - (the only chars in a hostname).
+        try:
+            decoded = _re.sub(r"\\(.)", r"\1", inner)
+        except Exception:
+            out.append(p)
+            continue
+        out.append(decoded)
+    return out
+
+
+def _federation_has_pending_changes() -> bool:
+    """True when tuwunel.toml has been edited since the last successful apply.
+
+    We compare the file's mtime to ``federation_last_applied_at`` in the
+    instance settings JSON. If no apply has ever been recorded, any
+    existing file counts as pending so the admin can't forget to hit
+    Apply after an install.
+    """
+    from services.tuwunel_config import TUWUNEL_CONFIG_PATH
+
+    if not TUWUNEL_CONFIG_PATH.exists():
+        return False
+    last = _read_instance_settings().get("federation_last_applied_at")
+    if not last:
+        # Never applied — treat as pending.
+        return True
+    try:
+        return TUWUNEL_CONFIG_PATH.stat().st_mtime > float(last)
+    except (OSError, TypeError, ValueError):
+        return True
+
 
 @router.get("/api/admin/federation")
 async def admin_get_federation(
     user_id: str = Depends(get_user_id),
 ):
-    """Get current federation configuration."""
+    """Get current federation configuration.
+
+    Returns both the running state (what Tuwunel is currently enforcing)
+    and the pending state (what the TOML file will apply on next restart),
+    so the UI can show an "unapplied changes" indicator.
+
+    ``pending_apply`` is derived from the TOML file mtime vs. the last
+    recorded successful ``/apply`` timestamp in instance settings. This
+    survives page reloads and different admin sessions — the indicator
+    only clears after a real restart succeeds.
+    """
     require_admin(user_id)
-    settings = _read_instance_settings()
-    import os
+    import os as _os
 
-    # Read live env config
-    allow_federation = os.getenv("CONDUWUIT_ALLOW_FEDERATION", "true").lower() == "true"
-
+    settings = read_federation()
     return {
-        "enabled": allow_federation,
-        "server_name": os.getenv("CONDUWUIT_SERVER_NAME", "unknown"),
-        "allowed_servers": settings.get("federation_allowlist", []),
+        "enabled": settings.allow_federation,
+        "server_name": _os.getenv("CONDUWUIT_SERVER_NAME", "unknown"),
+        "allowed_servers": _server_names_from_regex_patterns(
+            settings.allowed_remote_server_names
+        ),
+        "raw_allowed_patterns": settings.allowed_remote_server_names,
+        "raw_forbidden_patterns": settings.forbidden_remote_server_names,
+        "pending_apply": _federation_has_pending_changes(),
     }
 
 
 class FederationAllowlistUpdate(BaseModel):
-    allowed_servers: list[str]  # server names (not regex — we escape them)
+    allowed_servers: list[str]  # plain server names — not regex
 
 
 @router.put("/api/admin/federation/allowlist")
@@ -401,38 +484,108 @@ async def admin_update_federation_allowlist(
     body: FederationAllowlistUpdate,
     user_id: str = Depends(get_user_id),
 ):
-    """Update the federation allowlist.
+    """Update the federation allowlist (pending — not applied yet).
 
-    Stores the list in instance settings. The actual Conduwuit env var
-    (CONDUWUIT_ALLOWED_REMOTE_SERVER_NAMES) must be regenerated from
-    this list on container restart. A future version will hot-reload
-    via the Conduwuit admin API.
+    Writes the new allowlist to ``tuwunel.toml`` with anchored regex
+    patterns. The change is not visible to Tuwunel until
+    ``POST /api/admin/federation/apply`` triggers a container restart.
     """
     require_admin(user_id)
 
-    # Validate: server names should look like domains
-    cleaned = []
+    # Validate: each entry must be a well-formed RFC-1123 hostname.
+    # Silent drops would hide mistakes from the admin, so we 400 on bad input.
+    cleaned: list[str] = []
+    rejected: list[str] = []
     for name in body.allowed_servers:
         name = name.strip().lower()
-        if not name or len(name) > 253:
+        if not name:
+            continue
+        if not is_valid_server_name(name):
+            rejected.append(name)
             continue
         cleaned.append(name)
 
-    settings = _read_instance_settings()
-    settings["federation_allowlist"] = cleaned
-    _write_instance_settings(settings)
+    if rejected:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "Invalid server name(s)",
+                "rejected": rejected,
+                "message": "Each entry must be a valid hostname (letters, digits, hyphens, dot-separated).",
+            },
+        )
 
-    # Build the regex patterns for Conduwuit env var
-    import re
-    regex_patterns = [re.escape(s) + "$" for s in cleaned]
+    # Build anchored regex patterns (^escaped$) — correctness fix over the
+    # previous "escape + $" version which allowed unintended substring matches.
+    regex_patterns = server_names_to_regex_patterns(cleaned)
+
+    # Read + overlay + write atomically so the conduwuit container never
+    # sees a torn config on its next read.
+    current = read_federation()
+    current.allowed_remote_server_names = regex_patterns
+    write_federation(current)
 
     logger.info(
-        "Federation allowlist updated by %s: %s (restart required for Conduwuit to pick up changes)",
+        "Federation allowlist edited by %s: %s (apply pending — restart required)",
         user_id, cleaned,
     )
 
     return {
         "allowed_servers": cleaned,
-        "env_value": json.dumps(regex_patterns),
-        "restart_required": True,
+        "raw_allowed_patterns": regex_patterns,
+        "pending_apply": True,
+        "message": (
+            "Allowlist saved. Click 'Apply changes' to restart the Matrix "
+            "server and activate the new allowlist."
+        ),
+    }
+
+
+@router.post("/api/admin/federation/apply")
+async def admin_apply_federation(
+    user_id: str = Depends(get_user_id),
+):
+    """Restart the conduwuit container so Tuwunel picks up the new config.
+
+    This is a blocking operation — returns only after the container is back
+    up. Typical runtime is 5-15 seconds. The frontend should show a spinner.
+
+    Raises 502 if the docker-socket-proxy sidecar is unreachable or the
+    Docker API rejects the restart.
+    """
+    require_admin(user_id)
+
+    logger.info("Federation config apply (restart) triggered by %s", user_id)
+    try:
+        result = await restart_compose_service("conduwuit")
+    except DockerControlError as exc:
+        logger.error("Federation apply failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "Federation apply failed",
+                "message": str(exc),
+                "hint": (
+                    "Check that the docker-socket-proxy service is running "
+                    "and that concord-api can reach it."
+                ),
+            },
+        ) from exc
+
+    # Only record success after the Docker API has confirmed the restart.
+    # This timestamp gates the "pending apply" indicator on the GET endpoint.
+    import time as _time
+    settings_json = _read_instance_settings()
+    settings_json["federation_last_applied_at"] = _time.time()
+    settings_json["federation_last_applied_by"] = user_id
+    _write_instance_settings(settings_json)
+
+    logger.info(
+        "Federation apply succeeded: restarted %d container(s) in %.2fs",
+        len(result["restarted"]), result["elapsed_seconds"],
+    )
+    return {
+        "applied": True,
+        "restarted_containers": result["restarted"],
+        "elapsed_seconds": result["elapsed_seconds"],
     }

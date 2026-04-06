@@ -1000,6 +1000,14 @@ ENVEOF
 
 info "Configuration written to .env"
 
+# ── Federation config migration ──────────────────────────────────────────
+# Concord 0.2.0 moved federation allowlist settings from .env environment
+# variables to config/tuwunel.toml so the admin UI can hot-edit them at
+# runtime. This runs on every install and is a no-op for fresh setups.
+if [ -x "./scripts/migrate-federation-config.sh" ]; then
+  ./scripts/migrate-federation-config.sh || warn "Federation config migration reported a non-zero exit — review output above"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════
 # Launch prompt
 # ═══════════════════════════════════════════════════════════════════════

@@ -1037,6 +1037,27 @@ export interface FederationStatus {
   enabled: boolean;
   server_name: string;
   allowed_servers: string[];
+  // Anchored regex patterns (^escaped$) as stored in tuwunel.toml.
+  // Exposed so the admin UI can tell the difference between a plain
+  // hostname entry and a hand-edited advanced pattern.
+  raw_allowed_patterns: string[];
+  raw_forbidden_patterns: string[];
+  // True when tuwunel.toml has been edited since the last successful apply.
+  // Derived from file mtime vs. federation_last_applied_at on the server.
+  pending_apply: boolean;
+}
+
+export interface FederationUpdateResult {
+  allowed_servers: string[];
+  raw_allowed_patterns: string[];
+  pending_apply: boolean;
+  message: string;
+}
+
+export interface FederationApplyResult {
+  applied: boolean;
+  restarted_containers: string[];
+  elapsed_seconds: number;
 }
 
 export async function getFederationStatus(
@@ -1048,10 +1069,26 @@ export async function getFederationStatus(
 export async function updateFederationAllowlist(
   allowedServers: string[],
   accessToken: string,
-): Promise<{ allowed_servers: string[]; env_value: string; restart_required: boolean }> {
+): Promise<FederationUpdateResult> {
   return apiFetch(
     "/admin/federation/allowlist",
     { method: "PUT", body: JSON.stringify({ allowed_servers: allowedServers }) },
+    accessToken,
+  );
+}
+
+/**
+ * Trigger a restart of the Matrix (conduwuit) container so it picks up
+ * the new federation allowlist from tuwunel.toml. Blocks for ~5-15s
+ * while the container restarts. Call this only after the admin has
+ * confirmed in a modal that downtime is acceptable.
+ */
+export async function applyFederationChanges(
+  accessToken: string,
+): Promise<FederationApplyResult> {
+  return apiFetch(
+    "/admin/federation/apply",
+    { method: "POST", body: "{}" },
     accessToken,
   );
 }
