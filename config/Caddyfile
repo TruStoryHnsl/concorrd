@@ -69,8 +69,24 @@
     }
 
     # React SPA — serve static files, fall back to index.html
+    #
+    # Cache strategy:
+    #  - /assets/* are content-hashed by Vite (e.g. index-XXXX.js) — safe to
+    #    cache forever as immutable.
+    #  - Everything else resolves to index.html via try_files fallback. The
+    #    HTML must NOT be cached, otherwise browsers serve a stale shell that
+    #    references old asset hashes after a deploy.
     handle {
         root * /srv/html
+
+        @assets path /assets/*
+        header @assets Cache-Control "public, max-age=31536000, immutable"
+
+        @notAssets not path /assets/*
+        header @notAssets Cache-Control "no-cache, no-store, must-revalidate"
+        header @notAssets Pragma "no-cache"
+        header @notAssets Expires "0"
+
         try_files {path} /index.html
         file_server
     }
