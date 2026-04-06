@@ -185,10 +185,14 @@ export function ChatLayout() {
     setMobileView("chat");
   }, [setActiveDM]);
 
-  // When settings is opened, show it on mobile
+  // When app settings or server settings is opened, switch to the mobile
+  // settings view. Without the serverSettingsId branch, tapping the gear
+  // icon in ChannelSidebar's server header on mobile would silently update
+  // the store but leave mobileView on "channels", so nothing visible would
+  // happen and server owners on mobile had no path to manage their server.
   useEffect(() => {
-    if (settingsOpen) setMobileView("settings");
-  }, [settingsOpen]);
+    if (settingsOpen || serverSettingsId) setMobileView("settings");
+  }, [settingsOpen, serverSettingsId]);
 
   // Desktop layout
   const renderDesktopLayout = () => (
