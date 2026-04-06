@@ -1,6 +1,6 @@
 # Concord — Master Development Plan
 
-P2P mesh-networked communication platform. v1 (Matrix-based) runs on orrgate. v2 (native Rust/Tauri + libp2p) is the active rewrite in `v2/`.
+Decentralized communication platform. The stable Matrix-based build lives at the repo root (currently `v0.1.0`, tagged, deployed on orrgate). The native Rust/Tauri + libp2p mesh rewrite lives in `beta/` as an experimental parallel track. Both share this roadmap while they converge.
 
 ## Open Conflicts
 
@@ -105,15 +105,19 @@ All must pass on real physical devices (iPhone, iPad, desktop) before distributi
 
 ## Architecture
 
-### v1 (running on orrgate — Docker stack)
-- conduwuit (Matrix server), concord-api, web client, livekit
-- Serves as bridge/federation endpoint during v2 transition
+### Stable — repo root (`v0.1.0`, Matrix-based, running on orrgate)
+- Tuwunel (Matrix homeserver), concord-api (FastAPI), React client, LiveKit SFU, Caddy
+- Tauri v2 desktop shell wraps the web client (`src-tauri/` at root)
+- Federation: allowlist-only between Concord instances (shipped 2026-04 — `server/routers/admin.py`, `client/src/hooks/useFederation.ts`, `FederationBadge.tsx`)
 - Deploy: `orrgate:/docker/stacks/concord/`
+- Renamed from "v1" during the 2026-03-31 SemVer restructure
 
-### v2 (active development — `concord/v2/`)
-- **Tauri v2 + Rust** (libp2p mesh, local-first)
-- Three-pathway comms: libp2p mesh, Matrix federation (bridge), LiveKit SFU (fallback)
-- See `v2/CLAUDE.md` for full technical architecture
+### Experimental — `beta/` (native Rust/Tauri + libp2p mesh)
+- Tauri v2 + Rust, libp2p swarm (mDNS, Kademlia, GossipSub, QUIC, Noise, Relay, DCUtR)
+- Three-pathway comms: forums (mesh-scoped), servers/places (org-scoped), direct (walkie-talkie)
+- Voice currently over GossipSub raw frames; str0m WebRTC signaling placeholder
+- See `beta/CLAUDE.md` and `beta/ARCHITECTURE.md` for the full technical architecture
+- Renamed from "v2" during the 2026-03-31 SemVer restructure
 
 ### Mesh Network Architecture (from user feedback 2026-03-26, refined 2026-03-27)
 - **Nodes**: Every concord instance. Same binary. Nodes represent either a user or a place.
@@ -191,7 +195,7 @@ No direct anonymous mode. Instead: **private browsing via disposable user node**
 - [ ] Web portal for guest access (phantom node hosting)
 - [ ] Basic reputation system visible in UI
 
-### v2 Core (in progress)
+### Beta Mesh Core — `beta/` (in progress)
 - [x] Tauri + Rust scaffold
 - [x] libp2p transport layer (TCP + mDNS)
 - [x] Identity system (Ed25519 keypairs)
@@ -206,7 +210,7 @@ No direct anonymous mode. Instead: **private browsing via disposable user node**
 - [ ] File/media sharing
 - [ ] CRDT shared state
 - [ ] Moderation system
-- [x] LICENSE file (MIT — v2/LICENSE)
+- [x] LICENSE file (MIT — `beta/LICENSE`)
 - [ ] SQLCipher for at-rest encryption
 
 ### Mesh Network (from feedback — planned)

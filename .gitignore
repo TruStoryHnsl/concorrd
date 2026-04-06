@@ -5,15 +5,14 @@
 .env.*.local
 
 # Docker volume data
-v1/data/
+data/
 
 # Node
 node_modules/
 
-# v1 specifics
-v1/client/node_modules/
-v1/client/dist/
-v1/downloads/
+# Client build output
+client/dist/
+client/downloads/
 
 # Desktop app
 desktop/node_modules/
@@ -22,12 +21,13 @@ desktop/dist/
 # Python
 __pycache__/
 *.pyc
-v1/server/.venv/
+server/.venv/
 
-# v2 specifics
-v2/target/
-v2/venv/
-v2/frontend/dist/
+# Beta mesh (Rust + Tauri)
+beta/target/
+beta/frontend/node_modules/
+beta/frontend/dist/
+beta/venv/
 
 # IDE
 .vscode/
@@ -42,6 +42,9 @@ v2/frontend/dist/
 
 # Claude Code local config
 .claude/
+
+# Orrchestrator workflow state (develop_feature MCP tool)
+.orrch/
 
 # Playwright MCP artifacts
 .playwright-mcp/
