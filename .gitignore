@@ -51,3 +51,21 @@ beta/venv/
 
 # Temp files
 .orrtemp
+
+# AI / workflow files (kept locally, not tracked)
+CLAUDE.md
+GEMINI.md
+agents.md
+AGENTS.md
+PLAN.md
+fb2p.md
+scratchpad.md
+TODO.md
+notes.md
+instructions_inbox.md
+naming-brainstorm.md
+SELF_CONTAINMENT_REPORT.md
+.bugfix-ledger.md
+.bugfix-analysis.md
+mempalace.yaml
+entities.json
