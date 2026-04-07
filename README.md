@@ -221,9 +221,9 @@ docker compose logs -f conduwuit
 - **Caddy** automatically provisions and renews HTTPS certificates when `SITE_ADDRESS` is set to a domain name.
 - All bind mounts that point at `config/` are **directory mounts**, not single-file mounts. Single-file binds pin a specific inode at container start, so atomic tmp-file-then-rename writes (used by `tuwunel_config.py` and by `git pull`) become invisible inside the container until restart. Directory mounts track changes by path.
 
-## Project history
+## Related projects
 
-The current build is `0.1.0` (released 2026-03-31). An earlier v2 prototype that explored Tauri + libp2p as a peer-to-peer mesh transport has been split out into its own archive repository: **[concord-beta](https://github.com/TruStoryHnsl/concord-beta)**. It is not part of the running stack and is preserved only for reference.
+The current build is `0.1.0` (released 2026-03-31). A parallel research track exploring **native peer-to-peer mesh chat** (Tauri 2 + Rust + libp2p, no central homeserver) is under active development in its own repository: **[concord-beta](https://github.com/TruStoryHnsl/concord-beta)**. It shares the Concord product vision but is an independent codebase using a fundamentally different transport architecture. It is not part of the running concord stack — treat current concord as production and concord-beta as research.
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
