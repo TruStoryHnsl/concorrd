@@ -1,5 +1,13 @@
 services:
-  # Vite dev server with HMR — source mounted for live editing
+  # Vite dev server with HMR.
+  #
+  # Source is bind-mounted (ro) for live editing.
+  #
+  # package.json and package-lock.json are ALSO bind-mounted so the container
+  # sees the current host state of dependencies. Combined with the named
+  # node_modules volume and the runtime `npm ci` in Dockerfile.dev, this
+  # means dependency changes on the host are picked up on container restart
+  # — no image rebuild needed.
   vite-dev:
     build:
       context: .
@@ -12,6 +20,12 @@ services:
       - ./client/tsconfig.app.json:/app/tsconfig.app.json:ro
       - ./client/tsconfig.node.json:/app/tsconfig.node.json:ro
       - ./client/eslint.config.js:/app/eslint.config.js:ro
+      - ./client/package.json:/app/package.json:ro
+      - ./client/package-lock.json:/app/package-lock.json:ro
+      # Named volume so node_modules persists across container recreates.
+      # First startup on a fresh volume takes ~30-60s for npm ci; subsequent
+      # startups skip it if the lockfile matches.
+      - concord-vite-node-modules:/app/node_modules
     networks:
       - concord
 
@@ -30,6 +44,9 @@ services:
         condition: service_healthy
       vite-dev:
         condition: service_started
+
+volumes:
+  concord-vite-node-modules:
 
 networks:
   concord:

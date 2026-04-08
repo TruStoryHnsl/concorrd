@@ -1,7 +1,41 @@
 FROM node:22-alpine
 WORKDIR /app
-COPY client/package.json client/package-lock.json ./
-RUN npm ci
-# Source is bind-mounted at runtime for live editing
+
+# Deps are NOT baked into the image. Instead, the container startup compares
+# a hash of /app/package-lock.json (bind-mounted from the host) against a
+# stamp file stored in the named node_modules volume. If they match we skip
+# `npm ci`; if not, we run it and update the stamp.
+#
+# Why this instead of comparing /app/package-lock.json to /app/node_modules/.package-lock.json:
+#   npm 7+ writes a "hidden lockfile" to node_modules/.package-lock.json that
+#   it has stripped of unused fields. That file is semantically equivalent to
+#   the top-level lockfile but NOT byte-identical, so a naive cmp will always
+#   report "differ" and npm ci will run on every restart. Hashing the host
+#   lockfile and storing the hash in the volume avoids this.
+#
+# Required runtime volumes (from docker-compose.dev.yml):
+#   - host client/package.json       -> /app/package.json       (ro)
+#   - host client/package-lock.json  -> /app/package-lock.json  (ro)
+#   - named volume                   -> /app/node_modules       (rw)
+#   - host client/src, index.html,
+#     vite.config.ts, tsconfig*,
+#     eslint.config.js               -> /app/*                  (ro)
+#
+# Dep changes on the host are picked up by a simple restart of the container:
+#   docker restart concord-vite-dev-1
+# No image rebuild needed.
+
 EXPOSE 5173
-CMD ["npx", "vite", "--host", "0.0.0.0", "--port", "5173"]
+
+CMD ["/bin/sh", "-c", "\
+  STAMP=/app/node_modules/.installed-lockfile-md5; \
+  CURRENT=$(md5sum /app/package-lock.json | awk '{print $1}'); \
+  if [ -f \"$STAMP\" ] && [ \"$(cat \"$STAMP\")\" = \"$CURRENT\" ]; then \
+    echo \"[vite-dev] node_modules matches lockfile ($CURRENT), skipping npm ci\"; \
+  else \
+    echo \"[vite-dev] Installing deps (npm ci) — target lockfile md5: $CURRENT\"; \
+    npm ci --no-audit --no-fund || exit 1; \
+    echo \"$CURRENT\" > \"$STAMP\"; \
+  fi; \
+  exec npx vite --host 0.0.0.0 --port 5173\
+"]

@@ -61,6 +61,10 @@ naming-brainstorm.md
 SELF_CONTAINMENT_REPORT.md
 DEVLOG.md
 PROVENANCE_REPORT.md
+
+# Syncthing folder ignore patterns (local only)
+.stignore
+.stfolder
 .bugfix-ledger.md
 .bugfix-analysis.md
 mempalace.yaml
