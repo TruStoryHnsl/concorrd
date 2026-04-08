@@ -29,12 +29,16 @@ services:
     networks:
       - concord
 
-  # Override web to use dev Caddyfile (proxies to vite-dev instead of static)
+  # Override web to use dev Caddyfile (proxies to vite-dev instead of serving
+  # the baked-in /srv/html static bundle).
+  #
+  # Caddyfile.dev is already visible inside the container via the base
+  # compose's `./config:/etc/concord-config:ro` mount, so we just point
+  # Caddy at it instead of bind-mounting a single file (which would pin a
+  # specific inode and break on rewrite — same reasoning as the volume
+  # comment in docker-compose.yml).
   web:
-    volumes:
-      - ./config/Caddyfile.dev:/etc/caddy/Caddyfile:ro
-      - ./data/caddy:/data
-      - ./downloads:/srv/downloads:ro
+    command: caddy run --config /etc/concord-config/Caddyfile.dev --adapter caddyfile
     depends_on:
       conduwuit:
         condition: service_started

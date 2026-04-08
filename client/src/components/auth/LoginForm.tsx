@@ -129,29 +129,6 @@ export function LoginForm() {
 
   return (
     <div className="min-h-screen bg-surface flex items-center justify-center p-4 relative mesh-background">
-      {/* Welcome overlay */}
-      {showWelcome && (
-        <div
-          className={`absolute inset-0 z-10 bg-surface flex items-center justify-center transition-opacity duration-700 ${
-            welcomeFading ? "opacity-0" : "opacity-100"
-          }`}
-        >
-          <div className="text-center">
-            <img
-              src="/logo.png"
-              alt=""
-              className="w-24 h-24 mx-auto mb-4 object-contain animate-[fadeSlideUp_0.6s_ease-out]"
-            />
-            <h1 className="text-5xl font-headline font-bold text-primary mb-3 animate-[fadeSlideUp_0.6s_ease-out_0.1s_both]">
-              {instanceName}
-            </h1>
-            <p className="text-on-surface-variant text-lg font-body animate-[fadeSlideUp_0.6s_ease-out_0.2s_both]">
-              Welcome back
-            </p>
-          </div>
-        </div>
-      )}
-
       <div className="w-full max-w-sm relative z-10">
         {/* TOTP verification screen */}
         {pendingLogin ? (
@@ -283,6 +260,32 @@ export function LoginForm() {
         </>
         )}
       </div>
+
+      {/* Welcome overlay — rendered LAST so paint order also wins.
+          `fixed inset-0` covers the viewport regardless of any parent stacking context.
+          `z-50` matches every other full-screen modal in the app. */}
+      {showWelcome && (
+        <div
+          className={`fixed inset-0 z-50 bg-surface flex items-center justify-center transition-opacity duration-700 ${
+            welcomeFading ? "opacity-0 pointer-events-none" : "opacity-100"
+          }`}
+          style={{ backgroundColor: "var(--color-surface)" }}
+        >
+          <div className="text-center">
+            <img
+              src="/logo.png"
+              alt=""
+              className="w-24 h-24 mx-auto mb-4 object-contain animate-[fadeSlideUp_0.6s_ease-out]"
+            />
+            <h1 className="text-5xl font-headline font-bold text-primary mb-3 animate-[fadeSlideUp_0.6s_ease-out_0.1s_both]">
+              {instanceName}
+            </h1>
+            <p className="text-on-surface-variant text-lg font-body animate-[fadeSlideUp_0.6s_ease-out_0.2s_both]">
+              Welcome back
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
