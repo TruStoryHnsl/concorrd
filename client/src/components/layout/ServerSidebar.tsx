@@ -369,6 +369,32 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   const handleServerClick = (serverId: string) => {
     setDMActive(false);
     setActiveServer(serverId);
+    // Auto-select the server's first channel on click so the chat
+    // view populates immediately. Without this, the activeChannelId
+    // stays whatever it was before (often a channel from a DIFFERENT
+    // server), the chat view keeps rendering that stale channel, and
+    // the newly-clicked tile looks dead. Mattered most for federated
+    // synthetic servers — their tiles looked unresponsive because
+    // nothing in the right-hand chat pane changed on click.
+    //
+    // We only reset the channel when the new server's channel list
+    // doesn't already contain the currently-active channel id. That
+    // way re-clicking the currently-active server keeps your current
+    // channel selection instead of resetting it every time the tile
+    // is tapped.
+    const state = useServerStore.getState();
+    const target = state.servers.find((s) => s.id === serverId);
+    if (target && target.channels.length > 0) {
+      const current = state.activeChannelId;
+      const alreadyInServer = current
+        ? target.channels.some((c) => c.matrix_room_id === current)
+        : false;
+      if (!alreadyInServer) {
+        useServerStore
+          .getState()
+          .setActiveChannel(target.channels[0].matrix_room_id);
+      }
+    }
     onServerSelect?.();
   };
 
@@ -378,12 +404,14 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   };
 
   // Mobile: full-width list view. The outer wrapper is a flex
-  // column (not a plain block) so `mt-auto` on the Explore button
-  // can push it to the bottom of the sidebar regardless of how many
-  // servers are in the list above.
+  // column (not a plain block) so flex-shrink-0 on children forces
+  // the parent's overflow-y-auto to scroll when content overflows,
+  // instead of squeezing entries to fit. The `[&>*]:shrink-0`
+  // arbitrary selector is a cheaper way to apply shrink-0 to every
+  // direct child than marking each row individually.
   if (mobile) {
     return (
-      <div className="h-full bg-surface-container-low overflow-y-auto p-3 flex flex-col">
+      <div className="h-full bg-surface-container-low overflow-y-auto p-3 flex flex-col [&>*]:shrink-0">
         <h3 className="text-xs font-label font-medium text-on-surface-variant uppercase tracking-widest px-2 mb-3">
           Your Servers
         </h3>
@@ -467,16 +495,13 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
 
         <button
           onClick={() => setShowNewServer(true)}
-          className="btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-on-surface-variant hover:text-secondary hover:bg-secondary/5 transition-all mt-2"
+          className="btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-on-surface-variant hover:text-secondary hover:bg-secondary/5 transition-all mt-2 flex-shrink-0"
         >
           <div className="w-10 h-10 rounded-xl bg-surface-container-highest flex items-center justify-center flex-shrink-0">
             <span className="material-symbols-outlined text-xl">add</span>
           </div>
           <span className="font-body font-medium">Add Server</span>
         </button>
-
-        {/* Spacer pushes federated stack + Explore to the bottom. */}
-        <div className="flex-1 min-h-0" aria-hidden="true" />
 
         {/* Federated search input: inline text field that filters
             both live and placeholder federated tiles by name or
@@ -527,7 +552,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
                 placeholder ? undefined : () => handleServerClick(server.id)
               }
               disabled={placeholder}
-              className={`btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${
+              className={`btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all flex-shrink-0 ${
                 placeholder ? "opacity-55 cursor-default" : ""
               } ${
                 isActive
@@ -582,10 +607,12 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
           );
         })}
 
-        {/* Explore pinned to the bottom of the federated stack. */}
+        {/* Explore — always the last row in the natural flow.
+            Sidebar scrolls via the parent's overflow-y-auto when
+            content is too tall. */}
         <button
           onClick={() => setExploreOpen(true)}
-          className="btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-on-surface-variant hover:text-tertiary hover:bg-tertiary/5 transition-all"
+          className="btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-on-surface-variant hover:text-tertiary hover:bg-tertiary/5 transition-all flex-shrink-0"
         >
           <div className="w-10 h-10 rounded-xl bg-surface-container-highest flex items-center justify-center flex-shrink-0">
             <span className="material-symbols-outlined text-xl">public</span>
@@ -599,9 +626,15 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
     );
   }
 
-  // Desktop: compact icon sidebar
+  // Desktop: compact icon sidebar. The `[&>*]:shrink-0` arbitrary
+  // selector forces every direct flex child (DM button, divider,
+  // SortableServerRow, Add Server, federated tiles, Explore) to
+  // keep its natural size so overflow-y-auto actually triggers when
+  // the list grows beyond the viewport. Without it the default
+  // `flex-shrink: 1` causes tiles to squish before the scrollbar
+  // ever appears.
   return (
-    <div className="w-16 bg-surface flex flex-col items-center py-3 gap-2 overflow-y-auto min-h-0">
+    <div className="w-16 bg-surface flex flex-col items-center py-3 gap-2 overflow-y-auto min-h-0 [&>*]:shrink-0">
       {/* DM button */}
       <div className="relative group">
         <div className={`absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-r-full bg-primary transition-all ${
@@ -710,17 +743,10 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
       <button
         onClick={() => setShowNewServer(true)}
         title="Add Server"
-        className="btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-secondary/10 hover:text-secondary hover:rounded-xl flex items-center justify-center transition-all"
+        className="btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-secondary/10 hover:text-secondary hover:rounded-xl flex items-center justify-center transition-all flex-shrink-0"
       >
         <span className="material-symbols-outlined text-xl">add</span>
       </button>
-
-      {/* Spacer: consumes whatever vertical space is left between the
-          Add-Server button and the federated stack at the bottom. The
-          flex container's gap-2 handles internal spacing; this
-          mt-auto div just pushes the federated stack + Explore to
-          the bottom edge. */}
-      <div className="flex-1 min-h-0" aria-hidden="true" />
 
       {/* Federated (non-local) servers, stacked upward from Explore.
           Rendered in reverse order so the OLDEST federated join sits
@@ -769,7 +795,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         return (
           <div
             key={server.id}
-            className={`relative group ${placeholder ? "opacity-55" : ""}`}
+            className={`relative group flex-shrink-0 ${placeholder ? "opacity-55" : ""}`}
           >
             <div
               className={`absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-r-full ${accentClass} transition-all ${
@@ -833,16 +859,17 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         );
       })}
 
-      {/* Explore federated servers — pinned to the bottom of the
-          sidebar. Federated servers stack upward from here, with the
-          oldest join adjacent and the newest at the top of the
-          federated section. Visually separates "manage your own
-          servers" from "discover the broader federated network". */}
+      {/* Explore federated servers — always rendered last so it
+          sits at the bottom of the natural flow. Federated servers
+          above it stack in reverse chronological order (first join
+          adjacent to this button, newest join at the top of the
+          federated section). When the sidebar overflows, the whole
+          list scrolls via the parent's overflow-y-auto. */}
       <button
         onClick={() => setExploreOpen(true)}
         title="Explore"
         aria-label="Explore federated servers"
-        className="btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-tertiary/15 hover:text-tertiary hover:rounded-xl flex items-center justify-center transition-all"
+        className="btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-tertiary/15 hover:text-tertiary hover:rounded-xl flex items-center justify-center transition-all flex-shrink-0"
       >
         <span className="material-symbols-outlined text-xl">public</span>
       </button>
