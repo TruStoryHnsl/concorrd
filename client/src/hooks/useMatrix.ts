@@ -163,9 +163,77 @@ export function useMatrixSync() {
       }
     }, 60_000);
 
+    // Federated-room hydration loop.
+    //
+    // Matrix sync events fire the classifier + catalog updaters
+    // so the federated-tile sidebar reflects the current
+    // joined-room state as soon as matrix-js-sdk has caught up.
+    //
+    // The previous implementation lived in `useRooms()`, but that
+    // hook was never actually consumed by any component — it was
+    // dead code. Federated hydration only fired when ExploreModal
+    // explicitly called `hydrateFederatedRooms` after a join,
+    // which is why page reloads left the sidebar stuck with
+    // placeholder tiles until the user joined something new.
+    // Moving the subscription into `useMatrixSync` (which IS
+    // called from ChatLayout) means hydration runs on every sync
+    // event, as it was always meant to.
+    //
+    // De-dup via a local `prevIdsSig` string so we only re-hydrate
+    // when the set of joined rooms actually changes — sync events
+    // fire every few seconds during idle and we don't need to
+    // rebuild the synthetic servers unless something changed.
+    let prevIdsSig = "";
+    const hydrateFederated = () => {
+      const joined = client.getRooms().filter(
+        (r) => r.getMyMembership() === "join",
+      );
+      const sig = joined
+        .map((r) => r.roomId)
+        .sort()
+        .join(",");
+      if (sig === prevIdsSig) return;
+      prevIdsSig = sig;
+      // Dynamic imports so this file doesn't pull the whole
+      // server store into every consumer of useMatrixSync.
+      Promise.all([
+        import("../stores/server"),
+        import("../stores/federatedInstances"),
+      ])
+        .then(([{ useServerStore }, { useFederatedInstanceStore }]) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          useServerStore.getState().hydrateFederatedRooms(client as any);
+          const instanceStore = useFederatedInstanceStore.getState();
+          // Probe each catalog host for /.well-known/concord/client
+          // exactly once per session — skip hosts that have already
+          // been classified as Concord (isConcord=true) or already
+          // have a live status.
+          for (const [host, inst] of Object.entries(
+            instanceStore.instances,
+          )) {
+            if (inst.isConcord) continue;
+            if (inst.status === "live") continue;
+            instanceStore.probeConcordHost(host);
+          }
+        })
+        .catch((err) => {
+          console.warn("federated hydration failed:", err);
+        });
+    };
+    client.on(ClientEvent.Sync, hydrateFederated);
+    client.on(ClientEvent.Room, hydrateFederated);
+    // Also fire once immediately in case the client already has
+    // joined rooms in its cache from a prior session — matrix-js-sdk
+    // seeds the Room list synchronously when recovering from
+    // persisted state, and we want those rooms to render before
+    // the first sync tick completes.
+    hydrateFederated();
+
     return () => {
       clearInterval(trimInterval);
       client.removeListener(ClientEvent.Sync, onSync);
+      client.removeListener(ClientEvent.Sync, hydrateFederated);
+      client.removeListener(ClientEvent.Room, hydrateFederated);
       client.removeListener(RoomMemberEvent.Membership, onMembership);
       // NOTE: do NOT call client.stopClient() here.
       //
@@ -196,6 +264,16 @@ export function useMatrixSync() {
 }
 
 export function useRooms() {
+  // NOTE: this hook is currently unused by any consumer in the
+  // project. It exists as a lightweight "give me the joined room
+  // list" utility for future use. The federated-room hydration
+  // that USED to live here has moved into `useMatrixSync` above,
+  // because that's the hook that's actually called by ChatLayout
+  // and thus actually runs during a normal page load. Before the
+  // move, federated hydration never fired on refresh — it only
+  // ran when the user joined a new room via ExploreModal — and
+  // the sidebar was stuck showing stale placeholder tiles. Don't
+  // re-add hydration logic here without also adding a consumer.
   const client = useAuthStore((s) => s.client);
   const [rooms, setRooms] = useState<Room[]>([]);
   const prevIdsRef = useRef<string>("");
@@ -207,42 +285,10 @@ export function useRooms() {
       const joined = client
         .getRooms()
         .filter((r) => r.getMyMembership() === "join");
-      // Only update state if the set of room IDs actually changed.
-      // Prevents re-renders on every sync cycle (fires every few seconds).
       const ids = joined.map((r) => r.roomId).join(",");
       if (ids !== prevIdsRef.current) {
         prevIdsRef.current = ids;
         setRooms(joined);
-        // The set of joined rooms changed — refresh the synthetic
-        // federated-room entries in the server store so newly-joined
-        // loose rooms appear in the sidebar, and rooms the user has
-        // left disappear. This is a client-side-only augmentation;
-        // the Concord API server list is unaffected.
-        //
-        // After hydrating, probe every newly-seen federated
-        // hostname for a /.well-known/concord/client document so
-        // we can visually mark other Concord instances distinctly
-        // from vanilla Matrix hosts. Probes are de-duplicated by
-        // the store and cached across page reloads via the
-        // persist middleware, so we don't hammer the network on
-        // every sync.
-        Promise.all([
-          import("../stores/server"),
-          import("../stores/federatedInstances"),
-        ]).then(([{ useServerStore }, { useFederatedInstanceStore }]) => {
-          useServerStore.getState().hydrateFederatedRooms(client);
-          const instanceStore = useFederatedInstanceStore.getState();
-          for (const [host, inst] of Object.entries(instanceStore.instances)) {
-            // Only probe hosts we haven't determined the Concord-
-            // status of yet. Once isConcord is true, we're done;
-            // once we've tried and got a clear non-Concord answer
-            // (status "live" but isConcord still false), we skip
-            // until the user manually refreshes.
-            if (inst.isConcord) continue;
-            if (inst.status === "live") continue;
-            instanceStore.probeConcordHost(host);
-          }
-        });
       }
     };
 
@@ -489,7 +535,47 @@ export function useRoomMessages(roomId: string | null): RoomMessagesResult {
     client.on(RoomEvent.Redaction, onRedaction);
     extractMessages();
 
+    // Auto-backfill initial scrollback when a room is first opened with an
+    // empty live timeline. Typical for federated rooms the user just joined
+    // via Explore: matrix-js-sdk's /sync only delivers forward events on a
+    // newly-joined room, so history stays empty until someone calls
+    // /messages?dir=b. MessageList's top-sentinel IntersectionObserver can't
+    // help because its sentinel div is behind an `if (messages.length === 0)`
+    // early return — no messages means no sentinel means the observer never
+    // fires and the room reads as "No messages yet" forever.
+    //
+    // We bridge that gap here: if the freshly-bound room has zero events in
+    // its live timeline, fire one scrollback eagerly, update hasMore from
+    // the result, then re-extract. The `cancelled` guard keeps a slow join
+    // on an abandoned roomId from clobbering state for the room the user
+    // has since moved to.
+    const room = client.getRoom(roomId);
+    let cancelled = false;
+    if (room && room.getLiveTimeline().getEvents().length === 0) {
+      setIsPaginating(true);
+      const timeline = room.getLiveTimeline();
+      client
+        .paginateEventTimeline(timeline, { backwards: true, limit: 50 })
+        .then((more) => {
+          if (cancelled) return;
+          setHasMore(more);
+          extractMessages();
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            console.warn(
+              `Initial scrollback failed for ${roomId}:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setIsPaginating(false);
+        });
+    }
+
     return () => {
+      cancelled = true;
       if (debounceRef.current) clearTimeout(debounceRef.current);
       client.removeListener(RoomEvent.Timeline, onTimeline);
       client.removeListener(RoomEvent.Redaction, onRedaction);

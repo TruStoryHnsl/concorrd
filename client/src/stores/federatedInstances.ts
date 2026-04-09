@@ -161,10 +161,31 @@ export const useFederatedInstanceStore = create<FederatedInstanceState>()(
         const now = Date.now();
         set((s) => {
           const existing = s.instances[normalized];
+          // Display-name resolution priority:
+          //   1. Caller-supplied metadata.displayName wins outright —
+          //      this is the only way hydrateFederatedRooms or the
+          //      well-known probe can update the label.
+          //   2. If the existing record is a confirmed Concord
+          //      instance, keep its displayName (which was set by
+          //      `probeConcordHost` from the well-known's
+          //      `instance_name` field and is authoritative).
+          //   3. Otherwise default to the hostname. This is important
+          //      for migrating stale entries from earlier code that
+          //      stored room names (e.g. "Add-ons") as the
+          //      displayName: if the record isn't confirmed Concord
+          //      and the caller didn't supply a new name, we drop
+          //      back to the hostname and overwrite the stale label.
+          let displayName: string;
+          if (metadata?.displayName) {
+            displayName = metadata.displayName;
+          } else if (existing?.isConcord && existing.displayName) {
+            displayName = existing.displayName;
+          } else {
+            displayName = normalized;
+          }
           const merged: FederatedInstance = {
             hostname: normalized,
-            displayName:
-              metadata?.displayName ?? existing?.displayName ?? normalized,
+            displayName,
             isConcord: existing?.isConcord ?? false,
             status: "live",
             lastSeenTs: now,

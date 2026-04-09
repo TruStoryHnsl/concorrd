@@ -484,11 +484,17 @@ export const useServerStore = create<ServerState>((set, get) => ({
         position,
       }));
 
-      // Prefer the catalog's displayName (may be an
-      // instance_name from a Concord probe) over the bare host.
+      // Display name: use the catalog's displayName ONLY if this
+      // host has been confirmed as a Concord instance (the
+      // well-known probe set isConcord=true and stored an
+      // `instance_name` as the displayName). For vanilla Matrix
+      // hosts, always use the bare hostname — trusting the
+      // catalog's displayName for non-Concord hosts picks up
+      // stale room names from earlier versions of the code that
+      // incorrectly stored per-room labels in the catalog.
       const catalog = instanceCatalog[host.toLowerCase()];
       const name =
-        catalog?.displayName && catalog.displayName !== host
+        catalog?.isConcord && catalog.displayName
           ? catalog.displayName
           : host;
 
@@ -515,16 +521,23 @@ export const useServerStore = create<ServerState>((set, get) => ({
     // load, before the Matrix client has finished syncing. Also
     // enables the search filter and the is-Concord distinction.
     //
-    // We collect unique hostnames first to avoid N calls into the
-    // persist middleware when a space has many channels on the same
-    // homeserver.
+    // Only `hostname` is passed to recordSeen — no displayName. This
+    // is deliberate: the catalog's displayName should come from the
+    // `.well-known/concord/client` probe (for Concord instances) or
+    // fall back to the hostname (for vanilla Matrix hosts). Passing
+    // a stale room name or synthetic server name here would clobber
+    // those good values. The probe-authored names are preserved by
+    // `recordSeen`'s isConcord branch.
+    //
+    // Collect unique hostnames first to avoid N calls into the
+    // persist middleware when a host group has many channels.
     const seenHosts = new Set<string>();
     for (const srv of synthetic) {
-      // Synthetic server id is either `federated:<roomId>` (space)
-      // or `federated:<roomId>` (single room). Strip the prefix and
-      // extract the domain.
-      const roomId = srv.id.slice(FEDERATED_SERVER_ID_PREFIX.length);
-      const host = hostnameFromRoomId(roomId);
+      const strippedId = srv.id.slice(FEDERATED_SERVER_ID_PREFIX.length);
+      // New host-grouped ids look like `homeserver:mozilla.org`;
+      // older space-based ids look like `!roomId:host`. Both end
+      // with `:host`, so `hostnameFromRoomId` works for both.
+      const host = hostnameFromRoomId(strippedId);
       if (host) seenHosts.add(host);
       for (const ch of srv.channels) {
         const childHost = hostnameFromRoomId(ch.matrix_room_id);
@@ -533,18 +546,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
     }
     const instanceStore = useFederatedInstanceStore.getState();
     for (const host of seenHosts) {
-      // Best-effort metadata: if any synthetic has a parent name
-      // matching this host, use that as the display name for now;
-      // the well-known probe will overwrite with the real
-      // instance_name if the host is a Concord instance.
-      const matchingServer = synthetic.find((s) =>
-        hostnameFromRoomId(
-          s.id.slice(FEDERATED_SERVER_ID_PREFIX.length),
-        ) === host,
-      );
-      instanceStore.recordSeen(host, {
-        displayName: matchingServer?.name,
-      });
+      instanceStore.recordSeen(host);
     }
 
     set({ servers: [...concordServers, ...synthetic] });
