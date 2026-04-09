@@ -242,41 +242,51 @@ export const useServerStore = create<ServerState>((set, get) => ({
     // Mozilla space shows as five separate tiles" bug reports by
     // surfacing what matrix-js-sdk is actually reporting for those
     // rooms — crucially, whether the rooms carry m.space.parent
-    // state events that the grouping logic can work with. Wrapped
-    // in an IIFE so the closure captures stable values and doesn't
-    // affect render performance.
+    // state events that the grouping logic can work with.
     //
-    // Safe to leave in as long as the console output stays
-    // actionable; if it gets noisy, gate behind a
-    // localStorage.concord_debug_federated flag.
-    // eslint-disable-next-line no-console
-    console.groupCollapsed(
-      `[concord] hydrateFederatedRooms — ${joinedFederated.length} joined federated rooms, ${spaces.length} spaces, ${regularRooms.length} regular`,
-    );
-    try {
-      for (const room of joinedFederated) {
-        const parentEvents =
-          room.currentState?.getStateEvents("m.space.parent") ?? [];
-        const parentIds = parentEvents
-          .map((e) => e.getStateKey?.())
-          .filter((id): id is string => typeof id === "string" && id.length > 0);
-        const childEvents =
-          room.currentState?.getStateEvents("m.space.child") ?? [];
-        const childIds = childEvents
-          .map((e) => e.getStateKey?.())
-          .filter((id): id is string => typeof id === "string" && id.length > 0);
-        // eslint-disable-next-line no-console
-        console.log("[concord] room", {
-          roomId: room.roomId,
-          name: room.name,
-          type: room.getType?.() ?? "(regular)",
-          parents: parentIds,
-          children: childIds,
-        });
-      }
-    } finally {
+    // Gated behind the `concord_debug_federated` localStorage flag so
+    // it stays OFF in production. Commercial-scope hygiene: room IDs
+    // and names are personal metadata — we don't want them appearing
+    // in DevTools during a bug-report screenshare. To turn the
+    // diagnostic on in your own browser, open DevTools and run:
+    //
+    //     localStorage.setItem('concord_debug_federated', '1')
+    //
+    // then refresh. Clear it with `localStorage.removeItem(...)` when
+    // you're done investigating.
+    if (
+      typeof localStorage !== "undefined" &&
+      localStorage.getItem("concord_debug_federated")
+    ) {
       // eslint-disable-next-line no-console
-      console.groupEnd();
+      console.groupCollapsed(
+        `[concord] hydrateFederatedRooms — ${joinedFederated.length} joined federated rooms, ${spaces.length} spaces, ${regularRooms.length} regular`,
+      );
+      try {
+        for (const room of joinedFederated) {
+          const parentEvents =
+            room.currentState?.getStateEvents("m.space.parent") ?? [];
+          const parentIds = parentEvents
+            .map((e) => e.getStateKey?.())
+            .filter((id): id is string => typeof id === "string" && id.length > 0);
+          const childEvents =
+            room.currentState?.getStateEvents("m.space.child") ?? [];
+          const childIds = childEvents
+            .map((e) => e.getStateKey?.())
+            .filter((id): id is string => typeof id === "string" && id.length > 0);
+          // eslint-disable-next-line no-console
+          console.log("[concord] room", {
+            roomId: room.roomId,
+            name: room.name,
+            type: room.getType?.() ?? "(regular)",
+            parents: parentIds,
+            children: childIds,
+          });
+        }
+      } finally {
+        // eslint-disable-next-line no-console
+        console.groupEnd();
+      }
     }
 
     // -----------------------------------------------------------------
