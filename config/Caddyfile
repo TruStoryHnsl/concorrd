@@ -27,9 +27,43 @@
         }
     }
 
-    # Matrix server well-known (client + server discovery)
-    handle /.well-known/matrix/* {
-        reverse_proxy conduwuit:6167
+    # Matrix server + client well-known — static JSON responses served
+    # directly by Caddy.
+    #
+    # Background (INS-026, 2026-04-08): these paths used to be proxied to
+    # conduwuit/tuwunel, which does NOT implement `.well-known/matrix/*` —
+    # it returns `{"errcode":"M_NOT_FOUND"}` with HTTP 404. The Matrix
+    # spec requires .well-known to be a STATIC file served by the
+    # reverse proxy, not a dynamic homeserver endpoint.
+    #
+    # Consequence of the old (broken) config: federating servers like
+    # matrix.org would fall back through the Matrix server discovery
+    # ladder (SRV -> .well-known -> port 8448), and since .well-known
+    # returned 404 and port 8448 is not exposed through our Cloudflare
+    # proxy, every federation attempt against concorrd.com failed with
+    # `401 M_UNAUTHORIZED: Failed to find any key to satisfy
+    # _FetchKeyRequest(server_name='concorrd.com')`.
+    #
+    # Fix: return the two .well-known JSON documents inline.
+    #
+    #   `m.server` delegates federation to port 443 on the same host,
+    #   which IS reachable through Cloudflare. Federating servers that
+    #   read this will connect to concorrd.com:443 for the server-server
+    #   API instead of the default port 8448.
+    #
+    #   `m.homeserver` tells Matrix clients that concorrd.com is its
+    #   own homeserver for the client-server API. This also unblocks
+    #   clients that enter `concorrd.com` in a server picker without a
+    #   scheme prefix.
+    handle /.well-known/matrix/server {
+        header Content-Type "application/json"
+        header Access-Control-Allow-Origin "*"
+        respond `{"m.server":"concorrd.com:443"}` 200
+    }
+    handle /.well-known/matrix/client {
+        header Content-Type "application/json"
+        header Access-Control-Allow-Origin "*"
+        respond `{"m.homeserver":{"base_url":"https://concorrd.com"}}` 200
     }
 
     # Matrix Server-Server (federation) API

@@ -24,8 +24,20 @@
         }
     }
 
-    handle /.well-known/matrix/* {
-        reverse_proxy conduwuit:6167
+    # Matrix well-known — see Caddyfile (production) for the full
+    # rationale. tl;dr: these are static files, not dynamic endpoints.
+    # Serving them inline from Caddy unblocks federation discovery —
+    # without them, peers fall back to port 8448 which is not exposed
+    # through the Cloudflare proxy. INS-026, 2026-04-08.
+    handle /.well-known/matrix/server {
+        header Content-Type "application/json"
+        header Access-Control-Allow-Origin "*"
+        respond `{"m.server":"concorrd.com:443"}` 200
+    }
+    handle /.well-known/matrix/client {
+        header Content-Type "application/json"
+        header Access-Control-Allow-Origin "*"
+        respond `{"m.homeserver":{"base_url":"https://concorrd.com"}}` 200
     }
 
     # Concord API
