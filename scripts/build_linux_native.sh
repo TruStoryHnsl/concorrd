@@ -22,6 +22,24 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SRC_TAURI="${REPO_ROOT}/src-tauri"
 CLIENT_DIR="${REPO_ROOT}/client"
 
+# Pinned upstream tuwunel version bundled as the embedded-servitude
+# Matrix homeserver. Bump via PR when the upstream track ships a new
+# stable release. See PLAN.md INS-022 Wave 2 for the rationale behind
+# the "bundle upstream .deb as a child process" approach.
+TUWUNEL_VERSION="v1.5.1"
+# Baseline x86_64 variant — runs on any modern Intel/AMD CPU without
+# requiring v2/v3 instruction sets.
+TUWUNEL_DEB_ASSET="${TUWUNEL_VERSION}-release-all-x86_64-v1-linux-gnu-tuwunel.deb"
+TUWUNEL_DEB_URL="https://github.com/matrix-construct/tuwunel/releases/download/${TUWUNEL_VERSION}/${TUWUNEL_DEB_ASSET}"
+# Cache location — the downloaded .deb is large (~35MB) and we don't
+# want to re-fetch it on every build. Kept outside src-tauri so cargo
+# clean doesn't wipe it.
+TUWUNEL_CACHE_DIR="${REPO_ROOT}/.build-cache/tuwunel"
+# Final bundled path — declared in tauri.conf.json under
+# `bundle.resources` so the AppImage/deb pick it up automatically.
+TUWUNEL_BUNDLED_DIR="${SRC_TAURI}/resources/tuwunel"
+TUWUNEL_BUNDLED_BIN="${TUWUNEL_BUNDLED_DIR}/tuwunel"
+
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
@@ -60,6 +78,101 @@ log "cargo:       $(cargo --version)"
 log "rustc:       $(rustc --version)"
 log "tauri-cli:   $(cargo tauri --version)"
 log "node:        $(node --version)"
+
+# ----------------------------------------------------------------------------
+# Fetch and stage upstream tuwunel binary for embedded-servitude bundle
+# ----------------------------------------------------------------------------
+#
+# The embedded servitude module spawns tuwunel as a child process on
+# `servitude_start`. To make that work from an installed AppImage/.deb
+# without requiring the end user to install tuwunel separately, we
+# download the upstream tuwunel release .deb, extract the binary, and
+# drop it at src-tauri/resources/tuwunel/tuwunel. `tauri.conf.json`
+# declares resources/tuwunel/** under `bundle.resources` so the Tauri
+# bundler includes the binary in the final AppImage/deb.
+#
+# At runtime, `resolve_binary()` in
+# src-tauri/src/servitude/transport/matrix_federation.rs looks next to
+# the current executable and finds the binary via the same relative
+# path the bundler writes it to.
+
+stage_tuwunel_binary() {
+    if [[ -f "${TUWUNEL_BUNDLED_BIN}" ]]; then
+        log "Bundled tuwunel already present: ${TUWUNEL_BUNDLED_BIN}"
+        return 0
+    fi
+
+    mkdir -p "${TUWUNEL_CACHE_DIR}"
+    mkdir -p "${TUWUNEL_BUNDLED_DIR}"
+
+    local cache_deb="${TUWUNEL_CACHE_DIR}/${TUWUNEL_DEB_ASSET}"
+
+    if [[ ! -f "${cache_deb}" ]]; then
+        log "Downloading upstream tuwunel ${TUWUNEL_VERSION}..."
+        log "  ${TUWUNEL_DEB_URL}"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fL --retry 3 -o "${cache_deb}" "${TUWUNEL_DEB_URL}" \
+                || die "failed to download tuwunel .deb" 2
+        elif command -v wget >/dev/null 2>&1; then
+            wget -O "${cache_deb}" "${TUWUNEL_DEB_URL}" \
+                || die "failed to download tuwunel .deb" 2
+        else
+            die "neither curl nor wget available to fetch tuwunel .deb" 1
+        fi
+    else
+        log "Using cached tuwunel .deb: ${cache_deb}"
+    fi
+
+    # Extract the .deb's data tarball. Debian packages are `ar` archives
+    # containing `data.tar.*`. Native `dpkg-deb` does this cleanly; the
+    # `ar` + `tar` fallback covers non-Debian build hosts.
+    local extract_tmp
+    extract_tmp="$(mktemp -d)"
+    trap 'rm -rf "${extract_tmp}"' EXIT
+
+    if command -v dpkg-deb >/dev/null 2>&1; then
+        log "Extracting tuwunel binary via dpkg-deb..."
+        dpkg-deb -x "${cache_deb}" "${extract_tmp}" \
+            || die "dpkg-deb extraction failed" 2
+    else
+        log "Extracting tuwunel binary via ar + tar fallback (no dpkg-deb)..."
+        (
+            cd "${extract_tmp}"
+            ar x "${cache_deb}"
+            # data.tar may be .xz, .gz, or .zst depending on packager
+            if [[ -f data.tar.zst ]]; then
+                zstd -d --stdout data.tar.zst | tar -xf -
+            elif [[ -f data.tar.xz ]]; then
+                tar -xf data.tar.xz
+            elif [[ -f data.tar.gz ]]; then
+                tar -xzf data.tar.gz
+            else
+                die "unsupported data.tar format inside tuwunel .deb" 2
+            fi
+        )
+    fi
+
+    local extracted_bin
+    extracted_bin="$(find "${extract_tmp}" -type f -name tuwunel -executable 2>/dev/null | head -n1 || true)"
+    if [[ -z "${extracted_bin}" ]]; then
+        # Some .deb packages don't mark the executable bit until install
+        # scripts run — fall back to a name-only lookup and chmod.
+        extracted_bin="$(find "${extract_tmp}" -type f -name tuwunel 2>/dev/null | head -n1 || true)"
+    fi
+    if [[ -z "${extracted_bin}" ]]; then
+        die "could not find tuwunel binary inside extracted .deb" 2
+    fi
+
+    cp "${extracted_bin}" "${TUWUNEL_BUNDLED_BIN}"
+    chmod +x "${TUWUNEL_BUNDLED_BIN}"
+    rm -rf "${extract_tmp}"
+    trap - EXIT
+
+    log "Staged bundled tuwunel at ${TUWUNEL_BUNDLED_BIN}"
+    log "  size: $(stat -c%s "${TUWUNEL_BUNDLED_BIN}" 2>/dev/null || stat -f%z "${TUWUNEL_BUNDLED_BIN}") bytes"
+}
+
+stage_tuwunel_binary
 
 # ----------------------------------------------------------------------------
 # Build

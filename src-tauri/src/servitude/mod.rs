@@ -7,13 +7,15 @@
 //!
 //! Architectural decisions captured 2026-04-08:
 //!   * Servitude is an embedded module, not a separate process.
-//!   * Both mobile and desktop builds ship it.
-//!   * Mobile MVP is foreground-active (iOS VoIP background entitlement is a
-//!     stretch goal, not required for v0.1).
+//!   * Both mobile and desktop builds ship it (though INS-022 Wave 2
+//!     restricts the real-transport rollout to desktop first — iOS
+//!     sandboxing blocks inbound federation on the phone architecturally,
+//!     see the research trail in the Wave 2 DEVLOG entry).
 //!   * Layered transports (`WireGuard`, `Mesh`, `Tunnel`, `MatrixFederation`)
-//!     are declared via the [`Transport`] enum but their actual runtime
-//!     integration lives in a separate task — this module only encodes the
-//!     contract and the lifecycle state machine.
+//!     are declared via the [`crate::servitude::config::Transport`] enum.
+//!     Wave 2 (2026-04-08) wires the MatrixFederation variant to a bundled
+//!     tuwunel child-process. The other three variants are `NotImplemented`
+//!     stubs until later waves land.
 //!
 //! The public surface area exposed from `app_lib` is intentionally tiny:
 //!   * [`ServitudeHandle`] — the owning handle that drives lifecycle.
@@ -21,12 +23,28 @@
 //!   * [`Transport`] — enum of layered transports the node may speak.
 //!   * [`LifecycleState`] — public state machine state for status reporting.
 //!   * [`ServitudeError`] — structured error type (no stringly-typed errors).
+//!
+//! Lifecycle contract with the transport layer:
+//!
+//!   1. `start()` transitions `Stopped → Starting`, brings up every
+//!      enabled transport in order, and only then transitions to `Running`.
+//!      If any transport fails to start, already-started transports are
+//!      torn down in reverse order and the lifecycle is rolled back to
+//!      `Stopped` before the error propagates.
+//!   2. `stop()` transitions `Running → Stopping`, tears down transports
+//!      in reverse order (LIFO), and transitions to `Stopped` regardless
+//!      of whether any individual stop call errored. The first transport
+//!      error is surfaced to the caller, but the lifecycle is always
+//!      driven to the terminal state — we never leave a handle stuck in
+//!      `Stopping` because that would wedge the UI.
 
 pub mod config;
 pub mod lifecycle;
+pub mod transport;
 
 pub use config::{ServitudeConfig, Transport};
-pub use lifecycle::{LifecycleState, LifecycleError};
+pub use lifecycle::{LifecycleError, LifecycleState};
+pub use transport::{TransportError, TransportRuntime};
 
 use thiserror::Error;
 
@@ -42,6 +60,9 @@ pub enum ServitudeError {
     #[error("lifecycle error: {0}")]
     Lifecycle(#[from] lifecycle::LifecycleError),
 
+    #[error("transport error: {0}")]
+    Transport(#[from] TransportError),
+
     #[error("servitude is already running")]
     AlreadyRunning,
 
@@ -51,24 +72,54 @@ pub enum ServitudeError {
 
 /// Owning handle to an embedded servitude instance.
 ///
-/// In the v0.1 scaffold the handle does not yet drive a real network stack;
-/// it only manages the lifecycle state machine and holds the validated
-/// configuration. Wiring the layered transports is the next pass.
+/// As of Wave 2, the handle owns a `Vec<TransportRuntime>` built from
+/// `config.enabled_transports`. The runtimes are constructed eagerly at
+/// `new()` time but do not touch the network or spawn child processes
+/// until `start()` is called.
 #[derive(Debug)]
 pub struct ServitudeHandle {
     config: ServitudeConfig,
     lifecycle: lifecycle::Lifecycle,
+    transports: Vec<TransportRuntime>,
 }
 
 impl ServitudeHandle {
     /// Create a new handle with the given (already validated) config. The
     /// handle starts in the `Stopped` state — call [`Self::start`] to bring
     /// it up.
+    ///
+    /// Transport runtimes are built eagerly from `config.enabled_transports`
+    /// via [`TransportRuntime::for_variant`]. This is a cheap operation
+    /// (pure data-carrier construction); nothing is spawned until `start`.
     pub fn new(config: ServitudeConfig) -> Result<Self, ServitudeError> {
+        config.validate()?;
+        let transports = config
+            .enabled_transports
+            .iter()
+            .map(|variant| TransportRuntime::for_variant(*variant, &config))
+            .collect();
+        Ok(Self {
+            config,
+            lifecycle: lifecycle::Lifecycle::new(),
+            transports,
+        })
+    }
+
+    /// Test-only constructor that lets tests inject a pre-built transport
+    /// runtime vector instead of having the factory build one from config.
+    /// The production code path must keep using [`Self::new`] — this exists
+    /// solely so unit tests can drive the lifecycle state machine against
+    /// [`TransportRuntime::Noop`] without spawning real transports.
+    #[cfg(test)]
+    pub(crate) fn new_with_runtimes_for_test(
+        config: ServitudeConfig,
+        transports: Vec<TransportRuntime>,
+    ) -> Result<Self, ServitudeError> {
         config.validate()?;
         Ok(Self {
             config,
             lifecycle: lifecycle::Lifecycle::new(),
+            transports,
         })
     }
 
@@ -82,34 +133,104 @@ impl ServitudeHandle {
         self.lifecycle.state()
     }
 
-    /// Drive the state machine `Stopped -> Starting -> Running`.
+    /// Drive the state machine `Stopped -> Starting -> Running`, bringing
+    /// up each enabled transport in config order.
     ///
-    /// Returns [`ServitudeError::AlreadyRunning`] if the handle is not in the
-    /// `Stopped` state.
-    pub fn start(&mut self) -> Result<(), ServitudeError> {
+    /// If any transport's `start` fails, every already-started transport
+    /// is torn down in reverse order and the lifecycle is rolled back to
+    /// `Stopped` before the error is returned. This guarantees that a
+    /// failed start never leaves the handle in a half-running state.
+    pub async fn start(&mut self) -> Result<(), ServitudeError> {
         if self.lifecycle.state() != LifecycleState::Stopped {
             return Err(ServitudeError::AlreadyRunning);
         }
         self.lifecycle.transition(LifecycleState::Starting)?;
-        // TODO(transport): bring up enabled_transports here.
-        // For now this is a synchronous, no-op transition so the state
-        // machine and tests can exercise the contract end-to-end.
+
+        let mut started_count = 0usize;
+        for transport in self.transports.iter_mut() {
+            if let Err(e) = transport.start().await {
+                // Roll back in reverse order. Collect teardown errors
+                // into logs but do not surface them — the original
+                // failure is the root cause and should propagate.
+                for t in self.transports[..started_count].iter_mut().rev() {
+                    if let Err(teardown_err) = t.stop().await {
+                        log::warn!(
+                            target: "concord::servitude",
+                            "rollback stop failed for transport {}: {}",
+                            t.name(),
+                            teardown_err
+                        );
+                    }
+                }
+                // Drive the state machine back to Stopped so the next
+                // start attempt can proceed. These transitions are
+                // infallible on the canonical graph, but we unwrap into
+                // an error rather than panicking just in case.
+                self.lifecycle
+                    .transition(LifecycleState::Stopping)
+                    .map_err(ServitudeError::Lifecycle)?;
+                self.lifecycle
+                    .transition(LifecycleState::Stopped)
+                    .map_err(ServitudeError::Lifecycle)?;
+                return Err(ServitudeError::Transport(e));
+            }
+            started_count += 1;
+        }
+
         self.lifecycle.transition(LifecycleState::Running)?;
         Ok(())
     }
 
-    /// Drive the state machine `Running -> Stopping -> Stopped`.
+    /// Drive the state machine `Running -> Stopping -> Stopped`, tearing
+    /// down transports in reverse order.
     ///
-    /// Returns [`ServitudeError::NotRunning`] if the handle is not in the
-    /// `Running` state.
-    pub fn stop(&mut self) -> Result<(), ServitudeError> {
+    /// Unlike `start`, `stop` always drives the lifecycle to `Stopped`
+    /// even when a transport's `stop` call returns an error. The first
+    /// such error is surfaced to the caller, but the terminal state is
+    /// reached regardless. This is deliberate: leaving a handle stuck
+    /// in `Stopping` would wedge the UI with no recovery path.
+    pub async fn stop(&mut self) -> Result<(), ServitudeError> {
         if self.lifecycle.state() != LifecycleState::Running {
             return Err(ServitudeError::NotRunning);
         }
         self.lifecycle.transition(LifecycleState::Stopping)?;
-        // TODO(transport): tear down enabled_transports here.
+
+        let mut first_err: Option<TransportError> = None;
+        for transport in self.transports.iter_mut().rev() {
+            if let Err(e) = transport.stop().await {
+                log::warn!(
+                    target: "concord::servitude",
+                    "stop failed for transport {}: {}",
+                    transport.name(),
+                    e
+                );
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+
         self.lifecycle.transition(LifecycleState::Stopped)?;
-        Ok(())
+
+        match first_err {
+            Some(e) => Err(ServitudeError::Transport(e)),
+            None => Ok(()),
+        }
+    }
+
+    /// Cheap liveness check — polls every enabled transport's health
+    /// endpoint and returns `true` only if ALL of them report healthy.
+    /// `Stopped`-state handles always report unhealthy.
+    pub async fn is_healthy(&self) -> bool {
+        if self.lifecycle.state() != LifecycleState::Running {
+            return false;
+        }
+        for transport in self.transports.iter() {
+            if !transport.is_healthy().await {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -117,6 +238,10 @@ impl ServitudeHandle {
 mod tests {
     use super::*;
 
+    /// Canonical fixture config with a single `MatrixFederation` transport.
+    /// Tests that exercise the lifecycle state machine rebuild this with
+    /// [`TransportRuntime::Noop`] injected via `new_with_runtimes_for_test`
+    /// so they don't spawn a real tuwunel child.
     fn valid_config() -> ServitudeConfig {
         ServitudeConfig {
             display_name: "test-node".to_string(),
@@ -127,30 +252,48 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_handle_start_stop_cycle() {
-        let mut handle = ServitudeHandle::new(valid_config()).expect("config valid");
-        assert_eq!(handle.status(), LifecycleState::Stopped);
-
-        handle.start().expect("start should succeed");
-        assert_eq!(handle.status(), LifecycleState::Running);
-
-        handle.stop().expect("stop should succeed");
-        assert_eq!(handle.status(), LifecycleState::Stopped);
+    /// Build a handle whose transport vector is a single `Noop`. Lets the
+    /// state-machine tests run without an external tuwunel dependency.
+    fn handle_with_noop() -> ServitudeHandle {
+        ServitudeHandle::new_with_runtimes_for_test(
+            valid_config(),
+            vec![TransportRuntime::Noop],
+        )
+        .expect("fixture config must validate")
     }
 
-    #[test]
-    fn test_handle_double_start_rejected() {
-        let mut handle = ServitudeHandle::new(valid_config()).expect("config valid");
-        handle.start().expect("first start ok");
-        let err = handle.start().expect_err("second start should fail");
+    #[tokio::test]
+    async fn test_handle_start_stop_cycle() {
+        let mut handle = handle_with_noop();
+        assert_eq!(handle.status(), LifecycleState::Stopped);
+
+        handle.start().await.expect("start should succeed");
+        assert_eq!(handle.status(), LifecycleState::Running);
+        assert!(handle.is_healthy().await, "noop transport should report healthy");
+
+        handle.stop().await.expect("stop should succeed");
+        assert_eq!(handle.status(), LifecycleState::Stopped);
+        assert!(!handle.is_healthy().await, "stopped handle must report unhealthy");
+    }
+
+    #[tokio::test]
+    async fn test_handle_double_start_rejected() {
+        let mut handle = handle_with_noop();
+        handle.start().await.expect("first start ok");
+        let err = handle
+            .start()
+            .await
+            .expect_err("second start should fail");
         assert!(matches!(err, ServitudeError::AlreadyRunning));
     }
 
-    #[test]
-    fn test_handle_stop_when_not_running_rejected() {
-        let mut handle = ServitudeHandle::new(valid_config()).expect("config valid");
-        let err = handle.stop().expect_err("stop while stopped should fail");
+    #[tokio::test]
+    async fn test_handle_stop_when_not_running_rejected() {
+        let mut handle = handle_with_noop();
+        let err = handle
+            .stop()
+            .await
+            .expect_err("stop while stopped should fail");
         assert!(matches!(err, ServitudeError::NotRunning));
     }
 
@@ -162,15 +305,35 @@ mod tests {
         assert!(matches!(err, ServitudeError::Config(_)));
     }
 
+    /// Production `new()` must build transport runtimes from config. Pin
+    /// the invariant that the constructed runtime count matches the
+    /// enabled-transport count.
+    #[test]
+    fn test_new_builds_one_runtime_per_enabled_transport() {
+        let cfg = ServitudeConfig {
+            display_name: "multi".to_string(),
+            max_peers: 8,
+            listen_port: 8765,
+            allow_privileged_port: false,
+            enabled_transports: vec![
+                Transport::MatrixFederation,
+                Transport::Tunnel,
+            ],
+        };
+        let handle = ServitudeHandle::new(cfg).expect("config must validate");
+        assert_eq!(handle.transports.len(), 2);
+        assert_eq!(handle.transports[0].name(), "matrix_federation");
+        assert_eq!(handle.transports[1].name(), "tunnel");
+    }
+
     /// Hermetic smoke test that exercises the full Tauri-command surface
     /// at the handle level (without a real Tauri runtime). If this test
     /// starts failing, the `servitude_start` / `servitude_status` /
     /// `servitude_stop` Tauri commands are also broken — they delegate
     /// to exactly these three methods.
-    #[test]
-    fn test_servitude_handle_round_trip() {
-        let mut handle = ServitudeHandle::new(valid_config())
-            .expect("round-trip fixture config must validate");
+    #[tokio::test]
+    async fn test_servitude_handle_round_trip() {
+        let mut handle = handle_with_noop();
 
         // Initial status — matches what servitude_status returns when
         // no prior start has happened.
@@ -181,7 +344,7 @@ mod tests {
         );
 
         // start() — matches servitude_start after config load.
-        handle.start().expect("first start must succeed");
+        handle.start().await.expect("first start must succeed");
         assert_eq!(
             handle.status(),
             LifecycleState::Running,
@@ -189,7 +352,7 @@ mod tests {
         );
 
         // stop() — matches servitude_stop.
-        handle.stop().expect("stop must succeed while Running");
+        handle.stop().await.expect("stop must succeed while Running");
         assert_eq!(
             handle.status(),
             LifecycleState::Stopped,
@@ -199,9 +362,9 @@ mod tests {
         // And the handle must be re-usable — a second start→stop cycle
         // is how the Tauri state is expected to behave across user
         // toggles in the UI.
-        handle.start().expect("second start must succeed");
+        handle.start().await.expect("second start must succeed");
         assert_eq!(handle.status(), LifecycleState::Running);
-        handle.stop().expect("second stop must succeed");
+        handle.stop().await.expect("second stop must succeed");
         assert_eq!(handle.status(), LifecycleState::Stopped);
     }
 
@@ -221,8 +384,8 @@ mod tests {
     /// This test exercises the same "rebuild on restart" path that
     /// `servitude_start` takes when it sees an existing handle in the
     /// `Stopped` state.
-    #[test]
-    fn test_servitude_handle_restart_picks_up_new_config() {
+    #[tokio::test]
+    async fn test_servitude_handle_restart_picks_up_new_config() {
         // Config A — what the handle was originally built with.
         let config_a = ServitudeConfig {
             display_name: "node-before-edit".to_string(),
@@ -232,8 +395,11 @@ mod tests {
             enabled_transports: vec![Transport::MatrixFederation],
         };
 
-        let mut handle =
-            ServitudeHandle::new(config_a.clone()).expect("config A must validate");
+        let mut handle = ServitudeHandle::new_with_runtimes_for_test(
+            config_a.clone(),
+            vec![TransportRuntime::Noop],
+        )
+        .expect("config A must validate");
         assert_eq!(
             handle.config().display_name,
             "node-before-edit",
@@ -241,9 +407,9 @@ mod tests {
         );
 
         // First lifecycle run with config A.
-        handle.start().expect("first start must succeed");
+        handle.start().await.expect("first start must succeed");
         assert_eq!(handle.status(), LifecycleState::Running);
-        handle.stop().expect("first stop must succeed");
+        handle.stop().await.expect("first stop must succeed");
         assert_eq!(handle.status(), LifecycleState::Stopped);
 
         // The user edits their settings — a different config is now
@@ -267,12 +433,15 @@ mod tests {
             LifecycleState::Stopped,
             "restart path only triggers when handle is Stopped"
         );
-        handle =
-            ServitudeHandle::new(config_b.clone()).expect("config B must validate");
+        handle = ServitudeHandle::new_with_runtimes_for_test(
+            config_b.clone(),
+            vec![TransportRuntime::Noop],
+        )
+        .expect("config B must validate");
 
         // Bring the new handle up and confirm the reloaded config
         // actually took effect.
-        handle.start().expect("restart must succeed");
+        handle.start().await.expect("restart must succeed");
         assert_eq!(handle.status(), LifecycleState::Running);
 
         let observed = handle.config();
@@ -280,10 +449,7 @@ mod tests {
             observed.display_name, "node-after-edit",
             "restart must pick up new display_name"
         );
-        assert_eq!(
-            observed.max_peers, 64,
-            "restart must pick up new max_peers"
-        );
+        assert_eq!(observed.max_peers, 64, "restart must pick up new max_peers");
         assert_eq!(
             observed.listen_port, 9999,
             "restart must pick up new listen_port"
@@ -315,6 +481,42 @@ mod tests {
             "post-restart handle must not retain pre-edit enabled_transports"
         );
 
-        handle.stop().expect("post-restart stop must succeed");
+        handle.stop().await.expect("post-restart stop must succeed");
+    }
+
+    /// If a transport's `start` fails, any earlier transports must be
+    /// torn down in reverse order AND the lifecycle must land back in
+    /// `Stopped` — not stuck in `Starting`.
+    #[tokio::test]
+    async fn test_start_rollback_on_transport_failure() {
+        // Build a handle with two runtimes: a Noop (succeeds) followed
+        // by an unimplemented Tunnel variant (fails). The rollback
+        // path must stop the Noop and drive the lifecycle to Stopped.
+        let cfg = valid_config();
+        let mut handle = ServitudeHandle::new_with_runtimes_for_test(
+            cfg,
+            vec![TransportRuntime::Noop, TransportRuntime::Tunnel],
+        )
+        .expect("config must validate");
+
+        let err = handle
+            .start()
+            .await
+            .expect_err("start must fail because the Tunnel variant is unimplemented");
+        // Match explicitly instead of via matches! so a failure surfaces
+        // the actual error text in the panic message. The original
+        // `matches!` form gave zero diagnostic when it tripped during
+        // development.
+        match err {
+            ServitudeError::Transport(TransportError::NotImplemented(name)) => {
+                assert_eq!(name, "tunnel");
+            }
+            other => panic!("unexpected start error: {:?}", other),
+        }
+        assert_eq!(
+            handle.status(),
+            LifecycleState::Stopped,
+            "lifecycle must roll back to Stopped on transport failure"
+        );
     }
 }

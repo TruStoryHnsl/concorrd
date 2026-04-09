@@ -6,6 +6,7 @@ import { AudioTab } from "./AudioTab";
 import { VoiceTab } from "./VoiceTab";
 import { NotificationsTab } from "./NotificationsTab";
 import { ProfileTab } from "./ProfileTab";
+import { NodeHostingTab } from "./NodeHostingTab";
 import { AboutTab } from "./AboutTab";
 import { AdminTab } from "./AdminTab";
 
@@ -14,6 +15,7 @@ const baseTabs = [
   { key: "voice" as const, label: "Voice", icon: "graphic_eq" },
   { key: "notifications" as const, label: "Notifications", icon: "notifications" },
   { key: "profile" as const, label: "Profile", icon: "person" },
+  { key: "node" as const, label: "Node", icon: "dns" },
   { key: "about" as const, label: "About", icon: "info" },
 ];
 
@@ -76,6 +78,7 @@ export function SettingsPanel() {
         {activeTab === "voice" && <VoiceTab />}
         {activeTab === "notifications" && <NotificationsTab />}
         {activeTab === "profile" && <ProfileTab />}
+        {activeTab === "node" && <NodeHostingTab />}
         {activeTab === "about" && <AboutTab />}
         {activeTab === "admin" && isAdmin && <AdminTab />}
 

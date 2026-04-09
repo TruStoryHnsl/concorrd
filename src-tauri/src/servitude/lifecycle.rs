@@ -1,15 +1,24 @@
 //! Servitude lifecycle state machine.
 //!
-//! The state machine is intentionally tiny:
+//! The canonical happy-path graph is:
 //!
 //! ```text
 //!     Stopped ──► Starting ──► Running ──► Stopping ──► Stopped
 //! ```
 //!
-//! Skipping a state (e.g. `Stopped → Running` directly) is rejected. Going
-//! backwards is rejected. The state machine has no `Failed` state in v0.1 —
-//! transport errors flow up through `ServitudeError` and the caller is
-//! responsible for resetting the handle.
+//! There is one additional rollback edge — `Starting ──► Stopping` —
+//! added for the transport-failure-during-start path. When a transport
+//! fails mid-`Starting`, the handle tears down whatever it already
+//! brought up and must drive the lifecycle back to `Stopped`. Without
+//! this edge the rollback would be stuck in `Starting` indefinitely.
+//! The edge exists purely for error recovery; the happy path never
+//! uses it.
+//!
+//! Skipping a state along any other edge (e.g. `Stopped → Running`
+//! directly) is rejected. Going backwards is rejected. The state
+//! machine has no `Failed` state in v0.1 — transport errors flow up
+//! through `ServitudeError` and the caller is responsible for
+//! resetting the handle.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -86,6 +95,7 @@ fn is_valid_transition(from: LifecycleState, to: LifecycleState) -> bool {
         (from, to),
         (Stopped, Starting)
             | (Starting, Running)
+            | (Starting, Stopping) // rollback edge when a transport fails mid-start
             | (Running, Stopping)
             | (Stopping, Stopped)
     )

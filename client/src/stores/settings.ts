@@ -38,7 +38,7 @@ interface SettingsState {
 
   // UI (not persisted)
   settingsOpen: boolean;
-  settingsTab: "audio" | "voice" | "notifications" | "profile" | "about" | "admin";
+  settingsTab: "audio" | "voice" | "notifications" | "profile" | "node" | "about" | "admin";
   serverSettingsId: string | null;
 
   // Actions
@@ -68,9 +68,9 @@ interface SettingsState {
   setServerNotificationLevel: (serverId: string, level: "all" | "mentions" | "nothing" | "default") => void;
   setChannelNotificationLevel: (roomId: string, level: "all" | "mentions" | "nothing" | "default") => void;
   setNotificationSound: (v: boolean) => void;
-  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "about" | "admin") => void;
+  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "node" | "about" | "admin") => void;
   closeSettings: () => void;
-  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "about" | "admin") => void;
+  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "node" | "about" | "admin") => void;
   openServerSettings: (serverId: string) => void;
   closeServerSettings: () => void;
   resetToDefaults: () => void;

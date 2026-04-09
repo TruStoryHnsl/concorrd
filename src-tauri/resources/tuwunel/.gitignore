@@ -1,0 +1,6 @@
+# The tuwunel binary is downloaded + extracted by scripts/build_linux_native.sh
+# from the pinned upstream release. It is ~60MB and should not be committed.
+# The README.md in this directory is the only source-controlled artifact here.
+tuwunel
+*.so
+*.so.*

@@ -24,6 +24,23 @@ tauri-plugin-store = "2"
 # Servitude embedded module dependencies
 toml = "0.8"
 thiserror = "1.0"
+# Async runtime + child process management for the embedded transport.
+# `process` — spawn/await tuwunel as a child.
+# `net` — TCP health probe against the tuwunel listen port.
+# `time` — timeouts on health checks and graceful-shutdown waits.
+# `io-util` — capture stdout/stderr streams.
+# `sync` — Mutex/Notify for cancellation during start-up races.
+# `macros` — #[tokio::test] in unit tests.
+# `rt-multi-thread` — the runtime Tauri's command handlers already expect.
+tokio = { version = "1", features = ["process", "net", "time", "io-util", "sync", "macros", "rt-multi-thread"] }
+# Trait async support for the Transport trait.
+async-trait = "0.1"
+
+# Unix-only deps for servitude child-process management. `nix::sys::signal`
+# gives us SIGTERM for graceful shutdown — std::process::Child::kill uses
+# SIGKILL only, which doesn't let tuwunel flush its RocksDB on exit.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal", "process"] }
 
 # Linux-specific deps (handled transitively by tauri/webkit2gtk in normal builds,
 # this section is reserved for Linux-only crates Concord may add later).

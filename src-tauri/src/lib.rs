@@ -1,5 +1,5 @@
-use std::sync::{Mutex, MutexGuard};
 use tauri_plugin_store::StoreExt;
+use tokio::sync::Mutex;
 
 pub mod servitude;
 
@@ -7,28 +7,21 @@ use servitude::{LifecycleState, ServitudeConfig, ServitudeHandle};
 
 /// Tauri-managed state wrapping the optional embedded servitude handle.
 ///
-/// The handle lives behind a plain `std::sync::Mutex` because none of the
-/// current `ServitudeHandle` APIs are async — locks are held briefly across
-/// synchronous state transitions. The `Option` encodes the
-/// "handle not yet constructed" vs "handle constructed and running/stopped"
-/// distinction so restarts don't have to recreate Tauri managed state.
-pub struct ServitudeState(pub Mutex<Option<ServitudeHandle>>);
-
-/// Acquire the servitude state lock, recovering transparently from a
-/// poisoned mutex.
+/// The handle lives behind a `tokio::sync::Mutex` because the servitude
+/// lifecycle is async — transports spawn child processes and await
+/// health checks, so the lock must be held across `.await` points.
+/// `std::sync::MutexGuard` is not `Send`, which would make the command
+/// futures non-Send and incompatible with Tauri's multi-threaded runtime.
 ///
-/// Poisoning here is benign: the guarded data is `Option<ServitudeHandle>`
-/// and every lifecycle operation is a discrete, idempotent transition. A
-/// panic mid-operation at worst leaves the handle in a transitional state
-/// which the `LifecycleState` enum already models. Propagating
-/// `PoisonError` to the UI would permanently disable servitude until app
-/// restart — that is a worse outcome than reusing the inner value.
-fn lock_servitude(state: &ServitudeState) -> MutexGuard<'_, Option<ServitudeHandle>> {
-    state
-        .0
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
+/// The `Option` encodes the "handle not yet constructed" vs "handle
+/// constructed and running/stopped" distinction so restarts don't have
+/// to recreate Tauri managed state.
+///
+/// Note on poisoning: `tokio::sync::Mutex` does not poison on panic — a
+/// panic mid-lock simply releases the lock on unwind. The previous
+/// `unwrap_or_else(|p| p.into_inner())` recovery shim is no longer
+/// necessary and has been removed.
+pub struct ServitudeState(pub Mutex<Option<ServitudeHandle>>);
 
 #[tauri::command]
 fn get_server_url(app: tauri::AppHandle) -> String {
@@ -67,7 +60,7 @@ async fn servitude_start(
     // overlaps with the mutex guard.
     let config = ServitudeConfig::from_store(&app).map_err(|e| e.to_string())?;
 
-    let mut guard = lock_servitude(&state);
+    let mut guard = state.0.lock().await;
 
     // Recreate the handle if either (a) there is no handle yet, or
     // (b) there is an existing handle that is currently Stopped. Case
@@ -86,7 +79,7 @@ async fn servitude_start(
     let handle = guard
         .as_mut()
         .expect("handle just inserted if it was None or Stopped");
-    handle.start().map_err(|e| e.to_string())
+    handle.start().await.map_err(|e| e.to_string())
 }
 
 /// Stop the embedded servitude. Leaves the handle in place (in the
@@ -94,9 +87,9 @@ async fn servitude_start(
 /// with a freshly configured one.
 #[tauri::command]
 async fn servitude_stop(state: tauri::State<'_, ServitudeState>) -> Result<(), String> {
-    let mut guard = lock_servitude(&state);
+    let mut guard = state.0.lock().await;
     match guard.as_mut() {
-        Some(handle) => handle.stop().map_err(|e| e.to_string()),
+        Some(handle) => handle.stop().await.map_err(|e| e.to_string()),
         None => Err("servitude has not been started".to_string()),
     }
 }
@@ -109,7 +102,7 @@ async fn servitude_stop(state: tauri::State<'_, ServitudeState>) -> Result<(), S
 /// `"stopped"` to match the expected "inactive" user-facing state.
 #[tauri::command]
 async fn servitude_status(state: tauri::State<'_, ServitudeState>) -> Result<String, String> {
-    let guard = lock_servitude(&state);
+    let guard = state.0.lock().await;
     let state_value = match guard.as_ref() {
         Some(handle) => handle.status(),
         None => LifecycleState::Stopped,
