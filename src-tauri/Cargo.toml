@@ -55,14 +55,45 @@ nix = { version = "0.29", features = ["signal", "process"] }
 # Android target deps. Real init must be done on a host with the Android SDK
 # via `cargo tauri android init`. This section is a placeholder so the manifest
 # is forward-compatible with Tauri v2 mobile builds.
+#
+# Target triples (added by `rustup target add`):
+#   aarch64-linux-android    — primary, phones + Google TV boxes
+#   armv7-linux-androideabi  — legacy 32-bit phones
+#   i686-linux-android       — emulators
+#   x86_64-linux-android     — emulators + Chromebooks
+#
+# min-sdk 24 (Android 7.0 Nougat) is the Tauri v2 mobile default and matches
+# `bundle.android.minSdkVersion` in tauri.conf.json. Do NOT raise it above 26
+# without coordinating a Google TV check — Android TV reference devices are
+# often pinned to older sdk versions in the wild.
 [target.'cfg(target_os = "android")'.dependencies]
-# Placeholder. Add jni / ndk-glue style crates here when the orrion build host
-# is provisioned with the Android SDK + NDK.
+# When real init runs on orrion, Tauri will auto-populate JNI glue. If
+# servitude needs to call into platform Android APIs (e.g. foreground
+# service control, Wi-Fi multicast locks for mDNS), add one of:
+#   jni = "0.21"
+#   ndk-context = "0.1"
+#   android-activity = { version = "0.6", features = ["native-activity"] }
+# keeping them commented out here until a concrete caller exists.
 
 # iOS target deps. Real init must be done on orrpheus via `cargo tauri ios init`.
+#
+# Target triples (added by `rustup target add`):
+#   aarch64-apple-ios      — device builds (iPhone + iPad physical hardware)
+#   aarch64-apple-ios-sim  — Apple Silicon iOS Simulator
+#   x86_64-apple-ios       — deprecated Intel simulator, retained for CI
+#
+# Minimum iOS version is declared in tauri.conf.json (`bundle.iOS.minimumSystemVersion`).
+# iPad shares the same Rust target as iPhone; the device family split is
+# done in the generated Info.plist via UIDeviceFamily = [1, 2].
 [target.'cfg(target_os = "ios")'.dependencies]
-# Placeholder. Add objc2 / ios-bindgen style crates here when orrpheus runs
-# the init command and pulls the Apple toolchains.
+# When real init runs on orrpheus, Tauri will auto-populate objc2 + swift-rs
+# bridging through its tauri-runtime. If servitude needs to call into
+# platform iOS APIs (e.g. MultipeerConnectivity, Network.framework
+# Bonjour browsing, AVAudioSession background mode), add one of:
+#   objc2 = "0.5"
+#   objc2-foundation = "0.2"
+#   objc2-multipeer-connectivity = "0.2"
+# keeping them commented out here until a concrete caller exists.
 
 [dev-dependencies]
 # Servitude tests use only std + serde + toml; no extra deps required.

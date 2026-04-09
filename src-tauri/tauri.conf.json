@@ -56,7 +56,9 @@
       }
     },
     "iOS": {
-      "developmentTeam": null
+      "developmentTeam": null,
+      "minimumSystemVersion": "15.0",
+      "frameworks": []
     },
     "android": {
       "minSdkVersion": 24
