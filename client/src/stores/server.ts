@@ -237,6 +237,48 @@ export const useServerStore = create<ServerState>((set, get) => ({
       }
     }
 
+    // DIAGNOSTIC (INS-028 follow-up): dump what the classifier sees
+    // into the console on every hydration. Helps diagnose "my
+    // Mozilla space shows as five separate tiles" bug reports by
+    // surfacing what matrix-js-sdk is actually reporting for those
+    // rooms — crucially, whether the rooms carry m.space.parent
+    // state events that the grouping logic can work with. Wrapped
+    // in an IIFE so the closure captures stable values and doesn't
+    // affect render performance.
+    //
+    // Safe to leave in as long as the console output stays
+    // actionable; if it gets noisy, gate behind a
+    // localStorage.concord_debug_federated flag.
+    // eslint-disable-next-line no-console
+    console.groupCollapsed(
+      `[concord] hydrateFederatedRooms — ${joinedFederated.length} joined federated rooms, ${spaces.length} spaces, ${regularRooms.length} regular`,
+    );
+    try {
+      for (const room of joinedFederated) {
+        const parentEvents =
+          room.currentState?.getStateEvents("m.space.parent") ?? [];
+        const parentIds = parentEvents
+          .map((e) => e.getStateKey?.())
+          .filter((id): id is string => typeof id === "string" && id.length > 0);
+        const childEvents =
+          room.currentState?.getStateEvents("m.space.child") ?? [];
+        const childIds = childEvents
+          .map((e) => e.getStateKey?.())
+          .filter((id): id is string => typeof id === "string" && id.length > 0);
+        // eslint-disable-next-line no-console
+        console.log("[concord] room", {
+          roomId: room.roomId,
+          name: room.name,
+          type: room.getType?.() ?? "(regular)",
+          parents: parentIds,
+          children: childIds,
+        });
+      }
+    } finally {
+      // eslint-disable-next-line no-console
+      console.groupEnd();
+    }
+
     // -----------------------------------------------------------------
     // Pass 2a: read `m.space.child` state events from each JOINED
     // space so we know which federated rooms belong where.
