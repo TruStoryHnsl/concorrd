@@ -94,15 +94,33 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
     setPreferredOrder(readStoredServerOrder(currentUserId));
   }, [currentUserId]);
 
-  // Compute the display order: any server present in the preferredOrder
-  // list first (in that order), followed by any newly-joined servers that
-  // haven't been placed yet, appended alphabetically by name. This keeps
-  // brand-new servers visible without requiring the user to immediately
-  // reorder the list on every join.
+  // Split the server list into Concord-managed ("home") servers and
+  // federated (non-local) rooms. They render in two separate sections
+  // — Concord at the top of the sidebar, federated pinned to the
+  // bottom above the Explore button — and only the Concord list
+  // participates in the INS-002B drag-reorder flow. Federated rooms
+  // stack upward from Explore with the oldest entry adjacent to it,
+  // matching the user's mental model of "Explore is how you find
+  // new servers, so the newest finds grow away from it".
+  const concordServers = useMemo(
+    () => servers.filter((s) => s.federated !== true),
+    [servers],
+  );
+  const federatedServers = useMemo(
+    () => servers.filter((s) => s.federated === true),
+    [servers],
+  );
+
+  // Compute the display order for CONCORD servers only: any server
+  // present in the preferredOrder list first (in that order),
+  // followed by any newly-joined servers that haven't been placed
+  // yet, appended alphabetically by name. Federated servers are
+  // handled separately and do NOT participate in drag-reorder —
+  // their position is deterministic from join order.
   const orderedServers = useMemo(() => {
-    if (!preferredOrder || preferredOrder.length === 0) return servers;
-    const byId = new Map(servers.map((s) => [s.id, s] as const));
-    const placed: typeof servers = [];
+    if (!preferredOrder || preferredOrder.length === 0) return concordServers;
+    const byId = new Map(concordServers.map((s) => [s.id, s] as const));
+    const placed: typeof concordServers = [];
     const placedIds = new Set<string>();
     for (const id of preferredOrder) {
       const srv = byId.get(id);
@@ -111,11 +129,22 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         placedIds.add(id);
       }
     }
-    const unplaced = servers
+    const unplaced = concordServers
       .filter((s) => !placedIds.has(s.id))
       .sort((a, b) => a.name.localeCompare(b.name));
     return [...placed, ...unplaced];
-  }, [servers, preferredOrder]);
+  }, [concordServers, preferredOrder]);
+
+  // Federated servers are rendered REVERSED in the bottom stack so
+  // the array's first entry (the user's first federated join, per
+  // matrix-js-sdk's getRooms() order) sits adjacent to Explore, and
+  // subsequent joins stack upward away from it. React needs a new
+  // array identity for a reverse, so we useMemo rather than
+  // calling federatedServers.slice().reverse() inline on every render.
+  const federatedStack = useMemo(
+    () => [...federatedServers].reverse(),
+    [federatedServers],
+  );
 
   // dnd-kit sensors. PointerSensor activates after 5px of movement so
   // regular clicks on the server tile still fire (for server select). The
@@ -350,13 +379,64 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
           <span className="font-body font-medium">Add Server</span>
         </button>
 
-        {/* Explore pinned to the bottom so the visual flow reads
-            "your servers → add one → (whitespace) → explore the
-            wider federated network". The mt-auto pushes it as far
-            down as the scroll container allows. */}
+        {/* Spacer pushes federated stack + Explore to the bottom. */}
+        <div className="flex-1 min-h-0" aria-hidden="true" />
+
+        {/* Federated (non-local) servers stacked upward from Explore.
+            Same reverse ordering as desktop: oldest join sits
+            directly above Explore, new joins stack upward. */}
+        {federatedStack.map((server) => {
+          const isActive = !dmActive && activeServerId === server.id;
+          const hasUnreads = !isActive && server.channels.some(
+            (ch) => (unreadCounts.get(ch.matrix_room_id) ?? 0) > 0,
+          );
+          return (
+            <button
+              key={server.id}
+              onClick={() => handleServerClick(server.id)}
+              className={`btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${
+                isActive
+                  ? "bg-tertiary/15 text-tertiary ring-1 ring-tertiary/40"
+                  : "text-on-surface hover:bg-tertiary/10"
+              }`}
+            >
+              <div className="relative flex-shrink-0">
+                <div
+                  className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm font-headline font-bold ${
+                    isActive
+                      ? "bg-tertiary text-on-tertiary"
+                      : "bg-tertiary/15 text-tertiary ring-1 ring-tertiary/40"
+                  }`}
+                >
+                  {server.abbreviation || server.name.charAt(0).toUpperCase()}
+                </div>
+                <div
+                  className="absolute -top-1 -left-1 w-4 h-4 bg-tertiary rounded-full border-2 border-surface-container-low flex items-center justify-center"
+                  aria-hidden="true"
+                >
+                  <span
+                    className="material-symbols-outlined text-on-tertiary"
+                    style={{ fontSize: "10px" }}
+                  >
+                    public
+                  </span>
+                </div>
+              </div>
+              <span className="truncate font-body font-medium">{server.name}</span>
+              <span className="text-[10px] uppercase tracking-wider text-tertiary/80 font-label ml-1">
+                federated
+              </span>
+              {hasUnreads && (
+                <div className="w-2.5 h-2.5 rounded-full bg-primary ml-auto flex-shrink-0 node-pulse" />
+              )}
+            </button>
+          );
+        })}
+
+        {/* Explore pinned to the bottom of the federated stack. */}
         <button
           onClick={() => setExploreOpen(true)}
-          className="btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-on-surface-variant hover:text-tertiary hover:bg-tertiary/5 transition-all mt-auto"
+          className="btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-on-surface-variant hover:text-tertiary hover:bg-tertiary/5 transition-all"
         >
           <div className="w-10 h-10 rounded-xl bg-surface-container-highest flex items-center justify-center flex-shrink-0">
             <span className="material-symbols-outlined text-xl">public</span>
@@ -477,8 +557,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         </SortableContext>
       </DndContext>
 
-      {/* Add server — sits right below the server list, same as
-          before, so muscle memory is preserved. */}
+      {/* Add server — sits right below the Concord server list. */}
       <button
         onClick={() => setShowNewServer(true)}
         title="Add Server"
@@ -487,17 +566,71 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         <span className="material-symbols-outlined text-xl">add</span>
       </button>
 
+      {/* Spacer: consumes whatever vertical space is left between the
+          Add-Server button and the federated stack at the bottom. The
+          flex container's gap-2 handles internal spacing; this
+          mt-auto div just pushes the federated stack + Explore to
+          the bottom edge. */}
+      <div className="flex-1 min-h-0" aria-hidden="true" />
+
+      {/* Federated (non-local) servers, stacked upward from Explore.
+          Rendered in reverse order so the OLDEST federated join sits
+          directly above the Explore button and each new join stacks
+          upward away from it. These don't participate in
+          drag-reorder — they're deterministic by join order and the
+          user only gets new entries here via the Explore flow. */}
+      {federatedStack.map((server) => {
+        const isActive = !dmActive && activeServerId === server.id;
+        const hasUnreads = !isActive && server.channels.some(
+          (ch) => (unreadCounts.get(ch.matrix_room_id) ?? 0) > 0,
+        );
+        return (
+          <div key={server.id} className="relative group">
+            <div
+              className={`absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-r-full bg-tertiary transition-all ${
+                isActive ? "h-8" : hasUnreads ? "h-2" : "h-0 group-hover:h-5"
+              }`}
+            />
+            <button
+              onClick={() => handleServerClick(server.id)}
+              title={`${server.name} (federated)`}
+              aria-label={`${server.name} (federated server)`}
+              className={`btn-press w-12 h-12 flex items-center justify-center text-sm font-headline font-bold transition-all ${
+                isActive
+                  ? "bg-tertiary text-on-tertiary rounded-xl shadow-[0_0_12px_rgba(180,120,255,0.35)]"
+                  : "bg-tertiary/15 text-tertiary rounded-2xl hover:rounded-xl hover:bg-tertiary/25 ring-1 ring-tertiary/40"
+              }`}
+            >
+              {server.abbreviation || server.name.charAt(0).toUpperCase()}
+            </button>
+            <div
+              className="absolute -top-0.5 -left-0.5 w-4 h-4 bg-tertiary rounded-full border-2 border-surface flex items-center justify-center"
+              aria-hidden="true"
+            >
+              <span
+                className="material-symbols-outlined text-on-tertiary"
+                style={{ fontSize: "10px" }}
+              >
+                public
+              </span>
+            </div>
+            {hasUnreads && (
+              <div className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-primary rounded-full border-2 border-surface node-pulse" />
+            )}
+          </div>
+        );
+      })}
+
       {/* Explore federated servers — pinned to the bottom of the
-          sidebar via `mt-auto`. The parent is already a `flex
-          flex-col`, so the auto margin consumes all remaining
-          vertical space above this button, pushing it against the
-          bottom edge. Visually separates "manage your own servers"
-          from "discover the broader federated network". */}
+          sidebar. Federated servers stack upward from here, with the
+          oldest join adjacent and the newest at the top of the
+          federated section. Visually separates "manage your own
+          servers" from "discover the broader federated network". */}
       <button
         onClick={() => setExploreOpen(true)}
         title="Explore"
         aria-label="Explore federated servers"
-        className="btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-tertiary/15 hover:text-tertiary hover:rounded-xl flex items-center justify-center transition-all mt-auto"
+        className="btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-tertiary/15 hover:text-tertiary hover:rounded-xl flex items-center justify-center transition-all"
       >
         <span className="material-symbols-outlined text-xl">public</span>
       </button>

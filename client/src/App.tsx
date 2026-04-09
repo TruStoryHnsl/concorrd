@@ -126,6 +126,53 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
+  // One-shot orphan-room cleanup. Runs the first time a user logs in
+  // on this browser after the fix landed; leaves any local-homeserver
+  // rooms they're still joined to but which aren't part of any
+  // Concord-managed server. These are ghosts from deleted servers
+  // that flood the sidebar otherwise. Guarded by a per-user
+  // localStorage flag so it never runs twice.
+  const cleanupHandled = useRef(false);
+  const cleanupUserId = useAuthStore((s) => s.userId);
+  useEffect(() => {
+    if (!isLoggedIn || !cleanupUserId || cleanupHandled.current) return;
+    const flagKey = `concord_orphan_cleanup_v1:${cleanupUserId}`;
+    if (typeof window !== "undefined" && window.localStorage.getItem(flagKey)) {
+      cleanupHandled.current = true;
+      return;
+    }
+    const client = useAuthStore.getState().client;
+    if (!client) return;
+    cleanupHandled.current = true;
+
+    (async () => {
+      // Let the Matrix client finish its initial sync before we start
+      // leaving rooms — leaveOrphanRooms reads `client.getRooms()` and
+      // we want the full joined-room set, not whatever happened to be
+      // in the cache half a second after login. 3 seconds is plenty on
+      // a warm client and harmless on a cold one (we only run once
+      // per user ever).
+      await new Promise((r) => setTimeout(r, 3000));
+      try {
+        const left = await useServerStore
+          .getState()
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .leaveOrphanRooms(client as any);
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(flagKey, String(Date.now()));
+        }
+        if (left.length > 0) {
+          addToast(
+            `Cleaned up ${left.length} ghost room${left.length === 1 ? "" : "s"} from deleted servers`,
+            "success",
+          );
+        }
+      } catch (err) {
+        console.warn("Orphan room cleanup failed:", err);
+      }
+    })();
+  }, [isLoggedIn, cleanupUserId, addToast]);
+
   // Auto-reconnect to voice after page refresh
   const voiceReconnectHandled = useRef(false);
   const voiceConnect = useVoiceStore((s) => s.connect);

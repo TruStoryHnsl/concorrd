@@ -49,6 +49,13 @@ export interface FederatedRoomsClientLike {
      */
     getDMInviter?(): string | null | undefined;
   }>;
+  /**
+   * Leave a room on the Matrix side. Used by
+   * `leaveOrphanRooms` to clean up ghosts left behind when a
+   * Concord server was deleted without first kicking the
+   * underlying Matrix rooms.
+   */
+  leave(roomId: string): Promise<unknown>;
 }
 
 interface ServerState {
@@ -72,6 +79,22 @@ interface ServerState {
    * real Concord servers are left untouched.
    */
   hydrateFederatedRooms: (client: FederatedRoomsClientLike) => void;
+  /**
+   * Identify and leave "orphan" rooms — Matrix rooms on the local
+   * homeserver the user is still joined to but which aren't part of
+   * any Concord-managed Server. These are ghosts left behind when a
+   * Concord server was deleted in the database without first
+   * leaving the underlying Matrix rooms, and they clutter a
+   * Matrix-level room list indefinitely.
+   *
+   * Returns the list of roomIds that were successfully left.
+   * Callers should guard this with a localStorage flag so it runs
+   * at most once per user per browser — we don't want to
+   * repeatedly leave rooms on every sync.
+   */
+  leaveOrphanRooms: (
+    client: FederatedRoomsClientLike,
+  ) => Promise<string[]>;
   createServer: (
     name: string,
     accessToken: string,
@@ -136,6 +159,23 @@ export const useServerStore = create<ServerState>((set, get) => ({
     }
 
     const userId = client.getUserId() ?? "";
+    // Derive the local homeserver domain from the user id ("@corr:concorrd.com"
+    // -> "concorrd.com"). Any joined room whose id shares this suffix lives on
+    // the local homeserver and is, by definition, NOT federated. Such rooms
+    // fall into two categories:
+    //
+    //   1. Concord-managed rooms (filtered out above via `managed`).
+    //   2. Orphans left behind when a Concord server was deleted in the
+    //      database without first leaving the underlying Matrix rooms.
+    //
+    // Category 2 used to flood the sidebar with dozens of ghost entries
+    // after the first successful federated-room join, because matrix-js-sdk
+    // still considers the user "joined" to them. We filter them out here
+    // by domain suffix: federated rooms live on OTHER homeservers
+    // (mozilla.org, matrix.org, friend.example.com) and therefore never
+    // match the local domain.
+    const localDomain = userId.includes(":") ? userId.split(":")[1] : "";
+
     const synthetic: Server[] = [];
     for (const room of client.getRooms()) {
       if (room.getMyMembership() !== "join") continue;
@@ -144,6 +184,13 @@ export const useServerStore = create<ServerState>((set, get) => ({
       // them. getDMInviter() returns the inviter's mxid when the room
       // was originally tagged as direct via m.direct account data.
       if (room.getDMInviter?.()) continue;
+
+      // Skip anything on the local homeserver — see the localDomain
+      // comment above. Room ids are formatted `!opaqueId:domain`,
+      // so splitting on the last colon gives us the hosting domain.
+      if (localDomain && room.roomId.endsWith(`:${localDomain}`)) {
+        continue;
+      }
 
       const name = room.name || room.roomId;
       synthetic.push({
@@ -171,6 +218,57 @@ export const useServerStore = create<ServerState>((set, get) => ({
     }
 
     set({ servers: [...concordServers, ...synthetic] });
+  },
+
+  leaveOrphanRooms: async (client) => {
+    const { servers } = get();
+    // Only compute orphans against real Concord servers — we do NOT
+    // want to leave the rooms that back our own synthetic federated
+    // wrappers, since those are legitimately joined federated rooms.
+    const concordServers = servers.filter(
+      (s) => !s.id.startsWith(FEDERATED_SERVER_ID_PREFIX),
+    );
+
+    const managed = new Set<string>();
+    for (const srv of concordServers) {
+      for (const ch of srv.channels) {
+        managed.add(ch.matrix_room_id);
+      }
+    }
+
+    const userId = client.getUserId() ?? "";
+    if (!userId.includes(":")) return [];
+    const localDomain = userId.split(":")[1];
+
+    const toLeave: string[] = [];
+    for (const room of client.getRooms()) {
+      if (room.getMyMembership() !== "join") continue;
+      if (managed.has(room.roomId)) continue;
+      if (room.getDMInviter?.()) continue;
+      // Orphan definition: joined, not Concord-managed, not a DM,
+      // AND lives on the LOCAL homeserver. Federated rooms live on
+      // other homeservers and must NOT be leaved by this pass.
+      if (!room.roomId.endsWith(`:${localDomain}`)) continue;
+      toLeave.push(room.roomId);
+    }
+
+    const succeeded: string[] = [];
+    for (const roomId of toLeave) {
+      try {
+        await client.leave(roomId);
+        succeeded.push(roomId);
+      } catch (err) {
+        // Best-effort — log and move on. A failure to leave one
+        // ghost shouldn't abort the whole cleanup pass.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `leaveOrphanRooms: failed to leave ${roomId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    return succeeded;
   },
 
   loadServers: async (accessToken) => {

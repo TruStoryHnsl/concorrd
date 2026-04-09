@@ -83,6 +83,7 @@ function makeFakeClient(overrides?: {
   joinRoom?: ReturnType<typeof vi.fn>;
   getRooms?: ReturnType<typeof vi.fn>;
   getUserId?: ReturnType<typeof vi.fn>;
+  leave?: ReturnType<typeof vi.fn>;
 }) {
   return {
     publicRooms:
@@ -96,6 +97,11 @@ function makeFakeClient(overrides?: {
     getRooms: overrides?.getRooms ?? vi.fn().mockReturnValue([]),
     getUserId:
       overrides?.getUserId ?? vi.fn().mockReturnValue("@tester:example.org"),
+    // `leaveOrphanRooms` (the cleanup pass) calls this; ExploreModal
+    // tests never trigger it directly but the store's action type
+    // requires the method to exist on the FederatedRoomsClientLike
+    // shape, so we supply a no-op resolved default.
+    leave: overrides?.leave ?? vi.fn().mockResolvedValue(undefined),
   };
 }
 

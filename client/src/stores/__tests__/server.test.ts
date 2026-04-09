@@ -55,11 +55,20 @@ function fakeRoom(config: FakeRoomConfig) {
 /**
  * Build a FederatedRoomsClientLike stub whose `getRooms` returns the
  * given list and whose `getUserId` returns a stable tester identity.
+ * Tests that exercise `leaveOrphanRooms` can inspect the leave mock
+ * via the returned object.
  */
-function fakeClient(rooms: ReturnType<typeof fakeRoom>[]): FederatedRoomsClientLike {
+type LeaveFn = (roomId: string) => Promise<unknown>;
+function fakeClient(
+  rooms: ReturnType<typeof fakeRoom>[],
+  overrides?: { leave?: LeaveFn },
+): FederatedRoomsClientLike {
   return {
     getUserId: () => "@tester:example.org",
     getRooms: () => rooms,
+    leave:
+      overrides?.leave ??
+      ((_roomId: string) => Promise.resolve()),
   };
 }
 
@@ -218,6 +227,40 @@ describe("useServerStore.hydrateFederatedRooms", () => {
     expect(servers.filter((s) => s.federated)).toHaveLength(1);
   });
 
+  it("skips orphan rooms on the local homeserver (deleted-server ghosts)", () => {
+    // Scenario: the user deleted a Concord server in the database,
+    // but the underlying Matrix rooms were never kicked, so the
+    // matrix-js-sdk client still thinks the user is joined to them.
+    // Before the local-domain filter, these ghosts would flood the
+    // sidebar with synthetic federated entries on every hydration
+    // call. After the filter, they are dropped silently.
+    //
+    // The fake client's `getUserId` returns "@tester:example.org", so
+    // any room ending in `:example.org` is considered local.
+    const rooms = [
+      // Local orphan — should be filtered
+      fakeRoom({ roomId: "!ghost1:example.org", name: "Deleted Server 1" }),
+      fakeRoom({ roomId: "!ghost2:example.org", name: "Deleted Server 2" }),
+      // Real federated room on a remote homeserver — should appear
+      fakeRoom({ roomId: "!real:mozilla.org", name: "Mozilla General" }),
+      // Another federated room on a different remote
+      fakeRoom({ roomId: "!real:friend.example.com", name: "Friend's Room" }),
+    ];
+    useServerStore.getState().hydrateFederatedRooms(fakeClient(rooms));
+
+    const servers = useServerStore.getState().servers;
+    expect(servers).toHaveLength(2);
+    const ids = servers.map((s) => s.id).sort();
+    expect(ids).toEqual([
+      "federated:!real:friend.example.com",
+      "federated:!real:mozilla.org",
+    ]);
+    // Critically, neither ghost made it into the list.
+    for (const srv of servers) {
+      expect(srv.channels[0].matrix_room_id).not.toContain("example.org");
+    }
+  });
+
   it("falls back to the room id when the room has no name", () => {
     const rooms = [fakeRoom({ roomId: "!unnamed:remote.example", name: undefined })];
     useServerStore.getState().hydrateFederatedRooms(fakeClient(rooms));
@@ -226,5 +269,95 @@ describe("useServerStore.hydrateFederatedRooms", () => {
     expect(servers).toHaveLength(1);
     expect(servers[0].name).toBe("!unnamed:remote.example");
     expect(servers[0].abbreviation).toBe("!");
+  });
+});
+
+describe("useServerStore.leaveOrphanRooms", () => {
+  beforeEach(() => {
+    useServerStore.setState({
+      servers: [],
+      activeServerId: null,
+      activeChannelId: null,
+      members: {},
+    });
+  });
+
+  it("leaves all local-homeserver rooms that aren't Concord-managed", async () => {
+    // Seed a real Concord server whose channel owns one room.
+    useServerStore.setState({
+      servers: [concordServer("srv-1", ["!managed:example.org"])],
+      activeServerId: null,
+      activeChannelId: null,
+      members: {},
+    });
+
+    const rooms = [
+      // Managed — NOT an orphan, leave() must NOT be called
+      fakeRoom({ roomId: "!managed:example.org" }),
+      // Local orphan 1 — leave() must be called
+      fakeRoom({ roomId: "!ghost1:example.org" }),
+      // Local orphan 2 — leave() must be called
+      fakeRoom({ roomId: "!ghost2:example.org" }),
+      // Federated — NOT local, leave() must NOT be called
+      fakeRoom({ roomId: "!fed:mozilla.org" }),
+      // DM — leave() must NOT be called
+      fakeRoom({ roomId: "!dm:example.org", dmInviter: "@f:example.org" }),
+      // Invited but not joined — leave() must NOT be called
+      fakeRoom({ roomId: "!invited:example.org", membership: "invite" }),
+    ];
+    const leave = vi.fn().mockResolvedValue(undefined);
+    const client = fakeClient(rooms, { leave });
+
+    const left = await useServerStore.getState().leaveOrphanRooms(client);
+
+    expect(left).toEqual(["!ghost1:example.org", "!ghost2:example.org"]);
+    expect(leave).toHaveBeenCalledTimes(2);
+    expect(leave).toHaveBeenCalledWith("!ghost1:example.org");
+    expect(leave).toHaveBeenCalledWith("!ghost2:example.org");
+  });
+
+  it("skips federated rooms on remote homeservers", async () => {
+    const rooms = [
+      fakeRoom({ roomId: "!moz:mozilla.org" }),
+      fakeRoom({ roomId: "!matrix:matrix.org" }),
+      fakeRoom({ roomId: "!friend:friend.example.com" }),
+    ];
+    const leave = vi.fn().mockResolvedValue(undefined);
+
+    const left = await useServerStore
+      .getState()
+      .leaveOrphanRooms(fakeClient(rooms, { leave }));
+
+    expect(left).toEqual([]);
+    expect(leave).not.toHaveBeenCalled();
+  });
+
+  it("continues on per-room leave failures and returns only successful leaves", async () => {
+    const rooms = [
+      fakeRoom({ roomId: "!a:example.org" }),
+      fakeRoom({ roomId: "!b:example.org" }),
+      fakeRoom({ roomId: "!c:example.org" }),
+    ];
+    const leave = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("rate limited"))
+      .mockResolvedValueOnce(undefined);
+
+    const left = await useServerStore
+      .getState()
+      .leaveOrphanRooms(fakeClient(rooms, { leave }));
+
+    expect(left).toEqual(["!a:example.org", "!c:example.org"]);
+    expect(leave).toHaveBeenCalledTimes(3);
+  });
+
+  it("no-ops when the client has no orphans", async () => {
+    const leave = vi.fn().mockResolvedValue(undefined);
+    const left = await useServerStore
+      .getState()
+      .leaveOrphanRooms(fakeClient([], { leave }));
+    expect(left).toEqual([]);
+    expect(leave).not.toHaveBeenCalled();
   });
 });
