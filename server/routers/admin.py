@@ -389,6 +389,7 @@ async def admin_update_report(
 
 from services.tuwunel_config import (
     FederationSettings,
+    decode_server_name_patterns,
     is_valid_server_name,
     read_federation,
     server_names_to_regex_patterns,
@@ -397,31 +398,11 @@ from services.tuwunel_config import (
 from services.docker_control import DockerControlError, restart_compose_service
 
 
-def _server_names_from_regex_patterns(patterns: list[str]) -> list[str]:
-    """Best-effort inverse of server_names_to_regex_patterns.
-
-    The admin UI shows plain server names, but the TOML stores anchored
-    regex patterns (``^example\\.com$``). For each pattern that looks like
-    our own ``^escaped-name$`` format, unescape it back to a plain name;
-    patterns we can't decode are returned unchanged so hand-edited advanced
-    regexes are preserved through round-trips.
-    """
-    import re as _re
-    out: list[str] = []
-    for p in patterns:
-        m = _re.fullmatch(r"\^(.+)\$", p)
-        if not m:
-            out.append(p)
-            continue
-        inner = m.group(1)
-        # Inverse of re.escape for alnum . - (the only chars in a hostname).
-        try:
-            decoded = _re.sub(r"\\(.)", r"\1", inner)
-        except Exception:
-            out.append(p)
-            continue
-        out.append(decoded)
-    return out
+# Backwards-compatible alias. The canonical implementation now lives in
+# ``services.tuwunel_config.decode_server_name_patterns`` so both the admin
+# router and the explore router can share it; older call sites inside this
+# module keep the previous name so their diff stays minimal.
+_server_names_from_regex_patterns = decode_server_name_patterns
 
 
 def _federation_has_pending_changes() -> bool:

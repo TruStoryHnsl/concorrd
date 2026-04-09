@@ -5,6 +5,7 @@ import { useAuthStore } from "../../stores/auth";
 import { useUnreadCounts } from "../../hooks/useUnreadCounts";
 import { usePresenceMap } from "../../hooks/usePresence";
 import { NewServerModal } from "../server/NewServerModal";
+import { ExploreModal } from "../server/ExploreModal";
 
 interface ServerSidebarProps {
   mobile?: boolean;
@@ -21,6 +22,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   const currentUserId = useAuthStore((s) => s.userId);
   const unreadCounts = useUnreadCounts();
   const [showNewServer, setShowNewServer] = useState(false);
+  const [exploreOpen, setExploreOpen] = useState(false);
 
   // Ensure each server we're a member of has its member list loaded so we can
   // compute presence badges. loadMembers is idempotent (it simply overwrites
@@ -190,7 +192,18 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
           <span className="font-body font-medium">Add Server</span>
         </button>
 
+        <button
+          onClick={() => setExploreOpen(true)}
+          className="btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-on-surface-variant hover:text-secondary hover:bg-secondary/5 transition-all"
+        >
+          <div className="w-10 h-10 rounded-xl bg-surface-container-highest flex items-center justify-center flex-shrink-0">
+            <span className="material-symbols-outlined text-xl">public</span>
+          </div>
+          <span className="font-body font-medium">Explore</span>
+        </button>
+
         {showNewServer && <NewServerModal onClose={() => setShowNewServer(false)} />}
+        <ExploreModal isOpen={exploreOpen} onClose={() => setExploreOpen(false)} />
       </div>
     );
   }
@@ -272,7 +285,18 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         <span className="material-symbols-outlined text-xl">add</span>
       </button>
 
+      {/* Explore federated servers */}
+      <button
+        onClick={() => setExploreOpen(true)}
+        title="Explore"
+        aria-label="Explore federated servers"
+        className="btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-secondary/10 hover:text-secondary hover:rounded-xl flex items-center justify-center transition-all"
+      >
+        <span className="material-symbols-outlined text-xl">public</span>
+      </button>
+
       {showNewServer && <NewServerModal onClose={() => setShowNewServer(false)} />}
+      <ExploreModal isOpen={exploreOpen} onClose={() => setExploreOpen(false)} />
     </div>
   );
 });

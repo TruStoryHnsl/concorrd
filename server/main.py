@@ -18,7 +18,7 @@ logging.basicConfig(
 
 from database import init_db
 from errors import ConcordError, ErrorResponse
-from routers import servers, invites, registration, voice, soundboard, webhooks, admin, direct_invites, stats, totp, moderation, preview, media, dms, nodes
+from routers import servers, invites, registration, voice, soundboard, webhooks, admin, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore
 
 
 @asynccontextmanager
@@ -642,6 +642,7 @@ app.include_router(preview.router)
 app.include_router(media.router)
 app.include_router(dms.router)
 app.include_router(nodes.router)
+app.include_router(explore.router)
 
 
 @app.get("/api/health")

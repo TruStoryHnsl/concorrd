@@ -63,6 +63,51 @@ def server_names_to_regex_patterns(names: list[str]) -> list[str]:
     return [rf"^{re.escape(n.strip().lower())}$" for n in names if n.strip()]
 
 
+def decode_server_name_patterns(patterns: list[str]) -> list[str]:
+    """Best-effort inverse of :func:`server_names_to_regex_patterns`.
+
+    The admin UI (and other read-side consumers like the explore endpoint)
+    wants plain server names, but the TOML stores anchored regex patterns
+    (``^example\\.com$``). For each pattern that looks like our own
+    ``^escaped-name$`` format, unescape it back to a plain name; patterns we
+    can't decode are returned unchanged so hand-edited advanced regexes are
+    preserved through round-trips.
+
+    The naive unescape (``re.sub(r"\\\\(.)", r"\\1", ...)``) would happily
+    strip the backslashes out of a genuine regex metachar sequence like
+    ``^\\d+\\.example\\.com$``, producing the bogus hostname
+    ``d+.example.com`` and handing it back to API consumers as if it were a
+    real domain. To prevent that, we validate the unescape result against
+    :data:`_HOSTNAME_RE`; if the unescaped string doesn't look like a
+    well-formed RFC-1123 hostname, we fall back to returning the original
+    pattern verbatim — honouring the "patterns we can't decode are returned
+    unchanged" contract even for patterns that *look* like our escape format
+    but aren't really.
+    """
+    out: list[str] = []
+    for p in patterns:
+        m = re.fullmatch(r"\^(.+)\$", p)
+        if not m:
+            out.append(p)
+            continue
+        inner = m.group(1)
+        # Inverse of re.escape for alnum . - (the only chars in a hostname).
+        try:
+            decoded = re.sub(r"\\(.)", r"\1", inner)
+        except Exception:
+            out.append(p)
+            continue
+        # Defence-in-depth: only accept the unescaped result if it actually
+        # parses as a hostname. Otherwise surrender to verbatim — a
+        # hand-edited regex with genuine metachars (\d, \w, character
+        # classes, etc.) would otherwise leak through as corrupted garbage.
+        if _HOSTNAME_RE.match(decoded):
+            out.append(decoded)
+        else:
+            out.append(p)
+    return out
+
+
 @contextmanager
 def _locked(path: Path, mode: str):
     """Open `path` and hold an exclusive flock for the duration of the block."""

@@ -11,6 +11,15 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
 
+/// Key under which the servitude config is persisted in the shared
+/// `settings.json` tauri store. Kept as a module-local const so callers never
+/// stringify it themselves.
+pub const SERVITUDE_STORE_KEY: &str = "servitude";
+
+/// Store file name used for persistence. Matches the file already used by
+/// the rest of the Concord settings surface (see `lib.rs`).
+pub const SETTINGS_STORE_FILE: &str = "settings.json";
+
 /// Layered transports the embedded servitude can advertise.
 ///
 /// The actual runtime wiring lives in a separate task — this enum is the
@@ -88,6 +97,54 @@ impl ServitudeConfig {
         Ok(cfg)
     }
 
+    /// Load a validated `ServitudeConfig` from the shared tauri settings
+    /// store under the [`SERVITUDE_STORE_KEY`] key.
+    ///
+    /// If the key is absent (first-run / never persisted), returns
+    /// [`ServitudeConfig::default`] — this is an explicit, non-error case
+    /// so the embedded servitude can always come up.
+    ///
+    /// Any stored value that fails schema or validation checks is surfaced
+    /// as a [`ConfigError`] so the caller can decide whether to reset or
+    /// surface the failure to the user.
+    pub fn from_store(app: &tauri::AppHandle) -> Result<Self, ConfigError> {
+        use tauri_plugin_store::StoreExt;
+
+        let store = app
+            .store(SETTINGS_STORE_FILE)
+            .map_err(|e| ConfigError::Store(e.to_string()))?;
+
+        let Some(value) = store.get(SERVITUDE_STORE_KEY) else {
+            return Ok(Self::default());
+        };
+
+        let cfg: Self = serde_json::from_value(value)
+            .map_err(|e| ConfigError::Parse(e.to_string()))?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// Persist this config to the shared tauri settings store under the
+    /// [`SERVITUDE_STORE_KEY`] key. Validation runs before writing so a bad
+    /// config can never land on disk.
+    pub fn save_to_store(&self, app: &tauri::AppHandle) -> Result<(), ConfigError> {
+        use tauri_plugin_store::StoreExt;
+
+        self.validate()?;
+
+        let store = app
+            .store(SETTINGS_STORE_FILE)
+            .map_err(|e| ConfigError::Store(e.to_string()))?;
+
+        let value = serde_json::to_value(self)
+            .map_err(|e| ConfigError::Parse(e.to_string()))?;
+        store.set(SERVITUDE_STORE_KEY, value);
+        store
+            .save()
+            .map_err(|e| ConfigError::Store(e.to_string()))?;
+        Ok(())
+    }
+
     /// Pydantic-style validator. Enforces invariants the type system cannot
     /// express. Returns the first error encountered (fail-fast). Designed to
     /// be cheap so callers can re-run after edits.
@@ -134,6 +191,9 @@ pub enum ConfigError {
 
     #[error("at least one transport must be enabled in enabled_transports")]
     NoTransportsEnabled,
+
+    #[error("settings store error: {0}")]
+    Store(String),
 }
 
 #[cfg(test)]
@@ -154,6 +214,42 @@ mod tests {
     fn test_config_validation_accepts_valid_config() {
         let cfg = base();
         cfg.validate().expect("base config should validate");
+    }
+
+    #[test]
+    fn test_servitude_config_serde_round_trip() {
+        // Every field intentionally set to a NON-default value so schema
+        // drift (renamed/dropped fields) is caught by an assertion failure
+        // rather than silently surviving because the default matched.
+        let original = ServitudeConfig {
+            display_name: "round-trip-fixture".to_string(),
+            max_peers: 99,
+            listen_port: 31_337,
+            allow_privileged_port: true,
+            enabled_transports: vec![
+                Transport::WireGuard,
+                Transport::Mesh,
+                Transport::Tunnel,
+                Transport::MatrixFederation,
+            ],
+        };
+
+        let json = serde_json::to_string(&original)
+            .expect("ServitudeConfig should serialize to JSON");
+        let decoded: ServitudeConfig = serde_json::from_str(&json)
+            .expect("ServitudeConfig should deserialize from its own JSON");
+
+        assert_eq!(decoded.display_name, original.display_name);
+        assert_eq!(decoded.max_peers, original.max_peers);
+        assert_eq!(decoded.listen_port, original.listen_port);
+        assert_eq!(decoded.allow_privileged_port, original.allow_privileged_port);
+        assert_eq!(decoded.enabled_transports, original.enabled_transports);
+
+        // And the decoded config must still pass validation (catches
+        // "serde accepted garbage but validator would have rejected it").
+        decoded
+            .validate()
+            .expect("round-tripped config should revalidate");
     }
 
     #[test]

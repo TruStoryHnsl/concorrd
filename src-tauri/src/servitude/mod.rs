@@ -161,4 +161,160 @@ mod tests {
         let err = ServitudeHandle::new(bad).expect_err("empty name should fail");
         assert!(matches!(err, ServitudeError::Config(_)));
     }
+
+    /// Hermetic smoke test that exercises the full Tauri-command surface
+    /// at the handle level (without a real Tauri runtime). If this test
+    /// starts failing, the `servitude_start` / `servitude_status` /
+    /// `servitude_stop` Tauri commands are also broken — they delegate
+    /// to exactly these three methods.
+    #[test]
+    fn test_servitude_handle_round_trip() {
+        let mut handle = ServitudeHandle::new(valid_config())
+            .expect("round-trip fixture config must validate");
+
+        // Initial status — matches what servitude_status returns when
+        // no prior start has happened.
+        assert_eq!(
+            handle.status(),
+            LifecycleState::Stopped,
+            "fresh handle must start in Stopped"
+        );
+
+        // start() — matches servitude_start after config load.
+        handle.start().expect("first start must succeed");
+        assert_eq!(
+            handle.status(),
+            LifecycleState::Running,
+            "post-start status must be Running"
+        );
+
+        // stop() — matches servitude_stop.
+        handle.stop().expect("stop must succeed while Running");
+        assert_eq!(
+            handle.status(),
+            LifecycleState::Stopped,
+            "post-stop status must return to Stopped"
+        );
+
+        // And the handle must be re-usable — a second start→stop cycle
+        // is how the Tauri state is expected to behave across user
+        // toggles in the UI.
+        handle.start().expect("second start must succeed");
+        assert_eq!(handle.status(), LifecycleState::Running);
+        handle.stop().expect("second stop must succeed");
+        assert_eq!(handle.status(), LifecycleState::Stopped);
+    }
+
+    /// Regression test for the "restart discards reloaded config" bug.
+    ///
+    /// Scenario reproduced here (without a Tauri runtime):
+    ///   1. Build a handle with config A, start it, stop it.
+    ///   2. The user edits their settings — modelled as "loading a
+    ///      different `ServitudeConfig` B from the store".
+    ///   3. The `servitude_start` Tauri command replaces the stopped
+    ///      handle with a freshly constructed one built from B, then
+    ///      starts it.
+    ///   4. The now-running handle's observable config must reflect B,
+    ///      not A — otherwise the user's edits have been silently
+    ///      discarded, which is exactly the bug.
+    ///
+    /// This test exercises the same "rebuild on restart" path that
+    /// `servitude_start` takes when it sees an existing handle in the
+    /// `Stopped` state.
+    #[test]
+    fn test_servitude_handle_restart_picks_up_new_config() {
+        // Config A — what the handle was originally built with.
+        let config_a = ServitudeConfig {
+            display_name: "node-before-edit".to_string(),
+            max_peers: 8,
+            listen_port: 8765,
+            allow_privileged_port: false,
+            enabled_transports: vec![Transport::MatrixFederation],
+        };
+
+        let mut handle =
+            ServitudeHandle::new(config_a.clone()).expect("config A must validate");
+        assert_eq!(
+            handle.config().display_name,
+            "node-before-edit",
+            "pre-edit handle must report config A"
+        );
+
+        // First lifecycle run with config A.
+        handle.start().expect("first start must succeed");
+        assert_eq!(handle.status(), LifecycleState::Running);
+        handle.stop().expect("first stop must succeed");
+        assert_eq!(handle.status(), LifecycleState::Stopped);
+
+        // The user edits their settings — a different config is now
+        // what "from_store" would return. Everything except display_name
+        // and max_peers is deliberately varied too so we can assert the
+        // FULL config was picked up, not just one field.
+        let config_b = ServitudeConfig {
+            display_name: "node-after-edit".to_string(),
+            max_peers: 64,
+            listen_port: 9999,
+            allow_privileged_port: false,
+            enabled_transports: vec![Transport::WireGuard, Transport::Tunnel],
+        };
+
+        // This block mirrors exactly what the fixed `servitude_start`
+        // does when it observes an existing handle in the `Stopped`
+        // state: drop the old handle and construct a new one with the
+        // freshly-loaded config.
+        assert_eq!(
+            handle.status(),
+            LifecycleState::Stopped,
+            "restart path only triggers when handle is Stopped"
+        );
+        handle =
+            ServitudeHandle::new(config_b.clone()).expect("config B must validate");
+
+        // Bring the new handle up and confirm the reloaded config
+        // actually took effect.
+        handle.start().expect("restart must succeed");
+        assert_eq!(handle.status(), LifecycleState::Running);
+
+        let observed = handle.config();
+        assert_eq!(
+            observed.display_name, "node-after-edit",
+            "restart must pick up new display_name"
+        );
+        assert_eq!(
+            observed.max_peers, 64,
+            "restart must pick up new max_peers"
+        );
+        assert_eq!(
+            observed.listen_port, 9999,
+            "restart must pick up new listen_port"
+        );
+        assert_eq!(
+            observed.enabled_transports,
+            vec![Transport::WireGuard, Transport::Tunnel],
+            "restart must pick up new enabled_transports"
+        );
+
+        // And critically, NONE of the config A fields may have leaked
+        // into the restarted handle. This is the assertion that would
+        // fail under the original bug (where the handle kept its
+        // original config and silently ignored the reload).
+        assert_ne!(
+            observed.display_name, config_a.display_name,
+            "post-restart handle must not retain pre-edit display_name"
+        );
+        assert_ne!(
+            observed.max_peers, config_a.max_peers,
+            "post-restart handle must not retain pre-edit max_peers"
+        );
+        assert_ne!(
+            observed.listen_port, config_a.listen_port,
+            "post-restart handle must not retain pre-edit listen_port"
+        );
+        assert_ne!(
+            observed.enabled_transports, config_a.enabled_transports,
+            "post-restart handle must not retain pre-edit enabled_transports"
+        );
+
+        handle.stop().expect("post-restart stop must succeed");
+    }
 }

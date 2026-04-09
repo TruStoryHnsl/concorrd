@@ -1117,3 +1117,26 @@ export async function applyFederationChanges(
     accessToken,
   );
 }
+
+// --- Explore (federated peers) ---
+
+export interface ExploreServerEntry {
+  domain: string;
+  name: string;
+  description: string | null;
+}
+
+/**
+ * List the federated peers this instance knows about. Backed by
+ * `GET /api/explore/servers`, which derives its list from the
+ * federation allowlist. Requires a valid access token — the
+ * backend enforces auth via `get_user_id`.
+ *
+ * Note: `getApiBase()` already returns `/api`, so the path below
+ * is relative to that prefix.
+ */
+export async function listExploreServers(
+  accessToken: string,
+): Promise<ExploreServerEntry[]> {
+  return apiFetch("/explore/servers", {}, accessToken);
+}
