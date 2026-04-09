@@ -17,6 +17,11 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useServerStore } from "../../stores/server";
+import {
+  useFederatedInstanceStore,
+  filterInstances,
+  hostnameFromRoomId,
+} from "../../stores/federatedInstances";
 import { useDMStore } from "../../stores/dm";
 import { useAuthStore } from "../../stores/auth";
 import { useUnreadCounts } from "../../hooks/useUnreadCounts";
@@ -135,16 +140,107 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
     return [...placed, ...unplaced];
   }, [concordServers, preferredOrder]);
 
-  // Federated servers are rendered REVERSED in the bottom stack so
-  // the array's first entry (the user's first federated join, per
-  // matrix-js-sdk's getRooms() order) sits adjacent to Explore, and
-  // subsequent joins stack upward away from it. React needs a new
-  // array identity for a reverse, so we useMemo rather than
-  // calling federatedServers.slice().reverse() inline on every render.
-  const federatedStack = useMemo(
-    () => [...federatedServers].reverse(),
-    [federatedServers],
-  );
+  // Persistent federated-instance catalog drives three features the
+  // ephemeral `federatedServers` list above can't: (1) tiles appear
+  // at page load BEFORE the Matrix client has finished syncing,
+  // (2) each tile knows whether its host is another Concord instance
+  // (distinct sidebar visuals), (3) a search filter over both
+  // hostnames and display names.
+  const instancesMap = useFederatedInstanceStore((s) => s.instances);
+  const searchQuery = useFederatedInstanceStore((s) => s.searchQuery);
+  const setSearchQuery = useFederatedInstanceStore((s) => s.setSearchQuery);
+
+  // Map each live federated Server (from Matrix client state) back
+  // to its catalog record so the render loop has access to the
+  // `isConcord` flag and persistent metadata. Keyed by matrix host
+  // extracted from the synthetic server id. Live servers that don't
+  // yet have a catalog entry (e.g. freshly joined before
+  // recordSeen has fired) fall through to a synthesized default.
+  const liveFederatedEntries = useMemo(() => {
+    return federatedServers.map((server) => {
+      const roomId = server.id.replace(/^federated:/, "");
+      const host = hostnameFromRoomId(roomId) ?? "";
+      const catalog = host ? instancesMap[host] : undefined;
+      return {
+        server,
+        host,
+        isConcord: catalog?.isConcord ?? false,
+        status: catalog?.status ?? "live",
+      };
+    });
+  }, [federatedServers, instancesMap]);
+
+  // Placeholder tiles: catalog records whose host has NO matching
+  // live federated Server yet. These appear on a fresh page load
+  // because the persist middleware hydrates the catalog synchronously
+  // but the Matrix sync takes a few seconds to rebuild the server
+  // list. The placeholders give the user something to see (and
+  // click) during that window. Once hydrateFederatedRooms fires, the
+  // placeholder for a given host is replaced by the live entry via
+  // the Map below.
+  const placeholderTiles = useMemo(() => {
+    const liveHosts = new Set(liveFederatedEntries.map((e) => e.host));
+    return Object.values(instancesMap)
+      .filter((inst) => !liveHosts.has(inst.hostname))
+      .map((inst) => ({
+        // Synthetic server shape just enough for the render loop
+        // below. Placeholder tiles don't have a matching real
+        // Server record and clicking them is a no-op until the
+        // Matrix client catches up.
+        placeholder: true as const,
+        server: {
+          id: `federated-placeholder:${inst.hostname}`,
+          name: inst.displayName,
+          abbreviation: inst.displayName.charAt(0).toUpperCase() || "#",
+          channels: [],
+        },
+        host: inst.hostname,
+        isConcord: inst.isConcord,
+        status: inst.status,
+      }));
+  }, [instancesMap, liveFederatedEntries]);
+
+  // Apply the search filter across BOTH live and placeholder
+  // tiles. An empty query returns everything. Reuses
+  // `filterInstances` to stay consistent with any future
+  // search-over-catalog UI.
+  const filteredLive = useMemo(() => {
+    if (!searchQuery.trim()) return liveFederatedEntries;
+    return liveFederatedEntries.filter((e) => {
+      const q = searchQuery.trim().toLowerCase();
+      return (
+        e.server.name.toLowerCase().includes(q) ||
+        e.host.toLowerCase().includes(q)
+      );
+    });
+  }, [liveFederatedEntries, searchQuery]);
+  const filteredPlaceholders = useMemo(() => {
+    return filterInstances(
+      placeholderTiles.map((p) => ({
+        hostname: p.host,
+        displayName: p.server.name,
+        isConcord: p.isConcord,
+        status: p.status,
+        lastSeenTs: 0,
+      })),
+      searchQuery,
+    ).map((inst) =>
+      placeholderTiles.find((p) => p.host === inst.hostname)!,
+    );
+  }, [placeholderTiles, searchQuery]);
+
+  // Federated stack order: first joined at the bottom (adjacent to
+  // Explore), newest at the top of the federated section. Live
+  // entries first, then placeholders (catalog records we haven't
+  // seen in the Matrix client this session yet). Reversed so the
+  // render-order maps to the intended bottom-up stacking.
+  const federatedStack = useMemo(() => {
+    const all = [
+      ...filteredLive.map((e) => ({ ...e, placeholder: false as const })),
+      ...filteredPlaceholders,
+    ];
+    return all.slice().reverse();
+  }, [filteredLive, filteredPlaceholders]);
 
   // dnd-kit sensors. PointerSensor activates after 5px of movement so
   // regular clicks on the server tile still fire (for server select). The
@@ -382,21 +478,62 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         {/* Spacer pushes federated stack + Explore to the bottom. */}
         <div className="flex-1 min-h-0" aria-hidden="true" />
 
+        {/* Federated search input: inline text field that filters
+            both live and placeholder federated tiles by name or
+            host. Empty query shows everything. Mobile has room for
+            the input inline; desktop uses a narrower affordance
+            (future work). */}
+        <div className="mt-2 mb-1">
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search federated servers…"
+            aria-label="Search federated servers"
+            className="w-full px-3 py-1.5 text-xs bg-surface-container border border-outline-variant/20 rounded-lg text-on-surface placeholder-on-surface-variant/60 focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+
         {/* Federated (non-local) servers stacked upward from Explore.
             Same reverse ordering as desktop: oldest join sits
-            directly above Explore, new joins stack upward. */}
-        {federatedStack.map((server) => {
+            directly above Explore, new joins stack upward. Now
+            distinguishes Concord-on-Concord federation from vanilla
+            Matrix servers via palette + badge. */}
+        {federatedStack.map((entry) => {
+          const { server, isConcord, placeholder } = entry;
           const isActive = !dmActive && activeServerId === server.id;
-          const hasUnreads = !isActive && server.channels.some(
-            (ch) => (unreadCounts.get(ch.matrix_room_id) ?? 0) > 0,
-          );
+          const hasUnreads =
+            !isActive &&
+            !placeholder &&
+            "channels" in server &&
+            server.channels.some(
+              (ch: { matrix_room_id: string }) =>
+                (unreadCounts.get(ch.matrix_room_id) ?? 0) > 0,
+            );
+          const accentClass = isConcord ? "bg-secondary" : "bg-tertiary";
+          const accentTextClass = isConcord
+            ? "text-on-secondary"
+            : "text-on-tertiary";
+          const ringClass = isConcord
+            ? "ring-secondary/40"
+            : "ring-tertiary/40";
+          const textAccentClass = isConcord
+            ? "text-secondary"
+            : "text-tertiary";
           return (
             <button
               key={server.id}
-              onClick={() => handleServerClick(server.id)}
+              onClick={
+                placeholder ? undefined : () => handleServerClick(server.id)
+              }
+              disabled={placeholder}
               className={`btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${
+                placeholder ? "opacity-55 cursor-default" : ""
+              } ${
                 isActive
-                  ? "bg-tertiary/15 text-tertiary ring-1 ring-tertiary/40"
+                  ? isConcord
+                    ? "bg-secondary/15 text-secondary ring-1 ring-secondary/40"
+                    : "bg-tertiary/15 text-tertiary ring-1 ring-tertiary/40"
                   : "text-on-surface hover:bg-tertiary/10"
               }`}
             >
@@ -404,30 +541,42 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
                 <div
                   className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm font-headline font-bold ${
                     isActive
-                      ? "bg-tertiary text-on-tertiary"
-                      : "bg-tertiary/15 text-tertiary ring-1 ring-tertiary/40"
+                      ? `${accentClass} ${accentTextClass}`
+                      : `${isConcord ? "bg-secondary/15 text-secondary" : "bg-tertiary/15 text-tertiary"} ring-1 ${ringClass}`
                   }`}
                 >
                   {server.abbreviation || server.name.charAt(0).toUpperCase()}
                 </div>
                 <div
-                  className="absolute -top-1 -left-1 w-4 h-4 bg-tertiary rounded-full border-2 border-surface-container-low flex items-center justify-center"
+                  className={`absolute -top-1 -left-1 w-4 h-4 ${accentClass} rounded-full border-2 border-surface-container-low flex items-center justify-center`}
                   aria-hidden="true"
                 >
-                  <span
-                    className="material-symbols-outlined text-on-tertiary"
-                    style={{ fontSize: "10px" }}
-                  >
-                    public
-                  </span>
+                  {isConcord ? (
+                    <span
+                      className={`font-headline font-bold ${accentTextClass}`}
+                      style={{ fontSize: "8px", lineHeight: 1 }}
+                    >
+                      C
+                    </span>
+                  ) : (
+                    <span
+                      className={`material-symbols-outlined ${accentTextClass}`}
+                      style={{ fontSize: "10px" }}
+                    >
+                      public
+                    </span>
+                  )}
                 </div>
               </div>
-              <span className="truncate font-body font-medium">{server.name}</span>
-              <span className="text-[10px] uppercase tracking-wider text-tertiary/80 font-label ml-1">
-                federated
-              </span>
+              <div className="min-w-0 flex-1 text-left">
+                <div className="truncate font-body font-medium">{server.name}</div>
+                <div className={`text-[10px] uppercase tracking-wider ${textAccentClass}/80 font-label`}>
+                  {isConcord ? "concord federated" : "matrix federated"}
+                  {placeholder && " • connecting"}
+                </div>
+              </div>
               {hasUnreads && (
-                <div className="w-2.5 h-2.5 rounded-full bg-primary ml-auto flex-shrink-0 node-pulse" />
+                <div className="w-2.5 h-2.5 rounded-full bg-primary flex-shrink-0 node-pulse" />
               )}
             </button>
           );
@@ -576,43 +725,106 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
       {/* Federated (non-local) servers, stacked upward from Explore.
           Rendered in reverse order so the OLDEST federated join sits
           directly above the Explore button and each new join stacks
-          upward away from it. These don't participate in
-          drag-reorder — they're deterministic by join order and the
-          user only gets new entries here via the Explore flow. */}
-      {federatedStack.map((server) => {
+          upward away from it.
+
+          Two visual tiers:
+
+          • Concord-on-Concord federation (isConcord === true) uses
+            the `secondary` palette with a subtle "C" monogram
+            overlay. These are other Concord instances reachable via
+            Matrix federation, and they earn a distinct look because
+            they behave more like "your own servers" than like
+            arbitrary Matrix rooms — same UI capabilities, same
+            chart renderers, same soundboards, etc.
+
+          • Vanilla Matrix federation (isConcord === false) keeps
+            the globe badge + tertiary palette.
+
+          Placeholder entries (from the persistent catalog but not
+          yet visible to the live Matrix client this session) render
+          at reduced opacity and have their onClick disabled — they
+          exist purely so the sidebar has something to show before
+          the sync catches up. */}
+      {federatedStack.map((entry) => {
+        const { server, host, isConcord, placeholder } = entry;
         const isActive = !dmActive && activeServerId === server.id;
-        const hasUnreads = !isActive && server.channels.some(
-          (ch) => (unreadCounts.get(ch.matrix_room_id) ?? 0) > 0,
-        );
+        const hasUnreads =
+          !isActive &&
+          !placeholder &&
+          "channels" in server &&
+          server.channels.some(
+            (ch: { matrix_room_id: string }) =>
+              (unreadCounts.get(ch.matrix_room_id) ?? 0) > 0,
+          );
+        const accentClass = isConcord ? "bg-secondary" : "bg-tertiary";
+        const accentTextClass = isConcord
+          ? "text-on-secondary"
+          : "text-on-tertiary";
+        const inactiveClass = isConcord
+          ? "bg-secondary/15 text-secondary rounded-2xl hover:rounded-xl hover:bg-secondary/25 ring-1 ring-secondary/40"
+          : "bg-tertiary/15 text-tertiary rounded-2xl hover:rounded-xl hover:bg-tertiary/25 ring-1 ring-tertiary/40";
+        const activeClass = isConcord
+          ? "bg-secondary text-on-secondary rounded-xl shadow-[0_0_12px_rgba(120,220,180,0.35)]"
+          : "bg-tertiary text-on-tertiary rounded-xl shadow-[0_0_12px_rgba(180,120,255,0.35)]";
         return (
-          <div key={server.id} className="relative group">
+          <div
+            key={server.id}
+            className={`relative group ${placeholder ? "opacity-55" : ""}`}
+          >
             <div
-              className={`absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-r-full bg-tertiary transition-all ${
+              className={`absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-r-full ${accentClass} transition-all ${
                 isActive ? "h-8" : hasUnreads ? "h-2" : "h-0 group-hover:h-5"
               }`}
             />
             <button
-              onClick={() => handleServerClick(server.id)}
-              title={`${server.name} (federated)`}
-              aria-label={`${server.name} (federated server)`}
+              onClick={
+                placeholder
+                  ? undefined
+                  : () => handleServerClick(server.id)
+              }
+              disabled={placeholder}
+              title={
+                placeholder
+                  ? `${server.name} (${host}) — connecting…`
+                  : isConcord
+                    ? `${server.name} (${host}, Concord instance)`
+                    : `${server.name} (${host}, federated Matrix)`
+              }
+              aria-label={
+                isConcord
+                  ? `${server.name} Concord instance`
+                  : `${server.name} federated Matrix server`
+              }
               className={`btn-press w-12 h-12 flex items-center justify-center text-sm font-headline font-bold transition-all ${
-                isActive
-                  ? "bg-tertiary text-on-tertiary rounded-xl shadow-[0_0_12px_rgba(180,120,255,0.35)]"
-                  : "bg-tertiary/15 text-tertiary rounded-2xl hover:rounded-xl hover:bg-tertiary/25 ring-1 ring-tertiary/40"
-              }`}
+                isActive ? activeClass : inactiveClass
+              } ${placeholder ? "cursor-default" : ""}`}
             >
-              {server.abbreviation || server.name.charAt(0).toUpperCase()}
+              {server.abbreviation ||
+                server.name.charAt(0).toUpperCase()}
             </button>
+            {/* Top-left badge marks the instance type. A globe for
+                vanilla Matrix, a stylised "C" for Concord. Both
+                share the same absolute positioning so the rest of
+                the tile layout is unchanged. */}
             <div
-              className="absolute -top-0.5 -left-0.5 w-4 h-4 bg-tertiary rounded-full border-2 border-surface flex items-center justify-center"
+              className={`absolute -top-0.5 -left-0.5 w-4 h-4 ${accentClass} rounded-full border-2 border-surface flex items-center justify-center`}
               aria-hidden="true"
             >
-              <span
-                className="material-symbols-outlined text-on-tertiary"
-                style={{ fontSize: "10px" }}
-              >
-                public
-              </span>
+              {isConcord ? (
+                <span
+                  className={`font-headline font-bold ${accentTextClass}`}
+                  style={{ fontSize: "8px", lineHeight: 1 }}
+                >
+                  C
+                </span>
+              ) : (
+                <span
+                  className={`material-symbols-outlined ${accentTextClass}`}
+                  style={{ fontSize: "10px" }}
+                >
+                  public
+                </span>
+              )}
             </div>
             {hasUnreads && (
               <div className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-primary rounded-full border-2 border-surface node-pulse" />

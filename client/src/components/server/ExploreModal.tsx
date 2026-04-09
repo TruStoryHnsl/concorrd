@@ -198,6 +198,78 @@ export function ExploreModal({ isOpen, onClose }: Props) {
         });
         const joinedRoomId: string = joined?.roomId ?? roomIdOrAlias;
 
+        // Walk the just-joined room's state for `m.space.parent`
+        // hints and try to ALSO join the parent space. The user's
+        // intent when clicking a room in Explore is "join this part
+        // of the federated network", and in Matrix that usually
+        // means the containing space, not a single loose room.
+        // Joining the parent gives the classifier enough context to
+        // group the clicked room (and any siblings the user also
+        // joins later) as channels under a single space-shaped
+        // sidebar entry — matching the user's mental model of
+        // "one server per federated community".
+        //
+        // Best effort: failures are swallowed. If the parent space
+        // is private, gone, or unreachable, the fallback Pass 2b
+        // grouping inside hydrateFederatedRooms still collapses the
+        // child under a synthetic entry named after the parent
+        // domain. Either way the sidebar doesn't fragment.
+        try {
+          const joinedRoom =
+            typeof (joined as { currentState?: unknown })?.currentState === "object"
+              ? (joined as {
+                  currentState: {
+                    getStateEvents(t: string): Array<{
+                      getStateKey(): string | undefined;
+                    }>;
+                  };
+                })
+              : null;
+          const parentEvents =
+            joinedRoom?.currentState?.getStateEvents("m.space.parent") ?? [];
+          const parentIds: string[] = [];
+          for (const ev of parentEvents) {
+            const pid = ev.getStateKey?.();
+            if (typeof pid === "string" && pid.length > 0) {
+              parentIds.push(pid);
+            }
+          }
+          for (const parentId of parentIds) {
+            // Derive the via hint for the parent from its own
+            // domain. Parent spaces can live on a different
+            // homeserver than the child, but typically they're the
+            // same; either way the domain component of the parent
+            // roomId is a correct via hint.
+            const colonIdx = parentId.lastIndexOf(":");
+            const parentDomain =
+              colonIdx >= 0 ? parentId.slice(colonIdx + 1) : domain;
+            // Fire-and-forget — don't block the main join on the
+            // parent join. If it fails we log and move on; the
+            // hydrator fallback handles the grouping.
+            client
+              .joinRoom(parentId, { viaServers: [parentDomain] })
+              .catch((err: unknown) => {
+                // eslint-disable-next-line no-console
+                console.warn(
+                  `ExploreModal: parent-space join failed for ${parentId}:`,
+                  err instanceof Error ? err.message : err,
+                );
+              });
+          }
+          // Give the SDK a moment to ingest the parent-join state
+          // events before we hydrate — otherwise hydrateFederatedRooms
+          // runs before the parent appears in client.getRooms() and
+          // the Pass 2a classifier misses it, falling back to Pass 2b
+          // naming which is less pretty.
+          if (parentIds.length > 0) {
+            await new Promise((r) => setTimeout(r, 600));
+          }
+        } catch (err) {
+          // Non-fatal — the child-only path still works.
+          // eslint-disable-next-line no-console
+          console.warn("ExploreModal: parent-space lookup failed:", err);
+        }
+
         // Refresh the Concord server list first (picks up any server
         // whose channel happens to include the joined room — e.g.
         // rejoining a room that Concord already manages).

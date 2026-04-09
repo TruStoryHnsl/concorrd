@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import type { Server, Channel, ServerMember } from "../api/concord";
 import {
+  hostnameFromRoomId,
+  useFederatedInstanceStore,
+} from "./federatedInstances";
+import {
   listServers,
   createServer as apiCreateServer,
   createChannel as apiCreateChannel,
@@ -234,18 +238,25 @@ export const useServerStore = create<ServerState>((set, get) => ({
     }
 
     // -----------------------------------------------------------------
-    // Pass 2: read `m.space.child` state events from each space so we
-    // know which federated rooms belong where. A room may appear as a
-    // child of multiple spaces in theory; in practice the first space
-    // claim wins because our sidebar shows one entry per room.
+    // Pass 2a: read `m.space.child` state events from each JOINED
+    // space so we know which federated rooms belong where.
     // -----------------------------------------------------------------
     const roomById = new Map<string, FederatedRoomLike>();
     for (const room of joinedFederated) {
       roomById.set(room.roomId, room);
     }
 
+    // Parent-space-id -> array of child room ids. Populated from BOTH
+    // the downward m.space.child pointers on joined spaces AND the
+    // upward m.space.parent pointers on regular rooms — see Pass 2b
+    // for the latter. This dual-direction walk is what lets Concord
+    // collapse the Mozilla space's children into one sidebar entry
+    // even when the user joined the children directly via the Explore
+    // menu and was never a member of the Mozilla space itself.
+    const parentIdToChildren = new Map<string, string[]>();
+    const parentIdToName = new Map<string, string>();
     const childrenOfSpaces = new Set<string>();
-    const spaceChildIds = new Map<string, string[]>();
+
     for (const space of spaces) {
       const childEvents = space.currentState?.getStateEvents("m.space.child") ?? [];
       const childIds: string[] = [];
@@ -256,29 +267,76 @@ export const useServerStore = create<ServerState>((set, get) => ({
           childrenOfSpaces.add(childId);
         }
       }
-      spaceChildIds.set(space.roomId, childIds);
+      parentIdToChildren.set(space.roomId, childIds);
+      // Joined space's own name wins for the sidebar label when we have it.
+      if (space.name) parentIdToName.set(space.roomId, space.name);
     }
 
     // -----------------------------------------------------------------
-    // Pass 3: build synthetic Server records.
+    // Pass 2b: walk regular rooms for `m.space.parent` hints. Each
+    // regular room can declare "I belong to parent space !foo:host"
+    // via one or more `m.space.parent` state events whose state_key
+    // is the parent space's room id. When multiple regular rooms
+    // point at the same parent id, we group them together under a
+    // single synthetic server — even if the parent space itself is
+    // NOT in client.getRooms() (the user joined the children
+    // directly via Explore, never joined the container).
     //
-    // - One server per SPACE, with channels = the space's child rooms
-    //   the user has actually joined. Spaces with zero joined children
-    //   are skipped (an empty sidebar entry would confuse more than
-    //   help).
+    // When multiple parents are advertised for the same room, we
+    // take the first one — Matrix allows multi-parenting but the
+    // sidebar can only show a room in one place at a time.
+    // -----------------------------------------------------------------
+    const roomToParentId = new Map<string, string>();
+    for (const room of regularRooms) {
+      if (childrenOfSpaces.has(room.roomId)) continue; // already placed
+      const parentEvents =
+        room.currentState?.getStateEvents("m.space.parent") ?? [];
+      for (const event of parentEvents) {
+        const parentId = event.getStateKey?.();
+        if (typeof parentId === "string" && parentId.length > 0) {
+          roomToParentId.set(room.roomId, parentId);
+          childrenOfSpaces.add(room.roomId);
+          const existing = parentIdToChildren.get(parentId) ?? [];
+          existing.push(room.roomId);
+          parentIdToChildren.set(parentId, existing);
+          break; // first parent wins
+        }
+      }
+    }
+
+    // -----------------------------------------------------------------
+    // Pass 3: build synthetic Server records from the
+    // `parentIdToChildren` map (populated by Pass 2a + 2b) plus any
+    // standalone rooms that aren't children of any space.
     //
-    // - One server per standalone federated room — a room the user
-    //   joined directly that isn't a child of any joined space.
+    // - One server per PARENT SPACE (whether joined or inferred via
+    //   m.space.parent hints on children), with channels = the joined
+    //   child rooms.
+    // - One server per STANDALONE room — a regular room that's not a
+    //   child of any space.
+    //
+    // Empty parents (zero joined children) are skipped entirely so
+    // the sidebar never shows a dangling container.
     // -----------------------------------------------------------------
     const synthetic: Server[] = [];
+    const placedRoomIds = new Set<string>();
 
-    for (const space of spaces) {
-      const childIds = spaceChildIds.get(space.roomId) ?? [];
+    for (const [parentId, childIds] of parentIdToChildren) {
+      // Dedupe child ids while preserving insertion order —
+      // m.space.child + m.space.parent walks can both point at the
+      // same room, and we only want to render it once per space.
+      const seen = new Set<string>();
+      const orderedChildIds = childIds.filter((id) => {
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+
       const channels: Channel[] = [];
       let position = 0;
-      for (const childId of childIds) {
+      for (const childId of orderedChildIds) {
         const childRoom = roomById.get(childId);
-        if (!childRoom) continue; // user isn't joined to this child, skip
+        if (!childRoom) continue; // user isn't joined to this child
         const channelName = childRoom.name || childId;
         channels.push({
           // id=0 + unique position is a sentinel for synthetic channels.
@@ -290,15 +348,26 @@ export const useServerStore = create<ServerState>((set, get) => ({
           matrix_room_id: childId,
           position,
         });
+        placedRoomIds.add(childId);
         position++;
       }
-      // Skip empty spaces — the user is joined to the container but
-      // none of its child rooms, so there's nothing to render.
+      // Skip empty parents — container with no joined children.
       if (channels.length === 0) continue;
 
-      const name = space.name || space.roomId;
+      // Name resolution:
+      //   1. If we have a joined-space name, use it.
+      //   2. Else try the parent id's inferred domain-portion as a
+      //      best-effort label ("!foo:mozilla.org" → "mozilla.org").
+      //   3. Fall back to the raw parent id.
+      const joinedSpaceName = parentIdToName.get(parentId);
+      let name = joinedSpaceName;
+      if (!name) {
+        const colonIdx = parentId.lastIndexOf(":");
+        name = colonIdx >= 0 ? parentId.slice(colonIdx + 1) : parentId;
+      }
+
       synthetic.push({
-        id: `${FEDERATED_SERVER_ID_PREFIX}${space.roomId}`,
+        id: `${FEDERATED_SERVER_ID_PREFIX}${parentId}`,
         name,
         icon_url: null,
         owner_id: userId,
@@ -310,9 +379,10 @@ export const useServerStore = create<ServerState>((set, get) => ({
       });
     }
 
+    // Standalone rooms: a regular room that's not a child of any
+    // space parent (neither via m.space.child nor m.space.parent).
     for (const room of regularRooms) {
-      // If this room is already displayed as a channel under a space,
-      // don't also render it as a standalone entry.
+      if (placedRoomIds.has(room.roomId)) continue;
       if (childrenOfSpaces.has(room.roomId)) continue;
 
       const name = room.name || room.roomId;
@@ -334,6 +404,44 @@ export const useServerStore = create<ServerState>((set, get) => ({
           },
         ],
         federated: true,
+      });
+    }
+
+    // Record every hostname we just rendered a synthetic for in the
+    // persistent federated-instance catalog. The sidebar reads from
+    // the catalog at mount time so tiles appear immediately on page
+    // load, before the Matrix client has finished syncing. Also
+    // enables the search filter and the is-Concord distinction.
+    //
+    // We collect unique hostnames first to avoid N calls into the
+    // persist middleware when a space has many channels on the same
+    // homeserver.
+    const seenHosts = new Set<string>();
+    for (const srv of synthetic) {
+      // Synthetic server id is either `federated:<roomId>` (space)
+      // or `federated:<roomId>` (single room). Strip the prefix and
+      // extract the domain.
+      const roomId = srv.id.slice(FEDERATED_SERVER_ID_PREFIX.length);
+      const host = hostnameFromRoomId(roomId);
+      if (host) seenHosts.add(host);
+      for (const ch of srv.channels) {
+        const childHost = hostnameFromRoomId(ch.matrix_room_id);
+        if (childHost) seenHosts.add(childHost);
+      }
+    }
+    const instanceStore = useFederatedInstanceStore.getState();
+    for (const host of seenHosts) {
+      // Best-effort metadata: if any synthetic has a parent name
+      // matching this host, use that as the display name for now;
+      // the well-known probe will overwrite with the real
+      // instance_name if the host is a Concord instance.
+      const matchingServer = synthetic.find((s) =>
+        hostnameFromRoomId(
+          s.id.slice(FEDERATED_SERVER_ID_PREFIX.length),
+        ) === host,
+      );
+      instanceStore.recordSeen(host, {
+        displayName: matchingServer?.name,
       });
     }
 

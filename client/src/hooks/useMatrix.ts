@@ -145,8 +145,30 @@ export function useRooms() {
         // loose rooms appear in the sidebar, and rooms the user has
         // left disappear. This is a client-side-only augmentation;
         // the Concord API server list is unaffected.
-        import("../stores/server").then(({ useServerStore }) => {
+        //
+        // After hydrating, probe every newly-seen federated
+        // hostname for a /.well-known/concord/client document so
+        // we can visually mark other Concord instances distinctly
+        // from vanilla Matrix hosts. Probes are de-duplicated by
+        // the store and cached across page reloads via the
+        // persist middleware, so we don't hammer the network on
+        // every sync.
+        Promise.all([
+          import("../stores/server"),
+          import("../stores/federatedInstances"),
+        ]).then(([{ useServerStore }, { useFederatedInstanceStore }]) => {
           useServerStore.getState().hydrateFederatedRooms(client);
+          const instanceStore = useFederatedInstanceStore.getState();
+          for (const [host, inst] of Object.entries(instanceStore.instances)) {
+            // Only probe hosts we haven't determined the Concord-
+            // status of yet. Once isConcord is true, we're done;
+            // once we've tried and got a clear non-Concord answer
+            // (status "live" but isConcord still false), we skip
+            // until the user manually refreshes.
+            if (inst.isConcord) continue;
+            if (inst.status === "live") continue;
+            instanceStore.probeConcordHost(host);
+          }
         });
       }
     };
