@@ -163,6 +163,29 @@ export interface Reaction {
   eventIds: Record<string, string>; // userId -> reaction event ID
 }
 
+/**
+ * ChartAttachment — typed chart spec attached to a Matrix message via the
+ * `com.concord.chart` custom content field. Matrix permits namespaced custom
+ * fields on `m.room.message`; they are preserved verbatim through federation
+ * and on reload, so no separate persistence layer is needed. A chart is
+ * authored by an agent (e.g. OpenClaw) and rendered client-side by
+ * react-chartjs-2. The `options` field is a raw chart.js options object.
+ */
+export interface ChartAttachment {
+  type: "bar" | "line" | "pie";
+  data: {
+    labels: string[];
+    datasets: Array<{
+      label?: string;
+      data: number[];
+      backgroundColor?: string | string[];
+      borderColor?: string | string[];
+    }>;
+  };
+  options?: Record<string, unknown>;
+  title?: string;
+}
+
 export interface ChatMessage {
   id: string;
   sender: string;
@@ -174,6 +197,8 @@ export interface ChatMessage {
   url: string | null;
   info?: { mimetype?: string; size?: number; w?: number; h?: number };
   reactions: Reaction[];
+  /** Raw chart attachment payload as received from Matrix (untrusted). */
+  chartRaw?: unknown;
 }
 
 export interface RoomMessagesResult {
@@ -302,6 +327,12 @@ export function useRoomMessages(roomId: string | null): RoomMessagesResult {
             }
           }
 
+          // Chart attachments ride on a namespaced custom field per Matrix
+          // extensibility rules; they survive federation + reload natively.
+          const chartRaw = redacted
+            ? undefined
+            : (content as Record<string, unknown>)["com.concord.chart"];
+
           return {
             id,
             sender: ev.getSender()!,
@@ -313,6 +344,7 @@ export function useRoomMessages(roomId: string | null): RoomMessagesResult {
             url,
             info: redacted ? undefined : (content.info as ChatMessage["info"]),
             reactions,
+            chartRaw,
           };
         });
 
@@ -320,7 +352,7 @@ export function useRoomMessages(roomId: string | null): RoomMessagesResult {
       const idsKey = msgs
         .map(
           (m) =>
-            `${m.id}:${m.redacted}:${m.edited}:${m.body.length}:${m.reactions.map((r) => `${r.emoji}${r.count}`).join("")}`,
+            `${m.id}:${m.redacted}:${m.edited}:${m.body.length}:${m.chartRaw ? "c" : "."}:${m.reactions.map((r) => `${r.emoji}${r.count}`).join("")}`,
         )
         .join(",");
       if (idsKey !== lastIdsRef.current) {

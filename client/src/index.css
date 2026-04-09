@@ -319,3 +319,60 @@ textarea,
     -webkit-tap-highlight-color: transparent;
   }
 }
+
+/* ── INS-016: Mobile Pill Row + Dashboard Sheet ── */
+.concord-mobile-pill-row {
+  background: rgba(23, 26, 29, 0.72);
+  border: 1px solid rgba(164, 165, 255, 0.12);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(164, 165, 255, 0.04);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: blur(20px) saturate(140%);
+}
+.concord-mobile-pill {
+  /* capsule pill look — icon-only, labelled via aria-label */
+  min-height: 44px; /* iOS HIG minimum tap target */
+}
+.concord-mobile-pill-active {
+  background: linear-gradient(
+    135deg,
+    rgba(164, 165, 255, 0.22),
+    rgba(148, 150, 255, 0.10)
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(164, 165, 255, 0.32),
+    0 0 14px rgba(164, 165, 255, 0.18);
+}
+@media (pointer: coarse) {
+  .concord-mobile-pill {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Slide-up sheet — shares the INS-001 easing with the existing nav. */
+.concord-sheet-root {
+  /* Always mounted; visibility flips on a delay when closing so the slide
+     animation can play out before we remove the sheet from the hit area. */
+  visibility: hidden;
+  transition: visibility 0s linear 300ms;
+}
+.concord-sheet-root-open {
+  visibility: visible;
+  transition: visibility 0s linear 0s;
+}
+.concord-sheet-backdrop {
+  opacity: 0;
+  transition: opacity 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.concord-sheet-backdrop-open {
+  opacity: 1;
+}
+.concord-sheet-panel {
+  transform: translateY(100%);
+  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
+}
+.concord-sheet-panel-open {
+  transform: translateY(0);
+}
