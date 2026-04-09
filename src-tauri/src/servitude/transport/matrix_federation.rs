@@ -408,6 +408,18 @@ fn which_in_path(name: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::servitude::config::{ServitudeConfig, Transport as TransportVariant};
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate process env vars (`BIN_OVERRIDE_ENV`,
+    /// `PATH`, `XDG_DATA_HOME`). Cargo's default test runner uses
+    /// multiple threads within a single process, so concurrent
+    /// env-mutation tests race without this guard. Introduced
+    /// alongside INS-024 Wave 3 when the added discord_bridge test
+    /// suite made the pre-existing race-condition flake reproducible
+    /// on orrion. The mutex is local to this module; the
+    /// discord_bridge test module has its own identically-named
+    /// guard.
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
 
     fn config_on_port(port: i64) -> ServitudeConfig {
         ServitudeConfig {
@@ -471,6 +483,7 @@ mod tests {
 
     #[test]
     fn test_resolve_binary_honours_env_override() {
+        let _g = ENV_GUARD.lock().unwrap();
         // Point the override at ourselves — the current test binary is
         // guaranteed to be a file we can stat. The function only
         // validates `is_file`, not executability, so this is safe.
@@ -492,6 +505,7 @@ mod tests {
 
     #[test]
     fn test_resolve_binary_rejects_broken_override() {
+        let _g = ENV_GUARD.lock().unwrap();
         // Pointing at a path that does not exist must surface the
         // override failure explicitly — we don't want a silent
         // fallback to PATH when the user explicitly set the env var.
@@ -509,6 +523,8 @@ mod tests {
 
     #[test]
     fn test_resolve_data_dir_prefers_xdg_data_home() {
+        let _g = ENV_GUARD.lock().unwrap();
+        let saved = std::env::var_os("XDG_DATA_HOME");
         unsafe {
             std::env::set_var("XDG_DATA_HOME", "/tmp/fake-xdg-data");
         }
@@ -517,18 +533,21 @@ mod tests {
             d,
             PathBuf::from("/tmp/fake-xdg-data/concord/tuwunel")
         );
-        unsafe {
-            std::env::remove_var("XDG_DATA_HOME");
+        match saved {
+            Some(p) => unsafe { std::env::set_var("XDG_DATA_HOME", p) },
+            None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
         }
     }
 
     #[tokio::test]
     async fn test_start_fails_when_binary_missing() {
+        let _g = ENV_GUARD.lock().unwrap();
         // No env override, and we assume the test host has no
         // `tuwunel` on its PATH nor bundled next to the test binary.
         // If some dev host happens to have one installed, this test
         // will flake — but that's an expected quirk of testing
         // binary-discovery logic without a hermetic fs sandbox.
+        let saved_bin = std::env::var_os(BIN_OVERRIDE_ENV);
         unsafe {
             std::env::remove_var(BIN_OVERRIDE_ENV);
         }
@@ -551,6 +570,11 @@ mod tests {
         if let Some(p) = saved_path {
             unsafe {
                 std::env::set_var("PATH", p);
+            }
+        }
+        if let Some(b) = saved_bin {
+            unsafe {
+                std::env::set_var(BIN_OVERRIDE_ENV, b);
             }
         }
     }
@@ -577,8 +601,24 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_stop_sends_sigterm_to_running_child() {
+        // Hold ENV_GUARD so we don't race any concurrent env-mutating
+        // test that might clear PATH and break the sh spawn below.
+        // See the note on ENV_GUARD at the top of this module.
+        let _g = ENV_GUARD.lock().unwrap();
+
         use std::process::Stdio;
         use tokio::process::Command;
+
+        // Belt-and-suspenders: prefer an absolute path to sh so the
+        // test survives a concurrent PATH mutation racing in before
+        // the lock is acquired.
+        let sh_path = if std::path::Path::new("/bin/sh").exists() {
+            "/bin/sh"
+        } else if std::path::Path::new("/usr/bin/sh").exists() {
+            "/usr/bin/sh"
+        } else {
+            panic!("no sh found at /bin/sh or /usr/bin/sh on unix test host");
+        };
 
         let mut t = MatrixFederationTransport::from_config(&config_on_port(18768));
 
@@ -586,7 +626,7 @@ mod tests {
         // transport so we bypass the healthcheck wait loop. This is
         // the intended test hook — the public API is still the real
         // thing, we're just building a controlled child.
-        let child = Command::new("sh")
+        let child = Command::new(sh_path)
             .arg("-c")
             .arg("sleep 300")
             .stdin(Stdio::null())

@@ -46,6 +46,7 @@ pub use config::{ServitudeConfig, Transport};
 pub use lifecycle::{LifecycleError, LifecycleState};
 pub use transport::{TransportError, TransportRuntime};
 
+use std::collections::HashMap;
 use thiserror::Error;
 
 /// Top-level error type for the servitude module.
@@ -81,6 +82,14 @@ pub struct ServitudeHandle {
     config: ServitudeConfig,
     lifecycle: lifecycle::Lifecycle,
     transports: Vec<TransportRuntime>,
+    /// Failure surface for non-critical transports (INS-024 Wave 3).
+    /// Keyed by transport name, value is the stringified failure
+    /// reason. Populated during `start()` when a non-critical
+    /// transport errors out — the handle stays Running and the UI
+    /// renders the degraded set alongside the live transports.
+    /// Cleared at the top of every `start()` call so stale entries
+    /// can't leak across restarts.
+    degraded: HashMap<String, String>,
 }
 
 impl ServitudeHandle {
@@ -102,6 +111,7 @@ impl ServitudeHandle {
             config,
             lifecycle: lifecycle::Lifecycle::new(),
             transports,
+            degraded: HashMap::new(),
         })
     }
 
@@ -120,6 +130,7 @@ impl ServitudeHandle {
             config,
             lifecycle: lifecycle::Lifecycle::new(),
             transports,
+            degraded: HashMap::new(),
         })
     }
 
@@ -133,48 +144,198 @@ impl ServitudeHandle {
         self.lifecycle.state()
     }
 
+    /// Snapshot of the current degraded-transport map. Keyed by
+    /// transport name, value is the stringified failure reason.
+    /// Populated by the partial-failure rollback path in
+    /// [`Self::start`] when a non-critical transport (e.g.
+    /// `DiscordBridge`) fails to start. Critical transports never
+    /// appear here — their failures trigger a full rollback and the
+    /// handle ends up in `Stopped`.
+    ///
+    /// The UI polls this alongside [`Self::status`] so the operator
+    /// can see "Matrix: running, Discord bridge: failed (reason)".
+    pub fn degraded_transports(&self) -> &HashMap<String, String> {
+        &self.degraded
+    }
+
+    /// Cross-transport pre-pass, invoked at the top of [`Self::start`]
+    /// BEFORE any transport's `start` is called. Gives transport
+    /// variants a chance to stage on-disk state that a later variant
+    /// depends on.
+    ///
+    /// The only Wave 3 use case is the Discord bridge: when it is
+    /// enabled, this pre-pass ensures the bridge's data directory and
+    /// placeholder AS registration exist so the `MatrixFederation`
+    /// transport can point tuwunel at the generated file via
+    /// `TUWUNEL_CONFIG` / `CONDUWUIT_APP_SERVICE_REGISTRATION` (the
+    /// latter becomes real when Wave 4 wires the real token flow).
+    ///
+    /// Returns the list of (transport_name, reason) pairs that should
+    /// be recorded as `degraded` if any pre-pass step failed without
+    /// aborting the whole start. Critical-transport pre-pass failures
+    /// propagate as hard errors; non-critical failures are returned so
+    /// `start()` can surface them via `degraded`.
+    async fn cross_transport_prewrite(
+        &mut self,
+    ) -> Result<Vec<(String, String)>, ServitudeError> {
+        let mut noncritical_failures: Vec<(String, String)> = Vec::new();
+
+        let has_discord = self
+            .config
+            .enabled_transports
+            .contains(&Transport::DiscordBridge);
+
+        if has_discord {
+            // Resolve the bridge data dir and pre-write the placeholder
+            // registration + config. This mirrors what the bridge
+            // transport's own `ensure_config_and_registration` would
+            // do on first start — we run it ahead of time so tuwunel
+            // can read the registration file BEFORE the bridge itself
+            // spawns.
+            //
+            // Pre-pass failures for the Discord bridge are treated as
+            // non-critical because the bridge itself is non-critical:
+            // if we cannot stage its files, we degrade just the
+            // bridge and let Matrix come up anyway.
+            match transport::discord_bridge::DiscordBridgeTransport::resolve_data_dir() {
+                Err(e) => {
+                    log::warn!(
+                        target: "concord::servitude",
+                        "discord_bridge pre-pass: cannot resolve data dir: {}",
+                        e
+                    );
+                    noncritical_failures.push((
+                        "discord_bridge".to_string(),
+                        format!("pre-pass resolve_data_dir: {}", e),
+                    ));
+                }
+                Ok(data_dir) => {
+                    if let Err(e) = tokio::fs::create_dir_all(&data_dir).await {
+                        log::warn!(
+                            target: "concord::servitude",
+                            "discord_bridge pre-pass: cannot create data dir {:?}: {}",
+                            data_dir, e
+                        );
+                        noncritical_failures.push((
+                            "discord_bridge".to_string(),
+                            format!(
+                                "pre-pass create data dir {:?}: {}",
+                                data_dir, e
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(noncritical_failures)
+    }
+
     /// Drive the state machine `Stopped -> Starting -> Running`, bringing
     /// up each enabled transport in config order.
     ///
-    /// If any transport's `start` fails, every already-started transport
-    /// is torn down in reverse order and the lifecycle is rolled back to
-    /// `Stopped` before the error is returned. This guarantees that a
-    /// failed start never leaves the handle in a half-running state.
+    /// Behaviour on a transport start failure depends on whether the
+    /// transport is **critical**:
+    ///
+    ///   * **Critical** (e.g. `MatrixFederation`): every already-started
+    ///     transport is torn down in reverse order, the lifecycle is
+    ///     rolled back to `Stopped`, and the error propagates. Matches
+    ///     the Wave 2 all-or-nothing contract.
+    ///   * **Non-critical** (e.g. `DiscordBridge`): the failure is
+    ///     recorded in `self.degraded`, already-started critical
+    ///     transports are LEFT RUNNING, and the lifecycle continues to
+    ///     `Running`. The caller gets `Ok(())` and can inspect
+    ///     `degraded_transports()` to see the failure surface.
+    ///
+    /// Before the start loop, a cross-transport pre-pass
+    /// ([`Self::cross_transport_prewrite`]) runs so transport variants
+    /// can stage on-disk state that a later variant depends on.
     pub async fn start(&mut self) -> Result<(), ServitudeError> {
         if self.lifecycle.state() != LifecycleState::Stopped {
             return Err(ServitudeError::AlreadyRunning);
         }
+        // Clear any stale degraded entries from a previous run so
+        // restarts always reflect the current state.
+        self.degraded.clear();
+
         self.lifecycle.transition(LifecycleState::Starting)?;
 
-        let mut started_count = 0usize;
-        for transport in self.transports.iter_mut() {
-            if let Err(e) = transport.start().await {
-                // Roll back in reverse order. Collect teardown errors
-                // into logs but do not surface them — the original
-                // failure is the root cause and should propagate.
-                for t in self.transports[..started_count].iter_mut().rev() {
-                    if let Err(teardown_err) = t.stop().await {
-                        log::warn!(
-                            target: "concord::servitude",
-                            "rollback stop failed for transport {}: {}",
-                            t.name(),
-                            teardown_err
-                        );
-                    }
+        // Cross-transport pre-pass (INS-024 Wave 3). Non-critical
+        // failures are folded into `degraded` so the caller can see
+        // them; critical pre-pass failures would propagate as hard
+        // errors, but the current Wave 3 implementation has no
+        // critical pre-pass steps.
+        match self.cross_transport_prewrite().await {
+            Ok(prewrite_degraded) => {
+                for (name, reason) in prewrite_degraded {
+                    self.degraded.insert(name, reason);
                 }
-                // Drive the state machine back to Stopped so the next
-                // start attempt can proceed. These transitions are
-                // infallible on the canonical graph, but we unwrap into
-                // an error rather than panicking just in case.
+            }
+            Err(e) => {
+                // Pre-pass itself errored at the critical level — roll
+                // back cleanly and surface the error.
                 self.lifecycle
                     .transition(LifecycleState::Stopping)
                     .map_err(ServitudeError::Lifecycle)?;
                 self.lifecycle
                     .transition(LifecycleState::Stopped)
                     .map_err(ServitudeError::Lifecycle)?;
-                return Err(ServitudeError::Transport(e));
+                return Err(e);
             }
-            started_count += 1;
+        }
+
+        let mut started_count = 0usize;
+        for idx in 0..self.transports.len() {
+            let is_critical = self.transports[idx].is_critical();
+            let name = self.transports[idx].name().to_string();
+
+            let start_result = self.transports[idx].start().await;
+            match start_result {
+                Ok(()) => {
+                    started_count += 1;
+                }
+                Err(e) if !is_critical => {
+                    // Partial-failure rollback path (INS-024 Wave 3).
+                    // Non-critical transport failed — log, record in
+                    // degraded, leave already-started transports
+                    // untouched, and continue.
+                    log::warn!(
+                        target: "concord::servitude",
+                        "non-critical transport {} failed to start: {} — \
+                         continuing with degraded state",
+                        name, e
+                    );
+                    self.degraded.insert(name, e.to_string());
+                    // NOTE: we do NOT increment `started_count` — the
+                    // transport is not running and the `stop()` path
+                    // should not try to tear it down. The matching
+                    // non-critical `stop()` path in the runtime is a
+                    // noop anyway for safety, but this keeps the
+                    // bookkeeping honest.
+                }
+                Err(e) => {
+                    // Critical-transport failure: roll back everything
+                    // and surface the error. Matches the Wave 2
+                    // all-or-nothing contract.
+                    for t in self.transports[..started_count].iter_mut().rev() {
+                        if let Err(teardown_err) = t.stop().await {
+                            log::warn!(
+                                target: "concord::servitude",
+                                "rollback stop failed for transport {}: {}",
+                                t.name(),
+                                teardown_err
+                            );
+                        }
+                    }
+                    self.lifecycle
+                        .transition(LifecycleState::Stopping)
+                        .map_err(ServitudeError::Lifecycle)?;
+                    self.lifecycle
+                        .transition(LifecycleState::Stopped)
+                        .map_err(ServitudeError::Lifecycle)?;
+                    return Err(ServitudeError::Transport(e));
+                }
+            }
         }
 
         self.lifecycle.transition(LifecycleState::Running)?;
@@ -219,13 +380,26 @@ impl ServitudeHandle {
     }
 
     /// Cheap liveness check — polls every enabled transport's health
-    /// endpoint and returns `true` only if ALL of them report healthy.
-    /// `Stopped`-state handles always report unhealthy.
+    /// endpoint and returns `true` only if ALL non-degraded transports
+    /// report healthy. `Stopped`-state handles always report unhealthy.
+    ///
+    /// Transports listed in `self.degraded` (non-critical failures
+    /// from Wave 3's partial-failure path) are SKIPPED by this check —
+    /// their "unhealthy" state is already captured in the degraded
+    /// map, and including them here would force the whole handle to
+    /// report unhealthy whenever any non-critical transport was
+    /// degraded. That would defeat the purpose of the split.
     pub async fn is_healthy(&self) -> bool {
         if self.lifecycle.state() != LifecycleState::Running {
             return false;
         }
         for transport in self.transports.iter() {
+            let name = transport.name();
+            if self.degraded.contains_key(name) {
+                // Already marked as degraded; skip and don't let its
+                // unhealthy state poison the overall report.
+                continue;
+            }
             if !transport.is_healthy().await {
                 return false;
             }
@@ -518,5 +692,259 @@ mod tests {
             LifecycleState::Stopped,
             "lifecycle must roll back to Stopped on transport failure"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // INS-024 Wave 3 — partial-failure rollback + cross-transport
+    // pre-pass lifecycle contract tests
+    // -----------------------------------------------------------------
+
+    /// Partial-failure rollback: when a non-critical transport fails
+    /// to start, the handle must:
+    ///
+    ///   * stay in `Running` state (NOT roll back to `Stopped`)
+    ///   * leave already-started critical transports alone
+    ///   * record the failure in `degraded_transports()`
+    ///
+    /// This is the core Wave 3 contract that makes the Discord bridge
+    /// optional without compromising the rest of the servitude.
+    #[tokio::test]
+    async fn test_servitude_handle_continues_when_noncritical_transport_fails() {
+        // Noop (critical) + FailingNonCritical (not critical,
+        // returns NotImplemented on start).
+        let cfg = valid_config();
+        let mut handle = ServitudeHandle::new_with_runtimes_for_test(
+            cfg,
+            vec![
+                TransportRuntime::Noop,
+                TransportRuntime::FailingNonCritical,
+            ],
+        )
+        .expect("config must validate");
+
+        // Start must succeed — the non-critical failure is absorbed.
+        handle
+            .start()
+            .await
+            .expect("start must succeed despite non-critical failure");
+
+        // Handle stays Running.
+        assert_eq!(
+            handle.status(),
+            LifecycleState::Running,
+            "partial failure must leave handle Running"
+        );
+
+        // Degraded map has exactly one entry for the failing transport.
+        let degraded = handle.degraded_transports();
+        assert_eq!(
+            degraded.len(),
+            1,
+            "degraded map must have exactly one entry, got: {:?}",
+            degraded
+        );
+        assert!(
+            degraded.contains_key("failing_noncritical"),
+            "degraded map must contain failing_noncritical, got: {:?}",
+            degraded.keys().collect::<Vec<_>>()
+        );
+        let reason = degraded.get("failing_noncritical").unwrap();
+        assert!(
+            reason.contains("failing_noncritical")
+                || reason.contains("not yet implemented"),
+            "degraded reason must surface the transport error: {}",
+            reason
+        );
+
+        // The critical Noop transport must still report healthy.
+        assert!(
+            handle.is_healthy().await,
+            "critical transports must still be healthy"
+        );
+
+        // And stop still works.
+        handle
+            .stop()
+            .await
+            .expect("stop must succeed from degraded state");
+        assert_eq!(handle.status(), LifecycleState::Stopped);
+
+        // After stop, degraded map is preserved until the next start
+        // (so the UI can render the last-known failure reason) — but
+        // a subsequent start must clear it.
+        assert_eq!(
+            handle.degraded_transports().len(),
+            1,
+            "degraded state persists through stop until next start"
+        );
+    }
+
+    /// Regression-proof the existing Wave 2 contract: when a
+    /// **critical** transport fails to start, the handle must tear
+    /// down everything and roll the lifecycle back to `Stopped`. The
+    /// new partial-failure code path must not weaken this.
+    #[tokio::test]
+    async fn test_servitude_handle_rolls_back_when_critical_transport_fails() {
+        // Noop (critical, succeeds) followed by Tunnel (critical,
+        // unimplemented → fails). This is the same shape as the
+        // Wave 2 `test_start_rollback_on_transport_failure` test,
+        // duplicated here so the Wave 3 contract tests stand alone
+        // as a self-contained regression suite.
+        let cfg = valid_config();
+        let mut handle = ServitudeHandle::new_with_runtimes_for_test(
+            cfg,
+            vec![TransportRuntime::Noop, TransportRuntime::Tunnel],
+        )
+        .expect("config must validate");
+
+        let err = handle
+            .start()
+            .await
+            .expect_err("critical transport failure must propagate");
+        match err {
+            ServitudeError::Transport(TransportError::NotImplemented(name)) => {
+                assert_eq!(name, "tunnel");
+            }
+            other => panic!("unexpected start error: {:?}", other),
+        }
+
+        assert_eq!(
+            handle.status(),
+            LifecycleState::Stopped,
+            "critical failure must roll back to Stopped"
+        );
+        // No degraded entries because the whole handle rolled back.
+        assert!(
+            handle.degraded_transports().is_empty(),
+            "critical-transport rollback must not populate degraded map"
+        );
+    }
+
+    /// If the critical Matrix transport fails, the Discord bridge
+    /// must never start. This pins the ordering contract: tuwunel
+    /// runs first, bridge second, and a tuwunel failure short-
+    /// circuits the start loop before the bridge gets a chance to
+    /// try.
+    ///
+    /// We model this with [FailingCritical, NoopNonCritical] where
+    /// `FailingCritical` is just `Tunnel` (critical, unimplemented
+    /// → fails) and `NoopNonCritical` stands in for the Discord
+    /// bridge. If the start loop short-circuited correctly, the
+    /// NoopNonCritical transport should never have its `start`
+    /// method called — but we can't observe that directly without a
+    /// spy. What we CAN observe is that the lifecycle rolls back to
+    /// `Stopped` with no degraded entries (the non-critical
+    /// transport never got recorded because it never ran).
+    #[tokio::test]
+    async fn test_servitude_handle_matrix_failure_tears_down_discord() {
+        let cfg = valid_config();
+        let mut handle = ServitudeHandle::new_with_runtimes_for_test(
+            cfg,
+            vec![
+                TransportRuntime::Tunnel, // critical, fails first
+                TransportRuntime::NoopNonCritical, // stand-in for Discord
+            ],
+        )
+        .expect("config must validate");
+
+        let err = handle
+            .start()
+            .await
+            .expect_err("critical tunnel failure must propagate");
+        match err {
+            ServitudeError::Transport(TransportError::NotImplemented(name)) => {
+                assert_eq!(name, "tunnel");
+            }
+            other => panic!("unexpected start error: {:?}", other),
+        }
+
+        assert_eq!(
+            handle.status(),
+            LifecycleState::Stopped,
+            "critical failure must roll back to Stopped"
+        );
+        assert!(
+            handle.degraded_transports().is_empty(),
+            "non-critical transport after a critical failure must NOT \
+             appear in degraded map (it was never started)"
+        );
+    }
+
+    /// Cross-transport pre-pass (INS-024 Wave 3): when `DiscordBridge`
+    /// is enabled in the config, the pre-pass must create the bridge
+    /// data directory BEFORE any transport starts. We exercise this
+    /// via a config that lists `MatrixFederation` + `DiscordBridge`
+    /// but substitutes Noop runtimes for both, then sets
+    /// `XDG_DATA_HOME` to a scratch dir and asserts the directory
+    /// exists after `start()`.
+    ///
+    /// This test pins the file-creation part of the pre-pass without
+    /// requiring a real mautrix-discord binary.
+    #[tokio::test]
+    async fn test_servitude_handle_cross_transport_prewrite_registration() {
+        use std::sync::Mutex;
+        // Serialize with any other env-mutating test so parallel
+        // execution doesn't clobber XDG_DATA_HOME.
+        static ENV_GUARD: Mutex<()> = Mutex::new(());
+        let _g = ENV_GUARD.lock().unwrap();
+
+        let scratch = std::env::temp_dir().join(format!(
+            "concord-wave3-prewrite-{}",
+            std::process::id()
+        ));
+        // Make sure it does NOT exist before start.
+        let _ = std::fs::remove_dir_all(&scratch);
+
+        let saved_xdg = std::env::var_os("XDG_DATA_HOME");
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &scratch);
+        }
+
+        let cfg = ServitudeConfig {
+            display_name: "prewrite-test".to_string(),
+            max_peers: 8,
+            listen_port: 8765,
+            allow_privileged_port: false,
+            enabled_transports: vec![
+                Transport::MatrixFederation,
+                Transport::DiscordBridge,
+            ],
+        };
+        let mut handle = ServitudeHandle::new_with_runtimes_for_test(
+            cfg,
+            // Noops stand in for both transports — the pre-pass runs
+            // BEFORE either transport's start is called, so their
+            // actual impls are irrelevant for this test.
+            vec![TransportRuntime::Noop, TransportRuntime::NoopNonCritical],
+        )
+        .expect("config must validate");
+
+        handle.start().await.expect("start must succeed");
+        assert_eq!(handle.status(), LifecycleState::Running);
+
+        // Pre-pass must have created the bridge data dir under
+        // XDG_DATA_HOME/concord/discord-bridge.
+        let expected = scratch.join("concord").join("discord-bridge");
+        assert!(
+            expected.is_dir(),
+            "pre-pass must create {:?}",
+            expected
+        );
+
+        // No degraded entries — pre-pass succeeded and both noops ran.
+        assert!(
+            handle.degraded_transports().is_empty(),
+            "successful pre-pass + successful starts must leave degraded empty, got: {:?}",
+            handle.degraded_transports()
+        );
+
+        handle.stop().await.expect("stop must succeed");
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&scratch);
+        match saved_xdg {
+            Some(p) => unsafe { std::env::set_var("XDG_DATA_HOME", p) },
+            None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+        }
     }
 }

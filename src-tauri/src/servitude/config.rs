@@ -36,6 +36,13 @@ pub enum Transport {
     Tunnel,
     /// Matrix federation — the canonical Concord stable transport.
     MatrixFederation,
+    /// Sandboxed mautrix-discord application-service bridge. Must be
+    /// listed strictly after `MatrixFederation` in `enabled_transports`
+    /// because the bridge process attaches to the embedded tuwunel via
+    /// a pre-written AS registration file (see the cross-transport
+    /// pre-pass in `ServitudeHandle::start`). Linux-only at the
+    /// transport layer — macOS / Windows return `NotImplemented`.
+    DiscordBridge,
 }
 
 /// Validated servitude configuration.
@@ -164,6 +171,44 @@ impl ServitudeConfig {
         if self.enabled_transports.is_empty() {
             return Err(ConfigError::NoTransportsEnabled);
         }
+
+        // Cross-transport ordering invariants for the Discord bridge.
+        //
+        // The bridge is a child process of the embedded servitude, not
+        // a peer transport. It attaches to the Matrix homeserver via a
+        // Matrix Application Service (AS) registration file written
+        // during the pre-pass in `ServitudeHandle::start`. Two things
+        // follow from that:
+        //
+        //   1. The bridge cannot start without a running tuwunel, so
+        //      `MatrixFederation` MUST be in the enabled list when
+        //      `DiscordBridge` is requested.
+        //   2. Start ordering must go tuwunel-first, bridge-second,
+        //      otherwise the bridge would race the homeserver on
+        //      startup (the bridge opens an HTTP connection to
+        //      `127.0.0.1:<port>` as its very first action and would
+        //      crash with a connection refused error).
+        //
+        // Both checks fail fast with structured errors so a typo in
+        // the config never lands on disk or makes it to the runtime.
+        let discord_idx = self
+            .enabled_transports
+            .iter()
+            .position(|t| *t == Transport::DiscordBridge);
+        if let Some(discord_idx) = discord_idx {
+            let matrix_idx = self
+                .enabled_transports
+                .iter()
+                .position(|t| *t == Transport::MatrixFederation);
+            match matrix_idx {
+                None => return Err(ConfigError::DiscordBridgeRequiresMatrix),
+                Some(matrix_idx) if matrix_idx >= discord_idx => {
+                    return Err(ConfigError::DiscordBridgeMustFollowMatrix);
+                }
+                Some(_) => {}
+            }
+        }
+
         Ok(())
     }
 }
@@ -191,6 +236,20 @@ pub enum ConfigError {
 
     #[error("at least one transport must be enabled in enabled_transports")]
     NoTransportsEnabled,
+
+    #[error(
+        "discord_bridge transport requires matrix_federation to be enabled \
+         in enabled_transports — the bridge cannot run without the embedded \
+         tuwunel homeserver"
+    )]
+    DiscordBridgeRequiresMatrix,
+
+    #[error(
+        "discord_bridge transport must be listed AFTER matrix_federation \
+         in enabled_transports — the bridge races tuwunel on startup if \
+         brought up first"
+    )]
+    DiscordBridgeMustFollowMatrix,
 
     #[error("settings store error: {0}")]
     Store(String),
@@ -326,6 +385,155 @@ listen_port = 8765
         let err = ServitudeConfig::from_toml_str(raw)
             .expect_err("empty display_name should fail validation");
         assert_eq!(err, ConfigError::EmptyDisplayName);
+    }
+
+    // ---------------------------------------------------------------
+    // INS-024 Wave 3 — DiscordBridge variant + ordering validators
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_transport_enum_accepts_discord_bridge() {
+        // Serde round-trip via JSON — the Transport enum feeds both
+        // the tauri store (JSON) and the on-disk TOML config, and
+        // `rename_all = "snake_case"` means the wire form is
+        // "discord_bridge" regardless of container format.
+        let variants = [
+            Transport::WireGuard,
+            Transport::Mesh,
+            Transport::Tunnel,
+            Transport::MatrixFederation,
+            Transport::DiscordBridge,
+        ];
+        for v in &variants {
+            let s = serde_json::to_string(v)
+                .expect("Transport variant should serialize");
+            let back: Transport = serde_json::from_str(&s)
+                .expect("Transport variant should round-trip");
+            assert_eq!(&back, v, "round-trip must preserve variant {:?}", v);
+        }
+
+        // Explicit wire form check so anyone renaming the variant
+        // notices the on-disk schema change immediately.
+        let json = serde_json::to_string(&Transport::DiscordBridge).unwrap();
+        assert_eq!(json, "\"discord_bridge\"");
+
+        // And the TOML list form used in ServitudeConfig.
+        let raw = r#"
+display_name = "bridge-host"
+max_peers = 8
+listen_port = 8765
+enabled_transports = ["matrix_federation", "discord_bridge"]
+"#;
+        let cfg = ServitudeConfig::from_toml_str(raw)
+            .expect("toml with discord_bridge after matrix must validate");
+        assert_eq!(cfg.enabled_transports.len(), 2);
+        assert_eq!(cfg.enabled_transports[1], Transport::DiscordBridge);
+    }
+
+    #[test]
+    fn test_validate_rejects_discord_without_matrix() {
+        // DiscordBridge alone (or with any transports except
+        // MatrixFederation) is rejected — the bridge has no
+        // homeserver to attach to.
+        let cfg = ServitudeConfig {
+            display_name: "bridge-no-matrix".to_string(),
+            max_peers: 8,
+            listen_port: 8765,
+            allow_privileged_port: false,
+            enabled_transports: vec![Transport::DiscordBridge],
+        };
+        assert_eq!(
+            cfg.validate(),
+            Err(ConfigError::DiscordBridgeRequiresMatrix)
+        );
+
+        // And with unrelated peer transports but still no Matrix.
+        let cfg = ServitudeConfig {
+            display_name: "bridge-no-matrix-2".to_string(),
+            max_peers: 8,
+            listen_port: 8765,
+            allow_privileged_port: false,
+            enabled_transports: vec![
+                Transport::WireGuard,
+                Transport::Tunnel,
+                Transport::DiscordBridge,
+            ],
+        };
+        assert_eq!(
+            cfg.validate(),
+            Err(ConfigError::DiscordBridgeRequiresMatrix)
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_discord_before_matrix() {
+        // Bridge BEFORE matrix would race tuwunel on startup — the
+        // validator rejects the ordering even though both are
+        // present. The bridge MUST come after.
+        let cfg = ServitudeConfig {
+            display_name: "bridge-before-matrix".to_string(),
+            max_peers: 8,
+            listen_port: 8765,
+            allow_privileged_port: false,
+            enabled_transports: vec![
+                Transport::DiscordBridge,
+                Transport::MatrixFederation,
+            ],
+        };
+        assert_eq!(
+            cfg.validate(),
+            Err(ConfigError::DiscordBridgeMustFollowMatrix)
+        );
+
+        // Adjacent pair — same rejection.
+        let cfg = ServitudeConfig {
+            display_name: "bridge-before-matrix-2".to_string(),
+            max_peers: 8,
+            listen_port: 8765,
+            allow_privileged_port: false,
+            enabled_transports: vec![
+                Transport::WireGuard,
+                Transport::DiscordBridge,
+                Transport::MatrixFederation,
+            ],
+        };
+        assert_eq!(
+            cfg.validate(),
+            Err(ConfigError::DiscordBridgeMustFollowMatrix)
+        );
+    }
+
+    #[test]
+    fn test_validate_accepts_discord_after_matrix() {
+        // The happy path: matrix first, bridge second.
+        let cfg = ServitudeConfig {
+            display_name: "happy-path".to_string(),
+            max_peers: 8,
+            listen_port: 8765,
+            allow_privileged_port: false,
+            enabled_transports: vec![
+                Transport::MatrixFederation,
+                Transport::DiscordBridge,
+            ],
+        };
+        cfg.validate()
+            .expect("matrix then discord must validate");
+
+        // With other peer transports in between is ALSO fine, as long
+        // as matrix strictly precedes discord somewhere in the list.
+        let cfg = ServitudeConfig {
+            display_name: "happy-path-2".to_string(),
+            max_peers: 8,
+            listen_port: 8765,
+            allow_privileged_port: false,
+            enabled_transports: vec![
+                Transport::MatrixFederation,
+                Transport::Tunnel,
+                Transport::DiscordBridge,
+            ],
+        };
+        cfg.validate()
+            .expect("matrix then other then discord must validate");
     }
 
     // ---------------------------------------------------------------

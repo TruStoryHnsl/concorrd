@@ -39,11 +39,12 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/tuwunel/**/*"
+      "resources/tuwunel/**/*",
+      "resources/discord_bridge/**/*"
     ],
     "linux": {
       "deb": {
-        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "bubblewrap"]
       }
     },
     "macOS": {

@@ -1,0 +1,6 @@
+# Ignore the staged upstream mautrix-discord binary — it is fetched
+# fresh from the pinned release on every build host by
+# scripts/build_linux_native.sh and must not bloat the git repo.
+mautrix-discord
+!.gitignore
+!README.md
