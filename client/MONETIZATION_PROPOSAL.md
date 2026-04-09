@@ -1,228 +1,273 @@
 # Concord Native Mobile Monetization Proposal
 
-**Status:** Draft 2026-04-08 · Task INS-021 / OPT-002 · For user review
+**Status:** Resolved 2026-04-08 · Task INS-021 / OPT-002 · Donation-only model
 **Scope:** Native mobile frontend apps (iOS + Android) ONLY. The browser-accessible web UI is the canonical free interface and stays free-forever, no ads, forever.
-**Framing:** "A plea for donations." Not a paywall. Not a feature lockout. A cosmetic layer on top of a great free application — people who care will pay, people who don't, won't, and that's fine.
+**Framing:** "Pay what you want, or don't." Not a paywall. Not a feature lockout. Not a tier. The app is free on every store and every feature is always available; donations are an optional thank-you that the user chooses freely.
 
 ---
 
 ## Executive Summary
 
-Concord's web UI is, and will remain, **free forever with no advertising and no feature restrictions**. Every message, every voice call, every video call, every file exchange, every place you can host, every server you can join — all of it works in any browser on any device without paying anything.
+**Everything in Concord is free.** Free on the web, free on iOS, free on Android, free to install, free to use, free to remove ads, free forever. There is no paid tier and there never will be.
 
-The native mobile apps (iOS and Android) are a **cosmetic convenience layer** on top of that free experience. They exist because some users prefer a native-feeling app over a PWA, and because distributing via the App Store and Play Store gives Concord a marketing surface we wouldn't otherwise have. They are NOT required to use Concord.
+The native mobile apps ship with **house ads on by default** — privacy-respecting, first-party house ads that promote Concord places, features, and community events. No AdMob. No tracking. No data collection. When a user first opens the app (and any time in settings thereafter), they see a **three-way choice**:
 
-We propose monetizing ONLY the native mobile apps with two tiers:
+1. **"Pay what you want"** — one-tap donation to Concord development. The default highlighted amount is **$2.99**, and the user can pick any amount from $0.50 to $49.99 via a small ladder of consumable IAP SKUs. Donating removes ads as a thank-you, but removal is not what the user is paying for — they could have had it for free.
+2. **"Remove ads for free"** — no payment required. The user clicks, ads disappear, nothing else changes. This path is explicitly encouraged. It is not hidden, delayed, nagged, or fine-printed. If a user wants ads off and can't pay, that's fine.
+3. **"Keep ads on"** — the user explicitly chooses to support Concord development by leaving the house ads running. Because house ads promote Concord itself (places to discover, features to try, upcoming events), this path is framed as "keep the community surface visible" rather than "watch ads for the money." Thank-you framing only.
 
-1. **Free (ad-supported)** — full functional parity with the web UI, with unobtrusive banner/native ads. The default experience. Every feature works. No feature is gated behind the paid tier.
-2. **Ad-free (one-time purchase)** — the same app minus ads. A small one-time price (~$2.99 USD, adjusted regionally). No subscription. Pay once, ad-free on that device family forever.
+All three choices lead to the full Concord feature set. Every message, every voice/video call, every file exchange, every place, every server, every forum is available in every path.
 
-The **non-negotiable commitment** threaded through every section below: anyone can use Concord with zero ads and zero payments by opening it in a web browser. That is the canonical interface.
+**The commitment threaded through every section below:** Concord is free. If the donation model generates nothing, Concord is still free. If the user chooses the free-ads-off path en masse, Concord is still free. If nobody donates, Concord is still free. The donation model is a **yes or no question** — not a pressure funnel.
 
 ---
 
-## 1. Ad Network Recommendation
+## 1. The Three-Way Choice (first launch + settings)
 
-### Options considered
+### 1.1 When it appears
 
-| Option | Pros | Cons |
-|---|---|---|
-| **AdMob (Google)** | Largest fill rate, proven StoreKit/Play-Billing integration, low dev cost. | Heavy tracking, user-hostile defaults, privacy manifest burden, requires App Tracking Transparency prompt on iOS. Runs counter to Concord's decentralization/privacy story. |
-| **Apple Search Ads + Google Ads** | First-party ecosystems, fewer third-party trackers. | Apple Search Ads is acquisition-side (ads *for* Concord in other apps), not what we want. Google Ads inside our app funnels back to AdMob anyway. |
-| **EthicalAds / Carbon Ads** | No tracking, good fit for developer-adjacent audiences, simple integration. | Small inventory, low fill rate — likely can't sustain revenue on consumer chat apps. |
-| **In-house ("Concord promotes Concord")** | Zero tracking, full control of content, reinforces product narrative. Promote Concord servers, upcoming features, community events. | Zero revenue from the ads themselves — they become a marketing surface, not a monetization surface. The ad-free tier still monetizes; ads become value-add for community-curated content. |
-| **Mixed (house ads + minimal network fallback)** | Best of both — house ads fill first, tiny backfill from a privacy-respecting network. | Extra engineering; two code paths. |
+- **On first launch** of the native mobile app, after login, as a dedicated screen the user must interact with (one tap) before reaching the main UI.
+- **Always available from Settings → Support Concord**, so a user who skipped or dismissed it can come back at any time and change their mind.
+- **After every successful donation**, a compact thank-you confirmation that also re-exposes the other two choices (so the user knows they can still toggle the ad-free flag or resume ads if they want to see community promotions again).
 
-### Recommendation
+### 1.2 What the user sees
 
-**Primary: In-house "house ads" system.** Every ad slot shows either:
-- A Concord place to discover (curated or algorithmically surfaced from public places)
+```
+Welcome to Concord.
+
+This app is free. It will always be free.
+Every feature works without paying anything.
+
+How would you like to use it?
+
+┌────────────────────────────────────────────┐
+│  💛  Pay what you want                      │
+│                                              │
+│  Support Concord development with a         │
+│  one-time donation. Any amount.              │
+│                                              │
+│  Suggested: $2.99   [Choose amount →]       │
+│                                              │
+│  Removes ads as a thank-you.                │
+└────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────┐
+│  🎁  Remove ads for free                    │
+│                                              │
+│  No payment. Ads are gone.                  │
+│  Use Concord however you like.              │
+│                                              │
+│                          [Remove ads →]     │
+└────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────┐
+│  📣  Keep ads on                            │
+│                                              │
+│  Ads are in-house (no tracking).            │
+│  They promote Concord places and features. │
+│  Thank you for the visibility.              │
+│                                              │
+│                          [Keep ads on →]    │
+└────────────────────────────────────────────┘
+
+You can change this any time in Settings.
+```
+
+### 1.3 Defaults before the user chooses
+
+- **Ads render by default** (house ads, no tracking). The user must actively click one of the three options to stop the default.
+- The choice screen is **not dismissable by swipe-away or tap-outside** — the user must choose. Choosing is one tap, so this is not friction, but the choice is deliberate.
+- If the user quits the app before choosing, the choice screen re-appears on next launch.
+
+---
+
+## 2. Ad System (unchanged from prior draft)
+
+### 2.1 House ads
+
+Ads in the free default tier are **in-house**, first-party, and non-tracking. Each ad slot renders one of:
+
+- A Concord place to discover (curated or algorithmically surfaced from public places via the INS-025 federation allowlist)
 - A Concord feature announcement ("Try the new visual forum map")
 - A community event ("Concord development livestream tonight")
-- A blank slate explaining "this space supports Concord development — [remove ads for $2.99]"
+- A friendly promotion of the Support Concord flow ("Love Concord? Consider a donation or just disable these ads — we don't mind.")
 
-**No tracking, no third-party SDKs, no ATT prompt.** Concord's narrative is privacy-respecting and decentralized; importing AdMob contradicts that in a user-visible way every time the app opens.
+**No third-party SDKs. No tracking. No ATT prompt on iOS. No advertising ID. No analytics beyond opt-in crash reporting.**
 
-**Fallback (optional, phase 2):** If house ad inventory is insufficient, integrate **EthicalAds** as a backfill for the handful of impressions house ads can't fill. EthicalAds does not track users, collects no PII, and is already used by Python docs, Read the Docs, and similar privacy-conscious surfaces.
+### 2.2 No AdMob
 
-**Excluded:** AdMob. The user-tracking load, privacy manifest complications, ATT prompt friction, and narrative cost outweigh the revenue lift for a product whose entire value proposition is decentralized private comms.
+AdMob, Google Ads, Facebook Audience Network, and any other tracking-based ad network are explicitly **excluded**. The cost of importing a tracking SDK is not the $0.30 per 1000 impressions — it's the contradiction with Concord's privacy narrative. The three-way-choice UX depends on the user trusting that ads are a community surface, not a surveillance surface. Importing AdMob breaks that trust in a way no revenue increment makes up for.
+
+### 2.3 Fallback inventory (phase 2, optional)
+
+If house ad inventory is insufficient (the user sees the same place promoted back-to-back), integrate **EthicalAds** as a backfill. EthicalAds serves non-tracking text ads to privacy-conscious surfaces like Python docs and Read the Docs. Optional, phase 2, and clearly labeled as "supporting Concord via a partner" if it ever ships.
 
 ---
 
-## 2. Ad-Free Tier Model
+## 3. Donation Ladder (pay-what-you-want implementation)
 
-### Options considered
+App Store and Play Store both require IAP products to have **fixed prices**. "Pay what you want" is implemented as a ladder of **consumable** IAPs at different price points:
 
-| Option | Pros | Cons |
+| SKU | Price (USD) | Label in UI |
 |---|---|---|
-| **One-time purchase** | Simple, honest, "pay once forever" matches the donation framing. No recurring billing friction. | Smaller lifetime value per user. Store billing surcharge still applies. |
-| **Subscription (monthly or annual)** | Higher lifetime value, recurring revenue. | Feels predatory for a cosmetic upgrade. Subscription fatigue. Apple + Google take 15-30% in perpetuity. Hostile to the donation framing. |
-| **Freemium with IAP unlocks** | Unlock different cosmetic themes, custom chat colors, etc. | Turns into a treadmill of microtransactions. Every unlock is a decision the user has to relitigate. Not aligned with "donation plea" framing. |
-| **Pay-what-you-want** | Honest donation model. | No App Store or Play Store mechanism for truly variable pricing — you'd have to ship 3-5 price point variants ($0.99, $2.99, $4.99, $9.99, $19.99) and label them as "tips." |
+| `com.concord.donate.050` | $0.50 | "A little something" |
+| `com.concord.donate.099` | $0.99 | "Pocket change" |
+| `com.concord.donate.199` | $1.99 | "Coffee tip" |
+| `com.concord.donate.299` | **$2.99** | **"Default suggested"** |
+| `com.concord.donate.499` | $4.99 | "Nice tip" |
+| `com.concord.donate.999` | $9.99 | "Generous" |
+| `com.concord.donate.1999` | $19.99 | "Very generous" |
+| `com.concord.donate.4999` | $49.99 | "Big fan" |
 
-### Recommendation
+### 3.1 Why consumable, not non-consumable
 
-**One-time purchase.** Single SKU: "Concord ad-free." Pay once, ad-free on that platform forever. Matches the donation framing ("pay once if you care, don't if you don't"), avoids subscription hostility, keeps the in-app purchase flow simple.
+A donation is not an unlock. The user is not buying anything. Consumable IAPs:
+- Can be purchased any number of times (a user who loves Concord can donate monthly without a subscription)
+- Don't pollute the restore-purchases flow with permanent entitlements
+- Don't require the server to track "who owns what" — the donation happened, the money moved, no further state
 
-**Phase 2 addition (optional):** Add a "tip jar" with three or four higher-priced SKUs ($4.99, $9.99, $19.99, "Big fan" $49.99) that do NOTHING except display a tiny thank-you badge next to the user's name in a setting (opt-in display). These are pure donations — no feature, no status beyond the opt-in badge. Users who want to pay more than $2.99 can, and we make it explicit that this is a donation to Concord development, not a purchase.
+The **ad-free flag is set locally regardless** of whether the user donated. Donations flip the flag as a thank-you; the "Remove ads for free" button flips the same flag without payment. Both paths produce the same flag value.
 
-**Excluded:**
-- Subscription model (hostile to framing).
-- Freemium unlocks (treadmill, decision fatigue).
-- Pay-what-you-want at store-billing level (infeasible).
-
----
-
-## 3. Price Points Per Platform
-
-### iOS (App Store)
-
-- **Concord ad-free:** **USD $2.99** (Tier 3 in Apple's pricing matrix — corresponds to $2.99 in the US, with Apple's regional equivalents applied automatically).
-- **Tip jar (phase 2):** $4.99, $9.99, $19.99, $49.99 ("Big fan").
-- **App itself (free download):** $0.00. The ad-supported experience is the default.
-
-### Android (Google Play)
-
-- **Concord ad-free:** **USD $2.99** equivalent (Google Play's Localized Pricing applies regional adjustments automatically). In practice this will be ~$2.99 USD / €2.99 EUR / ¥320 JPY / ₹99 INR etc.
-- **Tip jar (phase 2):** same as iOS tiers.
-- **App itself (free download):** $0.00.
-
-### Rationale for $2.99
+### 3.2 Why $2.99 is the default highlight
 
 - Below the psychological "not worth thinking about" threshold for most users in major markets.
-- Below Apple's Tier 2 ($1.99) floor where the 30% cut eats most of the revenue anyway — Tier 3 leaves ~$2.09 after Apple's cut, which is enough to meaningfully fund development.
-- High enough that it doesn't feel like a trivial in-app purchase that gets lost in transaction history.
-- Matches the "small donation" framing — more than a coffee, less than a beer.
+- Above Apple's Tier 2 ($1.99) where the 30% cut eats most of the revenue.
+- The user's stated preference ("default pay-what-you-want buttons should start at 2.99").
+- Users who want to donate less can pick $0.50 / $0.99 / $1.99 from the same ladder; the default is a suggestion, not a floor.
 
-### Excluded
+### 3.3 Regional pricing
 
-- Higher tiers ($4.99, $9.99) as the default — feels expensive for a cosmetic upgrade to an app that's also free in the browser.
-- Lower tiers ($0.99) — most of the revenue goes to Apple/Google, and it signals "disposable" rather than "support."
-
----
-
-## 4. Regional Pricing
-
-**Strategy:** Rely on the store platforms' automatic localized pricing.
-
-- **Apple App Store Connect** handles regional pricing via [Apple's pricing matrix](https://developer.apple.com/app-store/pricing/). Pick Tier 3 in USD and Apple computes equivalents for 175 regions automatically, including currency, local tax, and "ends in .99" psychological rounding.
-- **Google Play Console** uses [Localized Pricing](https://support.google.com/googleplay/android-developer/answer/138000) the same way — set USD and Play computes regional prices.
-
-**Override list (manual adjustments for affordability):**
-
-- **India (INR):** override to ~₹49 (≈USD $0.60) instead of the default ~₹249. India is both a huge market AND a price-sensitive market; a default conversion from $2.99 is ~$2.99 worth of INR which is substantial relative to local purchasing power. A lower price-point here is consistent with the "donation plea" framing and not losing revenue (users at the default price would mostly skip).
-- **Brazil (BRL):** override to ~R$4.99 (≈USD $1) for similar reasons.
-- **Southeast Asia (IDR / PHP / VND):** similar 50-65% discounts off the default localization.
-
-**Compliance:** Regional VAT/GST is handled by the store platforms on our behalf — we receive net proceeds.
+**Doesn't apply.** Pay-what-you-want at the store IAP level means regional pricing is handled automatically by Apple and Google on a per-SKU basis — $2.99 USD becomes ₹249 INR, R$16 BRL, ¥320 JPY, etc. via the store's own localized pricing matrices. Because donations are optional, regional pricing pressure is much lower than the prior draft's per-region-override scheme required. Users who find the default SKUs too expensive pick the $0.50 option, which the stores localize on their own.
 
 ---
 
-## 5. Refund Policy
+## 4. Refund Policy
 
-**Policy statement (shown at point of purchase):**
+**Policy statement (shown at donation confirmation):**
 
-> Concord is free to use in your browser at any time. The ad-free tier is a donation to Concord development — if you change your mind, request a refund through your device's app store within the standard store window (Apple: 90 days at Apple's discretion; Google: 48 hours self-service, beyond that case-by-case).
+> Thank you for supporting Concord development. This was a donation — it bought you nothing except our gratitude (and the ad-free flag, which you could have flipped for free). If you change your mind, request a refund through your device's app store within the standard store window (Apple: 90 days at Apple's discretion; Google: 48 hours self-service, beyond that case-by-case). **We will not contest any refund request.**
 >
-> We will not contest a refund request. If you requested ad-free but decided it wasn't worth it to you, that's fine. Concord still works, in your browser, free, forever.
+> Concord still works, in your browser, free, forever — and in this native app, ad-free if you want, even after the refund.
 
-**Why no-contest:** The transaction is framed as a donation. Contesting a refund request on a donation is hostile and undermines the framing. Accepting refunds is the cost of running on an honest model.
+**No-contest rationale:** The transaction is a donation. Contesting a refund request on a donation is hostile and undermines the framing the user's answer explicitly demanded ("They give me money or they do not. No pressure or way to trap them."). The cost of an accepted refund is $2.99. The cost of contesting is trust erosion. No math makes contesting worth it.
 
-**Abuse guardrails:** None. At $2.99 per transaction, abuse is not material. If someone systematically buys and refunds to get ad-free, we lose $0 per cycle and they end up... running the app in the browser for free, which is already what we're offering.
+**Abuse guardrails:** None. At $0.50 minimum and $49.99 maximum, abuse is not material.
 
 ---
 
-## 6. Store Listing Strategy (App Store + Play Store)
+## 5. Store Listing Strategy
 
-### Common to both stores
+### 5.1 Common to both stores
 
 - **App name:** "Concord — Decentralized Chat"
-- **Short description:** "Private, decentralized group chat. Free forever in your browser. Native apps available."
-- **Long description lead paragraph:** "Concord is a decentralized, privacy-respecting group chat platform. Every feature — messaging, voice, video, file sharing, servers, rooms, forums — works for free in any web browser, forever. The iOS / Android app is a convenient native version of that same experience. Ads in the free version help fund development; if you'd rather support us directly, the ad-free tier is a small one-time purchase."
-- **Privacy manifest (iOS) / Data Safety form (Android):** declare ZERO data collection. House ads do not track users. No advertising ID use. No analytics SDKs beyond the ones required for crash reporting (and even those should be opt-in — see "Crash reporting" below).
-- **Content rating:** Teen / 13+ (consistent with most social/communication apps; user-generated content requires content moderation tools, which Concord already has).
-- **Age gate:** 13+ on both stores. COPPA compliance means under-13 accounts are not permitted. The registration flow should include an age self-declaration and the privacy policy should state the 13+ minimum.
+- **Short description:** "Private, decentralized group chat. Free on every platform. Donations are optional."
+- **Long description lead paragraph:**
 
-### iOS App Store specifics
+  > "Concord is a decentralized, privacy-respecting group chat platform. Every feature — messaging, voice, video, file sharing, servers, rooms, forums — works for free in any web browser, on any desktop, on any phone, forever. This app is free too. On first launch, you'll pick how you'd like to use Concord: donate to support development, skip the donation and turn off the in-house ads for free, or keep the community-promotion ads running. All three are fine."
 
-- **Screenshots:** 6 screenshots. Show the free web version + native iOS app side-by-side with a caption "Same Concord, free in your browser or native on iOS."
-- **App preview (video):** 15-second loop showing a voice call → map view → chat, with captioning "Decentralized. Free. Yours."
-- **Keywords:** "decentralized chat, privacy, voice chat, video chat, group chat, forum, mesh, peer to peer, free messenger."
-- **Privacy label:** "Data Not Collected" across all categories. The house ad system does not collect data; contacts and messages never leave the decentralized network.
-- **App Review specifics:** the app requests Camera, Microphone, Local Network, and Bluetooth permissions with usage strings explaining each. Be explicit in the reviewer notes that Local Network + Bluetooth are required for the mesh-transport pathway (MPC on iOS) and are used only for peer-to-peer node discovery, not for tracking.
+- **Privacy manifest (iOS) / Data Safety form (Android):** Declare ZERO data collection. House ads do not track users. No advertising ID use. No analytics SDKs beyond opt-in crash reporting.
+- **Content rating:** Teen / 13+ (user-generated content requires moderation tools, which Concord already has).
+- **Age gate:** 13+ on both stores. COPPA compliance — under-13 accounts are not permitted. Registration flow includes an age self-declaration and the privacy policy states the 13+ minimum.
 
-### Google Play Store specifics
+### 5.2 iOS App Store specifics
 
-- **Screenshots:** 8 screenshots (Play allows more). Same side-by-side framing.
+- **Screenshots:** 6 screenshots including one of the three-way-choice screen with a caption: "This app is free. Donate if you want. Remove ads if you don't. Or leave them on and support the community."
+- **App preview (video):** 15-second loop showing a voice call → map view → chat, captioned "Decentralized. Free. Yours."
+- **Keywords:** "decentralized chat, privacy, voice chat, video chat, group chat, forum, mesh, peer to peer, free messenger, open source."
+- **Privacy label:** "Data Not Collected" across all categories. House ads declared as "first-party, no tracking, no third-party SDK."
+- **App Review reviewer notes:** explain that Local Network + Bluetooth are required for mesh-transport peer discovery, not for tracking. Call out the three-way-choice screen explicitly and link to Apple's [App Store Review Guideline 3.1.1](https://developer.apple.com/app-store/review/guidelines/#in-app-purchase) — consumable donation IAPs for non-physical non-subscription-non-unlock support are permitted.
+
+### 5.3 Google Play Store specifics
+
+- **Screenshots:** 8 screenshots including the three-way-choice screen.
 - **Feature graphic:** Concord logo + tagline "Decentralized. Free. Yours."
-- **Data Safety form:** declare no data collection, no data shared with third parties. House ads declared as "first-party ads, no tracking."
-- **Target API level:** Android API 35 (Android 15) or latest required by Play Console at submission time.
-- **Permissions:** Microphone, Camera, Local Network, Bluetooth, Foreground Service (for embedded servitude running in background per INS-022). Foreground service type: `mediaPlayback | microphone` (conservative choice — lets voice calls run in the background without triggering the "always-on background service" policy hammer).
+- **Data Safety form:** Declare no data collection, no data shared with third parties. House ads declared as "first-party ads, no tracking."
+- **Target API level:** Android API 35 (Android 15) or the latest required by Play Console at submission time.
+- **Permissions:** Microphone, Camera, Local Network, Bluetooth, Foreground Service (for embedded servitude running in background per INS-022). Foreground service type: `mediaPlayback | microphone` (lets voice calls run in the background without triggering "always-on background service" policy hammers).
+- **IAP policy**: Google Play allows consumable IAPs for donations provided the app also offers the underlying functionality for free. Concord meets that bar trivially — everything is free.
 
 ---
 
-## 7. In-App Purchase Integration
+## 6. In-App Purchase Integration
 
-### iOS: StoreKit 2
+### 6.1 iOS: StoreKit 2
 
-- **Tauri v2 StoreKit plugin:** Tauri v2 has a first-class [StoreKit plugin](https://v2.tauri.app/plugin/store) (or we write a thin Objective-C bridge via Tauri's mobile plugin API).
-- **Product configuration:** one non-consumable in-app purchase, ID `com.concord.ads_free`. Price tier 3.
-- **Purchase flow:** user taps "Remove ads" → StoreKit modal → confirmation → local receipt validation → persistent "ad-free" flag written to `localStorage` AND synced to the Matrix account's user profile (so the user is ad-free on any future install signed in with the same account, not just this device).
-- **Restore purchases:** mandatory button in settings per Apple guidelines — calls `Transaction.currentEntitlements` and re-applies the ad-free flag.
-- **Receipt validation:** client-side via `VerificationResult.verify()` — no server-side validation required for a non-consumable at this price point. A server-side check is added to phase 2 if fraud becomes a concern.
+- **Tauri v2 StoreKit plugin** or a thin Objective-C bridge via Tauri's mobile plugin API.
+- **Product configuration:** 8 consumable IAP products under the prefix `com.concord.donate.*`. Each has a short localized display name from §3's table.
+- **Purchase flow:** User picks an amount → StoreKit sheet → confirmation → **transaction is finished immediately** (consumable) → local "ad-free" flag set → a lightweight `{amount, timestamp}` entry written to the Matrix account's private account data at `com.concord.donations` (a list of donation events, local/private — not federated, not public). The ledger is purely for the user's own records and for a "you've supported Concord N times, thank you" settings affordance.
+- **No server-side validation** required for consumables at these price points. Phase 2 can add receipt validation if fraud becomes material, but the cost of fraud is "someone gets ads removed," which they could have done for free anyway, so the attack surface is empty.
 
-### Android: Google Play Billing Library
+### 6.2 Android: Google Play Billing Library
 
-- **Tauri v2 Play Billing plugin:** similar approach — use the Tauri plugin or a thin Kotlin bridge.
-- **Product configuration:** one [inapp product](https://developer.android.com/google/play/billing/integrate), SKU `com.concord.ads_free`. $2.99 USD base.
-- **Purchase flow:** `BillingClient.launchBillingFlow()` → onPurchaseUpdated callback → acknowledge the purchase → persist `ad-free` flag locally and sync to the Matrix profile.
-- **Acknowledgment:** REQUIRED within 3 days or Play refunds automatically. Handled in the purchase callback.
-- **Restore:** `queryPurchasesAsync()` on app launch to detect existing entitlements — Play keeps a server-side record so "restore" is automatic, no explicit user action needed.
+- **Tauri v2 Play Billing plugin** or a thin Kotlin bridge.
+- **Product configuration:** 8 consumable in-app products mirroring iOS, under `com.concord.donate.*`.
+- **Purchase flow:** `BillingClient.launchBillingFlow()` → onPurchaseUpdated callback → `consumeAsync()` immediately (consumable must be consumed to be purchasable again) → set ad-free flag + append to the private donation ledger.
+- **Acknowledgment:** REQUIRED within 3 days or Play refunds automatically. Handled in the consume callback.
 
-### Cross-platform state sync
+### 6.3 "Remove ads for free" flow (no IAP)
 
-The "ad-free" flag is synced via a custom Matrix account data field (`com.concord.ad_free` under the user's account data). This means:
-- Buying ad-free on iOS ALSO removes ads on the web UI (if the web UI has ads — currently it has none, so this is a no-op today).
-- Signing into the same Matrix account on Android after buying ad-free on iOS will restore ad-free automatically (cross-platform restore).
-- If the user buys ad-free on BOTH iOS and Android, that's fine — they paid twice, we keep both receipts, and they're ad-free on both platforms. No refund triggered automatically.
+- Button tap → set local `ad-free` flag in store → sync to Matrix account data at `com.concord.ad_free: true` (private, not federated beyond the user's own devices) → optional toast "Ads off. Enjoy Concord."
+- **No confirmation dialog, no "are you sure," no delay.** The user asked for ads off, ads are off.
 
-### Implementation order
+### 6.4 "Keep ads on" flow
 
-1. **Phase 0 (current):** no ads, no purchases. Native apps launch with nothing monetized.
-2. **Phase 1 (INS-021 implementation):** house ads rendered in-app on mobile only. No purchase flow yet. Gather data on how intrusive the house ads feel.
-3. **Phase 2:** purchase flow lands. "Remove ads" button appears. Ad-free unlock works on both platforms.
-4. **Phase 3 (optional):** tip jar SKUs added.
-5. **Phase 4 (optional):** EthicalAds backfill if house ads can't sustain inventory.
+- Button tap → set `ad-free` flag to `false` (default anyway) → optional toast "Thanks for supporting Concord." → dismiss the three-way-choice screen.
+- Ads are rendered from the first launch afterward.
+
+### 6.5 Cross-platform state sync
+
+The `ad-free` flag is synced via private Matrix account data (`com.concord.ad_free`), which means:
+- Flipping ad-free on iOS also removes ads on the web UI (currently a no-op because the web UI has no ads, and never will).
+- Signing into the same Matrix account on Android after choosing ad-free on iOS restores the flag automatically.
+- If the user donates on BOTH iOS and Android, the local donation ledgers on each device are independent (the ledger is private per-device account data). A future unification can consolidate them via shared account data, but it is not blocking.
+
+---
+
+## 7. Implementation Phases
+
+1. **Phase 0 (current)** — no ads, no donations, no choice screen. Native apps launch without monetization scaffolding.
+2. **Phase 1** — three-way-choice screen + house ads in free default tier. No donation flow yet. Ship the choice UX first so the ads have meaning (they're opt-in by the user's explicit action, not a surprise).
+3. **Phase 2** — donation ladder lands. StoreKit + Play Billing integration. The "Pay what you want" button in the three-way-choice screen becomes functional.
+4. **Phase 3 (optional)** — EthicalAds backfill if house inventory proves insufficient. Optional.
+5. **Phase 4 (optional)** — settings-side "donation history" view showing the user their own donations from the private ledger, with a gentle prompt to re-donate if they feel like it. Opt-in, never nagged.
 
 ---
 
 ## Appendix A — Commitments We Will NOT Break
 
-1. **The web UI has no ads. Ever.** Not "no ads until we change our mind" — no ads, forever. If a future stakeholder argues for web ads, the answer is no. The web UI is the canonical free interface and its freeness is what lets us honestly frame the native ads as "optional support."
-2. **No feature gating behind payment.** Every feature in the native app is also in the web app, and every feature in both is free. The ad-free tier removes ads. Nothing else.
-3. **No data collection by the ad system.** House ads are first-party. If we ever add a backfill network it will be a privacy-respecting one (EthicalAds) and the Data Safety declaration will remain "no data collected."
-4. **Refunds are honored, no questions asked.** Donation framing means we do not contest refund requests.
-5. **Concord remains open-source on the free tier.** The web UI's code is the canonical Concord codebase. Making the native apps paid does not close-source Concord.
+1. **The web UI has no ads. Ever.** Not "no ads until we change our mind." No ads, forever.
+2. **No feature gating behind payment.** Every feature in the native app is in the web app and both are free. Donations do not unlock anything that isn't already available.
+3. **The "Remove ads for free" path is not hidden.** It is a first-class option in the three-way-choice screen and in Settings. It is not delayed behind a timer, a nag modal, or a dark-patterned "are you sure." One tap, done.
+4. **No data collection by the ad system.** House ads are first-party. If an EthicalAds backfill ships, the Data Safety declaration remains "no data collected."
+5. **Refunds are honored, no questions asked.** Donation framing means refunds are honored at face value.
+6. **Concord is open-source.** The project is FoSS. Making the native apps donation-capable does not close-source any part of the codebase.
+7. **The three-way choice is genuine.** The "Keep ads on" path is not a trick to upsell donations. "Remove ads for free" is not greyed out or second-class. The three options are equally blessed and equally final.
 
-## Appendix B — Open Questions for User Review
+---
 
-1. **House ad content curation:** who curates the list of "Concord places to discover" that house ads rotate through? Automated by a trending algorithm? Hand-picked? Community voted? This matters for how the feature is built.
-2. **Tip jar opt-in:** should the tip jar launch with phase 2, or strictly defer to phase 3? Feels like a phase 3 feature — but a small "Support Concord" button in settings could land earlier.
-3. **Crash reporting:** Sentry is opt-in but requires an SDK. Is the user OK with an opt-in Sentry integration, or should we rely purely on user bug reports (BugReportModal)?
-4. **Cross-platform restore UX:** if a user buys ad-free on iOS then installs on Android with the same Matrix account, should the restore be automatic (no dialog) or opt-in (dialog: "We noticed you bought ad-free on another device — restore?")? Automatic is less friction; opt-in is more transparent.
-5. **Ad placement:** where in the app do house ads appear? Candidates: (a) a banner at the top of the chat list, (b) a native card between every N messages in the message list, (c) a full-screen interstitial after certain actions (aggressive, not recommended), (d) a settings-tab promotion (passive, easy to ignore). Recommendation: (a) + (b) with (b) tuned conservatively (every 50 messages, not every 5).
-6. **Promotion of ad-free in the ad rotation itself:** when house ad inventory is low, one of the "ads" is a friendly prompt to buy ad-free. Should this appear always (at a low rate) or only when inventory is empty? Recommendation: always, at ~5% rotation rate, so users see the upgrade path even when house inventory is healthy.
+## Appendix B — Settled Questions
+
+The previous draft had six open questions. Under the donation-only model, they either resolve automatically or become non-applicable:
+
+1. ~~**House ad content curation**~~ → **Resolved by scope**: house ads promote Concord places (auto-surfaced from the federation allowlist + public rooms shipping via INS-025), Concord features (hardcoded list per release), and community events (admin-curated via a simple `client/house_ads_manifest.json` checked into the repo). Algorithmic or community-voted is phase 3+, not part of the MVP.
+2. ~~**Tip jar opt-in**~~ → **Resolved by model collapse**: the donation ladder IS the tip jar. No separate phase-3 tip jar. Users tip via the same IAP flow that is shown on first launch and in settings.
+3. **Crash reporting** → **Still open — low priority**. Opt-in Sentry remains the cleanest approach for a donation-funded project, but the user has not confirmed. Alternative: rely purely on `BugReportModal` (existing) + structured console logs streamed to stdout for Tauri debug builds. Defer decision until Phase 1 ships.
+4. ~~**Cross-platform restore UX**~~ → **Doesn't apply**: there is nothing to "restore" because donations don't unlock anything. The ad-free flag is synced via Matrix account data automatically.
+5. **Ad placement** → **Resolved for MVP**: (a) a banner at the top of the server list on the home screen, (b) a native card between every 50 messages in the message list (NOT every 5). No interstitials. No full-screen ads. No mid-video pauses. Phase-1 conservative.
+6. ~~**Promotion of ad-free in the ad rotation**~~ → **Doesn't apply in the original sense**: the three-way-choice screen makes ad-free a first-class option from day one, not a hidden upgrade path. House ads may occasionally rotate a "Change your choice in Settings" card as a reminder that the three-way choice is always available — friendly, not salesy.
 
 ---
 
 ## Appendix C — Cross-References
 
-- **Scope retag:** Concord retagged `public` → `commercial` on 2026-04-08 (see PLAN.md Open Conflicts). This proposal is the commercial-scope work.
-- **v3 Scope Boundary:** this proposal is the narrow exception to the v3 commerce deferral — native mobile apps only, web UI stays free-forever.
-- **INS-020 (OPT-001):** native mobile frontend apps. This proposal depends on INS-020 shipping — no native app, no ad surface.
-- **Apple Developer Program:** user enrolled 2026-04-07, awaiting ID verification. Proceed as if active.
+- **Scope:** Concord is `.scope=commercial` (rigor), but the project is FoSS (source open) with donation-only mobile monetization. Commercial rigor + FoSS distribution + donation support are all consistent.
+- **v3 Scope Boundary:** this proposal is the narrow exception to the v3 commerce deferral — native mobile apps only, web UI stays free-forever, and even the native apps have no paid tier.
+- **INS-020 (OPT-001):** native mobile frontend apps. This proposal depends on INS-020 shipping — no native app, no ad surface, no choice screen, no donation ladder.
+- **INS-025:** the public rooms browser (already shipped on `feat/resolve-skipped-followups`) supplies the Concord-place inventory that house ads rotate through.
+- **Apple Developer Program:** user enrolled 2026-04-07, awaiting ID verification (up to 48h). Proceed as if enrolled.
 - **PLAN.md "From 2026-04-22 Routing — Resolved" items 1, 2, 3, 7** are the resolutions this proposal implements.
+- **Previous draft:** superseded 2026-04-08 by user decision. The prior two-tier "$2.99 one-time unlock" model was correct about ad-freeness and wrong about the payment being required. The three-way choice reframes ad removal as an always-free feature and donations as a first-class supported-but-optional act.
 
 ---
 
-*Proposal draft — awaiting user decision on Appendix B open questions.*
+*Proposal resolved 2026-04-08 via user directive. The only remaining open item is crash reporting (Appendix B #3), which is deferred until Phase 1 ships. Everything else is settled and ready for Phase 1 implementation when the INS-020 native mobile shell exists.*
