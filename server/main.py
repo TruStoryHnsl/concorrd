@@ -1,9 +1,11 @@
 import logging
 import os
+import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 # Configure root logging once at import time so all module-level
 # `logger = logging.getLogger(__name__)` calls actually emit. Without this,
@@ -15,7 +17,8 @@ logging.basicConfig(
 )
 
 from database import init_db
-from routers import servers, invites, registration, voice, soundboard, webhooks, admin, direct_invites, stats, totp, moderation, preview, media, dms
+from errors import ConcordError, ErrorResponse
+from routers import servers, invites, registration, voice, soundboard, webhooks, admin, direct_invites, stats, totp, moderation, preview, media, dms, nodes
 
 
 @asynccontextmanager
@@ -248,6 +251,44 @@ async def lifespan(app: FastAPI):
                         matrix_room_id VARCHAR NOT NULL UNIQUE,
                         created_at DATETIME,
                         UNIQUE(user_a, user_b)
+                    )
+                """))
+
+            # Server: previous_place_id (re-mint chain) and bans_disposables
+            if "previous_place_id" not in server_cols:
+                connection.execute(text(
+                    "ALTER TABLE servers ADD COLUMN previous_place_id VARCHAR REFERENCES servers(id)"
+                ))
+            if "bans_disposables" not in server_cols:
+                connection.execute(text(
+                    "ALTER TABLE servers ADD COLUMN bans_disposables BOOLEAN DEFAULT 0"
+                ))
+
+            # Disposable anonymous nodes table
+            if not insp.has_table("disposable_nodes"):
+                connection.execute(text("""
+                    CREATE TABLE disposable_nodes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_token VARCHAR NOT NULL UNIQUE,
+                        temp_identifier VARCHAR NOT NULL,
+                        is_disposable BOOLEAN DEFAULT 1,
+                        must_contribute_compute BOOLEAN DEFAULT 1,
+                        created_at DATETIME,
+                        expires_at DATETIME,
+                        revoked BOOLEAN DEFAULT 0
+                    )
+                """))
+
+            # Place ledger headers table (re-mint snapshots)
+            if not insp.has_table("place_ledger_headers"):
+                connection.execute(text("""
+                    CREATE TABLE place_ledger_headers (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        new_place_id VARCHAR NOT NULL REFERENCES servers(id),
+                        previous_place_id VARCHAR NOT NULL,
+                        encrypted BOOLEAN DEFAULT 0,
+                        payload VARCHAR NOT NULL,
+                        created_at DATETIME
                     )
                 """))
 
@@ -517,6 +558,59 @@ async def _ensure_lobby_welcome():
 
 app = FastAPI(title="Concord API", lifespan=lifespan)
 
+
+# ---------------------------------------------------------------------------
+# Structured exception handler (commercial-profile error contract)
+# ---------------------------------------------------------------------------
+#
+# Every endpoint that raises ConcordError gets converted into a stable
+# ErrorResponse JSON body. This is the machine-readable contract clients
+# branch on. The full traceback is logged server-side via the standard
+# logging module — never returned to the client.
+
+_error_logger = logging.getLogger("concord.errors")
+
+
+@app.exception_handler(ConcordError)
+async def _concord_error_handler(request: Request, exc: ConcordError) -> JSONResponse:
+    # Log the structured error with the path so operators can correlate
+    # client-reported error_codes to server-side context. We do NOT log a
+    # traceback here because ConcordError is an expected, classified
+    # condition — not an unhandled crash.
+    _error_logger.info(
+        "ConcordError %s on %s %s: %s",
+        exc.error_code, request.method, request.url.path, exc.message,
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=exc.to_response().model_dump(),
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Anything that wasn't explicitly classified bubbles to here. Log the
+    # FULL traceback server-side, return only a generic safe message to
+    # the client. This is the stack-trace-leakage guard required by the
+    # commercial profile.
+    #
+    # FastAPI's built-in HTTPException handler is more specific in the
+    # Starlette exception-handler MRO lookup, so HTTPException never
+    # reaches this branch — only truly unhandled exceptions do.
+    _error_logger.error(
+        "Unhandled %s on %s %s\n%s",
+        type(exc).__name__,
+        request.method,
+        request.url.path,
+        traceback.format_exc(),
+    )
+    safe_response = ErrorResponse(
+        error_code="INTERNAL_ERROR",
+        message="An internal error occurred. The server logs have details.",
+        details=None,
+    )
+    return JSONResponse(status_code=500, content=safe_response.model_dump())
+
 _default_origins = (
     "https://concorrd.com,"
     "https://www.concorrd.com,"
@@ -547,6 +641,7 @@ app.include_router(moderation.router)
 app.include_router(preview.router)
 app.include_router(media.router)
 app.include_router(dms.router)
+app.include_router(nodes.router)
 
 
 @app.get("/api/health")

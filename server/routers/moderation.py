@@ -2,17 +2,24 @@ import hashlib
 import logging
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
+from errors import ConcordError
 from models import (
     Channel, ChannelLock, Server, ServerMember, ServerBan,
     VoteKick, KickRecord, IPBan,
 )
 from routers.servers import get_user_id
+
+
+# Same Matrix user ID shape as in dms.py.
+_MATRIX_USER_ID_PATTERN = r"^@[a-zA-Z0-9._=\-/+]+:[a-zA-Z0-9.\-]+$"
+# Matrix room IDs start with `!` and have a similar shape.
+_MATRIX_ROOM_ID_PATTERN = r"^![a-zA-Z0-9._=\-/+]+:[a-zA-Z0-9.\-]+$"
 
 logger = logging.getLogger(__name__)
 
@@ -202,9 +209,24 @@ async def update_member_permissions(
 # ---------------------------------------------------------------------------
 
 class VoteKickStart(BaseModel):
-    channel_id: str  # matrix_room_id
-    target_user_id: str
-    total_eligible: int = 0  # participants minus target
+    channel_id: str = Field(
+        min_length=1,
+        max_length=255,
+        pattern=_MATRIX_ROOM_ID_PATTERN,
+        description="Matrix room ID of the voice channel where the vote was started.",
+    )
+    target_user_id: str = Field(
+        min_length=3,
+        max_length=255,
+        pattern=_MATRIX_USER_ID_PATTERN,
+        description="Matrix user ID of the kick target.",
+    )
+    total_eligible: int = Field(
+        default=0,
+        ge=0,
+        le=10_000,
+        description="Number of voters who must vote yes for the kick to pass.",
+    )
 
 
 @router.post("/servers/{server_id}/vote-kick")
@@ -305,7 +327,7 @@ async def cast_vote_kick(
 @router.post("/vote-kicks/{vote_id}/set-eligible")
 async def set_vote_eligible(
     vote_id: int,
-    count: int,
+    count: int = Query(..., ge=0, le=10_000),
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
@@ -498,7 +520,11 @@ async def execute_vote_kick(
 class BanSettings(BaseModel):
     kick_limit: int | None = Field(default=None, ge=1, le=100)
     kick_window_minutes: int | None = Field(default=None, ge=1, le=1440)
-    ban_mode: str | None = None  # "soft" or "harsh"
+    ban_mode: str | None = Field(
+        default=None,
+        pattern=r"^(soft|harsh)$",
+        description="Ban escalation mode: 'soft' or 'harsh'.",
+    )
 
 
 @router.patch("/servers/{server_id}/ban-settings")

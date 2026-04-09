@@ -1,11 +1,12 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
+from errors import ConcordError
 from models import DMConversation
 from routers.servers import get_user_id, get_access_token
 from services.matrix_admin import create_dm_room
@@ -15,8 +16,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["dms"])
 
 
+# A Matrix user ID looks like "@localpart:server.tld". The total length
+# is bounded by the Matrix spec at 255 characters and must start with
+# `@`. Tighter input validation here prevents an attacker from spamming
+# the DM creation endpoint with megabyte-sized payloads.
+_MATRIX_USER_ID_PATTERN = r"^@[a-zA-Z0-9._=\-/+]+:[a-zA-Z0-9.\-]+$"
+
+
 class DMCreate(BaseModel):
-    target_user_id: str
+    target_user_id: str = Field(
+        min_length=3,
+        max_length=255,
+        pattern=_MATRIX_USER_ID_PATTERN,
+        description="The Matrix user ID of the DM target (e.g. @bob:example.com).",
+    )
 
 
 @router.post("/api/dms")
@@ -28,7 +41,11 @@ async def create_or_get_dm(
 ):
     """Create a DM conversation or return the existing one (idempotent)."""
     if body.target_user_id == user_id:
-        raise HTTPException(400, "Cannot start a DM with yourself")
+        raise ConcordError(
+            error_code="INPUT_INVALID",
+            message="Cannot start a DM with yourself",
+            status_code=400,
+        )
 
     # Normalize the pair so user_a < user_b lexicographically
     user_a, user_b = sorted([user_id, body.target_user_id])

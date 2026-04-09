@@ -77,6 +77,65 @@ def test_rate_limit_is_per_ip():
     assert _check_registration_rate_limit("5.6.7.8") is True
 
 
+def test_rate_limit_evicts_empty_deques(monkeypatch):
+    """H-3 twin in registration.py: ``_reg_rate_limits`` must not
+    grow unbounded. An attacker spraying many distinct IPs a single
+    time each used to leak one dict entry per IP forever.
+
+    The fix adds a per-call post-pop ``del`` (fires when the same IP
+    comes back after the window) plus a periodic sweep that walks
+    the whole dict and drops fully-expired keys. This test drives
+    the sweep directly with simulated time so the 1000-call interval
+    doesn't have to be hit for real.
+    """
+    _reg_rate_limits.clear()
+    registration_module._reg_sweep_counter = 0
+
+    # Populate 50 distinct IPs at "now - 2000s" (outside the 900s window).
+    real_now = time.time()
+    past = real_now - 2000
+    monkeypatch.setattr(registration_module.time, "time", lambda: past)
+    for i in range(50):
+        _check_registration_rate_limit(f"198.51.100.{i}")
+    assert len(_reg_rate_limits) == 50
+
+    # Jump back to the real present and run the sweep.
+    monkeypatch.setattr(registration_module.time, "time", lambda: real_now)
+    registration_module._sweep_reg_rate_limits(real_now)
+
+    # All 50 keys are gone — their single entry was outside the window.
+    assert len(_reg_rate_limits) == 0, (
+        f"rate limit dict should be empty after sweep, "
+        f"got {sorted(_reg_rate_limits.keys())[:5]}"
+    )
+
+
+def test_rate_limit_per_call_eviction_after_expiry(monkeypatch):
+    """When the same IP comes back *after* its window has expired,
+    the per-call pop-then-del path must keep the dict clean instead
+    of letting the key linger with stale deque content.
+    """
+    _reg_rate_limits.clear()
+
+    real_now = time.time()
+    fake_now = [real_now - 2000]
+    monkeypatch.setattr(registration_module.time, "time", lambda: fake_now[0])
+
+    ip = "203.0.113.42"
+    # Fill up the window well in the past.
+    for _ in range(5):
+        _check_registration_rate_limit(ip)
+    # dict has one key with 5 expired entries
+    assert len(_reg_rate_limits[ip]) == 5
+
+    # Jump forward past the window.
+    fake_now[0] = real_now
+    # The next call must evict every stale entry, del the key, and
+    # then re-add a fresh entry. Net: one key with one fresh entry.
+    assert _check_registration_rate_limit(ip) is True
+    assert len(_reg_rate_limits[ip]) == 1
+
+
 def test_rate_limit_sliding_window_expires_old_entries(monkeypatch):
     """Entries older than the window should be evicted, freeing up
     slots for new attempts. Guards the deque-cleanup loop in

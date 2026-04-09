@@ -5,7 +5,7 @@ import time
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,8 +14,15 @@ from sqlalchemy.orm import selectinload
 from config import MATRIX_HOMESERVER_URL, SOUNDBOARD_DIR
 from database import get_db
 from dependencies import require_server_member, require_server_admin, require_server_owner
+from errors import ConcordError
 from models import Server, Channel, ServerMember, ServerBan, ServerWhitelist, SoundboardClip
 from services.matrix_admin import create_matrix_room, invite_to_room, join_room, set_room_name
+
+
+# Matrix user ID regex shared across server endpoints. Bounds the
+# input length and shape so a malicious client can't ship a megabyte
+# blob to /api/servers/{id}/bans.
+_MATRIX_USER_ID_PATTERN = r"^@[a-zA-Z0-9._=\-/+]+:[a-zA-Z0-9.\-]+$"
 
 logger = logging.getLogger(__name__)
 
@@ -38,22 +45,29 @@ _reconcile_lock = asyncio.Lock()
 
 class ServerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    visibility: str = "private"
-    abbreviation: str | None = Field(default=None, max_length=3)
+    visibility: Literal["public", "private"] = "private"
+    abbreviation: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=3,
+        pattern=r"^[A-Za-z0-9]+$",
+    )
 
 
 class ChannelCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_\- ]+$")
     channel_type: Literal["text", "voice"] = "text"
 
 
 class ChannelUpdate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_\- ]+$")
 
 
 class ChannelReorder(BaseModel):
     order: list[int] = Field(
         ...,
+        min_length=0,
+        max_length=1000,
         description="Channel IDs in desired order. Must contain every channel of the server exactly once.",
     )
 
@@ -83,8 +97,12 @@ class ServerOut(BaseModel):
 
 class ServerSettingsUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
-    visibility: str | None = None
-    abbreviation: str | None = Field(default=None, max_length=3)
+    visibility: Literal["public", "private"] | None = None
+    abbreviation: str | None = Field(
+        default=None,
+        max_length=3,
+        pattern=r"^[A-Za-z0-9]*$",
+    )
     media_uploads_enabled: bool | None = None
 
 
@@ -104,15 +122,23 @@ class RoleUpdate(BaseModel):
 
 
 class DisplayNameUpdate(BaseModel):
-    display_name: str | None = Field(default=None, max_length=32)
+    display_name: str | None = Field(default=None, min_length=1, max_length=32)
 
 
 class BanCreate(BaseModel):
-    user_id: str
+    user_id: str = Field(
+        min_length=3,
+        max_length=255,
+        pattern=_MATRIX_USER_ID_PATTERN,
+    )
 
 
 class WhitelistAdd(BaseModel):
-    user_id: str
+    user_id: str = Field(
+        min_length=3,
+        max_length=255,
+        pattern=_MATRIX_USER_ID_PATTERN,
+    )
 
 
 class ServerDiscoverOut(BaseModel):
@@ -701,7 +727,7 @@ async def leave_server(
 
 @router.get("/discover", response_model=list[ServerDiscoverOut])
 async def discover_servers(
-    q: str = "",
+    q: str = Query(default="", max_length=200),
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1159,3 +1185,321 @@ async def remove_from_whitelist(
     await db.delete(entry)
     await db.commit()
     return {"status": "removed"}
+
+
+# ---------------------------------------------------------------------------
+# Place ownership re-minting (TASK 28)
+# ---------------------------------------------------------------------------
+#
+# "Re-minting" is the Concord term for transferring ownership of a place
+# to a new owner. Instead of mutating the existing place record, we
+# create a NEW place that links back to the previous one via
+# ``previous_place_id`` and snapshot the previous ledger (channels +
+# member roster + media filenames) into a ``PlaceLedgerHeader``.
+#
+# Two modes:
+# - encrypted=True: the snapshot is base64'd and (in the long term)
+#   sealed under a key only the new owner can decrypt. Today this is a
+#   placeholder — see TODO below.
+# - encrypted=False: plaintext base64. Suitable for "flexible,
+#   committee-changeable" ownership where transparency matters more
+#   than confidentiality.
+#
+# The actual media files are not in the snapshot — only filenames. The
+# files live on disk under SOUNDBOARD_DIR and are kept around because
+# the new place inherits the same Server.id pattern.
+
+class RemintRequest(BaseModel):
+    new_owner_user_id: str = Field(
+        min_length=3,
+        max_length=255,
+        pattern=_MATRIX_USER_ID_PATTERN,
+        description="The Matrix user ID who will own the new place.",
+    )
+    encrypted: bool = Field(
+        default=False,
+        description=(
+            "If True, snapshot the ledger encrypted (placeholder — base64 "
+            "today, real encryption in a follow-up pillar). If False, "
+            "transfer ownership in plaintext."
+        ),
+    )
+
+
+class RemintResponse(BaseModel):
+    new_place_id: str
+    previous_place_id: str
+    new_owner_id: str
+    encrypted: bool
+    media_filenames_preserved: int
+    channel_id_mapping: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Mapping of old channel id -> new channel id, so the client "
+            "can rewire cached references after a re-mint. Keys and "
+            "values are stringified integer channel IDs."
+        ),
+    )
+    member_count_preserved: int = Field(
+        default=0,
+        description=(
+            "Number of ServerMember rows (including the new owner) "
+            "inserted on the new place. The prior owner is demoted "
+            "to 'admin'; the new owner becomes 'owner'."
+        ),
+    )
+
+
+@router.post("/{server_id}/remint-ownership", response_model=RemintResponse)
+async def remint_ownership(
+    server_id: str,
+    body: RemintRequest,
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-mint a place into a new owner.
+
+    Creates a new Server record owned by ``new_owner_user_id`` and
+    snapshots the ledger of the old place into a PlaceLedgerHeader
+    linked from the new record. The old place is preserved (not
+    deleted) so the audit chain stays intact and federated peers can
+    still resolve the previous_place_id.
+
+    Re-mint preserves the prior member roster. Prior members keep
+    their roles with one exception: the prior owner is demoted to
+    ``admin`` on the new place. The new owner is the caller of this
+    endpoint and is the sole ``owner`` on the new place.
+
+    Channels are rehydrated onto the new place with fresh
+    ``matrix_room_id`` values — the old Matrix rooms belong to the
+    old place and the new owner has no permission to send into them.
+    The response includes a ``channel_id_mapping`` so the client can
+    rewire any cached references from old channel IDs to new ones.
+
+    Encryption: ``encrypted=True`` is not yet implemented and will
+    return ``501 ENCRYPTION_NOT_AVAILABLE`` rather than silently
+    writing a plaintext payload tagged as encrypted. Pass
+    ``encrypted=False`` for an unencrypted ownership transfer.
+    """
+    import base64
+    import json
+    import secrets
+    from models import PlaceLedgerHeader, SoundboardClip
+
+    server = await db.get(Server, server_id)
+    if not server:
+        raise ConcordError(
+            error_code="RESOURCE_NOT_FOUND",
+            message="Place not found",
+            status_code=404,
+        )
+
+    # Auth: only the current owner can re-mint.
+    if server.owner_id != user_id:
+        raise ConcordError(
+            error_code="OWNER_REQUIRED",
+            message="Only the current place owner can re-mint ownership.",
+            status_code=403,
+        )
+
+    if body.new_owner_user_id == server.owner_id:
+        raise ConcordError(
+            error_code="OWNERSHIP_TRANSFER_FAILED",
+            message="New owner must differ from current owner.",
+            status_code=400,
+        )
+
+    # C-1: encrypted re-mint is not implemented. Reject loudly rather
+    # than silently writing plaintext into a row tagged ``encrypted=True``.
+    # Keeps the API contract honest and leaves room for a real encryption
+    # backend to slot in later without a schema lie in the interim.
+    if body.encrypted:
+        raise ConcordError(
+            "ENCRYPTION_NOT_AVAILABLE",
+            "Encrypted re-mint is not yet implemented. Pass encrypted=false for an unencrypted ownership transfer.",
+            status_code=501,
+        )
+
+    # Snapshot the ledger of the old place. Per the design, only
+    # filenames + channel roster + member roster are preserved — the
+    # actual media files stay on disk under their Server.id directory.
+    channels_result = await db.execute(
+        select(Channel).where(Channel.server_id == server_id)
+    )
+    old_channels = list(channels_result.scalars().all())
+
+    members_result = await db.execute(
+        select(ServerMember).where(ServerMember.server_id == server_id)
+    )
+    old_members = list(members_result.scalars().all())
+
+    clips_result = await db.execute(
+        select(SoundboardClip).where(SoundboardClip.server_id == server_id)
+    )
+    old_clips = list(clips_result.scalars().all())
+
+    media_filenames = [c.filename for c in old_clips]
+
+    snapshot = {
+        "previous_place_id": server.id,
+        "previous_owner_id": server.owner_id,
+        "channels": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "channel_type": c.channel_type,
+                "matrix_room_id": c.matrix_room_id,
+                "position": c.position,
+            }
+            for c in old_channels
+        ],
+        "members": [
+            {
+                "user_id": m.user_id,
+                "role": m.role,
+                "display_name": m.display_name,
+                "can_kick": m.can_kick,
+                "can_ban": m.can_ban,
+            }
+            for m in old_members
+        ],
+        "media_filenames": media_filenames,
+    }
+
+    snapshot_json = json.dumps(snapshot, sort_keys=True).encode("utf-8")
+    # Plaintext path only — encrypted path is rejected above until an
+    # encryption backend lands. The base64 wrapping keeps the column
+    # shape stable so a future encrypted payload is a drop-in.
+    payload = base64.b64encode(snapshot_json).decode("ascii")
+
+    # Create the new place record. Carry over the human-facing fields
+    # so the new owner doesn't have to re-name everything.
+    new_server = Server(
+        name=server.name,
+        icon_url=server.icon_url,
+        owner_id=body.new_owner_user_id,
+        visibility=server.visibility,
+        abbreviation=server.abbreviation,
+        kick_limit=server.kick_limit,
+        kick_window_minutes=server.kick_window_minutes,
+        ban_mode=server.ban_mode,
+        media_uploads_enabled=server.media_uploads_enabled,
+        previous_place_id=server.id,
+    )
+    db.add(new_server)
+    await db.flush()  # populate new_server.id
+
+    # H-1: Rehydrate channels onto the new place. If the old place had
+    # channels but the snapshot doesn't carry them, something is wrong
+    # with the snapshot format — fail loudly rather than produce a
+    # silently-broken shell place.
+    channel_id_mapping: dict[str, str] = {}
+    snapshot_channels = snapshot.get("channels")
+    if old_channels and not snapshot_channels:
+        raise ConcordError(
+            "REMINT_SNAPSHOT_INCOMPLETE",
+            "Re-mint snapshot is missing channel data required to reconstruct the place.",
+            status_code=500,
+        )
+
+    for ch_entry in snapshot_channels or []:
+        # Generate a fresh Matrix room ID. We cannot reuse the old
+        # room because (a) the Channel.matrix_room_id column has a
+        # UNIQUE constraint, and (b) the new owner has no permission
+        # to post into the prior owner's Matrix rooms. A real Matrix
+        # room should be minted via services.matrix_admin.create_matrix_room
+        # in a follow-up — for now use a placeholder with a clearly
+        # unique suffix so the row is distinguishable and the UNIQUE
+        # constraint is satisfied. This leaves a TODO for the Matrix
+        # room-creation integration.
+        # TODO(remint-matrix-rooms): call create_matrix_room() here
+        # once the re-mint flow is wired to the caller's access token.
+        fresh_room_id = (
+            f"!remint-{new_server.id}-{secrets.token_hex(6)}:placeholder.local"
+        )
+        old_id = ch_entry.get("id")
+        new_channel = Channel(
+            server_id=new_server.id,
+            matrix_room_id=fresh_room_id,
+            name=ch_entry["name"],
+            channel_type=ch_entry.get("channel_type", "text"),
+            position=ch_entry.get("position", 0),
+        )
+        db.add(new_channel)
+        await db.flush()  # populate new_channel.id
+        if old_id is not None:
+            channel_id_mapping[str(old_id)] = str(new_channel.id)
+
+    # H-2: Rehydrate the member roster. Same "loud fail" rule: if
+    # the old place had members but the snapshot is missing the
+    # array, refuse to produce a half-populated place.
+    snapshot_members = snapshot.get("members")
+    if old_members and not snapshot_members:
+        raise ConcordError(
+            "REMINT_SNAPSHOT_INCOMPLETE",
+            "Re-mint snapshot is missing member roster required to reconstruct the place.",
+            status_code=500,
+        )
+
+    # The new owner (the caller of this endpoint) is the sole owner
+    # on the new place. Add them first so we can dedupe against them
+    # when iterating the prior roster.
+    db.add(ServerMember(
+        server_id=new_server.id,
+        user_id=body.new_owner_user_id,
+        role="owner",
+    ))
+    seen_user_ids = {body.new_owner_user_id}
+
+    for m_entry in snapshot_members or []:
+        prior_user_id = m_entry["user_id"]
+        if prior_user_id in seen_user_ids:
+            # Don't insert a duplicate row for the new owner if they
+            # happened to already be in the prior roster.
+            continue
+        prior_role = m_entry.get("role") or "member"
+        # The prior owner is demoted to admin — the whole point of a
+        # re-mint is that ownership transfers. Any other prior role
+        # is carried over verbatim.
+        if prior_role == "owner":
+            new_role = "admin"
+        else:
+            new_role = prior_role
+        db.add(ServerMember(
+            server_id=new_server.id,
+            user_id=prior_user_id,
+            role=new_role,
+            can_kick=bool(m_entry.get("can_kick", False)),
+            can_ban=bool(m_entry.get("can_ban", False)),
+            display_name=m_entry.get("display_name"),
+        ))
+        seen_user_ids.add(prior_user_id)
+
+    # Persist the snapshot header
+    header = PlaceLedgerHeader(
+        new_place_id=new_server.id,
+        previous_place_id=server.id,
+        encrypted=body.encrypted,
+        payload=payload,
+    )
+    db.add(header)
+
+    await db.commit()
+    await db.refresh(new_server)
+
+    logger.info(
+        "Place re-minted: %s -> %s (new_owner=%s, encrypted=%s, media=%d, channels=%d, members=%d)",
+        server.id, new_server.id, body.new_owner_user_id,
+        body.encrypted, len(media_filenames),
+        len(channel_id_mapping), len(seen_user_ids),
+    )
+
+    return RemintResponse(
+        new_place_id=new_server.id,
+        previous_place_id=server.id,
+        new_owner_id=body.new_owner_user_id,
+        encrypted=body.encrypted,
+        media_filenames_preserved=len(media_filenames),
+        channel_id_mapping=channel_id_mapping,
+        member_count_preserved=len(seen_user_ids),
+    )

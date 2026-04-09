@@ -21,13 +21,59 @@ _reg_rate_limits: dict[str, deque[float]] = defaultdict(deque)
 _REG_RATE_LIMIT = 5
 _REG_RATE_WINDOW = 900  # 15 minutes
 
+# Periodic sweep counters. Without the sweep, an attacker spraying
+# many distinct IPs a single time each would leak one dict entry per
+# IP forever (the per-call ``del`` below only fires when the same
+# IP is hit again after the window expires). The sweep walks the
+# whole dict every ``_REG_SWEEP_INTERVAL`` calls and drops any empty
+# or fully-expired keys.
+_reg_sweep_counter = 0
+_REG_SWEEP_INTERVAL = 1000
+
+
+def _sweep_reg_rate_limits(now: float) -> None:
+    """Walk the rate-limit dict and delete empty / fully-expired entries.
+
+    Bounded O(dict_size) and infrequent. Catches the case where an
+    attacker hits many distinct IPs a single time each (so the
+    per-call ``del`` never fires).
+    """
+    cutoff = now - _REG_RATE_WINDOW
+    for key in list(_reg_rate_limits.keys()):
+        window = _reg_rate_limits.get(key)
+        if not window:
+            _reg_rate_limits.pop(key, None)
+            continue
+        while window and window[0] < cutoff:
+            window.popleft()
+        if not window:
+            _reg_rate_limits.pop(key, None)
+
 
 def _check_registration_rate_limit(ip: str) -> bool:
-    """Return True if within rate limit, False if exceeded."""
+    """Return True if within rate limit, False if exceeded.
+
+    After popping expired entries, if the deque is empty, delete the
+    IP key itself so the outer dict cannot grow unbounded. A periodic
+    sweep catches one-shot attacker IPs that the per-call ``del``
+    would never touch.
+    """
+    global _reg_sweep_counter
     now = time.time()
+
+    _reg_sweep_counter += 1
+    if _reg_sweep_counter >= _REG_SWEEP_INTERVAL:
+        _reg_sweep_counter = 0
+        _sweep_reg_rate_limits(now)
+
     window = _reg_rate_limits[ip]
     while window and window[0] < now - _REG_RATE_WINDOW:
         window.popleft()
+    # If the sliding-window pop emptied the deque, drop the key too;
+    # the ``append`` below recreates a fresh one via the defaultdict.
+    if not window:
+        del _reg_rate_limits[ip]
+        window = _reg_rate_limits[ip]
     if len(window) >= _REG_RATE_LIMIT:
         return False
     window.append(now)

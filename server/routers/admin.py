@@ -59,8 +59,8 @@ async def get_instance():
 # ---------------------------------------------------------------------------
 
 class PasswordChangeRequest(BaseModel):
-    current_password: str = Field(min_length=1)
-    new_password: str = Field(min_length=1, max_length=128)
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 @router.post("/api/user/change-password")
@@ -158,7 +158,7 @@ async def admin_check(user_id: str = Depends(get_user_id)):
 # ---------------------------------------------------------------------------
 
 class InstanceUpdate(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=64)
     require_totp: bool | None = None
 
 
@@ -171,9 +171,8 @@ async def admin_update_instance(
     require_admin(user_id)
     settings = _read_instance_settings()
     if body.name is not None:
-        if len(body.name) < 1 or len(body.name) > 64:
-            from fastapi import HTTPException
-            raise HTTPException(400, "Name must be 1-64 characters")
+        # Pydantic Field already enforces the 1-64 length range; this
+        # extra check is now defensive only.
         settings["name"] = body.name
     if body.require_totp is not None:
         settings["require_totp"] = body.require_totp
@@ -338,8 +337,11 @@ async def admin_list_reports(
 
 
 class ReportUpdate(BaseModel):
-    status: str | None = None  # open, in_progress, resolved, closed
-    admin_notes: str | None = None
+    status: str | None = Field(
+        default=None,
+        pattern=r"^(open|in_progress|resolved|closed)$",
+    )
+    admin_notes: str | None = Field(default=None, max_length=10_000)
 
 
 @router.patch("/api/admin/reports/{report_id}")
@@ -476,7 +478,11 @@ async def admin_get_federation(
 
 
 class FederationAllowlistUpdate(BaseModel):
-    allowed_servers: list[str]  # plain server names — not regex
+    allowed_servers: list[str] = Field(
+        min_length=0,
+        max_length=1000,
+        description="Plain RFC-1123 hostnames — not regex.",
+    )
 
 
 @router.put("/api/admin/federation/allowlist")

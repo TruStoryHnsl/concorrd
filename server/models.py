@@ -20,6 +20,14 @@ class Server(Base):
     kick_window_minutes: Mapped[int] = mapped_column(Integer, default=30)  # window for kick counting
     ban_mode: Mapped[str] = mapped_column(String, default="soft")  # "soft", "harsh"
     media_uploads_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Place re-minting (ownership transfer) link. Set on the NEW place
+    # record after a re-mint, pointing back to the place it inherited
+    # from. NULL on the original record. See routers/servers.py
+    # remint_ownership.
+    previous_place_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("servers.id"), nullable=True
+    )
+    bans_disposables: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     channels: Mapped[list["Channel"]] = relationship(back_populates="server", cascade="all, delete-orphan")
@@ -269,3 +277,70 @@ class BugReport(Base):
     admin_notes: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class DisposableNode(Base):
+    """A short-lived anonymous node session.
+
+    Used by the disposable-anonymous-browsing pillar (PLAN.md). A
+    disposable node has no email, no password, and no Matrix account —
+    only a random session token. The node MUST contribute compute back
+    to the network (the ``must_contribute_compute`` flag is a hint to
+    the scheduler that this node is eligible for compute work). Place
+    admins can ban disposable nodes per-place via
+    ``Server.bans_disposables``.
+    """
+
+    __tablename__ = "disposable_nodes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_token: Mapped[str] = mapped_column(
+        String, unique=True, nullable=False,
+        default=lambda: secrets.token_urlsafe(32),
+    )
+    temp_identifier: Mapped[str] = mapped_column(
+        String, nullable=False,
+        default=lambda: f"anon-{secrets.token_urlsafe(8)}",
+    )
+    is_disposable: Mapped[bool] = mapped_column(Boolean, default=True)
+    must_contribute_compute: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class PlaceLedgerHeader(Base):
+    """Compressed snapshot of a place ledger after a re-mint.
+
+    On ownership re-mint we compress the previous place's ledger
+    (channels, members, media filenames) into a single header row that
+    is preserved alongside the new place. The header is either:
+
+    - encrypted (``encrypted=True``): the JSON blob is base64-of-encrypted
+      bytes that only an authorized key can decode. Used for
+      privacy-preserving ownership transfer.
+    - unencrypted (``encrypted=False``): the JSON blob is plaintext base64,
+      visible to anyone with DB access. Matches the "flexible,
+      committee-changeable" branch of the design.
+
+    NB: The actual media files are NOT in this header — only their
+    filenames. Media itself is stored on disk under SOUNDBOARD_DIR.
+    """
+
+    __tablename__ = "place_ledger_headers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    new_place_id: Mapped[str] = mapped_column(
+        String, ForeignKey("servers.id"), nullable=False
+    )
+    previous_place_id: Mapped[str] = mapped_column(String, nullable=False)
+    encrypted: Mapped[bool] = mapped_column(Boolean, default=False)
+    payload: Mapped[str] = mapped_column(String, nullable=False)  # base64 JSON
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )

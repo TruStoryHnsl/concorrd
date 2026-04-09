@@ -4,14 +4,15 @@ import os
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel, Field
 from livekit import api as livekit_api
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import require_server_member
+from errors import ConcordError
 from models import Channel, ServerMember
 from routers.servers import get_user_id
 from services.livekit_tokens import generate_token, LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
@@ -25,7 +26,14 @@ METERED_API_KEY = os.getenv("METERED_API_KEY", "")
 
 
 class VoiceTokenRequest(BaseModel):
-    room_name: str  # We use the matrix_room_id as the LiveKit room name
+    # Matrix room IDs look like "!opaque:server.tld" — bound the length
+    # so a malicious client can't ship a megabyte of "room_name" and
+    # blow up the server.
+    room_name: str = Field(
+        min_length=1,
+        max_length=255,
+        description="The Matrix room ID of the voice channel.",
+    )
 
 
 class IceServer(BaseModel):
@@ -128,7 +136,11 @@ async def get_voice_token(
     )
     channel = result.scalar_one_or_none()
     if not channel:
-        raise HTTPException(404, "Voice channel not found")
+        raise ConcordError(
+            error_code="RESOURCE_NOT_FOUND",
+            message="Voice channel not found",
+            status_code=404,
+        )
 
     await require_server_member(channel.server_id, user_id, db)
 
@@ -171,7 +183,12 @@ class VoiceParticipant(BaseModel):
 
 @router.get("/participants")
 async def get_voice_participants(
-    rooms: str = Query(..., description="Comma-separated room IDs"),
+    rooms: str = Query(
+        ...,
+        min_length=1,
+        max_length=8192,
+        description="Comma-separated Matrix room IDs (max 8KB total).",
+    ),
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
