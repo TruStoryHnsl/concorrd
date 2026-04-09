@@ -18,6 +18,9 @@ client/downloads/
 desktop/node_modules/
 desktop/dist/
 
+# iOS/native smoke-build artifacts
+dist/
+
 # Python
 __pycache__/
 *.pyc

@@ -1,0 +1,127 @@
+name: concord
+options:
+  bundleIdPrefix: com.concord.chat
+  deploymentTarget:
+    iOS: 15.0
+fileGroups: [../../src]
+configs:
+  debug: debug
+  release: release
+settingGroups:
+  app:
+    base:
+      PRODUCT_NAME: Concord
+      PRODUCT_BUNDLE_IDENTIFIER: com.concord.chat
+targetTemplates:
+  app:
+    type: application
+    sources:
+      - path: Sources
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    settings:
+      groups: [app]
+targets:
+  concord_iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Assets.xcassets
+      - path: Externals
+      - path: concord_iOS
+      - path: assets
+        buildPhase: resources
+        type: folder
+      - path: LaunchScreen.storyboard
+    info:
+      path: concord_iOS/Info.plist
+      properties:
+        LSRequiresIPhoneOS: true
+        UILaunchStoryboardName: LaunchScreen
+        UIRequiredDeviceCapabilities: [arm64, metal]
+        # Min OS — must match `bundle.iOS.minimumSystemVersion` in
+        # tauri.conf.json. iOS 15 is the floor that supports the
+        # WKWebView features Concord relies on.
+        MinimumOSVersion: "15.0"
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # iPad multitasking — Split View / Slide Over require this.
+        UIRequiresFullScreen: false
+        # Privacy descriptions (App Store review requirement).
+        NSLocalNetworkUsageDescription: "Concord discovers other people on the same Wi-Fi network so you can chat without a server."
+        NSBonjourServices:
+          - "_concord._tcp"
+          - "_concord._udp"
+        NSMicrophoneUsageDescription: "Concord needs microphone access to use voice channels."
+        NSCameraUsageDescription: "Concord needs camera access to use video channels."
+        NSBluetoothAlwaysUsageDescription: "Concord can use Bluetooth to discover nearby peers when Wi-Fi is unavailable."
+        # Background modes — "audio" so LiveKit voice keeps running while
+        # backgrounded. "voip" is a stretch goal documented in the
+        # entitlements section but intentionally left out for v0.1.
+        UIBackgroundModes:
+          - audio
+        CFBundleShortVersionString: 0.1.0
+        CFBundleVersion: "0.1.0"
+    entitlements:
+      path: concord_iOS/concord_iOS.entitlements
+      properties:
+        # Multicast networking — required for mDNS / Bonjour peer discovery.
+        # Needs Apple Developer Program approval before it works in production.
+        com.apple.developer.networking.multicast: true
+        # Wi-Fi info — SSID visibility (foreground-only).
+        com.apple.developer.networking.wifi-info: true
+        # Application groups — empty for v0.1; populate when a widget /
+        # share extension target lands.
+        com.apple.security.application-groups: []
+        # Keychain access group — team-prefixed at build time.
+        keychain-access-groups:
+          - "$(AppIdentifierPrefix)com.concord.chat"
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    settings:
+      base:
+        ENABLE_BITCODE: false
+        ARCHS: [arm64]
+        VALID_ARCHS: arm64
+        # INS-020 — universal iPhone + iPad device family. Tauri's default
+        # init does not set this; without it the build setting overrides
+        # the Info.plist UIDeviceFamily key with iPhone-only at link time
+        # and Xcode emits a UIDeviceFamily-overwrite warning. Setting it
+        # here is the long-term right answer because project.yml is the
+        # source-of-truth Tauri regenerates the Xcode project from on
+        # every `cargo tauri ios init` run. 1 = iPhone, 2 = iPad.
+        TARGETED_DEVICE_FAMILY: "1,2"
+        LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        LIBRARY_SEARCH_PATHS[arch=arm64]: $(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
+        EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
+      groups: [app]
+    dependencies:
+      - framework: libapp.a
+        embed: false
+      - sdk: CoreGraphics.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: Security.framework
+      - sdk: UIKit.framework
+      - sdk: WebKit.framework
+    preBuildScripts:
+      - script: cargo tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
+        name: Build Rust Code
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
+          - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a

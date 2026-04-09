@@ -378,11 +378,20 @@ is `false` so iPad Split View and Slide Over work out of the box.
 > while the app is suspended) is a stretch goal that requires additional
 > Apple review. Document but do not enable it for the v0.1 cut.
 
-After init + entitlements are wired, builds use:
+After init + entitlements are wired, builds use the repo wrapper script
+`scripts/build_ios_native.sh` (preferred) or the raw Tauri CLI:
 
 ```bash
-cargo tauri ios build               # release IPA
-cargo tauri ios dev                 # iterate against a USB device or simulator
+# Repo wrapper (preferred — does prereq checks + artifact aggregation)
+./scripts/build_ios_native.sh --sim       # simulator debug .app (no signing)
+./scripts/build_ios_native.sh             # device release .app (signed if
+                                          # APPLE_TEAM_ID + APPLE_CERT_NAME set,
+                                          # unsigned otherwise for Sideloadly)
+
+# Raw Tauri CLI (equivalent, no prereq checks)
+cargo tauri ios build                     # release .app (device)
+cargo tauri ios build --target aarch64-sim --debug   # simulator debug
+cargo tauri ios dev                       # iterate against a USB device or simulator
 ```
 
 The `[target.'cfg(target_os = "ios")'.dependencies]` section in
@@ -392,6 +401,92 @@ real platform integration.
 The Apple Developer Program enrollment was submitted on 2026-04-07; ID
 verification is in progress. Plan as if active — the build flow above
 assumes the team ID is available by the time you run a real signed build.
+Until `bundle.iOS.developmentTeam` is populated in `src-tauri/tauri.conf.json`,
+`build_ios_native.sh` produces an **unsigned** device .app — fine for
+Sideloadly / AltStore re-signing (see §8a below), not for TestFlight.
+
+### 8a. Sideloading unsigned dev builds to a physical iPhone
+
+This flow produces a Concord .app that can be installed on your own
+iPhone today without waiting for Apple Developer Program ID verification
+to finish. The re-signing is done on-device by Sideloadly or AltStore
+against your free personal Apple ID, which gets a 7-day provisioning
+profile — so you'll need to re-install once a week until you upgrade to
+a paid team.
+
+**Step 1. Produce an unsigned device .app.** With `APPLE_TEAM_ID`
+and `APPLE_CERT_NAME` both unset in the environment:
+
+```bash
+unset APPLE_TEAM_ID APPLE_CERT_NAME
+./scripts/build_ios_native.sh
+```
+
+The script will print a warning line acknowledging the unsigned mode and
+drop the .app under `dist/ios-device/Concord.app`.
+
+**Step 2. Convert .app → .ipa.** Sideloadly and AltStore both prefer an
+.ipa (a zip of `Payload/Concord.app/`). Convert with:
+
+```bash
+cd dist/ios-device
+mkdir -p Payload
+mv Concord.app Payload/
+zip -r Concord.ipa Payload
+rm -rf Payload
+```
+
+If a future Tauri release emits the .ipa directly under
+`src-tauri/gen/apple/build/` (older versions did this), `build_ios_native.sh`
+picks it up automatically and you can skip the zip step.
+
+**Step 3a. AltStore mac-companion install (preferred).**
+
+1. Install AltServer for macOS from <https://altstore.io/>
+2. Plug your iPhone into orrpheus via USB (or Lightning, depending on
+   the device).
+3. On the iPhone: Settings → General → VPN & Device Management → trust
+   the developer certificate that AltStore installed.
+4. In AltServer's menu bar icon: "Install AltStore" → pick your device.
+5. In AltStore on the iPhone: tap `+` → browse to `Concord.ipa` synced
+   over AirDrop or via iTunes file sharing → install.
+6. AltStore signs the .ipa against your Apple ID and installs it. The
+   resulting app expires after 7 days; relaunch AltStore on the phone
+   before then to auto-refresh, or re-install from scratch.
+
+**Step 3b. Sideloadly alternative.**
+
+1. Install Sideloadly from <https://sideloadly.io/>
+2. Plug the iPhone into orrpheus.
+3. Drag `Concord.ipa` into the Sideloadly window.
+4. Enter your Apple ID email and an app-specific password (required —
+   Apple rejects plain account passwords from third-party installers).
+5. Click "Start". Sideloadly re-signs the .ipa and installs it directly.
+6. Same 7-day expiration applies; re-run Sideloadly to refresh.
+
+**Step 4. Upgrade path to TestFlight.** Once the Apple Developer
+Program ID verification completes:
+
+1. Read the team ID out of the developer portal (it's the 10-character
+   "Team ID" on the membership page).
+2. Set `bundle.iOS.developmentTeam` in `src-tauri/tauri.conf.json` to
+   that value.
+3. Set `APPLE_TEAM_ID` and `APPLE_CERT_NAME` in your environment.
+4. Re-run `./scripts/build_ios_native.sh` — it now produces a signed
+   device .app suitable for Xcode's Archive flow or direct TestFlight
+   submission via `xcrun altool` / the Transporter app.
+5. Stop using Sideloadly/AltStore — you no longer need the 7-day
+   re-sign loop.
+
+**Sideload caveat:** the free personal-team provisioning profile that
+Sideloadly/AltStore generates does NOT carry the multicast entitlement
+(`com.apple.developer.networking.multicast`) that Concord's servitude
+module requests for Bonjour peer discovery. On a sideloaded build, the
+mDNS-based local-mesh features will silently fall back to manual peer
+entry. This limitation disappears once the paid team's provisioning
+profile is in use. Everything else (Matrix federation, WebRTC voice,
+LAN chat against a homeserver on the same network via explicit IP) works
+normally.
 
 ---
 
@@ -417,5 +512,7 @@ If the smoke test passes, the AppImage and `.deb` in
 | `error: failed to find development files for webkit2gtk-4.1` | webkit dev headers missing | Install `webkit2gtk-4.1` (Arch) or `libwebkit2gtk-4.1-dev` (Debian) |
 | `tauri-cli: command not found` | Tauri CLI not installed | `cargo install tauri-cli --version '^2.0' --locked` |
 | `cargo tauri ios init` fails on orrion | Apple toolchain not present | iOS builds run on orrpheus only — see §8 |
+| iOS sideloaded app installs but crashes immediately on launch | `Info.plist` `UIDeviceFamily` and the entitlements file are out of sync, or an entitlement the app requests is missing from the provisioning profile | (1) Verify `plutil -p src-tauri/gen/apple/concord_iOS/Info.plist` shows `UIDeviceFamily = [1, 2]` and the `NSBonjourServices` types match servitude's advertised types. (2) On a free personal-team sideload, the multicast entitlement is silently stripped — Concord still launches but local-mesh features fall back to manual peer entry. (3) Check the device console (Console.app, attached to the iPhone) for the exact missing-entitlement string. |
+| `cargo tauri ios build --target aarch64-apple-ios-sim` fails with `invalid value` | Tauri CLI uses short target aliases | Use `--target aarch64-sim` (simulator) or `--target aarch64` (device); `aarch64-apple-ios-sim` is the rustup name, not the Tauri CLI alias |
 | AppImage smoke launch hangs in CI | No display server | Run with `xvfb-run` or skip `--smoke` |
 | `linker 'cc' not found` on Windows | MSVC build tools missing | Install Visual Studio 2022 Build Tools |

@@ -14,6 +14,7 @@ import { useTypingUsers, useSendTyping } from "../../hooks/useTyping";
 import { useAuthStore } from "../../stores/auth";
 import { useServerStore } from "../../stores/server";
 import { useServerConfigStore } from "../../stores/serverConfig";
+import { usePlatform } from "../../hooks/usePlatform";
 import { useSendReadReceipt } from "../../hooks/useUnreadCounts";
 import { useNotifications } from "../../hooks/useNotifications";
 import { useSettingsStore } from "../../stores/settings";
@@ -76,6 +77,19 @@ export function ChatLayout() {
   const typingUsers = useTypingUsers(activeRoomId);
   const { onKeystroke, onStopTyping } = useSendTyping(activeRoomId);
   useNotifications();
+
+  // INS-020 iPad layout — when running on an iPad (native Tauri iOS
+  // build or web browser with iPad-class touch screen), force the
+  // three-pane desktop layout regardless of the CSS `md:` breakpoint.
+  // The existing Tailwind `hidden md:block` / `md:hidden` split already
+  // handles web browsers correctly because iPad portrait is >=768px,
+  // but native Tauri iOS reports a webview viewport that can drift
+  // below the `md:` threshold during split view / slide over, which
+  // would otherwise flip the shell to the phone layout mid-session.
+  // Explicit `isIPad` + a prefersTabletLayout signal keeps the layout
+  // stable regardless of transient viewport width changes.
+  const platform = usePlatform();
+  const prefersTabletLayout = platform.isIPad;
 
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
   const [showBugReport, setShowBugReport] = useState(false);
@@ -704,16 +718,29 @@ export function ChatLayout() {
     );
   };
 
+  // INS-020: iPad explicitly renders the desktop three-pane layout so
+  // the native iOS Tauri build gets the tablet UX regardless of CSS
+  // breakpoints. Non-iPad clients use the existing Tailwind `md:`
+  // split that already handles desktop browsers and phones.
   return (
     <>
-      {/* Desktop */}
-      <div className="hidden md:block h-full">
-        {renderDesktopLayout()}
-      </div>
-      {/* Mobile */}
-      <div className="md:hidden h-full">
-        {renderMobileLayout()}
-      </div>
+      {prefersTabletLayout ? (
+        // iPad native — always three-pane, regardless of viewport width.
+        <div className="h-full" data-concord-layout="tablet">
+          {renderDesktopLayout()}
+        </div>
+      ) : (
+        <>
+          {/* Desktop */}
+          <div className="hidden md:block h-full" data-concord-layout="desktop">
+            {renderDesktopLayout()}
+          </div>
+          {/* Mobile */}
+          <div className="md:hidden h-full" data-concord-layout="mobile">
+            {renderMobileLayout()}
+          </div>
+        </>
+      )}
 
       {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} />}
       {showStats && <StatsModal onClose={() => setShowStats(false)} />}
