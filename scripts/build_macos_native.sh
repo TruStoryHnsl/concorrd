@@ -18,9 +18,18 @@
 #   RELEASE_DIR      — Where to copy final artifacts. Defaults to
 #                      ${REPO_ROOT}/dist/macos-universal
 #   SKIP_NOTARIZE    — Set to "1" to skip notarization (e.g. for local dev)
+#   WITH_DMG         — Set to "1" to ALSO produce a .dmg disk image alongside
+#                      the .app. NOT compatible with SSH-only sessions: Tauri's
+#                      bundle_dmg.sh runs an AppleScript that talks to Finder,
+#                      and Finder cannot accept AppleEvents over SSH (errors
+#                      with -1712 "AppleEvent timed out"). Only set this when
+#                      running the script from a logged-in GUI session on
+#                      orrpheus, e.g. via Terminal.app at the keyboard.
+#                      The default skips dmg so SSH-driven CI works.
 #
 # Usage:
-#   scripts/build_macos_native.sh
+#   scripts/build_macos_native.sh                # .app only (SSH-safe)
+#   WITH_DMG=1 scripts/build_macos_native.sh     # .app + .dmg (GUI session only)
 #
 # Exit codes:
 #   0  build (and signing/notarization, if requested) succeeded
@@ -117,13 +126,27 @@ npm run build
 popd >/dev/null
 
 log "Running cargo tauri build --target universal-apple-darwin..."
-pushd "${SRC_TAURI}" >/dev/null
-# Explicit --bundles app,dmg required: tauri.conf.json's bundle.targets
-# only declares Linux targets (deb, rpm, appimage). Without an explicit
+# Explicit --bundles required: tauri.conf.json's bundle.targets only
+# declares Linux targets (deb, rpm, appimage). Without an explicit
 # bundle list here, tauri compiles the binary and silently skips
 # bundling on macOS, leaving us with a release/concord ELF and no .app.
 # Mirrors the Linux script's `--bundles appimage,deb` pattern.
-if ! cargo tauri build --target universal-apple-darwin --bundles app,dmg; then
+#
+# .dmg is gated behind WITH_DMG=1 because Tauri's bundle_dmg.sh runs an
+# AppleScript that requires a logged-in GUI Finder session — it does
+# NOT work over SSH (errors with -1712). The .app alone is the primary
+# distribution artifact; codesigning + (optional) notarization happen
+# below regardless of WITH_DMG.
+if [[ "${WITH_DMG:-0}" == "1" ]]; then
+    log "WITH_DMG=1 — building .app AND .dmg (requires logged-in GUI session)"
+    BUNDLE_LIST="app,dmg"
+else
+    log "default — building .app only (SSH-safe). Set WITH_DMG=1 for .dmg."
+    BUNDLE_LIST="app"
+fi
+
+pushd "${SRC_TAURI}" >/dev/null
+if ! cargo tauri build --target universal-apple-darwin --bundles "${BUNDLE_LIST}"; then
     die "cargo tauri build failed" 2
 fi
 popd >/dev/null
