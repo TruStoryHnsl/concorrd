@@ -65,6 +65,20 @@ export default function App() {
   const autoGainControl = useSettingsStore((s) => s.autoGainControl);
   const preferredInputDeviceId = useSettingsStore((s) => s.preferredInputDeviceId);
 
+  // Appearance — mirror the persisted chatFontSize preference into the
+  // `--concord-chat-font-size` CSS variable so `.concord-message-body`
+  // picks it up without every <MessageContent> needing to re-render.
+  // Runs once on mount (with the hydrated value from localStorage) and
+  // again whenever the user moves the slider in Settings → Appearance.
+  const chatFontSize = useSettingsStore((s) => s.chatFontSize);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.style.setProperty(
+      "--concord-chat-font-size",
+      `${chatFontSize}px`,
+    );
+  }, [chatFontSize]);
+
   useEffect(() => {
     restoreSession();
   }, [restoreSession]);

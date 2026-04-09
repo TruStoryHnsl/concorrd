@@ -36,9 +36,17 @@ interface SettingsState {
   channelNotifications: Record<string, "all" | "mentions" | "nothing">;
   notificationSound: boolean;
 
+  // Appearance — chat body text size in absolute pixels. Applies only
+  // to the message body prose (via the `--concord-chat-font-size` CSS
+  // variable on .concord-message-body). UI chrome (sidebars, buttons,
+  // headings, code blocks) intentionally does NOT scale — this lever is
+  // for users who want large, readable chat text without a bloated
+  // interface.
+  chatFontSize: number;
+
   // UI (not persisted)
   settingsOpen: boolean;
-  settingsTab: "audio" | "voice" | "notifications" | "profile" | "node" | "about" | "admin";
+  settingsTab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "about" | "admin";
   serverSettingsId: string | null;
 
   // Actions
@@ -68,13 +76,32 @@ interface SettingsState {
   setServerNotificationLevel: (serverId: string, level: "all" | "mentions" | "nothing" | "default") => void;
   setChannelNotificationLevel: (roomId: string, level: "all" | "mentions" | "nothing" | "default") => void;
   setNotificationSound: (v: boolean) => void;
-  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "node" | "about" | "admin") => void;
+  /**
+   * Set the chat body text size in absolute pixels. Values are clamped
+   * to [CHAT_FONT_SIZE_MIN, CHAT_FONT_SIZE_MAX] — callers can safely
+   * forward raw slider input. Non-finite values (NaN, ±Infinity) are
+   * dropped to keep persisted state well-formed.
+   */
+  setChatFontSize: (px: number) => void;
+  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "about" | "admin") => void;
   closeSettings: () => void;
-  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "node" | "about" | "admin") => void;
+  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "about" | "admin") => void;
   openServerSettings: (serverId: string) => void;
   closeServerSettings: () => void;
   resetToDefaults: () => void;
 }
+
+/**
+ * Chat-font-size bounds. Default 14px matches the legacy `text-sm`
+ * that MessageContent used to apply on its body div before the CSS
+ * variable indirection; this preserves zero-visual-change at the
+ * default for existing users. The range is deliberately wide so
+ * users with low vision can crank it well beyond comfortable
+ * reading size.
+ */
+export const CHAT_FONT_SIZE_MIN = 12;
+export const CHAT_FONT_SIZE_MAX = 32;
+export const CHAT_FONT_SIZE_DEFAULT = 14;
 
 const defaults = {
   masterOutputVolume: 1.0,
@@ -99,6 +126,7 @@ const defaults = {
   serverNotifications: {} as Record<string, "all" | "mentions" | "nothing">,
   channelNotifications: {} as Record<string, "all" | "mentions" | "nothing">,
   notificationSound: true,
+  chatFontSize: CHAT_FONT_SIZE_DEFAULT,
 } as const;
 
 export const useSettingsStore = create<SettingsState>()(
@@ -158,6 +186,18 @@ export const useSettingsStore = create<SettingsState>()(
           return { channelNotifications: next };
         }),
       setNotificationSound: (v) => set({ notificationSound: v }),
+      setChatFontSize: (px) => {
+        // Reject non-finite inputs so persisted state never ends up
+        // with NaN/Infinity. Clamp to bounds so external callers (e.g.
+        // a future keyboard shortcut) can pass raw deltas without
+        // their own guard.
+        if (!Number.isFinite(px)) return;
+        const clamped = Math.max(
+          CHAT_FONT_SIZE_MIN,
+          Math.min(CHAT_FONT_SIZE_MAX, Math.round(px)),
+        );
+        set({ chatFontSize: clamped });
+      },
       openSettings: (tab) =>
         set({ settingsOpen: true, serverSettingsId: null, settingsTab: tab ?? "audio" }),
       closeSettings: () => set({ settingsOpen: false }),

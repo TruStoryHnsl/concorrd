@@ -69,6 +69,21 @@ html, body, #root {
   overflow: hidden;
 }
 
+/* ── Chat body text size ──
+ * User-configurable via Settings → Appearance. `App.tsx` mirrors the
+ * `chatFontSize` Zustand setting into this CSS variable on every change,
+ * so the size updates live without re-rendering the message tree.
+ *
+ * Only `.concord-message-body` (below) consumes this variable — UI
+ * chrome (sidebars, buttons, headings, code blocks) deliberately does
+ * NOT scale. Default 14px matches the legacy `text-sm` MessageContent
+ * used to apply directly, so zero-preference render is visually
+ * identical to the pre-feature state.
+ */
+:root {
+  --concord-chat-font-size: 14px;
+}
+
 /* ── Mobile Horizontal Scroll Lock ──
  * On phones the chat layout must never pan left/right at default zoom —
  * a stray wide message, code block, or markdown table used to push the
@@ -251,6 +266,17 @@ textarea,
   overflow-wrap: anywhere;
   word-break: break-word;
   min-width: 0;
+}
+
+/* Chat body font-size — honors Settings → Appearance via the
+ * `--concord-chat-font-size` CSS variable that the effect in `App.tsx`
+ * mirrors from the persisted `chatFontSize` Zustand setting. Nested
+ * elements with explicit Tailwind text-* classes (headings text-xl/lg,
+ * code blocks text-sm, etc.) retain their intentional sizing via
+ * Tailwind's utilities layer.
+ */
+.concord-message-body {
+  font-size: var(--concord-chat-font-size);
 }
 
 /* Markdown elements that can't word-wrap (tables, fenced code) must scroll

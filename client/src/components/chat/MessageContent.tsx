@@ -621,7 +621,12 @@ export function MessageContent({ message }: MessageContentProps) {
   const urls = extractUrls(body);
   const hasChart = message.chartRaw !== undefined && message.chartRaw !== null;
   return (
-    <div className="text-sm text-on-surface markdown-content concord-message-body">
+    // `text-sm` intentionally removed — font-size is now owned by
+    // `.concord-message-body` in `index.css`, which reads the user's
+    // preference from the `--concord-chat-font-size` CSS variable.
+    // Default is 14px so existing users see no visual change until
+    // they actively adjust the slider in Settings → Appearance.
+    <div className="text-on-surface markdown-content concord-message-body">
       {body && (
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
