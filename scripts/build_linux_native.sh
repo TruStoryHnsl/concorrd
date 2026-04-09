@@ -66,7 +66,15 @@ log "node:        $(node --version)"
 # ----------------------------------------------------------------------------
 log "Building React client (${CLIENT_DIR})..."
 pushd "${CLIENT_DIR}" >/dev/null
-if [[ ! -d node_modules ]]; then
+# Refresh node_modules when missing OR when package-lock.json has been
+# touched more recently than the last install's fingerprint. The second
+# condition catches the cross-machine case: Syncthing mirrors
+# package{,-lock}.json but excludes node_modules, so the working tree's
+# lockfile can be ahead of the locally-installed deps after a pull.
+if [[ ! -d node_modules ]] \
+   || [[ ! -f node_modules/.package-lock.json ]] \
+   || [[ package-lock.json -nt node_modules/.package-lock.json ]]; then
+    log "node_modules is missing or stale relative to package-lock.json — running npm ci"
     npm ci
 fi
 npm run build
