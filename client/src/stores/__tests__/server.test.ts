@@ -139,7 +139,12 @@ describe("useServerStore.hydrateFederatedRooms", () => {
     expect(useServerStore.getState().servers).toEqual([]);
   });
 
-  it("creates a synthetic federated server for each joined, non-DM, non-managed room", () => {
+  it("collapses multiple joined rooms on the same federated homeserver into ONE synthetic server with each room as a channel", () => {
+    // Two rooms on the same host → ONE sidebar tile labelled
+    // after the host, each room a channel under it. This is the
+    // homeserver-based grouping strategy (Pass 3b) that the
+    // classifier falls back to when no Matrix spaces or
+    // m.space.parent hints are available.
     const rooms = [
       fakeRoom({ roomId: "!a:remote.example", name: "Alpha" }),
       fakeRoom({ roomId: "!b:remote.example", name: "Bravo" }),
@@ -147,13 +152,35 @@ describe("useServerStore.hydrateFederatedRooms", () => {
     useServerStore.getState().hydrateFederatedRooms(fakeClient(rooms));
 
     const servers = useServerStore.getState().servers;
+    expect(servers).toHaveLength(1);
+    const host = servers[0];
+    expect(host.federated).toBe(true);
+    expect(host.id).toBe("federated:homeserver:remote.example");
+    expect(host.name).toBe("remote.example");
+    // Channels are sorted alphabetically by name for stable order
+    // across sync ticks — "Alpha" before "Bravo".
+    expect(host.channels).toHaveLength(2);
+    expect(host.channels.map((c) => c.matrix_room_id)).toEqual([
+      "!a:remote.example",
+      "!b:remote.example",
+    ]);
+    expect(host.channels.map((c) => c.name)).toEqual(["Alpha", "Bravo"]);
+  });
+
+  it("creates separate synthetic servers for rooms on different homeservers", () => {
+    const rooms = [
+      fakeRoom({ roomId: "!a:mozilla.org", name: "Alpha" }),
+      fakeRoom({ roomId: "!b:matrix.org", name: "Bravo" }),
+    ];
+    useServerStore.getState().hydrateFederatedRooms(fakeClient(rooms));
+
+    const servers = useServerStore.getState().servers;
     expect(servers).toHaveLength(2);
-    expect(servers[0].federated).toBe(true);
-    expect(servers[0].id).toBe("federated:!a:remote.example");
-    expect(servers[0].name).toBe("Alpha");
-    expect(servers[0].channels).toHaveLength(1);
-    expect(servers[0].channels[0].matrix_room_id).toBe("!a:remote.example");
-    expect(servers[1].id).toBe("federated:!b:remote.example");
+    const ids = servers.map((s) => s.id).sort();
+    expect(ids).toEqual([
+      "federated:homeserver:matrix.org",
+      "federated:homeserver:mozilla.org",
+    ]);
   });
 
   it("skips rooms whose membership is not 'join' (invites, bans, leaves)", () => {
@@ -167,6 +194,9 @@ describe("useServerStore.hydrateFederatedRooms", () => {
 
     const servers = useServerStore.getState().servers;
     expect(servers).toHaveLength(1);
+    // Only the joined room survives — the host group has exactly
+    // one channel.
+    expect(servers[0].channels).toHaveLength(1);
     expect(servers[0].channels[0].matrix_room_id).toBe("!joined:remote.example");
   });
 
@@ -207,30 +237,40 @@ describe("useServerStore.hydrateFederatedRooms", () => {
     // The Concord server is preserved untouched...
     expect(servers[0].id).toBe("srv-1");
     expect(servers[0].federated).toBeUndefined();
-    // ...and only the un-managed room became a federated wrapper.
-    expect(servers[1].id).toBe("federated:!loose:remote.example");
+    // ...and the un-managed remote room lives under its host
+    // group (Pass 3b homeserver bucket).
+    expect(servers[1].id).toBe("federated:homeserver:remote.example");
     expect(servers[1].federated).toBe(true);
+    expect(servers[1].channels[0].matrix_room_id).toBe("!loose:remote.example");
   });
 
   it("is idempotent — repeated calls replace stale federated entries rather than accumulating", () => {
-    // First call: two rooms, produces two federated wrappers.
+    // First call: two rooms on the same host → one synthetic
+    // server with two channels.
     useServerStore.getState().hydrateFederatedRooms(
       fakeClient([
         fakeRoom({ roomId: "!a:remote.example", name: "A" }),
         fakeRoom({ roomId: "!b:remote.example", name: "B" }),
       ]),
     );
-    expect(useServerStore.getState().servers).toHaveLength(2);
+    {
+      const first = useServerStore.getState().servers;
+      expect(first).toHaveLength(1);
+      expect(first[0].channels).toHaveLength(2);
+    }
 
-    // Second call: only ONE room remains joined (user left the other).
-    // The store should contain exactly one federated wrapper, not
-    // three (it must drop the stale !b entry).
+    // Second call: only ONE room remains joined (user left the
+    // other). The store must drop the stale "!b" channel from
+    // the host group — not keep both the new and old state
+    // merged together.
     useServerStore.getState().hydrateFederatedRooms(
       fakeClient([fakeRoom({ roomId: "!a:remote.example", name: "A" })]),
     );
     const servers = useServerStore.getState().servers;
     expect(servers).toHaveLength(1);
-    expect(servers[0].id).toBe("federated:!a:remote.example");
+    expect(servers[0].id).toBe("federated:homeserver:remote.example");
+    expect(servers[0].channels).toHaveLength(1);
+    expect(servers[0].channels[0].matrix_room_id).toBe("!a:remote.example");
   });
 
   it("preserves Concord servers across repeated hydration calls", () => {
@@ -278,23 +318,31 @@ describe("useServerStore.hydrateFederatedRooms", () => {
     expect(servers).toHaveLength(2);
     const ids = servers.map((s) => s.id).sort();
     expect(ids).toEqual([
-      "federated:!real:friend.example.com",
-      "federated:!real:mozilla.org",
+      "federated:homeserver:friend.example.com",
+      "federated:homeserver:mozilla.org",
     ]);
-    // Critically, neither ghost made it into the list.
+    // Critically, neither ghost made it into any channel list.
+    // @tester:example.org is the local homeserver, so *.example.org
+    // entries are filtered out before grouping.
     for (const srv of servers) {
-      expect(srv.channels[0].matrix_room_id).not.toContain("example.org");
+      for (const ch of srv.channels) {
+        expect(ch.matrix_room_id).not.toMatch(/:example\.org$/);
+      }
     }
   });
 
-  it("falls back to the room id when the room has no name", () => {
+  it("falls back to the room id as the channel name when the room has no name", () => {
     const rooms = [fakeRoom({ roomId: "!unnamed:remote.example", name: undefined })];
     useServerStore.getState().hydrateFederatedRooms(fakeClient(rooms));
 
     const servers = useServerStore.getState().servers;
     expect(servers).toHaveLength(1);
-    expect(servers[0].name).toBe("!unnamed:remote.example");
-    expect(servers[0].abbreviation).toBe("!");
+    // Host group takes its name from the domain, not from the
+    // channel, so "remote.example" not "!unnamed:remote.example".
+    expect(servers[0].name).toBe("remote.example");
+    expect(servers[0].abbreviation).toBe("R");
+    // But the channel inside falls back to the room id.
+    expect(servers[0].channels[0].name).toBe("!unnamed:remote.example");
   });
 
   it("collapses a space + its joined children into ONE synthetic server with the children as channels", () => {
@@ -418,7 +466,7 @@ describe("useServerStore.hydrateFederatedRooms", () => {
     expect(hasStandaloneChild).toBe(false);
   });
 
-  it("renders a standalone room that is NOT a child of any joined space as its own server", () => {
+  it("renders a standalone room that is NOT a child of any joined space under its host group", () => {
     const rooms = [
       fakeRoom({
         roomId: "!space:remote.example",
@@ -427,17 +475,19 @@ describe("useServerStore.hydrateFederatedRooms", () => {
         spaceChildren: ["!child:remote.example"],
       }),
       fakeRoom({ roomId: "!child:remote.example", name: "Child" }),
-      // Independent room not in any space.
+      // Independent room not in any space, on a different host.
       fakeRoom({ roomId: "!loose:other.example", name: "Loose Room" }),
     ];
     useServerStore.getState().hydrateFederatedRooms(fakeClient(rooms));
 
     const servers = useServerStore.getState().servers;
-    // The space gives us one entry, the loose room gives us another.
+    // The space gives us one synthetic entry (Pass 3a), the
+    // loose room on a different host gives us another (Pass 3b
+    // homeserver group).
     expect(servers).toHaveLength(2);
     expect(servers.map((s) => s.id).sort()).toEqual([
-      "federated:!loose:other.example",
       "federated:!space:remote.example",
+      "federated:homeserver:other.example",
     ]);
   });
 });

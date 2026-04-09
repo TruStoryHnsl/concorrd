@@ -347,22 +347,37 @@ export const useServerStore = create<ServerState>((set, get) => ({
     }
 
     // -----------------------------------------------------------------
-    // Pass 3: build synthetic Server records from the
-    // `parentIdToChildren` map (populated by Pass 2a + 2b) plus any
-    // standalone rooms that aren't children of any space.
+    // Pass 3: build synthetic Server records.
     //
-    // - One server per PARENT SPACE (whether joined or inferred via
-    //   m.space.parent hints on children), with channels = the joined
-    //   child rooms.
-    // - One server per STANDALONE room — a regular room that's not a
-    //   child of any space.
+    // Grouping strategy:
+    //
+    //   (a) Matrix SPACE grouping (from Pass 2a joined-space walk
+    //       and Pass 2b m.space.parent hints) — if rooms have
+    //       explicit space metadata, honour it. One tile per
+    //       parent space, children as channels.
+    //
+    //   (b) HOMESERVER grouping for every remaining room — rooms
+    //       that survived without being placed under a space
+    //       collapse into one synthetic server per unique
+    //       homeserver domain. All rooms on mozilla.org become
+    //       channels under a single "mozilla.org" tile; all rooms
+    //       on matrix.org become channels under a single
+    //       "matrix.org" tile. Matches the user's mental model
+    //       of "one federated instance = one sidebar server",
+    //       which is the right default for the very common case
+    //       where a Matrix host publishes its public rooms as a
+    //       flat list without declaring any spaces (like Mozilla).
     //
     // Empty parents (zero joined children) are skipped entirely so
-    // the sidebar never shows a dangling container.
+    // the sidebar never shows a dangling container. The
+    // placedRoomIds set tracks which rooms have already been
+    // assigned so Pass 3b doesn't double-render them under both
+    // a space AND a homeserver group.
     // -----------------------------------------------------------------
     const synthetic: Server[] = [];
     const placedRoomIds = new Set<string>();
 
+    // --- Pass 3a: space-based grouping (from Pass 2a + 2b) -----------
     for (const [parentId, childIds] of parentIdToChildren) {
       // Dedupe child ids while preserving insertion order —
       // m.space.child + m.space.parent walks can both point at the
@@ -421,30 +436,65 @@ export const useServerStore = create<ServerState>((set, get) => ({
       });
     }
 
-    // Standalone rooms: a regular room that's not a child of any
-    // space parent (neither via m.space.child nor m.space.parent).
+    // --- Pass 3b: homeserver-based grouping for remaining rooms ------
+    // Group every regular room that wasn't placed under a space by
+    // its homeserver domain (the part after the last `:` in the
+    // room id). One synthetic server per unique host.
+    const hostToRooms = new Map<string, FederatedRoomLike[]>();
     for (const room of regularRooms) {
       if (placedRoomIds.has(room.roomId)) continue;
       if (childrenOfSpaces.has(room.roomId)) continue;
+      const colonIdx = room.roomId.lastIndexOf(":");
+      const host = colonIdx >= 0 ? room.roomId.slice(colonIdx + 1) : "";
+      if (!host) continue;
+      const existing = hostToRooms.get(host) ?? [];
+      existing.push(room);
+      hostToRooms.set(host, existing);
+    }
 
-      const name = room.name || room.roomId;
+    // Read the federated-instance catalog once so each synthetic
+    // can pick up the best available display name (instance_name
+    // from a Concord well-known probe, else the bare hostname).
+    const instanceCatalog = useFederatedInstanceStore.getState().instances;
+
+    for (const [host, rooms] of hostToRooms) {
+      // Sort rooms within the host alphabetically by name so the
+      // channel order inside the tile is stable across sync ticks.
+      // matrix-js-sdk's getRooms() ordering isn't guaranteed stable,
+      // which would otherwise make the channel list visually
+      // shuffle on every hydration.
+      const sorted = [...rooms].sort((a, b) =>
+        (a.name ?? a.roomId).localeCompare(b.name ?? b.roomId),
+      );
+      const channels: Channel[] = sorted.map((room, position) => ({
+        id: 0,
+        name: room.name || room.roomId,
+        channel_type: "text",
+        matrix_room_id: room.roomId,
+        position,
+      }));
+
+      // Prefer the catalog's displayName (may be an
+      // instance_name from a Concord probe) over the bare host.
+      const catalog = instanceCatalog[host.toLowerCase()];
+      const name =
+        catalog?.displayName && catalog.displayName !== host
+          ? catalog.displayName
+          : host;
+
       synthetic.push({
-        id: `${FEDERATED_SERVER_ID_PREFIX}${room.roomId}`,
+        // Key the synthetic server id by the HOST so repeated
+        // hydrations return stable ids and activeServerId survives
+        // re-hydration cleanly. `homeserver:` sub-prefix keeps it
+        // distinct from per-room synthetic ids produced by Pass 3a.
+        id: `${FEDERATED_SERVER_ID_PREFIX}homeserver:${host}`,
         name,
         icon_url: null,
         owner_id: userId,
         visibility: "public",
         abbreviation: name.charAt(0).toUpperCase() || "#",
         media_uploads_enabled: false,
-        channels: [
-          {
-            id: 0,
-            name,
-            channel_type: "text",
-            matrix_room_id: room.roomId,
-            position: 0,
-          },
-        ],
+        channels,
         federated: true,
       });
     }
