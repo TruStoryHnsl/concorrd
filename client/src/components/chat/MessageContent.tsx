@@ -256,7 +256,7 @@ const markdownComponents: Components = {
  * structural checks only — chart.js will reject malformed `options` at render
  * time, which the ErrorBoundary-style fallback below will catch.
  */
-function validateChartAttachment(
+export function validateChartAttachment(
   raw: unknown,
 ): { ok: true; value: ChartAttachment } | { ok: false; error: string } {
   if (!raw || typeof raw !== "object") {
@@ -282,8 +282,26 @@ function validateChartAttachment(
       return { ok: false, error: `datasets[${i}] is not an object` };
     }
     const dsr = ds as Record<string, unknown>;
-    if (!Array.isArray(dsr.data) || !dsr.data.every((n) => typeof n === "number")) {
-      return { ok: false, error: `datasets[${i}].data must be number[]` };
+    // Number.isFinite rejects NaN, ±Infinity, and non-numbers in one check —
+    // `typeof n === "number"` alone would accept NaN/Infinity, which chart.js
+    // renders as blank bars or zero-length wedges with no user-facing error.
+    if (
+      !Array.isArray(dsr.data) ||
+      !dsr.data.every((n) => Number.isFinite(n))
+    ) {
+      return {
+        ok: false,
+        error: `datasets[${i}].data must be an array of finite numbers`,
+      };
+    }
+    // Each dataset's series must line up with the shared label axis. A
+    // mismatched length silently drops or pads data points in chart.js, so
+    // reject at the boundary instead of rendering a misleading chart.
+    if (dsr.data.length !== d.labels.length) {
+      return {
+        ok: false,
+        error: `datasets[${i}].data length (${dsr.data.length}) must match data.labels length (${d.labels.length})`,
+      };
     }
   }
   if (r.options !== undefined && (typeof r.options !== "object" || r.options === null)) {
@@ -453,7 +471,7 @@ function ChartBody({ chart }: { chart: ChartAttachment }) {
   );
 }
 
-function ChartRenderer({ raw }: { raw: unknown }) {
+export function ChartRenderer({ raw }: { raw: unknown }) {
   const result = useMemo(() => validateChartAttachment(raw), [raw]);
   if (!result.ok) {
     return <InvalidChartPill error={result.error} raw={raw} />;
