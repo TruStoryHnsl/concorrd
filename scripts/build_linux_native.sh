@@ -73,8 +73,13 @@ npm run build
 popd >/dev/null
 
 log "Running cargo tauri build (appimage,deb)..."
+# NO_STRIP=true: linuxdeploy (the AppImage tool tauri invokes) does not
+# cope with ELF binaries whose section headers have been stripped — it
+# bails with "failed to run linuxdeploy" and no useful error. Disabling
+# the bundler's strip pass costs ~10MB of release-binary size but makes
+# the AppImage build reliable. The deb bundle is unaffected.
 pushd "${SRC_TAURI}" >/dev/null
-if ! cargo tauri build --bundles appimage,deb; then
+if ! NO_STRIP=true cargo tauri build --bundles appimage,deb; then
     die "cargo tauri build failed" 2
 fi
 popd >/dev/null
