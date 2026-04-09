@@ -118,7 +118,12 @@ popd >/dev/null
 
 log "Running cargo tauri build --target universal-apple-darwin..."
 pushd "${SRC_TAURI}" >/dev/null
-if ! cargo tauri build --target universal-apple-darwin; then
+# Explicit --bundles app,dmg required: tauri.conf.json's bundle.targets
+# only declares Linux targets (deb, rpm, appimage). Without an explicit
+# bundle list here, tauri compiles the binary and silently skips
+# bundling on macOS, leaving us with a release/concord ELF and no .app.
+# Mirrors the Linux script's `--bundles appimage,deb` pattern.
+if ! cargo tauri build --target universal-apple-darwin --bundles app,dmg; then
     die "cargo tauri build failed" 2
 fi
 popd >/dev/null
