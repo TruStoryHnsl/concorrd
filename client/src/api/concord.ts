@@ -1018,6 +1018,12 @@ export interface AdminBugReport {
   system_info: Record<string, unknown> | null;
   status: string;
   admin_notes: string | null;
+  // INS-028: GitHub issue number when the bug report was mirrored.
+  // NULL when the server's GITHUB_BUG_REPORT_TOKEN is unset, when
+  // the GitHub API call failed (graceful-degradation path), or
+  // when the report predates INS-028. The admin UI renders a
+  // "View on GitHub" link when this is a number.
+  github_issue_number: number | null;
   created_at: string;
   updated_at: string;
 }

@@ -275,6 +275,14 @@ class BugReport(Base):
     system_info: Mapped[str | None] = mapped_column(String, nullable=True)  # JSON blob
     status: Mapped[str] = mapped_column(String, default="open")  # open, in_progress, resolved, closed
     admin_notes: Mapped[str | None] = mapped_column(String, nullable=True)
+    # INS-028: GitHub issue number when the bug report was successfully
+    # mirrored to the concord repo. NULL when GITHUB_BUG_REPORT_TOKEN is
+    # unset, when the GitHub API call failed (graceful-degradation path),
+    # or when the report predates INS-028. The migration helper in
+    # `database.py::_migrate_bug_reports_github_issue_number` adds this
+    # column to existing SQLite databases on startup so pre-INS-028
+    # deployments don't need to drop the table.
+    github_issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

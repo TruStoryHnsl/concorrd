@@ -9,7 +9,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import MATRIX_HOMESERVER_URL, ADMIN_USER_IDS, INSTANCE_SETTINGS_FILE, INSTANCE_NAME_DEFAULT
+from config import (
+    MATRIX_HOMESERVER_URL,
+    ADMIN_USER_IDS,
+    INSTANCE_SETTINGS_FILE,
+    INSTANCE_NAME_DEFAULT,
+    GITHUB_BUG_REPORT_TOKEN,
+    GITHUB_BUG_REPORT_REPO,
+)
 from database import get_db
 from models import (
     Server, Channel, ServerMember, InviteToken,
@@ -124,13 +131,142 @@ class BugReportCreate(BaseModel):
     system_info: str | None = None  # JSON string from client
 
 
+async def _create_github_issue_for_bug_report(
+    title: str, description: str, bug_report_id: int
+) -> int | None:
+    """Best-effort mirror of a bug report to a GitHub issue (INS-028).
+
+    Returns the created issue number on success, or None on any
+    failure. Failure modes — all produce a WARN log and return None:
+
+      - GITHUB_BUG_REPORT_TOKEN env var is unset (the mirror is
+        disabled entirely in that case — a single INFO log per call
+        noting the skip, not a warning)
+      - httpx network error (DNS, connection refused, TLS failure,
+        timeout exceeded)
+      - GitHub API non-2xx response (401 auth, 403 scope/rate-limit,
+        404 repo-not-found, 422 validation, 5xx)
+      - JSON parse error on the response body
+      - Response body missing or malformed `number` field
+
+    This function is called AFTER the bug_reports DB row has been
+    committed, so a GitHub failure at this point never loses the
+    user's report — the row persists in the local DB and the admin
+    UI still surfaces it. Commercial-scope hygiene: no exception
+    escapes this function into the request handler, because partial
+    failure of a best-effort mirror must never fail the user-facing
+    `POST /api/reports` call.
+
+    Privacy: by design, ONLY the user-supplied title and description
+    are sent to GitHub. The `system_info` JSON (userAgent, URL, voice
+    state, etc.) is kept local in the `bug_reports` table so it
+    never ends up in a public-repo issue body. Admins reviewing
+    reports see the full system_info via the admin list endpoint,
+    which pulls from the local DB row not the GitHub issue.
+    """
+    if not GITHUB_BUG_REPORT_TOKEN:
+        logger.info(
+            "bug report #%d: GITHUB_BUG_REPORT_TOKEN unset — GitHub mirror disabled",
+            bug_report_id,
+        )
+        return None
+
+    # The issue body preserves the user's description verbatim and
+    # appends a small footer pointing at the internal report ID so
+    # admins can cross-reference the public issue with the
+    # system-info-bearing DB row. We deliberately do NOT embed a
+    # machine-readable reference to the reporter or their
+    # fingerprint here.
+    body = (
+        f"{description}\n\n"
+        f"---\n"
+        f"*Filed via Concord bug report pipeline. Internal ID: #{bug_report_id}. "
+        f"Admins can view full reporter context (client fingerprint, voice "
+        f"state, etc.) in the concord-api admin dashboard — that data is "
+        f"never embedded in this public issue.*"
+    )
+    payload = {
+        "title": title,
+        "body": body,
+        "labels": ["bug", "user-report"],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"https://api.github.com/repos/{GITHUB_BUG_REPORT_REPO}/issues",
+                headers={
+                    "Authorization": f"Bearer {GITHUB_BUG_REPORT_TOKEN}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                json=payload,
+            )
+    except httpx.HTTPError as exc:
+        # Catches connect, read, timeout, remote protocol, and TLS
+        # errors. The DB row is already safe.
+        logger.warning(
+            "bug report #%d: GitHub API request failed (%s) — DB row kept, mirror skipped",
+            bug_report_id,
+            type(exc).__name__,
+        )
+        return None
+
+    if resp.status_code != 201:
+        # GitHub returns 201 Created on success for POST /issues.
+        # Anything else is a failure. Log the status code and a
+        # truncated body so operators can debug, but don't leak a
+        # multi-kilobyte error page into the log stream.
+        logger.warning(
+            "bug report #%d: GitHub API returned %d %s — DB row kept, mirror skipped",
+            bug_report_id,
+            resp.status_code,
+            (resp.text or "").strip()[:200],
+        )
+        return None
+
+    try:
+        data = resp.json()
+    except ValueError:
+        logger.warning(
+            "bug report #%d: GitHub API response was not valid JSON — DB row kept",
+            bug_report_id,
+        )
+        return None
+
+    issue_number = data.get("number")
+    if not isinstance(issue_number, int):
+        logger.warning(
+            "bug report #%d: GitHub API response missing integer 'number' field",
+            bug_report_id,
+        )
+        return None
+
+    logger.info(
+        "bug report #%d: mirrored to GitHub issue #%d in %s",
+        bug_report_id,
+        issue_number,
+        GITHUB_BUG_REPORT_REPO,
+    )
+    return issue_number
+
+
 @router.post("/api/reports")
 async def submit_bug_report(
     body: BugReportCreate,
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Submit a bug report."""
+    """Submit a bug report.
+
+    Two-phase persistence (INS-028):
+      1. Write the row to the local DB. This is the source of truth
+         and succeeds or fails atomically.
+      2. Best-effort mirror to a GitHub issue via
+         `_create_github_issue_for_bug_report`. Any failure here is
+         logged and swallowed — the user's report is NEVER lost to
+         a GitHub outage.
+    """
     report = BugReport(
         reported_by=user_id,
         title=body.title,
@@ -141,6 +277,17 @@ async def submit_bug_report(
     await db.commit()
     await db.refresh(report)
     logger.info("Bug report #%d submitted by %s: %s", report.id, user_id, body.title)
+
+    # Phase 2: GitHub mirror. Safe to call unconditionally — the
+    # helper handles the "token unset" case internally with an INFO
+    # log, and all other failure modes return None without raising.
+    issue_number = await _create_github_issue_for_bug_report(
+        body.title, body.description, report.id
+    )
+    if issue_number is not None:
+        report.github_issue_number = issue_number
+        await db.commit()
+
     return {"status": "ok", "id": report.id}
 
 
@@ -330,6 +477,13 @@ async def admin_list_reports(
             "system_info": json.loads(r.system_info) if r.system_info else None,
             "status": r.status,
             "admin_notes": r.admin_notes,
+            # INS-028: github_issue_number is NULL for reports that
+            # predate the integration, or that were filed while
+            # GITHUB_BUG_REPORT_TOKEN was unset, or that failed to
+            # mirror (graceful-degradation path). The admin UI
+            # surfaces the difference as a "View on GitHub" link on
+            # mirrored rows and "(GitHub unavailable)" on the rest.
+            "github_issue_number": r.github_issue_number,
             "created_at": r.created_at.isoformat(),
             "updated_at": r.updated_at.isoformat(),
         }

@@ -41,6 +41,21 @@ ADMIN_USER_IDS: set[str] = {
 INSTANCE_NAME_DEFAULT = os.getenv("INSTANCE_NAME", MATRIX_SERVER_NAME)
 INSTANCE_SETTINGS_FILE = DATA_DIR / "instance.json"
 
+# INS-028: GitHub bug report integration. When GITHUB_BUG_REPORT_TOKEN
+# is set to a fine-grained personal access token with `issues:write`
+# scoped to the concord repository ONLY, the `submit_bug_report`
+# handler mirrors each new report to a GitHub issue. The token's
+# blast radius is limited to creating issues on that one repo — it
+# cannot read private code, modify workflows, or touch the
+# homeserver. When the token is empty (the default), the mirror is
+# skipped silently and bug reports are stored only in the local DB.
+# Operators roll the token by generating a new PAT, updating the env
+# var, and restarting concord-api — there is no in-process cache to
+# invalidate. See `docs/deployment/github_bug_report_token.md` for
+# the full rotation runbook and threat model.
+GITHUB_BUG_REPORT_TOKEN = os.getenv("GITHUB_BUG_REPORT_TOKEN", "")
+GITHUB_BUG_REPORT_REPO = os.getenv("GITHUB_BUG_REPORT_REPO", "TruStoryHnsl/concord")
+
 # Ensure directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 SOUNDBOARD_DIR.mkdir(parents=True, exist_ok=True)

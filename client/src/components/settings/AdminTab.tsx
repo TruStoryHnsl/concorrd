@@ -740,6 +740,34 @@ function ReportDetail({
         <p className="text-sm text-on-surface whitespace-pre-wrap">
           {report.description}
         </p>
+        {/* INS-028: GitHub issue mirror status. When the server-side
+            submit_bug_report handler successfully called the GitHub
+            API, `github_issue_number` is populated and we render a
+            deep-link; otherwise we show a muted indicator so admins
+            know the mirror didn't run (either because the token is
+            unset or because the API call failed — the DB row always
+            exists regardless). */}
+        <div className="mt-2 text-xs">
+          {report.github_issue_number !== null ? (
+            <a
+              href={`https://github.com/TruStoryHnsl/concord/issues/${report.github_issue_number}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-primary hover:underline"
+              data-testid={`github-link-${report.id}`}
+            >
+              <span className="material-symbols-outlined text-sm">open_in_new</span>
+              View on GitHub (issue #{report.github_issue_number})
+            </a>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1 text-on-surface-variant italic"
+              data-testid={`github-unavailable-${report.id}`}
+            >
+              GitHub mirror unavailable
+            </span>
+          )}
+        </div>
       </div>
 
       {/* System info */}
