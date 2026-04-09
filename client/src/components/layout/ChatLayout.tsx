@@ -316,7 +316,25 @@ export function ChatLayout() {
     </div>
   );
 
-  // Mobile layout with bottom nav
+  // Mobile layout with bottom nav.
+  //
+  // INS-010 / INS-003 reflow chain (audited 2026-04-08 after INS-011/016/017
+  // top-bar + pill rework):
+  //
+  //   root  flex-col min-h-0 overflow-hidden                      (this div)
+  //     ├── top bar             flex-shrink-0                     (INS-011 icons)
+  //     ├── middle content      flex-1 min-h-0 overflow-hidden    (view router)
+  //     │     └── chat branch   flex flex-col min-h-0             (line 448)
+  //     │           ├── MessageList    flex-1 overflow-y-auto
+  //     │           └── MessageInput   form `flex-shrink-0`
+  //     ├── MobilePillRow       flex-shrink-0  (INS-016 pills)
+  //     └── MobileDashboardSheet  absolute-positioned overlay
+  //
+  // The chain MUST NOT be broken by any new ancestor introducing overflow:
+  // visible or removing min-h-0 — that would let MessageInput's auto-grow
+  // textarea push the MessageList out of view instead of reflowing it.
+  // MessageInput's internal useLayoutEffect caps the textarea at
+  // min(viewport*0.4, 8*22px) and switches to internal scroll above that.
   const renderMobileLayout = () => (
     <div className="h-full flex flex-col overflow-hidden bg-surface text-on-surface min-h-0">
       {/* Top bar */}
