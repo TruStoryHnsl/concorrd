@@ -31,6 +31,58 @@ export function useMatrixSync() {
   useEffect(() => {
     if (!client) return;
 
+    // DIAGNOSTIC (INS-028 follow-up): expose a window-global debug
+    // function that dumps the federated-room classifier input on
+    // demand. Lets a user (or Claude) reproduce the diagnostic
+    // without having to catch the once-per-sync log group — just
+    // open devtools, type `concordDebug()`, hit enter, and paste
+    // the result.
+    //
+    // Exposed on `window.concordDebug` rather than on a Concord
+    // namespace to keep the console typing short. Deliberately
+    // non-optional / non-lazy so it's discoverable via
+    // `Object.keys(window)` grep if someone forgets the name.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).concordDebug = () => {
+      const rooms = client
+        .getRooms()
+        .filter((r) => r.getMyMembership() === "join")
+        .map((r) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (r as any).currentState;
+          const parents = (
+            state?.getStateEvents?.("m.space.parent") ?? []
+          )
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .map((e: any) => e.getStateKey?.())
+            .filter((x: unknown) => typeof x === "string");
+          const children = (
+            state?.getStateEvents?.("m.space.child") ?? []
+          )
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .map((e: any) => e.getStateKey?.())
+            .filter((x: unknown) => typeof x === "string");
+          return {
+            id: r.roomId,
+            name: r.name,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            type: (r as any).getType?.() ?? "(regular)",
+            parents,
+            childCount: children.length,
+          };
+        });
+      const payload = {
+        userId: client.getUserId?.() ?? null,
+        joinedCount: rooms.length,
+        rooms,
+      };
+      // eslint-disable-next-line no-console
+      console.log("%c=== concordDebug() ===", "font-weight:bold;color:#4ade80");
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify(payload, null, 2));
+      return payload;
+    };
+
     let tokenErrorCount = 0;
     const onSync = (state: SyncState, _prev: SyncState | null, data?: SyncStateData) => {
       if (state === "SYNCING" || state === "PREPARED") {
