@@ -1,5 +1,7 @@
 use tauri_plugin_store::StoreExt;
 
+pub mod servitude;
+
 #[tauri::command]
 fn get_server_url(app: tauri::AppHandle) -> String {
     let store = app.store("settings.json").expect("failed to open store");

@@ -443,6 +443,8 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-log",
  "tauri-plugin-store",
+ "thiserror 1.0.69",
+ "toml 0.8.2",
 ]
 
 [[package]]

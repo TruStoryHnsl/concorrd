@@ -21,3 +21,31 @@ log = "0.4"
 tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-store = "2"
+# Servitude embedded module dependencies
+toml = "0.8"
+thiserror = "1.0"
+
+# Linux-specific deps (handled transitively by tauri/webkit2gtk in normal builds,
+# this section is reserved for Linux-only crates Concord may add later).
+[target.'cfg(target_os = "linux")'.dependencies]
+
+# Windows-specific deps (reserved for Windows-only crates).
+[target.'cfg(target_os = "windows")'.dependencies]
+
+# macOS-specific deps (reserved for macOS-only crates).
+[target.'cfg(target_os = "macos")'.dependencies]
+
+# Android target deps. Real init must be done on a host with the Android SDK
+# via `cargo tauri android init`. This section is a placeholder so the manifest
+# is forward-compatible with Tauri v2 mobile builds.
+[target.'cfg(target_os = "android")'.dependencies]
+# Placeholder. Add jni / ndk-glue style crates here when the orrion build host
+# is provisioned with the Android SDK + NDK.
+
+# iOS target deps. Real init must be done on orrpheus via `cargo tauri ios init`.
+[target.'cfg(target_os = "ios")'.dependencies]
+# Placeholder. Add objc2 / ios-bindgen style crates here when orrpheus runs
+# the init command and pulls the Apple toolchains.
+
+[dev-dependencies]
+# Servitude tests use only std + serde + toml; no extra deps required.

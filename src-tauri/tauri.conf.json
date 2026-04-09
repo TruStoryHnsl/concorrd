@@ -28,6 +28,9 @@
   "bundle": {
     "active": true,
     "targets": ["deb", "rpm", "appimage"],
+    "category": "Network",
+    "shortDescription": "Concord — decentralized chat",
+    "longDescription": "Concord is a self-hosted, Matrix-based decentralized chat platform with voice channels, soundboard, and federation.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -39,6 +42,21 @@
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
       }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "frameworks": []
+    },
+    "windows": {
+      "wix": {
+        "language": ["en-US"]
+      }
+    },
+    "iOS": {
+      "developmentTeam": null
+    },
+    "android": {
+      "minSdkVersion": 24
     }
   },
   "plugins": {

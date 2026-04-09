@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# build_linux_native.sh — Build Concord as a native Linux desktop bundle
+# (AppImage + .deb) via Tauri v2.
+#
+# Designed to run on orrion (CachyOS) but works on any Linux x86_64 host with
+# the listed prerequisites installed. See client/NATIVE_BUILD.md for the full
+# prerequisite matrix and machine-split convention.
+#
+# Usage:
+#   scripts/build_linux_native.sh           # build only
+#   scripts/build_linux_native.sh --smoke   # build then smoke-launch the AppImage
+#
+# Exit codes:
+#   0  build (and smoke, if requested) succeeded
+#   1  missing prerequisite tool
+#   2  build failed
+#   3  smoke test failed
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SRC_TAURI="${REPO_ROOT}/src-tauri"
+CLIENT_DIR="${REPO_ROOT}/client"
+
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
+log()  { printf '\033[1;36m[build_linux]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[build_linux]\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m[build_linux ERROR]\033[0m %s\n' "$*" >&2; exit "${2:-1}"; }
+
+require_tool() {
+    local tool="$1"
+    local hint="$2"
+    if ! command -v "${tool}" >/dev/null 2>&1; then
+        die "missing required tool '${tool}'. ${hint}" 1
+    fi
+}
+
+# ----------------------------------------------------------------------------
+# Prerequisite checks
+# ----------------------------------------------------------------------------
+log "Checking prerequisites..."
+require_tool cargo "Install Rust: https://rustup.rs/"
+require_tool node  "Install Node 18+ for the React client build"
+require_tool npm   "Comes with Node"
+
+if ! cargo tauri --version >/dev/null 2>&1; then
+    die "tauri-cli is not installed. Run: cargo install tauri-cli --version '^2.0' --locked" 1
+fi
+
+# Optional but warn if missing — don't block the build.
+if ! pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
+    warn "webkit2gtk-4.1 development files not detected. The build will fail without them."
+    warn "  CachyOS/Arch: sudo pacman -S webkit2gtk-4.1 gtk3 librsvg patchelf"
+    warn "  Debian/Ubuntu: sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf"
+fi
+
+log "cargo:       $(cargo --version)"
+log "rustc:       $(rustc --version)"
+log "tauri-cli:   $(cargo tauri --version)"
+log "node:        $(node --version)"
+
+# ----------------------------------------------------------------------------
+# Build
+# ----------------------------------------------------------------------------
+log "Building React client (${CLIENT_DIR})..."
+pushd "${CLIENT_DIR}" >/dev/null
+if [[ ! -d node_modules ]]; then
+    npm ci
+fi
+npm run build
+popd >/dev/null
+
+log "Running cargo tauri build (appimage,deb)..."
+pushd "${SRC_TAURI}" >/dev/null
+if ! cargo tauri build --bundles appimage,deb; then
+    die "cargo tauri build failed" 2
+fi
+popd >/dev/null
+
+# ----------------------------------------------------------------------------
+# Locate artifacts
+# ----------------------------------------------------------------------------
+BUNDLE_DIR="${SRC_TAURI}/target/release/bundle"
+APPIMAGE="$(find "${BUNDLE_DIR}/appimage" -maxdepth 1 -name '*.AppImage' 2>/dev/null | head -n1 || true)"
+DEB="$(find "${BUNDLE_DIR}/deb" -maxdepth 2 -name '*.deb' 2>/dev/null | head -n1 || true)"
+
+log "Build artifacts:"
+[[ -n "${APPIMAGE}" ]] && log "  AppImage: ${APPIMAGE}" || warn "  AppImage: NOT FOUND"
+[[ -n "${DEB}"      ]] && log "  Deb:      ${DEB}"      || warn "  Deb:      NOT FOUND"
+
+# ----------------------------------------------------------------------------
+# Optional smoke test
+# ----------------------------------------------------------------------------
+if [[ "${1:-}" == "--smoke" ]]; then
+    if [[ -z "${APPIMAGE}" ]]; then
+        die "cannot smoke-test: no AppImage produced" 3
+    fi
+
+    log "Running smoke test on AppImage..."
+    chmod +x "${APPIMAGE}"
+
+    SMOKE_CMD=("${APPIMAGE}" --version)
+    if command -v xvfb-run >/dev/null 2>&1; then
+        log "Wrapping in xvfb-run for headless launch"
+        SMOKE_CMD=(xvfb-run -a "${APPIMAGE}" --version)
+    else
+        warn "xvfb-run not available; running AppImage directly (display may be required)"
+    fi
+
+    if "${SMOKE_CMD[@]}" >/dev/null 2>&1; then
+        log "Smoke test passed."
+    else
+        # --version is not guaranteed by Tauri shells; fall back to a 2s launch.
+        warn "--version flag failed; trying a 2-second launch..."
+        if timeout 2s "${SMOKE_CMD[@]:0:1}" >/dev/null 2>&1; then
+            log "Smoke launch survived 2s — assuming healthy."
+        else
+            EC=$?
+            # timeout exits 124 on success-by-timeout, which is what we want.
+            if [[ ${EC} -eq 124 ]]; then
+                log "Smoke launch survived 2s (timeout reached) — assuming healthy."
+            else
+                die "Smoke test failed (exit ${EC})" 3
+            fi
+        fi
+    fi
+fi
+
+log "Done."

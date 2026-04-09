@@ -1,0 +1,29 @@
+// Placeholder — run: cargo tauri android init
+//
+// This file is a STUB. The real `build.gradle.kts` (and the rest of the
+// Android Studio project layout under src-tauri/gen/android/) is generated
+// by `cargo tauri android init`, which can only run on a host with the
+// Android SDK + NDK installed.
+//
+// On orrion (the designated Android build host) the one-time init flow is:
+//
+//   1. Install Android Studio or just the SDK + NDK
+//   2. Set environment:
+//        export ANDROID_HOME="$HOME/Android/Sdk"
+//        export NDK_HOME="$ANDROID_HOME/ndk/<version>"
+//        export JAVA_HOME="/usr/lib/jvm/java-17-openjdk"
+//   3. Add Rust Android targets:
+//        rustup target add aarch64-linux-android armv7-linux-androideabi \
+//                          i686-linux-android x86_64-linux-android
+//   4. From src-tauri/, run:
+//        cargo tauri android init
+//
+// After init succeeds, delete this `.template` file and commit the
+// generated `build.gradle.kts` instead.
+//
+// See client/NATIVE_BUILD.md §7 for the full Android scaffolding guide.
+//
+// This file's existence is intentional — it is committed so that
+//   * the directory layout is visible in git history,
+//   * a fresh clone shows where the Android project will land,
+//   * Tauri's bundle config can reference the path without errors.
