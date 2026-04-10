@@ -87,6 +87,40 @@ class ConcordClientWellKnown(BaseModel):
             "identifiers are listed here to keep the contract stable."
         ),
     )
+    turn_servers: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "STUN/TURN server list for ICE connectivity. Unauthenticated "
+            "entries only (STUN URLs) — authenticated TURN credentials "
+            "are issued per-user via the voice token endpoint. Clients "
+            "can use these for pre-auth connectivity checks in the "
+            "server picker screen."
+        ),
+    )
+    # INS-023: advertise the service-node posture so peers can see
+    # whether this instance plays an infrastructure role in the mesh.
+    # Deliberately DOES NOT include raw CPU / bandwidth / storage caps
+    # — those stay behind the admin-only
+    # ``/api/admin/service-node`` endpoint so the unauthenticated
+    # discovery document doesn't leak hardware fingerprinting info.
+    node_role: str | None = Field(
+        None,
+        max_length=32,
+        description=(
+            "Structural service-node role: 'frontend-only' (no "
+            "hosting), 'hybrid' (UI + opportunistic hosting — the "
+            "default), or 'anchor' (always-on infrastructure). "
+            "Clients should treat a missing value as 'hybrid'."
+        ),
+    )
+    tunnel_anchor: bool = Field(
+        False,
+        description=(
+            "True when this instance advertises itself as a "
+            "persistent mesh tunnel anchor other peers can dial "
+            "into. False / absent on nodes that have not opted in."
+        ),
+    )
 
 
 def _resolve_api_base() -> str:
@@ -136,6 +170,29 @@ def _resolve_instance_name() -> str | None:
     return name or None
 
 
+def _resolve_turn_servers() -> list[dict]:
+    """Return unauthenticated STUN/TURN server hints for pre-auth checks.
+
+    Only includes STUN URLs (no credentials) so the well-known document
+    stays safe to serve unauthenticated. Authenticated TURN credentials
+    are issued per-user via ``POST /api/voice/token``. Clients can use
+    these STUN entries in the server-picker screen to verify basic UDP
+    connectivity before the user even logs in.
+    """
+    turn_host = os.environ.get("TURN_HOST", "").strip()
+    turn_domain = os.environ.get("TURN_DOMAIN", "").strip()
+    host = turn_host or turn_domain
+
+    servers: list[dict] = []
+    if host:
+        # Advertise the instance's own STUN endpoint (coturn serves
+        # STUN on the same port as TURN, no credentials needed for STUN).
+        servers.append({"urls": f"stun:{host}:3478"})
+    # Always include Google's public STUN as a fallback
+    servers.append({"urls": "stun:stun.l.google.com:19302"})
+    return servers
+
+
 def _advertised_features() -> list[str]:
     """Return the stable list of feature identifiers advertised.
 
@@ -144,7 +201,7 @@ def _advertised_features() -> list[str]:
     corresponding feature ships; remove them only when the feature is
     retired AND no deployed native clients still check for them.
     """
-    return ["chat", "voice", "federation", "soundboard", "explore"]
+    return ["chat", "voice", "federation", "soundboard", "explore", "extensions"]
 
 
 @router.get(
@@ -164,10 +221,27 @@ async def concord_client_wellknown() -> ConcordClientWellKnown:
     All values are derived from environment variables read at request
     time (NOT at import time) so operators can rotate config via a
     container restart without code changes.
+
+    INS-023: service-node role + tunnel_anchor flag are read from
+    the admin-only ``service_node.json`` via
+    ``services.service_node_config.public_view``. A missing file
+    yields the default ``hybrid`` / ``false`` pair — no raw caps are
+    ever exposed here.
     """
+    # Imported inline so test patches of the service_node_config
+    # module see a fresh lookup on each request. Importing at module
+    # top-time would cache the symbol at import, and monkeypatching
+    # ``services.service_node_config.public_view`` mid-test would not
+    # reach this handler.
+    from services.service_node_config import public_view as _public_node_view
+
+    node_view = _public_node_view()
     return ConcordClientWellKnown(
         api_base=_resolve_api_base(),
         livekit_url=_resolve_livekit_url(),
         instance_name=_resolve_instance_name(),
         features=_advertised_features(),
+        turn_servers=_resolve_turn_servers(),
+        node_role=node_view.node_role,
+        tunnel_anchor=node_view.tunnel_anchor_enabled,
     )

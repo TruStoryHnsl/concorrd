@@ -12,14 +12,25 @@ import {
   getFederationStatus,
   updateFederationAllowlist,
   applyFederationChanges,
+  getServiceNodeConfig,
+  updateServiceNodeConfig,
   type AdminStats,
   type AdminServer,
   type AdminUser,
   type AdminBugReport,
   type FederationStatus,
+  type ServiceNodeConfig,
+  type ServiceNodeRole,
 } from "../../api/concord";
 
-type Section = "overview" | "instance" | "federation" | "servers" | "users" | "reports";
+type Section =
+  | "overview"
+  | "instance"
+  | "federation"
+  | "service-node"
+  | "servers"
+  | "users"
+  | "reports";
 
 export function AdminTab() {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -30,26 +41,39 @@ export function AdminTab() {
       <h3 className="text-xl font-semibold text-on-surface">Admin Dashboard</h3>
 
       <div className="flex gap-1 border-b border-outline-variant/15 pb-2 flex-wrap">
-        {(["overview", "instance", "federation", "servers", "users", "reports"] as Section[]).map(
-          (s) => (
-            <button
-              key={s}
-              onClick={() => setSection(s)}
-              className={`px-3 py-1.5 text-sm rounded-t transition-colors ${
-                section === s
-                  ? "bg-surface-container-highest text-on-surface"
-                  : "text-on-surface-variant hover:text-on-surface"
-              }`}
-            >
-              {s[0].toUpperCase() + s.slice(1)}
-            </button>
-          ),
-        )}
+        {(
+          [
+            "overview",
+            "instance",
+            "federation",
+            "service-node",
+            "servers",
+            "users",
+            "reports",
+          ] as Section[]
+        ).map((s) => (
+          <button
+            key={s}
+            onClick={() => setSection(s)}
+            className={`px-3 py-1.5 text-sm rounded-t transition-colors ${
+              section === s
+                ? "bg-surface-container-highest text-on-surface"
+                : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            {/* `service-node` prints as "Service Node" — every other
+                label reuses the identity capitalisation pattern. */}
+            {s === "service-node"
+              ? "Service Node"
+              : s[0].toUpperCase() + s.slice(1)}
+          </button>
+        ))}
       </div>
 
       {section === "overview" && <OverviewSection token={accessToken} />}
       {section === "instance" && <InstanceSection token={accessToken} />}
       {section === "federation" && <FederationSection token={accessToken} />}
+      {section === "service-node" && <ServiceNodeSection token={accessToken} />}
       {section === "servers" && <ServersSection token={accessToken} />}
       {section === "users" && <UsersSection token={accessToken} />}
       {section === "reports" && <ReportsSection token={accessToken} />}
@@ -829,6 +853,258 @@ function ReportDetail({
             Save
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Service Node (INS-023)
+// ---------------------------------------------------------------------------
+//
+// Admin surface for the resource + role contribution knobs that live
+// in `server/services/service_node_config.py`. Operators use this
+// screen to tell the embedded servitude how much of the box it is
+// allowed to spend on peer traffic, and whether the node advertises
+// itself as a persistent tunnel anchor.
+//
+// Only admins see this tab — the route is gated server-side via
+// `require_admin`, and the UI is rendered under the existing
+// `isAdmin` check in SettingsModal's tab bar.
+//
+// The `limits` block comes from the server response so a future
+// maxima bump doesn't require a coordinated client release.
+
+function ServiceNodeSection({ token }: { token: string | null }) {
+  const addToast = useToastStore((s) => s.addToast);
+  const [cfg, setCfg] = useState<ServiceNodeConfig | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Local draft state — we don't write back to `cfg` until a
+  // successful save, so the Reset button can restore the last
+  // persisted values without a round-trip.
+  const [cpu, setCpu] = useState(80);
+  const [bandwidth, setBandwidth] = useState(0);
+  const [storage, setStorage] = useState(0);
+  const [anchor, setAnchor] = useState(false);
+  const [role, setRole] = useState<ServiceNodeRole>("hybrid");
+
+  useEffect(() => {
+    if (!token) return;
+    getServiceNodeConfig(token)
+      .then((data) => {
+        setCfg(data);
+        setCpu(data.max_cpu_percent);
+        setBandwidth(data.max_bandwidth_mbps);
+        setStorage(data.max_storage_gb);
+        setAnchor(data.tunnel_anchor_enabled);
+        setRole(data.node_role);
+      })
+      .catch((e) => {
+        setErr(e instanceof Error ? e.message : String(e));
+      });
+  }, [token]);
+
+  const handleSave = async () => {
+    if (!token || !cfg) return;
+    setSaving(true);
+    try {
+      const result = await updateServiceNodeConfig(
+        {
+          max_cpu_percent: cpu,
+          max_bandwidth_mbps: bandwidth,
+          max_storage_gb: storage,
+          tunnel_anchor_enabled: anchor,
+          node_role: role,
+        },
+        token,
+      );
+      setCfg(result);
+      addToast("Service node config saved", "success");
+    } catch (e) {
+      addToast(
+        e instanceof Error ? e.message : "Failed to save service node config",
+        "error",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = () => {
+    if (!cfg) return;
+    setCpu(cfg.max_cpu_percent);
+    setBandwidth(cfg.max_bandwidth_mbps);
+    setStorage(cfg.max_storage_gb);
+    setAnchor(cfg.tunnel_anchor_enabled);
+    setRole(cfg.node_role);
+  };
+
+  if (err) {
+    return (
+      <div className="rounded border border-error/30 bg-error/10 px-4 py-3 space-y-1">
+        <p className="text-sm text-error font-medium">Failed to load service node config</p>
+        <p className="text-xs text-on-surface-variant break-all">{err}</p>
+      </div>
+    );
+  }
+
+  if (!cfg) {
+    return (
+      <p className="text-on-surface-variant text-sm" data-testid="service-node-loading">
+        Loading service node config…
+      </p>
+    );
+  }
+
+  const hasChanges =
+    cpu !== cfg.max_cpu_percent ||
+    bandwidth !== cfg.max_bandwidth_mbps ||
+    storage !== cfg.max_storage_gb ||
+    anchor !== cfg.tunnel_anchor_enabled ||
+    role !== cfg.node_role;
+
+  return (
+    <div className="space-y-6" data-testid="service-node-section">
+      <div>
+        <h4 className="text-sm font-medium text-on-surface mb-1">Service node contribution</h4>
+        <p className="text-xs text-on-surface-variant">
+          Tell the embedded servitude how much of this box it is allowed to
+          spend on Concord peer traffic, and pick the structural role this
+          instance advertises to the mesh. Raw caps are never shared publicly
+          — only the role flag and tunnel-anchor toggle reach the well-known
+          document.
+        </p>
+      </div>
+
+      {/* CPU ceiling */}
+      <div className="space-y-1">
+        <div className="flex items-baseline justify-between">
+          <label className="text-sm text-on-surface">CPU ceiling</label>
+          <span className="text-xs text-on-surface-variant font-mono">{cpu}%</span>
+        </div>
+        <input
+          type="range"
+          min={1}
+          max={cfg.limits.max_cpu_percent}
+          step={1}
+          value={cpu}
+          onChange={(e) => setCpu(Number(e.target.value))}
+          className="w-full"
+          data-testid="service-node-cpu-input"
+        />
+        <p className="text-xs text-on-surface-variant">
+          Max CPU the servitude runtime will consume once the scheduler lands.
+          Leave some headroom for the OS and admin tasks.
+        </p>
+      </div>
+
+      {/* Bandwidth cap */}
+      <div className="space-y-1">
+        <label className="text-sm text-on-surface block">Bandwidth cap (Mbps)</label>
+        <input
+          type="number"
+          min={0}
+          max={cfg.limits.max_bandwidth_mbps}
+          step={1}
+          value={bandwidth}
+          onChange={(e) => setBandwidth(Number(e.target.value))}
+          className="w-full px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary/30"
+          data-testid="service-node-bandwidth-input"
+        />
+        <p className="text-xs text-on-surface-variant">
+          Outbound bandwidth ceiling in megabits per second. <code>0</code>{" "}
+          means unlimited. Max {cfg.limits.max_bandwidth_mbps}.
+        </p>
+      </div>
+
+      {/* Storage cap */}
+      <div className="space-y-1">
+        <label className="text-sm text-on-surface block">Storage cap (GB)</label>
+        <input
+          type="number"
+          min={0}
+          max={cfg.limits.max_storage_gb}
+          step={1}
+          value={storage}
+          onChange={(e) => setStorage(Number(e.target.value))}
+          className="w-full px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary/30"
+          data-testid="service-node-storage-input"
+        />
+        <p className="text-xs text-on-surface-variant">
+          On-disk cache ceiling in gigabytes. <code>0</code> means unlimited.
+          Max {cfg.limits.max_storage_gb}.
+        </p>
+      </div>
+
+      {/* Node role */}
+      <div className="space-y-1">
+        <label className="text-sm text-on-surface block">Node role</label>
+        <select
+          value={role}
+          onChange={(e) => setRole(e.target.value as ServiceNodeRole)}
+          className="w-full px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary/30"
+          data-testid="service-node-role-select"
+        >
+          {cfg.limits.allowed_roles.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-on-surface-variant">
+          <code>frontend-only</code> — UI only, no hosting. <code>hybrid</code>{" "}
+          — UI plus opportunistic hosting (default). <code>anchor</code> —
+          always-on infrastructure node; pair with the Tunnel anchor toggle
+          when you commit to uptime.
+        </p>
+      </div>
+
+      {/* Tunnel anchor toggle */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm text-on-surface block">Tunnel anchor</label>
+          <p className="text-xs text-on-surface-variant mt-0.5">
+            Advertise this node as a persistent mesh tunnel anchor other
+            peers can dial into.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setAnchor((v) => !v)}
+          data-testid="service-node-anchor-toggle"
+          className={`relative w-11 h-6 rounded-full transition-colors ${
+            anchor ? "bg-primary" : "bg-surface-container-highest"
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+              anchor ? "translate-x-5" : ""
+            }`}
+          />
+        </button>
+      </div>
+
+      {/* Action row */}
+      <div className="flex items-center justify-end gap-2 border-t border-outline-variant/15 pt-4">
+        <button
+          type="button"
+          onClick={handleReset}
+          disabled={!hasChanges || saving}
+          className="px-3 py-2 bg-surface-container-high hover:bg-surface-container-highest disabled:opacity-40 text-on-surface text-sm rounded transition-colors"
+        >
+          Reset
+        </button>
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={!hasChanges || saving}
+          data-testid="service-node-save-button"
+          className="px-4 py-2 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface text-sm rounded transition-colors"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
       </div>
     </div>
   );

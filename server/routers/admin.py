@@ -54,11 +54,24 @@ def _write_instance_settings(settings: dict) -> None:
 
 @router.get("/api/instance")
 async def get_instance():
-    """Return public instance metadata (name, etc)."""
+    """Return public instance metadata (name, service-node posture).
+
+    Deliberately excludes the raw resource caps (CPU / bandwidth /
+    storage) — those live behind the admin-only
+    ``/api/admin/service-node`` endpoint so an unauthenticated peer
+    can't fingerprint the hardware profile. Only the two structural
+    flags (``node_role`` and ``tunnel_anchor_enabled``) are safe to
+    publish here and in the ``/.well-known/concord/client`` document.
+    """
+    from services.service_node_config import public_view as _public_node_view
+
     settings = _read_instance_settings()
+    node_view = _public_node_view()
     return {
         "name": settings.get("name", INSTANCE_NAME_DEFAULT),
         "require_totp": settings.get("require_totp", False),
+        "node_role": node_view.node_role,
+        "tunnel_anchor_enabled": node_view.tunnel_anchor_enabled,
     }
 
 
@@ -369,6 +382,96 @@ async def admin_stats(
 
 
 # ---------------------------------------------------------------------------
+# Admin: invite bootstrap (INS-020)
+# ---------------------------------------------------------------------------
+
+class AdminInviteCreate(BaseModel):
+    server_id: str
+    max_uses: int = Field(default=10, ge=1, le=10000)
+    expires_in_hours: int = Field(default=168, ge=1, le=87600)  # default 7 days, max 10 years
+    permanent: bool = False
+
+
+@router.post("/api/admin/invites")
+async def admin_create_invite(
+    body: AdminInviteCreate,
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create an invite token for any server. Admin-only bootstrap endpoint.
+
+    Unlike POST /api/invites (which requires server membership), this
+    endpoint lets a system admin create invite tokens for any server —
+    including the first invite for a fresh deployment where no members
+    exist yet.
+    """
+    require_admin(user_id)
+
+    # Verify server exists
+    server = (await db.execute(
+        select(Server).where(Server.id == body.server_id)
+    )).scalar_one_or_none()
+    if not server:
+        raise HTTPException(404, "Server not found")
+
+    invite = InviteToken(
+        server_id=body.server_id,
+        created_by=user_id,
+        max_uses=body.max_uses,
+        permanent=body.permanent,
+    )
+    if not body.permanent:
+        from datetime import timedelta
+        invite.expires_at = datetime.now(timezone.utc) + timedelta(hours=body.expires_in_hours)
+
+    db.add(invite)
+    await db.commit()
+    await db.refresh(invite)
+
+    return {
+        "token": invite.token,
+        "server_id": invite.server_id,
+        "server_name": server.name,
+        "max_uses": invite.max_uses,
+        "permanent": invite.permanent,
+        "expires_at": invite.expires_at.isoformat() if invite.expires_at else None,
+        "is_valid": invite.is_valid,
+    }
+
+
+@router.get("/api/admin/invites")
+async def admin_list_all_invites(
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all invite tokens across all servers. Admin-only."""
+    require_admin(user_id)
+
+    from sqlalchemy.orm import selectinload
+    result = await db.execute(
+        select(InviteToken).options(selectinload(InviteToken.server)).order_by(InviteToken.created_at.desc())
+    )
+    invites = result.scalars().all()
+
+    return [
+        {
+            "id": inv.id,
+            "token": inv.token,
+            "server_id": inv.server_id,
+            "server_name": inv.server.name if inv.server else None,
+            "created_by": inv.created_by,
+            "max_uses": inv.max_uses,
+            "use_count": inv.use_count,
+            "permanent": inv.permanent,
+            "expires_at": inv.expires_at.isoformat() if inv.expires_at else None,
+            "is_valid": inv.is_valid,
+            "created_at": inv.created_at.isoformat() if inv.created_at else None,
+        }
+        for inv in invites
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Admin: servers
 # ---------------------------------------------------------------------------
 
@@ -551,6 +654,16 @@ from services.tuwunel_config import (
     write_federation,
 )
 from services.docker_control import DockerControlError, restart_compose_service
+from services.service_node_config import (
+    ALLOWED_ROLES,
+    MAX_BANDWIDTH_MBPS,
+    MAX_CPU_PERCENT,
+    MAX_STORAGE_GB,
+    ServiceNodeConfig,
+    ServiceNodeConfigError,
+    load_config as load_service_node_config,
+    save_config as save_service_node_config,
+)
 
 
 # Backwards-compatible alias. The canonical implementation now lives in
@@ -739,3 +852,104 @@ async def admin_apply_federation(
         "restarted_containers": result["restarted"],
         "elapsed_seconds": result["elapsed_seconds"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Admin: service node configuration (INS-023)
+# ---------------------------------------------------------------------------
+#
+# The service node config lives in ``service_node.json`` next to
+# ``instance.json`` under ``CONCORD_DATA_DIR``. See
+# ``services.service_node_config`` for the atomic-write + validation
+# contract. The POST/PUT split is intentional — PATCH semantics would
+# require us to know which fields were omitted vs. nulled, and the
+# resource-cap schema is small enough that a full-document PUT is
+# simpler and less surprising for operators.
+
+class ServiceNodeUpdate(BaseModel):
+    """Full replacement schema for ``PUT /api/admin/service-node``.
+
+    Every field is required so the admin UI must always send a fully
+    coherent document. The Field constraints mirror the
+    ``ServiceNodeConfig.validate()`` contract so bad input is rejected
+    by Pydantic BEFORE touching the disk — defence in depth.
+    """
+
+    max_cpu_percent: int = Field(ge=1, le=MAX_CPU_PERCENT)
+    max_bandwidth_mbps: int = Field(ge=0, le=MAX_BANDWIDTH_MBPS)
+    max_storage_gb: int = Field(ge=0, le=MAX_STORAGE_GB)
+    tunnel_anchor_enabled: bool
+    node_role: str = Field(pattern=r"^(frontend-only|hybrid|anchor)$")
+
+
+def _serialize_service_node(cfg: ServiceNodeConfig) -> dict:
+    """Convert a :class:`ServiceNodeConfig` to the JSON response shape."""
+    return {
+        "max_cpu_percent": cfg.max_cpu_percent,
+        "max_bandwidth_mbps": cfg.max_bandwidth_mbps,
+        "max_storage_gb": cfg.max_storage_gb,
+        "tunnel_anchor_enabled": cfg.tunnel_anchor_enabled,
+        "node_role": cfg.node_role,
+        # Hard-coded constants exposed so the admin UI can render
+        # sensible slider max values without shipping a copy of the
+        # module-level constants. These are stable across versions and
+        # safe to surface behind admin auth.
+        "limits": {
+            "max_cpu_percent": MAX_CPU_PERCENT,
+            "max_bandwidth_mbps": MAX_BANDWIDTH_MBPS,
+            "max_storage_gb": MAX_STORAGE_GB,
+            "allowed_roles": list(ALLOWED_ROLES),
+        },
+    }
+
+
+@router.get("/api/admin/service-node")
+async def admin_get_service_node(
+    user_id: str = Depends(get_user_id),
+):
+    """Return the full service-node config (admin only).
+
+    Falls back to defaults on a fresh deployment where the file has
+    not been written yet, so the UI can always render something.
+    """
+    require_admin(user_id)
+    try:
+        cfg = load_service_node_config()
+    except ServiceNodeConfigError as exc:
+        # A corrupt on-disk file is an operator problem. Return a 500
+        # with the safe error message so the admin sees it, rather
+        # than silently falling back to defaults and masking the bug.
+        logger.error("service_node config load failed: %s", exc)
+        raise HTTPException(500, f"service_node config load failed: {exc}")
+    return _serialize_service_node(cfg)
+
+
+@router.put("/api/admin/service-node")
+async def admin_update_service_node(
+    body: ServiceNodeUpdate,
+    user_id: str = Depends(get_user_id),
+):
+    """Replace the service-node config (admin only).
+
+    The full document is required — partial updates would complicate
+    the coherence invariants around ``node_role`` + ``tunnel_anchor_enabled``.
+    """
+    require_admin(user_id)
+    cfg = ServiceNodeConfig(
+        max_cpu_percent=body.max_cpu_percent,
+        max_bandwidth_mbps=body.max_bandwidth_mbps,
+        max_storage_gb=body.max_storage_gb,
+        tunnel_anchor_enabled=body.tunnel_anchor_enabled,
+        # Pydantic's string regex guarantees this is a valid role;
+        # the cast keeps type-checkers happy with the Literal.
+        node_role=body.node_role,  # type: ignore[arg-type]
+    )
+    try:
+        saved = save_service_node_config(cfg)
+    except ServiceNodeConfigError as exc:
+        # Should be unreachable given the Pydantic layer above, but
+        # the dataclass validator is the source of truth and we must
+        # honor it. Surface the concrete message to the admin.
+        raise HTTPException(400, f"invalid service_node config: {exc}") from exc
+    logger.info("service_node config updated by %s", user_id)
+    return _serialize_service_node(saved)

@@ -58,6 +58,23 @@ export interface HomeserverConfig {
   instance_name?: string;
   /** Optional list of advertised feature flags. */
   features?: string[];
+  /** Optional STUN/TURN server hints for pre-auth connectivity checks. */
+  turn_servers?: Array<{ urls: string | string[]; username?: string; credential?: string }>;
+  /**
+   * INS-023 service-node posture. Advertised via
+   * `.well-known/concord/client` so peers can tell which structural
+   * role the instance plays in the mesh. Absent on instances that
+   * predate the field — clients should treat a missing value as
+   * "hybrid" (the default). Kept as an open string union so a future
+   * server-side addition doesn't require a coordinated client bump.
+   */
+  node_role?: "frontend-only" | "hybrid" | "anchor";
+  /**
+   * True when the instance advertises itself as a persistent mesh
+   * tunnel anchor. Never exposed alongside the raw CPU / bandwidth
+   * / storage caps — those stay behind the admin-only endpoint.
+   */
+  tunnel_anchor?: boolean;
 }
 
 /** Raised when the target host cannot be reached at all (DNS/network). */
@@ -153,6 +170,11 @@ interface ConcordClientWellKnown {
   livekit_url?: string;
   instance_name?: string;
   features?: string[];
+  turn_servers?: Array<{ urls: string | string[] }>;
+  // INS-023 — optional on the wire so older servers round-trip
+  // cleanly. The decoder below tolerates absence.
+  node_role?: string;
+  tunnel_anchor?: boolean;
 }
 
 /**
@@ -188,6 +210,7 @@ async function fetchWellKnown<T>(
     // connection refused, abort). We treat all of these as "host
     // unreachable" rather than trying to distinguish sub-cases that
     // don't exist at the DOM fetch layer.
+    console.error(`[wellKnown] fetch failed for ${url}:`, err);
     throw new DnsResolutionError(host, err);
   }
 
@@ -201,6 +224,13 @@ async function fetchWellKnown<T>(
     // 4xx other than 404 — treat as absent rather than error. A host
     // that returns 403 or 401 on a public discovery document is
     // misconfigured, but that's recoverable via fallback.
+    return { status: "absent" };
+  }
+
+  // Guard: if the server returned HTML (e.g. SPA fallback) instead of
+  // JSON, treat it as absent rather than crashing on JSON.parse.
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("text/html")) {
     return { status: "absent" };
   }
 
@@ -258,10 +288,15 @@ export async function discoverHomeserver(
     throw new InvalidUrlError(trimmed, "hostname is empty after parsing");
   }
 
-  // Run both discovery fetches in parallel — they're independent and
-  // both small. A failure in one propagates immediately; a 404 is
-  // absorbed and handled by the fallback logic below.
-  const [matrixResult, concordResult] = await Promise.all([
+  // Run both discovery fetches in parallel. The matrix well-known is
+  // the critical path; the concord well-known is optional (provides
+  // api_base, livekit_url, etc. but we can fall back without it).
+  // Use Promise.allSettled so a CORS or network failure on one
+  // endpoint doesn't kill the other — WebKitGTK on Linux blocks
+  // cross-origin responses that lack Access-Control-Allow-Origin,
+  // which is common for the concord well-known on deployments that
+  // only add CORS to the matrix well-known inline response.
+  const [matrixSettled, concordSettled] = await Promise.allSettled([
     fetchWellKnown<MatrixClientWellKnown>(
       canonicalHost,
       "/.well-known/matrix/client",
@@ -273,6 +308,20 @@ export async function discoverHomeserver(
       "concord/client",
     ),
   ]);
+
+  // If the matrix well-known itself failed at the network level,
+  // propagate that — the host is genuinely unreachable.
+  if (matrixSettled.status === "rejected") {
+    throw matrixSettled.reason;
+  }
+  const matrixResult = matrixSettled.value;
+
+  // Concord well-known failures (CORS, network, etc.) are non-fatal —
+  // treat as absent and fall back to defaults.
+  const concordResult: WellKnownResult<ConcordClientWellKnown> =
+    concordSettled.status === "fulfilled"
+      ? concordSettled.value
+      : { status: "absent" };
 
   // ---------------------------------------------------------------
   // Matrix homeserver URL resolution
@@ -318,6 +367,9 @@ export async function discoverHomeserver(
   let livekitUrl: string | undefined;
   let instanceName: string | undefined;
   let features: string[] | undefined;
+  let turnServers: HomeserverConfig["turn_servers"] | undefined;
+  let nodeRole: HomeserverConfig["node_role"] | undefined;
+  let tunnelAnchor: boolean | undefined;
   if (concordResult.status === "ok") {
     const body = concordResult.body;
     if (typeof body.api_base === "string" && body.api_base.length > 0) {
@@ -354,6 +406,27 @@ export async function discoverHomeserver(
         (f): f is string => typeof f === "string" && f.length > 0,
       );
     }
+    if (Array.isArray(body.turn_servers)) {
+      turnServers = body.turn_servers.filter(
+        (s): s is { urls: string | string[] } =>
+          s !== null && typeof s === "object" && "urls" in s,
+      );
+    }
+    // INS-023 — tolerate missing or unknown values on the wire.
+    // Older servers won't emit these fields at all; future servers
+    // may emit role names the client doesn't recognise yet. In
+    // either case fall through to `undefined` so the consumer treats
+    // it as "hybrid" / "no anchor".
+    if (
+      body.node_role === "frontend-only" ||
+      body.node_role === "hybrid" ||
+      body.node_role === "anchor"
+    ) {
+      nodeRole = body.node_role;
+    }
+    if (typeof body.tunnel_anchor === "boolean") {
+      tunnelAnchor = body.tunnel_anchor;
+    }
   } else {
     apiBase = assertHttpsUrl(
       `https://${canonicalHost}/api`,
@@ -369,5 +442,8 @@ export async function discoverHomeserver(
     livekit_url: livekitUrl,
     instance_name: instanceName,
     features,
+    turn_servers: turnServers,
+    node_role: nodeRole,
+    tunnel_anchor: tunnelAnchor,
   };
 }

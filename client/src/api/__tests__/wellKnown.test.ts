@@ -91,7 +91,11 @@ describe("discoverHomeserver", () => {
 
     const config = await discoverHomeserver("example.org");
 
-    expect(config).toEqual({
+    // `toMatchObject` instead of `toEqual` because the well-known
+    // response may include newer optional fields (turn_servers,
+    // node_role, tunnel_anchor) the happy-path fixture does not
+    // exercise. Those fields are covered by dedicated tests below.
+    expect(config).toMatchObject({
       host: "example.org",
       homeserver_url: "https://matrix.example.org",
       api_base: "https://api.example.org/api",
@@ -237,5 +241,109 @@ describe("discoverHomeserver", () => {
     await expect(discoverHomeserver("example.org")).rejects.toBeInstanceOf(
       HttpServerError,
     );
+  });
+
+  // ------------------------------------------------------------------
+  // INS-023 — service-node posture decoding
+  // ------------------------------------------------------------------
+
+  it("surfaces node_role and tunnel_anchor when the concord well-known advertises them", async () => {
+    fetchSpy.mockImplementation(async (url: string) => {
+      if (url.endsWith("/.well-known/matrix/client")) {
+        return jsonResponse(200, {
+          "m.homeserver": { base_url: "https://matrix.example.org" },
+        });
+      }
+      if (url.endsWith("/.well-known/concord/client")) {
+        return jsonResponse(200, {
+          api_base: "https://api.example.org/api",
+          features: ["chat"],
+          node_role: "anchor",
+          tunnel_anchor: true,
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const config = await discoverHomeserver("example.org");
+
+    expect(config.node_role).toBe("anchor");
+    expect(config.tunnel_anchor).toBe(true);
+  });
+
+  it("leaves node_role / tunnel_anchor undefined when the server omits them", async () => {
+    fetchSpy.mockImplementation(async (url: string) => {
+      if (url.endsWith("/.well-known/matrix/client")) {
+        return jsonResponse(200, {
+          "m.homeserver": { base_url: "https://matrix.example.org" },
+        });
+      }
+      if (url.endsWith("/.well-known/concord/client")) {
+        return jsonResponse(200, {
+          api_base: "https://api.example.org/api",
+          features: ["chat"],
+          // No node_role, no tunnel_anchor — simulate an older
+          // server that predates INS-023.
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const config = await discoverHomeserver("example.org");
+
+    // Client treats missing values as "hybrid / no anchor" via
+    // `undefined` — the consumer is responsible for applying the
+    // fallback. The decoder does NOT auto-populate a default so the
+    // two wire-model sides (server / client) stay explicit.
+    expect(config.node_role).toBeUndefined();
+    expect(config.tunnel_anchor).toBeUndefined();
+  });
+
+  it("drops an unknown node_role value rather than trusting it", async () => {
+    fetchSpy.mockImplementation(async (url: string) => {
+      if (url.endsWith("/.well-known/matrix/client")) {
+        return jsonResponse(200, {
+          "m.homeserver": { base_url: "https://matrix.example.org" },
+        });
+      }
+      if (url.endsWith("/.well-known/concord/client")) {
+        return jsonResponse(200, {
+          api_base: "https://api.example.org/api",
+          features: ["chat"],
+          node_role: "supernode", // not in the union
+          tunnel_anchor: true,
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const config = await discoverHomeserver("example.org");
+    // Unknown role → undefined so the consumer falls back to
+    // "hybrid". The tunnel_anchor boolean is unaffected.
+    expect(config.node_role).toBeUndefined();
+    expect(config.tunnel_anchor).toBe(true);
+  });
+
+  it("drops a non-boolean tunnel_anchor rather than coercing", async () => {
+    fetchSpy.mockImplementation(async (url: string) => {
+      if (url.endsWith("/.well-known/matrix/client")) {
+        return jsonResponse(200, {
+          "m.homeserver": { base_url: "https://matrix.example.org" },
+        });
+      }
+      if (url.endsWith("/.well-known/concord/client")) {
+        return jsonResponse(200, {
+          api_base: "https://api.example.org/api",
+          features: ["chat"],
+          node_role: "hybrid",
+          tunnel_anchor: "true", // wrong type — string not boolean
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const config = await discoverHomeserver("example.org");
+    expect(config.node_role).toBe("hybrid");
+    expect(config.tunnel_anchor).toBeUndefined();
   });
 });
