@@ -18,13 +18,9 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import { useServerConfigStore } from "./serverConfig";
 import { useFederatedInstanceStore } from "./federatedInstances";
 
-export type SourceType = "concord" | "discord";
-
 export interface ConcordSource {
   /** Unique ID for this source connection. */
   id: string;
-  /** Source type — Concord instance or external bridge. */
-  type: SourceType;
   /** The hostname of the Concord instance (e.g., "concorrd.com"). */
   host: string;
   /** Human-readable instance name (from .well-known/concord/client). */
@@ -65,12 +61,6 @@ export interface SourcesState {
   toggleSource: (id: string) => void;
   /** One-time migration from active session (native first launch). */
   migrateFromSession: () => void;
-  /**
-   * Sync the Discord bridge status. Called by the bridge status poller.
-   * Creates a Discord source when bridge is running, updates status
-   * when it changes, but never removes it (user can re-enable).
-   */
-  syncDiscordBridge: (bridgeRunning: boolean) => void;
 }
 
 const STORAGE_KEY = "concord_sources";
@@ -122,34 +112,6 @@ export const useSourcesStore = create<SourcesState>()(
         }));
       },
 
-      syncDiscordBridge: (bridgeRunning) => {
-        const existing = get().sources.find((s) => s.type === "discord");
-        if (bridgeRunning && !existing) {
-          const id = generateSourceId();
-          const discord: ConcordSource = {
-            id,
-            type: "discord",
-            host: "discord.com",
-            instanceName: "Discord",
-            inviteToken: "",
-            apiBase: "",
-            homeserverUrl: "",
-            status: "connected",
-            enabled: true,
-            addedAt: new Date().toISOString(),
-          };
-          set((state) => ({ sources: [...state.sources, discord] }));
-        } else if (existing) {
-          set((state) => ({
-            sources: state.sources.map((s) =>
-              s.type === "discord"
-                ? { ...s, status: bridgeRunning ? "connected" : "disconnected" }
-                : s,
-            ),
-          }));
-        }
-      },
-
       /**
        * One-time migration: populate sources from the active session.
        * Called on native app startup when the sources store is empty
@@ -168,7 +130,6 @@ export const useSourcesStore = create<SourcesState>()(
           const id = generateSourceId();
           const primary: ConcordSource = {
             id,
-            type: "concord",
             host: config.host,
             instanceName: config.instance_name,
             inviteToken: "",
@@ -189,7 +150,6 @@ export const useSourcesStore = create<SourcesState>()(
           const id = generateSourceId();
           const federated: ConcordSource = {
             id,
-            type: "concord",
             host: hostname,
             instanceName: inst.displayName || hostname,
             inviteToken: "",
@@ -211,15 +171,6 @@ export const useSourcesStore = create<SourcesState>()(
           : { getItem: () => null, setItem: () => {}, removeItem: () => {} },
       ),
       partialize: (state) => ({ sources: state.sources }),
-      // Ensure `enabled` defaults to true for sources persisted before
-      // the field existed — prevents them from appearing grayed out.
-      merge: (persisted, current) => ({
-        ...current,
-        ...(persisted as Partial<SourcesState>),
-        sources: ((persisted as Partial<SourcesState>)?.sources ?? []).map(
-          (s) => ({ ...s, enabled: s.enabled ?? true }),
-        ),
-      }),
     },
   ),
 );
