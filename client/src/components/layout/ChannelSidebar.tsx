@@ -20,6 +20,8 @@ import { useServerStore } from "../../stores/server";
 import { useAuthStore } from "../../stores/auth";
 import { useToastStore } from "../../stores/toast";
 import { useSettingsStore } from "../../stores/settings";
+import { useServerConfigStore } from "../../stores/serverConfig";
+import { useSourcesStore } from "../../stores/sources";
 import { Avatar } from "../ui/Avatar";
 import { useUnreadCounts } from "../../hooks/useUnreadCounts";
 import { useVoiceParticipants } from "../../hooks/useVoiceParticipants";
@@ -30,7 +32,7 @@ interface ChannelSidebarProps {
   onChannelSelect?: (roomId: string) => void;
 }
 
-export const ChannelSidebar = memo(function ChannelSidebar({ mobile, onChannelSelect }: ChannelSidebarProps) {
+export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, onChannelSelect }: ChannelSidebarProps) {
   const servers = useServerStore((s) => s.servers);
   const activeServerId = useServerStore((s) => s.activeServerId);
   const activeChannelId = useServerStore((s) => s.activeChannelId);
@@ -43,7 +45,6 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile, onChannelSe
   const leaveServerFn = useServerStore((s) => s.leaveServer);
   const userId = useAuthStore((s) => s.userId);
   const accessToken = useAuthStore((s) => s.accessToken);
-  const logout = useAuthStore((s) => s.logout);
   const addToast = useToastStore((s) => s.addToast);
 
   const unreadCounts = useUnreadCounts();
@@ -94,7 +95,6 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile, onChannelSe
             Use the <strong className="text-on-surface">+</strong> button to create or join a server
           </p>
         </div>
-        {!mobile && <UserBar userId={userId} logout={logout} />}
       </div>
     );
   }
@@ -493,8 +493,6 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile, onChannelSe
         )}
       </div>
 
-      {!mobile && <UserBar userId={userId} logout={logout} />}
-
       {showInviteModal && (
         <InviteModal serverId={server.id} onClose={() => setShowInviteModal(false)} />
       )}
@@ -712,7 +710,7 @@ function SortableChannelRow({
   );
 }
 
-function UserBar({
+export function UserBar({
   userId,
   logout,
 }: {
@@ -720,9 +718,51 @@ function UserBar({
   logout: () => void;
 }) {
   const openSettings = useSettingsStore((s) => s.openSettings);
+  const clearHomeserver = useServerConfigStore((s) => s.clearHomeserver);
+  const isNative = typeof window !== "undefined" && "__TAURI__" in window;
+
+  // "Switch server" — full disconnect from the current Concord
+  // instance. Does everything `logout` does (ends Matrix session,
+  // clears auth) PLUS:
+  //   1. Clears `serverConfig` so `getApiBase()` falls back to the
+  //      discovery flow instead of the previously-picked host.
+  //   2. Removes the corresponding primary source from the sources
+  //      store so the native Sources column doesn't show a ghost
+  //      entry after the switch.
+  //   3. Kicks the user back to the server picker (native) by
+  //      virtue of `hasNewConfig === null && hasLegacyUrl === ""`
+  //      which flips `computeInitialServerConnected` to `false`.
+  //
+  // Only exposed on native builds: in the browser, "switching server"
+  // is meaningless because the origin IS the server — `window.location`
+  // is the source of truth and you'd navigate to a different domain
+  // to change it. Hosting an instance on the same origin as the web
+  // deploy is the whole point of the docker-compose layout.
+  const handleSwitchServer = () => {
+    // Read-then-act: the sources store is a one-off imperative flush
+    // here, not a subscription. Calling getState() avoids creating a
+    // selector that re-runs on every unrelated source mutation.
+    const sourcesState = useSourcesStore.getState();
+    for (const src of sourcesState.sources) {
+      sourcesState.removeSource(src.id);
+    }
+    clearHomeserver();
+    logout();
+    // Force a full remount so `computeInitialServerConnected` re-runs
+    // against the now-null config + empty sources. Without this, App's
+    // `serverConnected` useState value still holds `true` from the
+    // initial mount and the picker never re-appears — the user would
+    // see the LoginForm pointed at the same host instead of being
+    // able to choose a different one. A webview reload is cheap and
+    // avoids adding cross-component state-sync plumbing just for the
+    // disconnect path.
+    if (typeof window !== "undefined") {
+      window.location.reload();
+    }
+  };
 
   return (
-    <div className="p-3 bg-surface-container flex items-center justify-between">
+    <div className="px-3 py-2 bg-surface-container flex items-center justify-between">
       <div className="flex items-center gap-2 min-w-0">
         {userId && <Avatar userId={userId} size="md" showPresence />}
         <span className="text-sm text-on-surface truncate font-body">
@@ -737,9 +777,19 @@ function UserBar({
         >
           <span className="material-symbols-outlined text-lg">settings</span>
         </button>
+        {isNative && (
+          <button
+            onClick={handleSwitchServer}
+            title="Disconnect from this instance and return to the server picker"
+            className="flex items-center gap-1 px-2 py-1 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
+          >
+            <span className="material-symbols-outlined text-lg">swap_horiz</span>
+          </button>
+        )}
         <button
           onClick={logout}
           className="px-2 py-1 rounded-lg text-xs text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors font-label"
+          title="Sign out of your account on this instance"
         >
           Logout
         </button>
