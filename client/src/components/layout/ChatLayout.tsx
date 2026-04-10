@@ -18,9 +18,16 @@ import { usePlatform } from "../../hooks/usePlatform";
 import { useSendReadReceipt } from "../../hooks/useUnreadCounts";
 import { useNotifications } from "../../hooks/useNotifications";
 import { useSettingsStore } from "../../stores/settings";
+import { useVoiceStore } from "../../stores/voice";
+import { SourcesPanel } from "./SourcesPanel";
+import { useSourcesStore } from "../../stores/sources";
 import { useDMStore } from "../../stores/dm";
 import { useToastStore } from "../../stores/toast";
 import { useDisplayName } from "../../hooks/useDisplayName";
+import { useExtension } from "../../hooks/useExtension";
+import { useExtensionStore } from "../../stores/extension";
+import ExtensionEmbed from "../extension/ExtensionEmbed";
+import ExtensionMenu from "../extension/ExtensionMenu";
 import { ServerSidebar } from "./ServerSidebar";
 import { ChannelSidebar } from "./ChannelSidebar";
 import { DMSidebar } from "../dm/DMSidebar";
@@ -46,10 +53,14 @@ class SilentBoundary extends Component<{ children: ReactNode; fallback?: ReactNo
   }
 }
 
-type MobileView = "servers" | "channels" | "chat" | "dms" | "settings";
+type MobileView = "sources" | "servers" | "channels" | "chat" | "actions" | "dms" | "settings";
+
+/** True when running inside a Tauri native shell (iOS, Android, desktop). */
+const isNativeApp = typeof window !== "undefined" && "__TAURI__" in window;
 
 export function ChatLayout() {
   const syncing = useMatrixSync();
+  const voiceConnected = useVoiceStore((s) => s.connected);
   const client = useAuthStore((s) => s.client);
   const userId = useAuthStore((s) => s.userId);
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -97,11 +108,17 @@ export function ChatLayout() {
   const [showHelp, setShowHelp] = useState(false);
 
   // Mobile view state — replaces the old drawer system
-  const [mobileView, setMobileView] = useState<MobileView>("chat");
+  const [mobileView, setMobileView] = useState<MobileView>(
+    isNativeApp ? "sources" : "chat",
+  );
   // Mobile account sheet (T003)
   const [accountSheetOpen, setAccountSheetOpen] = useState(false);
-  // INS-016: Mobile dashboard sheet (collapses BottomNav into pills + expand)
-  const [dashboardSheetOpen, setDashboardSheetOpen] = useState(false);
+  // INS-016: Dashboard sheet state — setters are still called by desktop
+  // quick-action handlers (they close the old sheet). The value isn't
+  // read because mobile's ActionsPanel replaced the sheet overlay.
+  const [, setDashboardSheetOpen] = useState(false);
+  // INS-020: Add-source flow modal
+  const [addSourceOpen, setAddSourceOpen] = useState(false);
 
   // Resizable channel sidebar (desktop only)
   const SIDEBAR_MIN = 160;
@@ -196,15 +213,85 @@ export function ChatLayout() {
     return room.getJoinedMemberCount();
   }, [client, activeRoomId, syncing]);
 
+  // Extension system
+  const { activeExtension, isHost: isExtensionHost, startExtension, stopExtension } = useExtension(activeRoomId);
+  const extensionMenuOpen = useExtensionStore((s) => s.menuOpen);
+  const setExtensionMenuOpen = useExtensionStore((s) => s.setMenuOpen);
+
+  // Extension / chat vertical split resize (desktop)
+  // extMediaPercent = percentage of container height used by the extension (top pane)
+  const EXT_MEDIA_MIN = 20;   // minimum 20% for extension
+  const EXT_MEDIA_MAX = 85;   // maximum 85% (leaves at least 15% for chat)
+  const EXT_MEDIA_DEFAULT = 65;
+  const [extMediaPercent, setExtMediaPercent] = useState(() => {
+    try {
+      const saved = localStorage.getItem("concord_extension_media_pct");
+      if (saved) return Math.max(EXT_MEDIA_MIN, Math.min(EXT_MEDIA_MAX, Number(saved)));
+    } catch {}
+    return EXT_MEDIA_DEFAULT;
+  });
+  const isExtDragging = useRef(false);
+  const extContainerRef = useRef<HTMLDivElement>(null);
+  const extensionBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Sidebar collapse when extension is active
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  const handleExtResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isExtDragging.current = true;
+    const startY = e.clientY;
+    const startPct = extMediaPercent;
+    const container = extContainerRef.current;
+    const containerH = container ? container.offsetHeight : window.innerHeight;
+
+    const onMove = (ev: MouseEvent) => {
+      const deltaY = ev.clientY - startY;
+      const deltaPct = (deltaY / containerH) * 100;
+      const newPct = Math.max(EXT_MEDIA_MIN, Math.min(EXT_MEDIA_MAX, startPct + deltaPct));
+      setExtMediaPercent(newPct);
+    };
+
+    const onUp = () => {
+      isExtDragging.current = false;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [extMediaPercent]);
+
+  useEffect(() => {
+    try { localStorage.setItem("concord_extension_media_pct", String(extMediaPercent)); } catch {}
+  }, [extMediaPercent]);
+
+  // Auto-collapse sidebar when extension becomes active, restore when it stops
+  const extensionIsActive = !!activeExtension;
+  useEffect(() => {
+    if (extensionIsActive && !dmActive) {
+      setSidebarCollapsed(true);
+    } else {
+      setSidebarCollapsed(false);
+    }
+  }, [extensionIsActive, dmActive]);
+
   const loadMembers = useServerStore((s) => s.loadMembers);
   const [serversLoaded, setServersLoaded] = useState(false);
+
+  const loadCatalog = useExtensionStore((s) => s.loadCatalog);
 
   useEffect(() => {
     if (accessToken && syncing && !serversLoaded) {
       loadServers(accessToken).then(() => setServersLoaded(true));
       loadConversations(accessToken);
+      loadCatalog(accessToken);
     }
-  }, [accessToken, syncing, serversLoaded, loadServers, loadConversations]);
+  }, [accessToken, syncing, serversLoaded, loadServers, loadConversations, loadCatalog]);
 
   useEffect(() => {
     if (accessToken && activeServerId) {
@@ -304,32 +391,99 @@ export function ChatLayout() {
   }, [settingsOpen, serverSettingsId]);
 
   // Desktop layout
-  const renderDesktopLayout = () => (
-    <div className="h-full flex overflow-hidden bg-surface text-on-surface">
-      {/* Server sidebar */}
-      <SilentBoundary>
-        <ServerSidebar />
-      </SilentBoundary>
+  const renderDesktopLayout = () => {
+    const extensionActive = !!activeExtension && !dmActive;
+    const showSidebar = !extensionActive || !sidebarCollapsed;
+    const sources = useSourcesStore.getState().sources;
+    const hasNoSources = isNativeApp && sources.length === 0;
 
-      {/* Channel / DM sidebar */}
-      <div className="flex min-h-0" style={{ width: sidebarWidth, minWidth: SIDEBAR_MIN, maxWidth: SIDEBAR_MAX }}>
-        <SilentBoundary>
-          {dmActive ? <DMSidebar /> : <ChannelSidebar />}
-        </SilentBoundary>
+    // Native desktop with no sources: show the Sources empty state full-screen
+    // instead of the normal multi-pane layout. Same first-launch experience
+    // as mobile — the user needs to connect to at least one instance first.
+    if (hasNoSources) {
+      return (
+        <div className="h-full flex overflow-hidden bg-surface text-on-surface">
+          <SourcesPanel
+            onAddSource={() => setAddSourceOpen(true)}
+          />
+        </div>
+      );
+    }
+
+    return (
+      <div className="h-full flex overflow-hidden bg-surface text-on-surface">
+        {/* Sources sidebar — native desktop only. Narrow column of
+            connected instance icons, same data as the mobile Sources
+            panel but rendered as compact icons. */}
+        {isNativeApp && (
+          <div className="w-14 flex-shrink-0 bg-surface-container-low border-r border-outline-variant/10 flex flex-col items-center py-2 gap-2 overflow-y-auto">
+            {sources.map((source) => (
+              <button
+                key={source.id}
+                title={source.instanceName || source.host}
+                className="w-10 h-10 rounded-xl bg-surface-container-high hover:bg-surface-container-highest flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-colors flex-shrink-0"
+              >
+                <span className="text-xs font-headline font-bold uppercase">
+                  {(source.instanceName || source.host).slice(0, 2)}
+                </span>
+              </button>
+            ))}
+            <button
+              onClick={() => setAddSourceOpen(true)}
+              title="Add source"
+              className="w-10 h-10 rounded-xl border border-dashed border-outline-variant/30 hover:border-primary/40 hover:bg-surface-container flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-colors flex-shrink-0"
+            >
+              <span className="material-symbols-outlined text-lg">add</span>
+            </button>
+          </div>
+        )}
+
+        {/* Sidebar collapse toggle — visible when extension is active */}
+        {extensionActive && (
+          <button
+            onClick={() => setSidebarCollapsed((c) => !c)}
+            className="flex-shrink-0 w-6 flex items-center justify-center bg-surface-container-low/60 backdrop-blur-sm hover:bg-surface-container-high/80 transition-colors z-10 border-r border-outline-variant/10"
+            aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+            title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+          >
+            <span
+              className="material-symbols-outlined text-sm text-on-surface-variant/70 transition-transform duration-200"
+              style={{ transform: sidebarCollapsed ? "rotate(0deg)" : "rotate(180deg)" }}
+            >
+              chevron_right
+            </span>
+          </button>
+        )}
+
+        {/* Server sidebar */}
+        {showSidebar && (
+          <>
+            <SilentBoundary>
+              <ServerSidebar />
+            </SilentBoundary>
+
+            {/* Channel / DM sidebar */}
+            <div className="flex min-h-0" style={{ width: sidebarWidth, minWidth: SIDEBAR_MIN, maxWidth: SIDEBAR_MAX }}>
+              <SilentBoundary>
+                {dmActive ? <DMSidebar /> : <ChannelSidebar />}
+              </SilentBoundary>
+            </div>
+
+            {/* Resize handle */}
+            <div
+              onMouseDown={handleResizeStart}
+              className="w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors flex-shrink-0"
+            />
+          </>
+        )}
+
+        {/* Main content */}
+        <div className="flex-1 flex flex-col min-h-0 min-w-0">
+          {renderMainContent()}
+        </div>
       </div>
-
-      {/* Resize handle */}
-      <div
-        onMouseDown={handleResizeStart}
-        className="w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors flex-shrink-0"
-      />
-
-      {/* Main content */}
-      <div className="flex-1 flex flex-col min-h-0 min-w-0">
-        {renderMainContent()}
-      </div>
-    </div>
-  );
+    );
+  };
 
   // Mobile layout with bottom nav.
   //
@@ -345,6 +499,47 @@ export function ChatLayout() {
   //     ├── MobilePillRow       flex-shrink-0  (INS-016 pills)
   //     └── MobileDashboardSheet  absolute-positioned overlay
   //
+  // ── Scroll-snap page navigation (INS-020) ──
+  // All three page-depth views are rendered as side-by-side panels in a
+  // horizontal scroll-snap container. The browser handles swipe physics,
+  // momentum, and snap-to-nearest. We sync `mobileView` state from the
+  // scroll position so the top bar and pills reflect the visible panel.
+  const scrollStripRef = useRef<HTMLDivElement>(null);
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scrollToPanel = useCallback((panelIndex: number) => {
+    const strip = scrollStripRef.current;
+    if (!strip) return;
+    const panelWidth = strip.clientWidth;
+    strip.scrollTo({ left: panelIndex * panelWidth, behavior: "smooth" });
+  }, []);
+
+  // Debounced scroll handler — updates mobileView when the user finishes
+  // scrolling. Uses a 100ms debounce so we don't spam state updates during
+  // the momentum phase.
+  const handleScrollSnap = useCallback(() => {
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = setTimeout(() => {
+      const strip = scrollStripRef.current;
+      if (!strip) return;
+      const panelWidth = strip.clientWidth;
+      if (panelWidth === 0) return;
+      const panelIndex = Math.round(strip.scrollLeft / panelWidth);
+      const clamped = Math.max(0, Math.min(panelIndex, PAGE_DEPTH.length - 1));
+      const target = PAGE_DEPTH[clamped];
+      if (target && target !== mobileView) {
+        setMobileView(target);
+        useDMStore.getState().setDMActive(false);
+      }
+    }, 100);
+  }, [mobileView]);
+
+  // Sync scroll position when mobileView changes from outside (e.g. pill tap).
+  useEffect(() => {
+    const depthIdx = PAGE_DEPTH.indexOf(mobileView);
+    if (depthIdx >= 0) scrollToPanel(depthIdx);
+  }, [mobileView, scrollToPanel]);
+
   // The chain MUST NOT be broken by any new ancestor introducing overflow:
   // visible or removing min-h-0 — that would let MessageInput's auto-grow
   // textarea push the MessageList out of view instead of reflowing it.
@@ -352,8 +547,12 @@ export function ChatLayout() {
   // min(viewport*0.4, 8*22px) and switches to internal scroll above that.
   const renderMobileLayout = () => (
     <div className="h-full flex flex-col overflow-hidden bg-surface text-on-surface min-h-0">
-      {/* Top bar */}
-      <div className="h-12 flex items-center px-3 bg-surface-container-low safe-top flex-shrink-0 gap-2">
+      {/* Top bar — safe-top lives on the OUTER wrapper so the safe-area
+          inset adds transparent padding ABOVE the 48px content bar instead
+          of stealing from its interior (which was cutting off icons on
+          notch-equipped iPhones). */}
+      <div className="bg-surface-container-low safe-top flex-shrink-0">
+      <div className="h-12 flex items-center px-3 gap-2">
         <div className="flex-1 min-w-0 flex items-center">
         {mobileView === "chat" && dmActive && dmConversation ? (
           <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -446,62 +645,98 @@ export function ChatLayout() {
           <span className="material-symbols-outlined text-xl">account_circle</span>
         </button>
       </div>
+      </div>
 
       {/* Main content area */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        {mobileView === "servers" && (
-          <SilentBoundary>
-            <ServerSidebar mobile onServerSelect={() => setMobileView("channels")} />
-          </SilentBoundary>
-        )}
-        {mobileView === "channels" && (
-          <SilentBoundary>
-            <ChannelSidebar mobile onChannelSelect={handleMobileChannelSelect} />
-          </SilentBoundary>
-        )}
-        {mobileView === "dms" && (
-          <SilentBoundary>
-            <DMSidebar mobile onDMSelect={handleMobileDMSelect} />
-          </SilentBoundary>
-        )}
-        {mobileView === "settings" && (
-          // Both SettingsPanel and ServerSettingsPanel use `flex-1 flex flex-col min-h-0`
-          // as their outer wrapper, which only behaves correctly inside a flex container.
-          // The parent on line 300 is a block div, so we need an explicit flex shell here
-          // (mirrors the chat branch a few lines below). Without this wrapper, the inner
-          // tab-content `flex-1 overflow-y-auto` collapses to zero height and the panel
-          // becomes unscrollable on mobile.
-          <div className="h-full flex flex-col min-h-0">
-            {settingsOpen ? (
-              <SettingsPanel />
-            ) : serverSettingsId ? (
-              <ServerSettingsPanel serverId={serverSettingsId} />
-            ) : (
-              <SettingsPanel />
+        {/* Page-depth views: horizontal scroll-snap strip.
+            All three panels are always mounted (servers, channels, chat).
+            CSS scroll-snap handles the swipe physics + snap-to-nearest.
+            DMs and Settings are full-screen overlays ABOVE the strip. */}
+        {(mobileView === "dms" || mobileView === "settings" || mobileView === "actions") ? (
+          // Non-page views: full-screen, no scroll strip
+          mobileView === "dms" ? (
+            <SilentBoundary>
+              <DMSidebar mobile onDMSelect={handleMobileDMSelect} />
+            </SilentBoundary>
+          ) : mobileView === "actions" ? (
+            <ActionsPanel
+              onReconnectLast={handleReconnectLastChannel}
+              onHostExchange={handleHostExchange}
+              onOpenProfile={handleOpenProfile}
+              onOpenNodeSettings={handleOpenNodeSettings}
+            />
+          ) : (
+            <div className="h-full flex flex-col min-h-0">
+              {settingsOpen ? (
+                <SettingsPanel />
+              ) : serverSettingsId ? (
+                <ServerSettingsPanel serverId={serverSettingsId} />
+              ) : (
+                <SettingsPanel />
+              )}
+            </div>
+          )
+        ) : (
+          // Page-depth scroll strip. Native: sources ↔ servers ↔ channels ↔ chat.
+          // Web: servers ↔ channels ↔ chat (no sources panel).
+          <div
+            ref={scrollStripRef}
+            className="h-full flex overflow-x-auto overflow-y-hidden overscroll-x-auto"
+            style={{
+              scrollSnapType: "x mandatory",
+              scrollBehavior: "smooth",
+              WebkitOverflowScrolling: "touch",
+            }}
+            onScroll={handleScrollSnap}
+          >
+            {/* Panel: Sources (native only) */}
+            {isNativeApp && (
+              <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
+                <SourcesPanel
+                  onAddSource={() => setAddSourceOpen(true)}
+                  onSourceSelect={() => scrollToPanel(1)}
+                />
+              </div>
             )}
-          </div>
-        )}
-        {mobileView === "chat" && (
-          <div className="h-full flex flex-col min-h-0">
-            {renderChatContent()}
+            {/* Panels below only render when sources exist (native) or always (web).
+                On native with no sources, only the Sources panel shows. */}
+            {(!isNativeApp || useSourcesStore.getState().sources.length > 0) && (
+              <>
+                {/* Panel: Servers */}
+                <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
+                  <SilentBoundary>
+                    <ServerSidebar mobile onServerSelect={() => setMobileView("channels")} />
+                  </SilentBoundary>
+                </div>
+                {/* Panel: Channels */}
+                <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
+                  <SilentBoundary>
+                    <ChannelSidebar mobile onChannelSelect={(chId) => { handleMobileChannelSelect(chId); setMobileView("chat"); }} />
+                  </SilentBoundary>
+                </div>
+              </>
+            )}
+            {/* Panel: Chat — gated on sources same as servers/channels */}
+            {(!isNativeApp || useSourcesStore.getState().sources.length > 0) && (
+              <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
+                <div className="h-full flex flex-col min-h-0">
+                  {renderChatContent()}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* INS-016: Collapsed pill row (always visible on mobile).
-          Tapping any pill opens the full dashboard sheet below. */}
+      {/* INS-020: New 4-pill bottom bar with direct navigation. */}
       <MobilePillRow
         active={mobileView}
-        onExpand={() => setDashboardSheetOpen(true)}
-      />
-
-      {/* INS-016 + TASK 26: Expanded mobile dashboard sheet with full nav and
-          quick actions. Slides up over the pill row. */}
-      <MobileDashboardSheet
-        open={dashboardSheetOpen}
-        active={mobileView}
-        onClose={() => setDashboardSheetOpen(false)}
-        onSelectView={(view) => {
+        pageDepth={PAGE_DEPTH.includes(mobileView) ? mobileView : "servers"}
+        voiceActive={voiceConnected}
+        voiceChannelName={useVoiceStore.getState().channelName ?? undefined}
+        onVoiceReturn={() => setMobileView("chat")}
+        onNavigate={(view) => {
           if (view === "dms") {
             useDMStore.getState().setDMActive(true);
           } else if (view === "servers" || view === "channels" || view === "chat") {
@@ -509,13 +744,48 @@ export function ChatLayout() {
           }
           if (view === "settings") openSettings();
           setMobileView(view);
-          setDashboardSheetOpen(false);
         }}
-        onReconnectLast={handleReconnectLastChannel}
-        onHostExchange={handleHostExchange}
-        onOpenProfile={handleOpenProfile}
-        onOpenNodeSettings={handleOpenNodeSettings}
       />
+
+      {/* Mobile extension menu overlay */}
+      {extensionMenuOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center md:hidden">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setExtensionMenuOpen(false)} />
+          <div className="relative w-full mx-3 mb-3 rounded-2xl bg-surface-container border border-outline-variant/20 shadow-xl overflow-hidden safe-bottom">
+            <div className="px-4 py-3 border-b border-outline-variant/20 flex items-center justify-between">
+              <h3 className="text-sm font-headline font-semibold text-on-surface">Extensions</h3>
+              <button onClick={() => setExtensionMenuOpen(false)} className="text-on-surface-variant">
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+            <div className="p-2 max-h-[50vh] overflow-y-auto">
+              {useExtensionStore.getState().catalog.map((ext) => {
+                const isActive = activeExtension?.extensionId === ext.id;
+                return (
+                  <div key={ext.id} className="flex items-center gap-3 p-3 rounded-lg hover:bg-surface-container-high/60 transition-colors">
+                    <span className="material-symbols-outlined text-xl text-on-surface-variant flex-shrink-0">{ext.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-label font-medium text-on-surface">{ext.name}</div>
+                      <div className="text-xs text-on-surface-variant font-label">{isActive ? `Active — hosted by ${ext.name}` : ext.description}</div>
+                    </div>
+                    {isActive ? (
+                      isExtensionHost && (
+                        <button onClick={() => { stopExtension(); setExtensionMenuOpen(false); }} className="px-2 py-1 rounded-lg text-xs font-label text-error hover:bg-error/10 transition-colors">Stop</button>
+                      )
+                    ) : (
+                      <button onClick={() => { startExtension(ext.id); setExtensionMenuOpen(false); }} className="px-2.5 py-1 rounded-lg text-xs font-label font-medium text-on-primary bg-primary hover:brightness-110 transition-all">Start</button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* INS-020: Quick Actions sheet — search bar + action grid. */}
+      {/* QuickActionsSheet removed — replaced by ActionsPanel (full-screen view) */}
+
     </div>
   );
 
@@ -608,6 +878,9 @@ export function ChatLayout() {
           <div className="flex items-center gap-2 flex-shrink-0">
             <ConnectedHostLabel />
             <div className="flex items-center gap-0.5">
+              {activeChannel && !isVoiceChannel && (
+                <TopBarIconButton ref={extensionBtnRef} icon="extension" label="Extensions" onClick={() => setExtensionMenuOpen(!extensionMenuOpen)} />
+              )}
               <TopBarIconButton icon="help" label="Help" onClick={() => setShowHelp(true)} />
               <TopBarIconButton icon="bar_chart" label="Your stats" onClick={() => setShowStats(true)} />
               <TopBarIconButton icon="bug_report" label="Report a bug" onClick={() => setShowBugReport(true)} />
@@ -615,7 +888,34 @@ export function ChatLayout() {
           </div>
         </div>
 
-        {renderChatContent()}
+        {/* Extension vertical split (media top, chat bottom) or normal chat */}
+        {activeExtension && !dmActive ? (
+          <div ref={extContainerRef} className="flex-1 flex flex-col min-h-0 min-w-0">
+            {/* Extension / media pane (top) */}
+            <div className="min-h-0 overflow-hidden" style={{ height: `${extMediaPercent}%` }}>
+              <ExtensionEmbed
+                url={activeExtension.extensionUrl}
+                extensionName={activeExtension.extensionName}
+                hostUserId={activeExtension.hostUserId}
+                isHost={isExtensionHost}
+                onStop={stopExtension}
+              />
+            </div>
+            {/* Horizontal resize handle (drag up/down) */}
+            <div
+              onMouseDown={handleExtResizeStart}
+              className="h-1.5 cursor-row-resize hover:bg-primary/30 active:bg-primary/50 transition-colors flex-shrink-0 flex items-center justify-center group"
+            >
+              <div className="w-12 h-0.5 rounded-full bg-outline-variant/40 group-hover:bg-primary/60 transition-colors" />
+            </div>
+            {/* Chat pane (bottom) */}
+            <div className="flex-1 flex flex-col min-h-0">
+              {renderChatContent()}
+            </div>
+          </div>
+        ) : (
+          renderChatContent()
+        )}
       </>
     );
   };
@@ -745,10 +1045,29 @@ export function ChatLayout() {
       {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} />}
       {showStats && <StatsModal onClose={() => setShowStats(false)} />}
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+      <ExtensionMenu
+        open={extensionMenuOpen}
+        onClose={() => setExtensionMenuOpen(false)}
+        activeExtension={activeExtension}
+        onStart={startExtension}
+        onStop={stopExtension}
+        isHost={isExtensionHost}
+        anchorRef={extensionBtnRef}
+      />
       {accountSheetOpen && (
         <AccountSheet
           userId={userId}
           onClose={() => setAccountSheetOpen(false)}
+        />
+      )}
+      {/* INS-020: Add Source modal — shared between mobile + desktop native */}
+      {addSourceOpen && (
+        <AddSourceModal
+          onClose={() => setAddSourceOpen(false)}
+          onSourceAdded={() => {
+            setAddSourceOpen(false);
+            if (scrollStripRef.current) scrollToPanel(1);
+          }}
         />
       )}
     </>
@@ -802,220 +1121,177 @@ function AccountSheet({
 }
 
 /* ── Mobile Nav Items (shared by pill row + full sheet) ── */
-const MOBILE_NAV_ITEMS: { key: MobileView; icon: string; label: string }[] = [
-  { key: "servers", icon: "dns", label: "Servers" },
-  { key: "channels", icon: "tag", label: "Channels" },
-  { key: "chat", icon: "forum", label: "Chat" },
-  { key: "dms", icon: "chat_bubble", label: "DMs" },
-  { key: "settings", icon: "settings", label: "Settings" },
-];
+// Page-depth hierarchy for swipe navigation. Swiping left goes deeper,
+// swiping right goes back (matching iOS back-gesture convention).
+// Native apps have an extra "sources" panel at the shallowest depth.
+const PAGE_DEPTH: MobileView[] = isNativeApp
+  ? ["sources", "servers", "channels", "chat"]
+  : ["servers", "channels", "chat"];
 
-/* ── Mobile Pill Row (INS-016) ──
-   Replaces the always-expanded labelled BottomNav with a compact row of
-   icon-only pills ("cucumbers") that fill the minimum floor-space. Each
-   pill is ≥44×44 tap target (iOS HIG); visual capsule is ~36px tall.
-   Tapping any pill opens the full dashboard sheet — users pick a view
-   inside the sheet. The center "chat" pill retains the INS-001 glow. */
+// Icon + label for the "Page" pill, contextual to the current depth.
+const PAGE_PILL_META: Record<string, { icon: string; label: string }> = {
+  sources: { icon: "hub", label: "Sources" },
+  servers: { icon: "dns", label: "Servers" },
+  channels: { icon: "tag", label: "Channels" },
+  chat: { icon: "forum", label: "Chat" },
+};
+
+/* ── Mobile Pill Row (INS-016 → INS-020 redesign) ──
+   Four pills: [📍 Page] [⚡ Actions] [💬 DMs] [⚙️ Settings].
+   The Page pill icon changes based on current depth (servers/channels/chat).
+   Tapping Page when on DMs/Settings returns to the last page depth.
+   Tapping Actions opens the quick-actions sheet. DMs and Settings navigate
+   directly. Voice persistence pills are inserted dynamically. */
 function MobilePillRow({
   active,
-  onExpand,
+  onNavigate,
+  pageDepth,
+  voiceActive,
+  voiceChannelName,
+  onVoiceReturn,
 }: {
   active: MobileView;
-  onExpand: () => void;
+  onNavigate: (view: MobileView) => void;
+  pageDepth: MobileView;
+  voiceActive?: boolean;
+  voiceChannelName?: string;
+  onVoiceReturn?: () => void;
 }) {
+  const pageMeta = PAGE_PILL_META[pageDepth] ?? PAGE_PILL_META.servers;
+  const isOnPage = PAGE_DEPTH.includes(active);
+
+  const pills: { key: string; icon: string; label: string; isActive: boolean; onClick: () => void }[] = [
+    {
+      key: "page",
+      icon: pageMeta.icon,
+      label: pageMeta.label,
+      isActive: isOnPage,
+      onClick: () => onNavigate(isOnPage ? "servers" : pageDepth),
+    },
+    // Voice persistence pill — only visible when in a voice call
+    ...(voiceActive
+      ? [{
+          key: "voice",
+          icon: "mic",
+          label: voiceChannelName ?? "Voice",
+          isActive: false,
+          onClick: () => onVoiceReturn?.(),
+        }]
+      : []),
+    {
+      key: "actions",
+      icon: "bolt",
+      label: "Actions",
+      isActive: active === "actions",
+      onClick: () => onNavigate("actions"),
+    },
+    {
+      key: "dms",
+      icon: "chat_bubble",
+      label: "DMs",
+      isActive: active === "dms",
+      onClick: () => onNavigate("dms"),
+    },
+    {
+      key: "settings",
+      icon: "settings",
+      label: "Settings",
+      isActive: active === "settings",
+      onClick: () => onNavigate("settings"),
+    },
+  ];
+
   return (
     <div className="concord-mobile-nav-wrap safe-bottom flex-shrink-0">
       <nav
-        className="concord-mobile-pill-row glass-panel mx-3 mb-2 rounded-full relative flex items-center justify-between gap-1 px-2 py-1.5"
-        aria-label="Mobile navigation (collapsed)"
+        className="concord-mobile-pill-row mx-3 mb-2 rounded-full relative flex items-center justify-between gap-1 px-2 py-1.5"
+        aria-label="Mobile navigation"
       >
-        {MOBILE_NAV_ITEMS.map(({ key, icon, label }, i) => {
-          const isActive = active === key;
-          const isCenter = i === 2; // chat
-          return (
-            <button
-              key={key}
-              type="button"
-              onClick={onExpand}
-              aria-label={`${label} — open dashboard`}
-              aria-current={isActive ? "page" : undefined}
-              className={`concord-mobile-pill relative flex items-center justify-center min-h-[44px] min-w-[44px] h-9 flex-1 rounded-full active:scale-95 transition-all duration-150 ${
+        {pills.map(({ key, icon, label, isActive, onClick }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={onClick}
+            aria-label={label}
+            aria-current={isActive ? "page" : undefined}
+            className={`concord-mobile-pill relative flex items-center justify-center min-h-[44px] min-w-[44px] h-9 flex-1 rounded-full active:scale-95 transition-all duration-150 ${
+              isActive
+                ? "concord-mobile-pill-active text-on-surface"
+                : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/40"
+            }`}
+          >
+            <span
+              className={`material-symbols-outlined text-lg transition-all duration-200`}
+              style={
                 isActive
-                  ? "concord-mobile-pill-active text-on-surface"
-                  : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/40"
-              }`}
+                  ? { fontVariationSettings: '"FILL" 1, "wght" 600, "GRAD" 0, "opsz" 24' }
+                  : undefined
+              }
             >
-              <span
-                className={`material-symbols-outlined transition-all duration-200 ${
-                  isCenter && isActive ? "concord-mobile-nav-center-glow" : ""
-                } ${isCenter ? "text-xl" : "text-lg"}`}
-                style={
-                  isActive
-                    ? { fontVariationSettings: '"FILL" 1, "wght" 600, "GRAD" 0, "opsz" 24' }
-                    : undefined
-                }
-              >
-                {icon}
-              </span>
-            </button>
-          );
-        })}
+              {icon}
+            </span>
+          </button>
+        ))}
       </nav>
     </div>
   );
 }
 
-/* ── Mobile Dashboard Sheet (INS-016 + TASK 26) ──
-   Slide-up sheet containing the full labelled navigation and the TASK 26
-   quick actions (reconnect last channel, host exchange, profile, node
-   settings). Each action is ≤2 taps from the pill row (1 tap to expand,
-   1 tap to invoke). Uses the existing cubic-bezier(0.16, 1, 0.3, 1)
-   easing via the `concord-sheet-*` classes below for smooth open/close. */
-function MobileDashboardSheet({
-  open,
-  active,
-  onClose,
-  onSelectView,
+/* ── Quick Actions Sheet (INS-020 redesign) ──
+   Slide-up sheet with a search/command bar at the top and a grid of
+   quick actions below. Opened by tapping the ⚡ Actions pill. The nav
+   grid is gone — Page/DMs/Settings are handled directly by the pill
+   row taps; depth navigation is via swipe or back arrows. */
+/* ── Actions Panel (INS-020) ──
+   Full-screen panel for quick actions. Replaces the old slide-up sheet.
+   Renders as a standard mobile view, same as DMs or Settings. */
+function ActionsPanel({
   onReconnectLast,
   onHostExchange,
   onOpenProfile,
   onOpenNodeSettings,
 }: {
-  open: boolean;
-  active: MobileView;
-  onClose: () => void;
-  onSelectView: (view: MobileView) => void;
   onReconnectLast: () => void;
   onHostExchange: () => void;
   onOpenProfile: () => void;
   onOpenNodeSettings: () => void;
 }) {
-  // Close on Escape for keyboard users.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  const [searchQuery, setSearchQuery] = useState("");
 
-  // Sheet is always mounted — we drive open/close with CSS classes so the
-  // exit animation plays without needing a render-gate effect. The root
-  // uses `concord-sheet-root` to delay visibility:hidden until after the
-  // slide-out finishes, so the closed state never intercepts taps.
   return (
-    <div
-      className={`fixed inset-0 z-40 md:hidden concord-sheet-root ${
-        open ? "concord-sheet-root-open pointer-events-auto" : "pointer-events-none"
-      }`}
-      aria-hidden={!open}
-    >
-      {/* Backdrop */}
-      <div
-        className={`absolute inset-0 bg-black/50 backdrop-blur-sm concord-sheet-backdrop ${
-          open ? "concord-sheet-backdrop-open" : ""
-        }`}
-        onClick={onClose}
-      />
-      {/* Sheet */}
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Dashboard"
-        className={`absolute left-0 right-0 bottom-0 safe-bottom glass-panel rounded-t-3xl border-t border-outline-variant/20 concord-sheet-panel ${
-          open ? "concord-sheet-panel-open" : ""
-        }`}
-      >
-        {/* Drag handle */}
-        <div className="flex justify-center pt-2 pb-1">
-          <div className="w-10 h-1 rounded-full bg-outline-variant/40" aria-hidden="true" />
-        </div>
+    <div className="h-full bg-surface-container-low overflow-y-auto overflow-x-hidden overscroll-y-auto p-4 flex flex-col">
+      <h3 className="text-xs font-label font-medium text-on-surface-variant uppercase tracking-widest px-1 mb-4">
+        Quick Actions
+      </h3>
 
-        <div className="px-4 pt-2 pb-4">
-          {/* Full labelled navigation */}
-          <div className="grid grid-cols-5 gap-1">
-            {MOBILE_NAV_ITEMS.map(({ key, icon, label }, i) => {
-              const isActive = active === key;
-              const isCenter = i === 2;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => onSelectView(key)}
-                  aria-label={label}
-                  aria-current={isActive ? "page" : undefined}
-                  className={`flex flex-col items-center justify-center gap-1 min-h-[60px] py-2 rounded-xl active:scale-95 transition-all duration-150 ${
-                    isActive
-                      ? "bg-surface-container-high text-on-surface"
-                      : "text-on-surface-variant hover:bg-surface-container-high/60 hover:text-on-surface"
-                  }`}
-                >
-                  <span
-                    className={`material-symbols-outlined ${
-                      isCenter && isActive ? "concord-mobile-nav-center-glow" : ""
-                    } ${isCenter ? "text-2xl" : "text-xl"}`}
-                    style={
-                      isActive
-                        ? { fontVariationSettings: '"FILL" 1, "wght" 600, "GRAD" 0, "opsz" 24' }
-                        : undefined
-                    }
-                  >
-                    {icon}
-                  </span>
-                  <span className="text-[10px] font-label font-medium tracking-wider">
-                    {label}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+      {/* Search / command bar */}
+      <div className="relative mb-4">
+        <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-lg">
+          search
+        </span>
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search servers, channels, users..."
+          className="w-full h-11 pl-10 pr-4 rounded-xl bg-surface-container-high border border-outline-variant/20 text-on-surface text-sm font-body placeholder:text-on-surface-variant/60 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
+        />
+      </div>
 
-          {/* Quick actions divider */}
-          <div className="mt-4 mb-3 flex items-center gap-2">
-            <div className="flex-1 h-px bg-outline-variant/20" />
-            <span className="text-[10px] font-label font-medium tracking-wider uppercase text-on-surface-variant">
-              Quick Actions
-            </span>
-            <div className="flex-1 h-px bg-outline-variant/20" />
-          </div>
-
-          {/* TASK 26: Four quick actions — each reachable in 2 taps
-              (pill row → quick-action button). */}
-          <div className="grid grid-cols-2 gap-2">
-            <QuickActionButton
-              icon="replay"
-              label="Reconnect last"
-              onClick={onReconnectLast}
-            />
-            <QuickActionButton
-              icon="add_call"
-              label="Host exchange"
-              onClick={onHostExchange}
-            />
-            <QuickActionButton
-              icon="person"
-              label="Profile"
-              onClick={onOpenProfile}
-            />
-            <QuickActionButton
-              icon="tune"
-              label="Node settings"
-              onClick={onOpenNodeSettings}
-            />
-          </div>
-
-          {/* Dismiss chrome */}
-          <button
-            type="button"
-            onClick={onClose}
-            className="mt-4 w-full min-h-[44px] rounded-xl border border-outline-variant/20 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/60 transition-colors text-sm font-label font-medium"
-          >
-            Close
-          </button>
-        </div>
+      {/* Action grid — Host exchange hidden on iOS (can't host) */}
+      <div className="grid grid-cols-2 gap-3">
+        <QuickActionButton icon="replay" label="Reconnect last" onClick={onReconnectLast} />
+        {!isNativeApp && (
+          <QuickActionButton icon="add_call" label="Host exchange" onClick={onHostExchange} />
+        )}
+        <QuickActionButton icon="person" label="Profile" onClick={onOpenProfile} />
+        <QuickActionButton icon="tune" label="Node settings" onClick={onOpenNodeSettings} />
       </div>
     </div>
   );
 }
+
+// QuickActionsSheet removed — replaced by ActionsPanel (full-screen view).
 
 /* ── Quick Action Button (TASK 26) ── */
 function QuickActionButton({
@@ -1038,6 +1314,149 @@ function QuickActionButton({
       </span>
       <span className="text-sm font-label font-medium min-w-0 truncate">{label}</span>
     </button>
+  );
+}
+
+/* ── Add Source Modal (INS-020) ──
+   Full-screen modal for connecting to a new Concord instance.
+   Step 1: Enter domain + invite token.
+   Step 2: Validate token against the instance.
+   Step 3: Show login/register form scoped to that instance.
+   Step 4: On success, add the source and close. */
+function AddSourceModal({
+  onClose,
+  onSourceAdded,
+}: {
+  onClose: () => void;
+  onSourceAdded: () => void;
+}) {
+  const [step, setStep] = useState<"connect" | "validating" | "login" | "error">("connect");
+  const [host, setHost] = useState("");
+  const [token, setToken] = useState("");
+  const [error, setError] = useState("");
+  const [, setDiscoveredName] = useState("");
+  const addSource = useSourcesStore((s) => s.addSource);
+
+  const handleConnect = async () => {
+    const trimmed = host.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    if (!trimmed) { setError("Enter a hostname"); return; }
+    if (!token.trim()) { setError("Enter an invite token"); return; }
+
+    setStep("validating");
+    setError("");
+
+    try {
+      // Step 1: Discover the instance via well-known
+      const { discoverHomeserver } = await import("../../api/wellKnown");
+      const config = await discoverHomeserver(trimmed);
+
+      // Step 2: Validate the invite token against the instance
+      const validateUrl = `${config.api_base}/invites/validate/${encodeURIComponent(token.trim())}`;
+      const validateRes = await fetch(validateUrl, { credentials: "omit" });
+      if (!validateRes.ok) throw new Error("Token validation request failed");
+      const validation = await validateRes.json();
+
+      if (!validation.valid) {
+        setStep("error");
+        setError("Invalid or expired invite token");
+        return;
+      }
+
+      setDiscoveredName(config.instance_name || trimmed);
+
+      // Step 3: Add the source in "connecting" state
+      addSource({
+        host: trimmed,
+        instanceName: config.instance_name,
+        inviteToken: token.trim(),
+        apiBase: config.api_base,
+        homeserverUrl: config.homeserver_url,
+        status: "connected",
+      });
+
+      onSourceAdded();
+    } catch (err) {
+      setStep("error");
+      setError(
+        err instanceof Error ? err.message : "Couldn't reach that host",
+      );
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-sm mx-4 bg-surface-container rounded-2xl border border-outline-variant/20 shadow-2xl p-6">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-lg font-headline font-semibold text-on-surface">
+            Add Source
+          </h2>
+          <button
+            onClick={onClose}
+            className="w-9 h-9 rounded-full flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
+          >
+            <span className="material-symbols-outlined text-xl">close</span>
+          </button>
+        </div>
+
+        {step === "validating" ? (
+          <div className="flex flex-col items-center gap-3 py-8">
+            <span className="inline-block w-6 h-6 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
+            <span className="text-sm text-on-surface-variant font-body">
+              Connecting to {host}...
+            </span>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-label font-medium text-on-surface-variant uppercase tracking-widest mb-1.5">
+                Hostname
+              </label>
+              <input
+                type="text"
+                value={host}
+                onChange={(e) => { setHost(e.target.value); setError(""); }}
+                placeholder="concorrd.com"
+                className="w-full px-4 py-3 bg-surface-container-high rounded-xl text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30 transition-all font-body"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-label font-medium text-on-surface-variant uppercase tracking-widest mb-1.5">
+                Invite Token
+              </label>
+              <input
+                type="text"
+                value={token}
+                onChange={(e) => { setToken(e.target.value); setError(""); }}
+                placeholder="Paste your invite token"
+                className="w-full px-4 py-3 bg-surface-container-high rounded-xl text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30 transition-all font-mono tracking-wider"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+            </div>
+
+            {error && (
+              <div className="px-3 py-2 rounded-lg bg-error/10 border border-error/20">
+                <p className="text-sm text-error font-body">{error}</p>
+              </div>
+            )}
+
+            <button
+              onClick={handleConnect}
+              disabled={!host.trim() || !token.trim()}
+              className="w-full py-3 font-headline font-semibold rounded-xl primary-glow text-on-primary hover:brightness-110 shadow-lg shadow-primary/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
+            >
+              Connect
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1097,13 +1516,16 @@ function TopBarIconButton({
   icon,
   label,
   onClick,
+  ref,
 }: {
   icon: string;
   label: string;
   onClick: () => void;
+  ref?: React.Ref<HTMLButtonElement>;
 }) {
   return (
     <button
+      ref={ref}
       onClick={onClick}
       aria-label={label}
       title={label}

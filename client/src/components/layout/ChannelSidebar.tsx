@@ -212,6 +212,15 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile, onChannelSe
     const isActive = activeChannelId === ch.matrix_room_id;
     const notifLevel = channelNotifications[ch.matrix_room_id];
     const isRenaming = renamingChannelId === ch.id;
+    // Voice channels signal "something is happening in here" via
+    // participant count, not Matrix unread count. Any participant
+    // (including the current user) counts — leaving the channel and
+    // seeing the dot reminds you that you're still connected in the
+    // other room. For text channels, activity is just unread > 0.
+    const voiceParticipantCount = isVoice
+      ? voiceParticipants.get(ch.matrix_room_id)?.length ?? 0
+      : 0;
+    const hasActivity = unread > 0 || voiceParticipantCount > 0;
     return (
       <SortableChannelRow
         key={ch.id}
@@ -220,6 +229,7 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile, onChannelSe
         isActive={isActive}
         isRenaming={isRenaming}
         unread={unread}
+        hasActivity={hasActivity}
         notifLevel={notifLevel}
         renameValue={renameValue}
         onRenameChange={setRenameValue}
@@ -498,6 +508,11 @@ interface SortableChannelRowProps {
   isActive: boolean;
   isRenaming: boolean;
   unread: number;
+  // Drives the small green "something is happening" dot next to
+  // the channel name. For text channels this is `unread > 0`; for
+  // voice channels it's "someone is currently in the room". The
+  // caller computes it so the row itself stays agnostic.
+  hasActivity: boolean;
   notifLevel: string | undefined;
   renameValue: string;
   onRenameChange: (v: string) => void;
@@ -521,6 +536,7 @@ function SortableChannelRow({
   isActive,
   isRenaming,
   unread,
+  hasActivity,
   notifLevel,
   renameValue,
   onRenameChange,
@@ -606,6 +622,21 @@ function SortableChannelRow({
           ) : (
             <span className="text-on-surface-variant flex-shrink-0">#</span>
           )}
+          {/* Activity dot: small green pip that indicates the channel
+              has new activity. Migrated here from the server tile
+              (which previously carried a "members online" green dot
+              that was visually noisy on every row). Suppressed on the
+              active channel so your current view doesn't flicker with
+              its own dot every time a message arrives. Text channels
+              light up on unread > 0, voice channels light up when
+              anyone is currently in the room — caller resolves which
+              and passes the unified `hasActivity` flag. */}
+          {hasActivity && !isActive && (
+            <span
+              className="w-2 h-2 rounded-full bg-secondary flex-shrink-0 node-pulse"
+              aria-label={isVoice ? "Users in voice channel" : "New activity"}
+            />
+          )}
           {/* Label lives in its own min-w-0 container so it can truncate
               without being pushed by the trailing action icons. Action
               icons sit in a sibling flex container outside this button. */}
@@ -620,8 +651,10 @@ function SortableChannelRow({
           >
             {channel.name}
           </span>
-          {/* Unread badge — renders on active channel too; read-receipts
-              still clear it via the normal path. */}
+          {/* Unread count badge — renders on active channel too; read
+              receipts still clear it via the normal path. Paired with
+              the green activity dot above: dot says "something
+              happened", number says "how much". */}
           {unread > 0 && (
             <span className="primary-glow text-on-primary text-xs font-bold rounded-full px-1.5 py-0.5 min-w-[1.25rem] text-center font-label flex-shrink-0">
               {unread > 99 ? "99+" : unread}
