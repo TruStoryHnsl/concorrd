@@ -77,6 +77,7 @@ export const useSourcesStore = create<SourcesState>()(
       addSource: (source) => {
         const id = generateSourceId();
         const full: ConcordSource = {
+          enabled: true,  // default before spread so caller can override
           ...source,
           id,
           addedAt: new Date().toISOString(),
@@ -171,6 +172,18 @@ export const useSourcesStore = create<SourcesState>()(
           : { getItem: () => null, setItem: () => {}, removeItem: () => {} },
       ),
       partialize: (state) => ({ sources: state.sources }),
+      version: 1,
+      migrate: (persisted: unknown, version: number) => {
+        const state = persisted as { sources?: ConcordSource[] };
+        if (version === 0 && state.sources) {
+          // v0 → v1: ensure every source has `enabled` defaulting to true.
+          state.sources = state.sources.map((s) => ({
+            ...s,
+            enabled: s.enabled ?? true,
+          }));
+        }
+        return state as SourcesState;
+      },
     },
   ),
 );

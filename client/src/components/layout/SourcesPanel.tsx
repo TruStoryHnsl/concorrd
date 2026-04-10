@@ -1,18 +1,13 @@
 /**
- * SourcesPanel — the leftmost panel on native mobile apps.
+ * SourcesPanel — the leftmost panel on native apps (INS-020).
  *
- * Displays connected Concord instances ("sources") and a + button to add
- * new ones. This panel only appears on native builds (Tauri iOS/Android/
- * desktop) — the web client skips it because its single instance IS the
- * source.
+ * Displays connected Concord instances ("sources") with toggle switches
+ * to enable/disable their visibility in the server column. Includes the
+ * Explore button for discovering new instances and an Add Source button.
  *
- * Each source tile shows:
- *  - Instance name (or hostname fallback)
- *  - Connection status dot (green=connected, yellow=connecting, red=error)
- *  - Number of servers available through this source
- *
- * The + button opens the AddSourceFlow (domain + invite token → validate
- * → login → connected).
+ * Sources are toggleable: tap the toggle to hide/show a source's servers
+ * in the server sidebar. The server column is a filtered view of enabled
+ * sources — toggle off = servers vanish instantly, toggle on = they return.
  */
 
 import { useSourcesStore, type ConcordSource } from "../../stores/sources";
@@ -20,14 +15,18 @@ import { useSourcesStore, type ConcordSource } from "../../stores/sources";
 export function SourcesPanel({
   onAddSource,
   onSourceSelect,
+  onExplore,
 }: {
   onAddSource: () => void;
   onSourceSelect?: (sourceId: string) => void;
+  onExplore?: () => void;
 }) {
   const sources = useSourcesStore((s) => s.sources);
+  const toggleSource = useSourcesStore((s) => s.toggleSource);
 
-  const statusDot = (status: ConcordSource["status"]) => {
-    switch (status) {
+  const statusDot = (source: ConcordSource) => {
+    if (!source.enabled) return "bg-outline-variant/40";
+    switch (source.status) {
       case "connected":
         return "bg-green-500";
       case "connecting":
@@ -68,29 +67,47 @@ export function SourcesPanel({
         // Connected sources list
         <div className="space-y-2 flex-1">
           {sources.map((source) => (
-            <button
+            <div
               key={source.id}
-              onClick={() => onSourceSelect?.(source.id)}
-              className="w-full flex items-center gap-3 px-3 py-3 rounded-xl bg-surface-container hover:bg-surface-container-high transition-colors text-left active:scale-[0.98]"
+              className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-all ${
+                source.enabled
+                  ? "bg-surface-container"
+                  : "bg-surface-container/40 opacity-60"
+              }`}
             >
               {/* Status dot */}
-              <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${statusDot(source.status)}`} />
+              <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${statusDot(source)}`} />
 
-              {/* Instance info */}
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-headline font-semibold text-on-surface truncate">
+              {/* Instance info — tap to select */}
+              <button
+                onClick={() => onSourceSelect?.(source.id)}
+                className="flex-1 min-w-0 text-left"
+              >
+                <div className={`text-sm font-headline font-semibold truncate ${
+                  source.enabled ? "text-on-surface" : "text-on-surface-variant"
+                }`}>
                   {source.instanceName || source.host}
                 </div>
                 <div className="text-xs text-on-surface-variant font-body truncate">
                   {source.host}
                 </div>
-              </div>
+              </button>
 
-              {/* Status badge */}
-              {source.status === "error" && (
-                <span className="text-xs text-error font-label">Error</span>
-              )}
-            </button>
+              {/* Toggle switch */}
+              <button
+                onClick={() => toggleSource(source.id)}
+                title={source.enabled ? "Hide servers" : "Show servers"}
+                className={`w-10 h-6 rounded-full flex-shrink-0 transition-colors relative ${
+                  source.enabled ? "bg-primary" : "bg-outline-variant/40"
+                }`}
+              >
+                <div
+                  className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${
+                    source.enabled ? "translate-x-[18px]" : "translate-x-0.5"
+                  }`}
+                />
+              </button>
+            </div>
           ))}
 
           {/* Add more sources */}
@@ -101,6 +118,17 @@ export function SourcesPanel({
             <span className="material-symbols-outlined text-lg">add</span>
             <span className="text-sm font-label font-medium">Add Source</span>
           </button>
+
+          {/* Explore — discover new instances */}
+          {onExplore && (
+            <button
+              onClick={onExplore}
+              className="w-full flex items-center gap-3 px-3 py-3 rounded-xl bg-surface-container hover:bg-surface-container-high transition-colors text-on-surface-variant hover:text-on-surface active:scale-[0.98] mt-2"
+            >
+              <span className="material-symbols-outlined text-lg">explore</span>
+              <span className="text-sm font-label font-medium">Explore</span>
+            </button>
+          )}
         </div>
       )}
     </div>
