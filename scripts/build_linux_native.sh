@@ -40,6 +40,22 @@ TUWUNEL_CACHE_DIR="${REPO_ROOT}/.build-cache/tuwunel"
 TUWUNEL_BUNDLED_DIR="${SRC_TAURI}/resources/tuwunel"
 TUWUNEL_BUNDLED_BIN="${TUWUNEL_BUNDLED_DIR}/tuwunel"
 
+# Pinned upstream mautrix-discord version bundled as the embedded
+# Discord-bridge child process. See PLAN.md INS-024 Wave 3 for the
+# sandboxed-child-process rationale. Bump via PR when upstream ships a
+# release fixing a Discord API drift or CVE; the Rust test suite
+# (`cargo test -p concord_app discord_bridge`) is the regression gate.
+MAUTRIX_DISCORD_VERSION="v0.7.2"
+# Linux amd64 tar.gz release asset from the mautrix-discord GitHub
+# releases page. Matches the Docker image (`dock.mau.dev/mautrix/discord:v0.7.2`)
+# shipped in Wave 2's docker-compose.yml so desktop + Docker paths
+# stay feature-parity.
+MAUTRIX_DISCORD_ASSET="mautrix-discord-amd64"
+MAUTRIX_DISCORD_URL="https://github.com/mautrix/discord/releases/download/${MAUTRIX_DISCORD_VERSION}/${MAUTRIX_DISCORD_ASSET}"
+MAUTRIX_DISCORD_CACHE_DIR="${REPO_ROOT}/.build-cache/mautrix-discord"
+MAUTRIX_DISCORD_BUNDLED_DIR="${SRC_TAURI}/resources/discord_bridge"
+MAUTRIX_DISCORD_BUNDLED_BIN="${MAUTRIX_DISCORD_BUNDLED_DIR}/mautrix-discord"
+
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
@@ -72,6 +88,25 @@ if ! pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
     warn "webkit2gtk-4.1 development files not detected. The build will fail without them."
     warn "  CachyOS/Arch: sudo pacman -S webkit2gtk-4.1 gtk3 librsvg patchelf"
     warn "  Debian/Ubuntu: sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf"
+fi
+
+# Bubblewrap is required for the sandboxed Discord bridge. Auto-install
+# if missing — it's a runtime dependency, not a build-time one, but we
+# want the build to produce a fully functional bundle.
+if ! command -v bwrap >/dev/null 2>&1; then
+    log "bubblewrap (bwrap) not found — installing..."
+    if command -v pacman >/dev/null 2>&1; then
+        sudo pacman -S --noconfirm --needed bubblewrap \
+            || die "failed to install bubblewrap via pacman" 1
+    elif command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get install -y bubblewrap \
+            || die "failed to install bubblewrap via apt" 1
+    else
+        die "bubblewrap (bwrap) is required for the Discord bridge sandbox. Install it manually." 1
+    fi
+    log "bubblewrap installed: $(bwrap --version 2>&1 || echo 'ok')"
+else
+    log "bwrap:       $(bwrap --version 2>&1 || echo 'present')"
 fi
 
 log "cargo:       $(cargo --version)"
@@ -173,6 +208,80 @@ stage_tuwunel_binary() {
 }
 
 stage_tuwunel_binary
+
+# ----------------------------------------------------------------------------
+# Fetch and stage upstream mautrix-discord binary for sandboxed Discord bridge
+# ----------------------------------------------------------------------------
+#
+# INS-024 Wave 3: the embedded servitude's DiscordBridge transport spawns
+# mautrix-discord as a bubblewrap-sandboxed child process. To make that
+# work from an installed AppImage/.deb without requiring the end user to
+# install mautrix-discord separately, we download the upstream release
+# binary and drop it at src-tauri/resources/discord_bridge/mautrix-discord.
+# `tauri.conf.json` declares resources/discord_bridge/** under
+# bundle.resources so the Tauri bundler picks it up.
+#
+# At runtime, `resolve_binary()` in
+# src-tauri/src/servitude/transport/discord_bridge.rs looks next to the
+# current executable and finds the binary via the same relative path.
+#
+# The bridge is a NON-CRITICAL transport — if this download fails (no
+# network, GitHub outage, etc.), the build still produces a usable
+# Concord bundle that runs without Discord support. The runtime's
+# `resolve_binary()` surfaces `BinaryNotFound` and the Discord bridge
+# lands in the degraded state.
+stage_mautrix_discord_binary() {
+    if [[ -f "${MAUTRIX_DISCORD_BUNDLED_BIN}" ]]; then
+        log "Bundled mautrix-discord already present: ${MAUTRIX_DISCORD_BUNDLED_BIN}"
+        return 0
+    fi
+
+    mkdir -p "${MAUTRIX_DISCORD_CACHE_DIR}"
+    mkdir -p "${MAUTRIX_DISCORD_BUNDLED_DIR}"
+
+    local cache_bin="${MAUTRIX_DISCORD_CACHE_DIR}/${MAUTRIX_DISCORD_ASSET}"
+
+    if [[ ! -f "${cache_bin}" ]]; then
+        log "Downloading upstream mautrix-discord ${MAUTRIX_DISCORD_VERSION}..."
+        log "  ${MAUTRIX_DISCORD_URL}"
+        if command -v curl >/dev/null 2>&1; then
+            if ! curl -fL --retry 3 -o "${cache_bin}" "${MAUTRIX_DISCORD_URL}"; then
+                warn "failed to download mautrix-discord — building without Discord bridge support"
+                warn "  (DiscordBridge transport will report BinaryNotFound at runtime)"
+                return 0
+            fi
+        elif command -v wget >/dev/null 2>&1; then
+            if ! wget -O "${cache_bin}" "${MAUTRIX_DISCORD_URL}"; then
+                warn "failed to download mautrix-discord — building without Discord bridge support"
+                return 0
+            fi
+        else
+            warn "neither curl nor wget available to fetch mautrix-discord — skipping"
+            return 0
+        fi
+    else
+        log "Using cached mautrix-discord: ${cache_bin}"
+    fi
+
+    cp "${cache_bin}" "${MAUTRIX_DISCORD_BUNDLED_BIN}"
+    chmod +x "${MAUTRIX_DISCORD_BUNDLED_BIN}"
+
+    log "Staged bundled mautrix-discord at ${MAUTRIX_DISCORD_BUNDLED_BIN}"
+    log "  size: $(stat -c%s "${MAUTRIX_DISCORD_BUNDLED_BIN}" 2>/dev/null || stat -f%z "${MAUTRIX_DISCORD_BUNDLED_BIN}") bytes"
+
+    # Non-blocking warning if bwrap is missing on the build host. The
+    # runtime still enforces the sandbox contract, but operators
+    # installing the .deb will get bubblewrap via the package's
+    # declared `depends` array in tauri.conf.json.
+    if ! command -v bwrap >/dev/null 2>&1; then
+        warn "bwrap (bubblewrap) not found on build host. This is fine for the build itself —"
+        warn "the .deb package declares bubblewrap as a runtime dep, and the AppImage refuses"
+        warn "to start the Discord bridge without bwrap at runtime. Install locally if you"
+        warn "want to smoke-test the sandboxed path: pacman -S bubblewrap OR apt install bubblewrap"
+    fi
+}
+
+stage_mautrix_discord_binary
 
 # ----------------------------------------------------------------------------
 # Build

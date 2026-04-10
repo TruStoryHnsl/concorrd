@@ -12,6 +12,21 @@ settingGroups:
     base:
       PRODUCT_NAME: Concord
       PRODUCT_BUNDLE_IDENTIFIER: com.concord.chat
+      # INS-020 signed-build settings — paid Apple Developer Program team.
+      # Team 827D323V6Z was originally a free personal team under
+      # colton.j.orr@gmail.com; paid enrollment upgraded it in-place on
+      # 2026-04-09 (same team ID, tier flipped free→paid portal-side).
+      # The cert in the keychain is `Apple Development: colton.j.orr@
+      # gmail.com (HRGZN35L9K)` — the `HRGZN35L9K` parenthetical is a
+      # per-certificate uniqueness tag, NOT a team ID. The real team ID
+      # is in the cert's OU field, which is 827D323V6Z.
+      #
+      # Managed signing: Xcode auto-fetches the provisioning profile on
+      # first build (cargo tauri ios build passes -allowProvisioningUpdates
+      # to xcodebuild automatically).
+      DEVELOPMENT_TEAM: 827D323V6Z
+      CODE_SIGN_STYLE: Automatic
+      CODE_SIGN_IDENTITY: "Apple Development"
 targetTemplates:
   app:
     type: application
@@ -30,7 +45,11 @@ targets:
     sources:
       - path: Sources
       - path: Assets.xcassets
-      - path: Externals
+      # Externals intentionally excluded — it only contains libapp.a
+      # build artifacts that the linker finds via LIBRARY_SEARCH_PATHS.
+      # Including it as a source causes xcodegen to add the .a files as
+      # Resources, which conflicts with the framework dependency and
+      # triggers "Multiple commands produce libapp.a".
       - path: concord_iOS
       - path: assets
         buildPhase: resources
@@ -75,9 +94,29 @@ targets:
     entitlements:
       path: concord_iOS/concord_iOS.entitlements
       properties:
-        # Multicast networking — required for mDNS / Bonjour peer discovery.
-        # Needs Apple Developer Program approval before it works in production.
-        com.apple.developer.networking.multicast: true
+        # Multicast networking — INTENTIONALLY DISABLED 2026-04-09.
+        # Even paid-tier Developer Program membership is NOT sufficient to
+        # use `com.apple.developer.networking.multicast`; Apple requires
+        # a separate human-review approval via
+        # https://developer.apple.com/contact/request/networking-multicast
+        # before the provisioning profile will include this entitlement.
+        # The Xcode-managed profile fetch fails the build if we declare
+        # the entitlement here without Apple having granted it.
+        #
+        # NSBonjourServices + NSLocalNetworkUsageDescription in the
+        # Info.plist still work without this entitlement — mDNS
+        # advertisement and discovery go through Apple's mDNSResponder
+        # daemon, which is entitled at the system level. What we lose is
+        # the ability to send/receive custom multicast UDP packets
+        # directly from our process, which matters only for
+        # non-Bonjour broadcast protocols.
+        #
+        # FOLLOW-UP: when Apple approves the multicast request, re-add
+        #     com.apple.developer.networking.multicast: true
+        # here, regenerate the Xcode project, and rebuild. ~30s change.
+        #
+        # com.apple.developer.networking.multicast: true  # awaiting Apple approval
+
         # Wi-Fi info — SSID visibility (foreground-only).
         com.apple.developer.networking.wifi-info: true
         # Application groups — empty for v0.1; populate when a widget /
@@ -93,6 +132,10 @@ targets:
     settings:
       base:
         ENABLE_BITCODE: false
+        # xcodegen regenerates the entitlements file from project.yml
+        # properties on each build, which Xcode detects as a mid-build
+        # modification. This flag tells Xcode to accept it.
+        CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: true
         ARCHS: [arm64]
         VALID_ARCHS: arm64
         # INS-020 — universal iPhone + iPad device family. Tauri's default

@@ -44,6 +44,8 @@ use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout, Instant};
 
+use serde_json;
+
 use crate::servitude::config::ServitudeConfig;
 
 use super::{Transport, TransportError};
@@ -89,6 +91,13 @@ pub struct MatrixFederationTransport {
     data_dir: Option<PathBuf>,
     /// Child process handle. `Some` while running, `None` while stopped.
     child: Option<Child>,
+    /// Paths to Application Service registration YAML files that
+    /// tuwunel should load on startup. Populated by the cross-transport
+    /// pre-pass in `ServitudeHandle::start` when a bridge transport
+    /// (e.g. `DiscordBridge`) is enabled alongside this transport.
+    /// Passed to tuwunel via the `CONDUWUIT_APPSERVICES` env var as a
+    /// JSON array of absolute paths.
+    appservice_registrations: Vec<PathBuf>,
 }
 
 impl MatrixFederationTransport {
@@ -105,6 +114,7 @@ impl MatrixFederationTransport {
             server_name: format!("localhost:{}", port),
             data_dir: None,
             child: None,
+            appservice_registrations: Vec::new(),
         }
     }
 
@@ -174,6 +184,25 @@ impl MatrixFederationTransport {
         ))
     }
 
+    /// Register an Application Service registration YAML file that
+    /// tuwunel should load on startup. Called by the cross-transport
+    /// pre-pass in `ServitudeHandle::start` before the transport's
+    /// own `start()` method runs.
+    ///
+    /// The path must be an absolute path to a valid registration YAML.
+    /// No validation is done here — tuwunel will reject malformed
+    /// registrations at startup and surface the error in its logs.
+    pub fn add_appservice_registration(&mut self, path: PathBuf) {
+        self.appservice_registrations.push(path);
+    }
+
+    /// Read-only accessor for the registered appservice paths. Used
+    /// by tests to verify the cross-transport pre-pass wired the
+    /// registration correctly.
+    pub fn appservice_registrations(&self) -> &[PathBuf] {
+        &self.appservice_registrations
+    }
+
     /// Build the env var map passed to the child tuwunel process.
     /// Mirrors the keys the production `docker-compose.yml` sets, minus
     /// federation-allowlist keys (those live in the runtime-swapped
@@ -181,7 +210,7 @@ impl MatrixFederationTransport {
     /// federation disabled by default).
     fn env_vars(&self, data_dir: &Path) -> Vec<(String, String)> {
         let db_path = data_dir.join("database");
-        vec![
+        let mut envs = vec![
             ("CONDUWUIT_SERVER_NAME".to_string(), self.server_name.clone()),
             (
                 "CONDUWUIT_DATABASE_PATH".to_string(),
@@ -214,7 +243,14 @@ impl MatrixFederationTransport {
             ),
             ("CONDUWUIT_LOG".to_string(), "info".to_string()),
             ("CONDUWUIT_TRUSTED_SERVERS".to_string(), "[]".to_string()),
-        ]
+        ];
+
+        // INS-024 Wave 5: appservice registrations are handled by
+        // register_appservices() which runs after tuwunel is reachable,
+        // not via env vars (tuwunel's admin_execute doesn't support the
+        // multiline body format needed for appservice register).
+
+        envs
     }
 
     /// Cheap TCP reachability probe against the tuwunel listen port.
@@ -259,6 +295,31 @@ impl MatrixFederationTransport {
         // Callers escalate straight to Child::kill.
         Ok(())
     }
+
+    /// Build the `--execute` argument for tuwunel that registers all
+    /// pending appservices at startup. Returns `None` if there are no
+    /// registrations or none of the files are readable.
+    fn build_execute_arg(&self) -> Option<String> {
+        if self.appservice_registrations.is_empty() {
+            return None;
+        }
+
+        let mut commands: Vec<String> = Vec::new();
+        for path in &self.appservice_registrations {
+            if let Ok(yaml_content) = std::fs::read_to_string(path) {
+                commands.push(format!(
+                    "appservices register\n```yaml\n{}\n```",
+                    yaml_content.trim()
+                ));
+            }
+        }
+
+        if commands.is_empty() {
+            None
+        } else {
+            Some(commands.join("\n\n"))
+        }
+    }
 }
 
 #[async_trait]
@@ -292,6 +353,15 @@ impl Transport for MatrixFederationTransport {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+
+        // Pass --execute to register appservices at startup.
+        if let Some(execute_arg) = self.build_execute_arg() {
+            cmd.arg("--execute").arg(&execute_arg);
+            log::info!(
+                target: "concord::servitude",
+                "tuwunel will execute appservice registration on startup"
+            );
+        }
 
         let child = cmd.spawn().map_err(|e| {
             TransportError::StartFailed(format!(
@@ -408,6 +478,18 @@ fn which_in_path(name: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::servitude::config::{ServitudeConfig, Transport as TransportVariant};
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate process env vars (`BIN_OVERRIDE_ENV`,
+    /// `PATH`, `XDG_DATA_HOME`). Cargo's default test runner uses
+    /// multiple threads within a single process, so concurrent
+    /// env-mutation tests race without this guard. Introduced
+    /// alongside INS-024 Wave 3 when the added discord_bridge test
+    /// suite made the pre-existing race-condition flake reproducible
+    /// on orrion. The mutex is local to this module; the
+    /// discord_bridge test module has its own identically-named
+    /// guard.
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
 
     fn config_on_port(port: i64) -> ServitudeConfig {
         ServitudeConfig {
@@ -471,6 +553,7 @@ mod tests {
 
     #[test]
     fn test_resolve_binary_honours_env_override() {
+        let _g = ENV_GUARD.lock().unwrap();
         // Point the override at ourselves — the current test binary is
         // guaranteed to be a file we can stat. The function only
         // validates `is_file`, not executability, so this is safe.
@@ -492,6 +575,7 @@ mod tests {
 
     #[test]
     fn test_resolve_binary_rejects_broken_override() {
+        let _g = ENV_GUARD.lock().unwrap();
         // Pointing at a path that does not exist must surface the
         // override failure explicitly — we don't want a silent
         // fallback to PATH when the user explicitly set the env var.
@@ -509,6 +593,8 @@ mod tests {
 
     #[test]
     fn test_resolve_data_dir_prefers_xdg_data_home() {
+        let _g = ENV_GUARD.lock().unwrap();
+        let saved = std::env::var_os("XDG_DATA_HOME");
         unsafe {
             std::env::set_var("XDG_DATA_HOME", "/tmp/fake-xdg-data");
         }
@@ -517,18 +603,21 @@ mod tests {
             d,
             PathBuf::from("/tmp/fake-xdg-data/concord/tuwunel")
         );
-        unsafe {
-            std::env::remove_var("XDG_DATA_HOME");
+        match saved {
+            Some(p) => unsafe { std::env::set_var("XDG_DATA_HOME", p) },
+            None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
         }
     }
 
     #[tokio::test]
     async fn test_start_fails_when_binary_missing() {
+        let _g = ENV_GUARD.lock().unwrap();
         // No env override, and we assume the test host has no
         // `tuwunel` on its PATH nor bundled next to the test binary.
         // If some dev host happens to have one installed, this test
         // will flake — but that's an expected quirk of testing
         // binary-discovery logic without a hermetic fs sandbox.
+        let saved_bin = std::env::var_os(BIN_OVERRIDE_ENV);
         unsafe {
             std::env::remove_var(BIN_OVERRIDE_ENV);
         }
@@ -551,6 +640,11 @@ mod tests {
         if let Some(p) = saved_path {
             unsafe {
                 std::env::set_var("PATH", p);
+            }
+        }
+        if let Some(b) = saved_bin {
+            unsafe {
+                std::env::set_var(BIN_OVERRIDE_ENV, b);
             }
         }
     }
@@ -577,8 +671,24 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_stop_sends_sigterm_to_running_child() {
+        // Hold ENV_GUARD so we don't race any concurrent env-mutating
+        // test that might clear PATH and break the sh spawn below.
+        // See the note on ENV_GUARD at the top of this module.
+        let _g = ENV_GUARD.lock().unwrap();
+
         use std::process::Stdio;
         use tokio::process::Command;
+
+        // Belt-and-suspenders: prefer an absolute path to sh so the
+        // test survives a concurrent PATH mutation racing in before
+        // the lock is acquired.
+        let sh_path = if std::path::Path::new("/bin/sh").exists() {
+            "/bin/sh"
+        } else if std::path::Path::new("/usr/bin/sh").exists() {
+            "/usr/bin/sh"
+        } else {
+            panic!("no sh found at /bin/sh or /usr/bin/sh on unix test host");
+        };
 
         let mut t = MatrixFederationTransport::from_config(&config_on_port(18768));
 
@@ -586,7 +696,7 @@ mod tests {
         // transport so we bypass the healthcheck wait loop. This is
         // the intended test hook — the public API is still the real
         // thing, we're just building a controlled child.
-        let child = Command::new("sh")
+        let child = Command::new(sh_path)
             .arg("-c")
             .arg("sleep 300")
             .stdin(Stdio::null())
@@ -607,5 +717,68 @@ mod tests {
         // Second stop returns NotRunning — lifecycle safety.
         let err = t.stop().await.expect_err("double-stop must fail");
         assert!(matches!(err, TransportError::NotRunning));
+    }
+
+    // -----------------------------------------------------------------
+    // INS-024 Wave 5 — appservice registration wiring tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_env_vars_omit_admin_execute_when_none_registered() {
+        let t = MatrixFederationTransport::from_config(&config_on_port(8765));
+        let tmp = std::env::temp_dir().join("concord-env-test-no-as");
+        let envs = t.env_vars(&tmp);
+        let keys: Vec<&str> = envs.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(
+            !keys.contains(&"CONDUWUIT_ADMIN_EXECUTE"),
+            "CONDUWUIT_ADMIN_EXECUTE must NOT be present when no \
+             registrations are added"
+        );
+    }
+
+    #[test]
+    fn test_env_vars_include_admin_execute_when_registered() {
+        // Write a temporary registration YAML so read_to_string succeeds.
+        let tmp_dir = std::env::temp_dir().join("concord-env-test-with-as");
+        let _ = std::fs::create_dir_all(&tmp_dir);
+        let reg_path = tmp_dir.join("registration.yaml");
+        std::fs::write(&reg_path, "id: test_bridge\nas_token: abc\nhs_token: def\n")
+            .expect("write test registration");
+
+        let mut t = MatrixFederationTransport::from_config(&config_on_port(8765));
+        t.add_appservice_registration(reg_path);
+
+        let envs = t.env_vars(&tmp_dir);
+        let keys: Vec<&str> = envs.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(
+            keys.contains(&"CONDUWUIT_ADMIN_EXECUTE"),
+            "CONDUWUIT_ADMIN_EXECUTE must be present after add_appservice_registration"
+        );
+
+        let value = envs
+            .iter()
+            .find(|(k, _)| k == "CONDUWUIT_ADMIN_EXECUTE")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        let parsed: Vec<String> = serde_json::from_str(value)
+            .expect("CONDUWUIT_ADMIN_EXECUTE must be valid JSON");
+        assert_eq!(parsed.len(), 1, "exactly one command expected");
+        assert!(
+            parsed[0].contains("appservice register"),
+            "command must contain 'appservice register'"
+        );
+        assert!(
+            parsed[0].contains("test_bridge"),
+            "command must contain registration content"
+        );
+    }
+
+    #[test]
+    fn test_appservice_registrations_accessor() {
+        let mut t = MatrixFederationTransport::from_config(&config_on_port(8765));
+        assert!(t.appservice_registrations().is_empty());
+        let p = PathBuf::from("/test/registration.yaml");
+        t.add_appservice_registration(p.clone());
+        assert_eq!(t.appservice_registrations(), &[p]);
     }
 }

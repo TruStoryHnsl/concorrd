@@ -46,7 +46,7 @@ interface SettingsState {
 
   // UI (not persisted)
   settingsOpen: boolean;
-  settingsTab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "about" | "admin";
+  settingsTab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation";
   serverSettingsId: string | null;
 
   // Actions
@@ -83,9 +83,9 @@ interface SettingsState {
    * dropped to keep persisted state well-formed.
    */
   setChatFontSize: (px: number) => void;
-  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "about" | "admin") => void;
+  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation") => void;
   closeSettings: () => void;
-  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "about" | "admin") => void;
+  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation") => void;
   openServerSettings: (serverId: string) => void;
   closeServerSettings: () => void;
   resetToDefaults: () => void;
@@ -203,7 +203,7 @@ export const useSettingsStore = create<SettingsState>()(
       closeSettings: () => set({ settingsOpen: false }),
       setSettingsTab: (tab) => set({ settingsTab: tab }),
       openServerSettings: (serverId) =>
-        set({ serverSettingsId: serverId, settingsOpen: false }),
+        set({ serverSettingsId: serverId, settingsOpen: true, settingsTab: "server-general" }),
       closeServerSettings: () => set({ serverSettingsId: null }),
       resetToDefaults: () => set({ ...defaults, userVolumes: {}, userMuted: {}, serverNotifications: {}, channelNotifications: {} }),
     }),

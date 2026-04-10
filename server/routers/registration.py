@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from collections import defaultdict, deque
 
@@ -103,8 +104,16 @@ async def register_user(
     """Register a new user account.
 
     If an invite_token is provided, also joins the user to that server.
-    If no invite_token, just creates the Matrix account.
+    If no invite_token, just creates the Matrix account (only when
+    OPEN_REGISTRATION=true — by default registration requires an invite).
     """
+    # Closed-registration gate: unless OPEN_REGISTRATION is explicitly
+    # enabled, every registration attempt must include a valid invite
+    # token. Login for existing accounts is unaffected (different endpoint).
+    open_reg = os.getenv("OPEN_REGISTRATION", "").lower() in ("true", "1", "yes")
+    if not open_reg and not body.invite_token:
+        raise HTTPException(403, "Registration requires an invite token")
+
     # Rate limit by real client IP (prefer Cf-Connecting-Ip from Cloudflare)
     client_ip = (
         request.headers.get("Cf-Connecting-Ip")

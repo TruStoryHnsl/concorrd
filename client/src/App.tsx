@@ -265,7 +265,7 @@ export default function App() {
 
   if (isLoading) {
     return (
-      <div className="h-screen bg-surface flex items-center justify-center mesh-background">
+      <div className="h-full bg-surface flex items-center justify-center mesh-background">
         <div className="flex flex-col items-center gap-3 relative z-10">
           <span className="inline-block w-6 h-6 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
           <span className="text-on-surface-variant text-sm font-body">Loading...</span>
@@ -276,7 +276,7 @@ export default function App() {
 
   // Authenticated content, optionally wrapped in LiveKitRoom
   const authenticatedContent = (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden">
       <div className="flex-1 min-h-0">
         <ChatLayout />
       </div>

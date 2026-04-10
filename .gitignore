@@ -4,6 +4,16 @@
 .env.production
 .env.*.local
 
+# INS-024 Discord bridge runtime secrets — template versions
+# (`config/discord-bridge.env.example` and
+# `config/mautrix-discord/config.yaml`) ARE committed. The real files
+# below hold bot tokens and AS registration tokens and must never be
+# committed. See `server/services/bridge_config.py` for the atomic
+# write path that generates registration.yaml on every "Enable" or
+# "Rotate" admin action.
+config/discord-bridge.env
+config/mautrix-discord/registration.yaml
+
 # Docker volume data
 data/
 

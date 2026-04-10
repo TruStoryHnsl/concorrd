@@ -21,6 +21,7 @@ log = "0.4"
 tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-store = "2"
+tauri-plugin-stronghold = { version = "2", features = ["kdf"] }
 # Servitude embedded module dependencies
 toml = "0.8"
 thiserror = "1.0"
@@ -35,6 +36,16 @@ thiserror = "1.0"
 tokio = { version = "1", features = ["process", "net", "time", "io-util", "sync", "macros", "rt-multi-thread"] }
 # Trait async support for the Transport trait.
 async-trait = "0.1"
+# Cryptographic random token generation for AS registration tokens.
+rand = "0.8"
+# Hex encoding for token strings.
+hex = "0.4"
+# Token redaction in log output (commercial-scope security requirement).
+regex = "1"
+# HTTP client for runtime binary download (mautrix-discord auto-fetch).
+reqwest = { version = "0.12", features = ["rustls-tls", "stream", "json"], default-features = false }
+# Async file IO for streaming downloads to disk.
+futures-util = "0.3"
 
 # Unix-only deps for servitude child-process management. `nix::sys::signal`
 # gives us SIGTERM for graceful shutdown — std::process::Child::kill uses

@@ -1,0 +1,10 @@
+[
+  {
+    "id": "worldview",
+    "name": "Worldview",
+    "url": "/ext/worldview/",
+    "icon": "public",
+    "description": "Interactive world map",
+    "enabled": true
+  }
+]

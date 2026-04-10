@@ -42,10 +42,13 @@
 
     # Concord-specific well-known (INS-027) — dynamic endpoint served
     # by the Concord API container. See Caddyfile (production) for the
-    # full rationale.
+    # full rationale. CORS wildcard (INS-020) kept in sync with prod.
     handle /.well-known/concord/* {
         reverse_proxy concord-api:8000 {
             header_up X-Forwarded-Proto {http.request.scheme}
+            header_down Access-Control-Allow-Origin "*"
+            header_down Access-Control-Allow-Methods "GET, OPTIONS"
+            header_down -Access-Control-Allow-Credentials
         }
     }
 

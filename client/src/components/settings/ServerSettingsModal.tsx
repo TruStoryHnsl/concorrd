@@ -21,10 +21,14 @@ import {
   toggleWebhook,
   searchUsers,
   sendDirectInvite,
+  createInvite,
+  listInvites,
+  getAuthCode,
   getBanSettings,
   updateBanSettings,
   updateMemberPermissions,
   type BanSettings,
+  type Invite,
 } from "../../api/concord";
 import type { ServerMember, ServerBan, ServerWhitelistEntry, Webhook, UserSearchResult } from "../../api/concord";
 
@@ -35,7 +39,10 @@ interface Props {
 }
 
 /**
- * Inline server settings panel — renders inside the main content pane.
+ * Legacy standalone server settings panel — redirects to the unified
+ * settings shell (INS-012). Kept as an export so any remaining direct
+ * references still compile; ChatLayout now routes through the unified
+ * SettingsPanel instead.
  */
 export function ServerSettingsPanel({ serverId }: Props) {
   const [tab, setTab] = useState<Tab>("general");
@@ -86,29 +93,56 @@ export function ServerSettingsPanel({ serverId }: Props) {
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto min-h-0 p-6 max-w-2xl">
-        {tab === "general" && (
-          <GeneralTab serverId={serverId} accessToken={accessToken} />
-        )}
-        {tab === "members" && (
-          <MembersTab serverId={serverId} accessToken={accessToken} isOwner={isOwner} />
-        )}
-        {tab === "invite" && (
-          <InviteUserTab serverId={serverId} accessToken={accessToken} />
-        )}
-        {tab === "bans" && (
-          <BansTab serverId={serverId} accessToken={accessToken} />
-        )}
-        {tab === "whitelist" && (
-          <WhitelistTab serverId={serverId} accessToken={accessToken} />
-        )}
-        {tab === "webhooks" && (
-          <WebhooksTab serverId={serverId} accessToken={accessToken} />
-        )}
-        {tab === "moderation" && (
-          <ModerationTab serverId={serverId} accessToken={accessToken} />
-        )}
+        <ServerSettingsContent serverId={serverId} activeTab={tab} />
       </div>
     </div>
+  );
+}
+
+/**
+ * INS-012: Server settings content renderer — used by the unified
+ * SettingsPanel to render server-scope tab content without its own
+ * tab bar. The parent (SettingsPanel) owns tab state via the store.
+ */
+export function ServerSettingsContent({
+  serverId,
+  activeTab,
+}: {
+  serverId: string;
+  activeTab: string;
+}) {
+  const server = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const userId = useAuthStore((s) => s.userId);
+
+  if (!server || !accessToken) return null;
+
+  const isOwner = server.owner_id === userId;
+
+  return (
+    <>
+      {activeTab === "general" && (
+        <GeneralTab serverId={serverId} accessToken={accessToken} />
+      )}
+      {activeTab === "members" && (
+        <MembersTab serverId={serverId} accessToken={accessToken} isOwner={isOwner} />
+      )}
+      {activeTab === "invite" && (
+        <InviteUserTab serverId={serverId} accessToken={accessToken} />
+      )}
+      {activeTab === "bans" && (
+        <BansTab serverId={serverId} accessToken={accessToken} />
+      )}
+      {activeTab === "whitelist" && (
+        <WhitelistTab serverId={serverId} accessToken={accessToken} />
+      )}
+      {activeTab === "webhooks" && (
+        <WebhooksTab serverId={serverId} accessToken={accessToken} />
+      )}
+      {activeTab === "moderation" && (
+        <ModerationTab serverId={serverId} accessToken={accessToken} />
+      )}
+    </>
   );
 }
 
@@ -1000,11 +1034,17 @@ function InviteUserTab({ serverId, accessToken }: { serverId: string; accessToke
   };
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-xl font-semibold text-on-surface">Invite User</h3>
-      <p className="text-xs text-on-surface-variant">
-        Search for registered users to invite directly to this server.
-      </p>
+    <div className="space-y-6">
+      {/* ── Shareable Invite Link ── */}
+      <InviteLinkSection serverId={serverId} accessToken={accessToken} />
+
+      {/* ── Direct Invite (search existing users) ── */}
+      <div>
+        <h3 className="text-lg font-semibold text-on-surface mb-1">Direct Invite</h3>
+        <p className="text-xs text-on-surface-variant mb-3">
+          Search for registered users to invite directly to this server.
+        </p>
+      </div>
 
       <input
         type="text"
@@ -1049,6 +1089,191 @@ function InviteUserTab({ serverId, accessToken }: { serverId: string; accessToke
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Quick Invite Section (INS-020) ──
+   Lets server members create a simple temporary passphrase that a
+   friend can use to join. Pick a word, tell your friend, it expires
+   in an hour. Simple and verbal-friendly. */
+function InviteLinkSection({
+  serverId,
+  accessToken,
+}: {
+  serverId: string;
+  accessToken: string;
+}) {
+  const [passphrase, setPassphrase] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [created, setCreated] = useState<string | null>(null);
+  const [invites, setInvites] = useState<Invite[]>([]);
+  const [authCode, setAuthCode] = useState("");
+  const [codeTtl, setCodeTtl] = useState(0);
+  const addToast = useToastStore((s) => s.addToast);
+
+  // Fetch and auto-refresh the rolling auth code
+  useEffect(() => {
+    let mounted = true;
+    const fetchCode = async () => {
+      try {
+        const result = await getAuthCode(serverId, accessToken);
+        if (mounted) {
+          setAuthCode(result.code);
+          setCodeTtl(result.ttl_seconds);
+        }
+      } catch { /* non-fatal */ }
+    };
+    fetchCode();
+    // Refresh every 30 seconds to keep the code + TTL fresh
+    const interval = setInterval(fetchCode, 30_000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, [serverId, accessToken]);
+
+  // Countdown timer for the TTL display
+  useEffect(() => {
+    if (codeTtl <= 0) return;
+    const timer = setInterval(() => setCodeTtl((t) => Math.max(0, t - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [codeTtl > 0]);
+
+  useEffect(() => {
+    listInvites(serverId, accessToken)
+      .then(setInvites)
+      .catch(() => {});
+  }, [serverId, accessToken]);
+
+  const handleGenerate = async () => {
+    setCreating(true);
+    try {
+      // No passphrase — server generates a random short token
+      const invite = await createInvite(serverId, accessToken, {
+        max_uses: 1,
+        expires_in_hours: 1,
+      });
+      setCreated(invite.token);
+      setInvites((prev) => [invite, ...prev]);
+      addToast("Token generated — share it with your friend", "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to generate token");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleCreate = async () => {
+    const phrase = passphrase.trim();
+    if (phrase.length < 3) {
+      addToast("Passphrase must be at least 3 characters");
+      return;
+    }
+    setCreating(true);
+    try {
+      const invite = await createInvite(serverId, accessToken, {
+        passphrase: phrase,
+        max_uses: 1,
+        expires_in_hours: 1,
+      });
+      setCreated(invite.token);
+      setInvites((prev) => [invite, ...prev]);
+      setPassphrase("");
+      addToast("Invite created — tell your friend the passphrase", "success");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to create invite";
+      addToast(msg.includes("409") ? "That passphrase is already in use" : msg);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const activeInvites = invites.filter((inv) => inv.is_valid !== false);
+
+  return (
+    <div>
+      <h3 className="text-lg font-semibold text-on-surface mb-1">Quick Invite</h3>
+      {/* Rolling auth code display */}
+      {authCode && (
+        <div className="mb-4 px-4 py-3 rounded-xl bg-surface-container-high border border-outline-variant/20">
+          <p className="text-xs text-on-surface-variant font-label uppercase tracking-wider mb-2">
+            Server Auth Code
+          </p>
+          <div className="flex items-center justify-between">
+            <span className="text-2xl font-mono font-bold text-on-surface tracking-[0.3em]">
+              {authCode}
+            </span>
+            <span className="text-xs text-on-surface-variant font-mono">
+              {Math.floor(codeTtl / 60)}:{String(codeTtl % 60).padStart(2, "0")}
+            </span>
+          </div>
+          <p className="text-[10px] text-on-surface-variant mt-1">
+            Share this code with your friend — they'll need it along with an invite token to join.
+          </p>
+        </div>
+      )}
+
+      <p className="text-xs text-on-surface-variant mb-3">
+        Generate a token or pick a custom passphrase. Expires in 1 hour, single use.
+      </p>
+
+      {/* One-tap generate button */}
+      <button
+        onClick={handleGenerate}
+        disabled={creating}
+        className="w-full py-2.5 rounded-xl primary-glow text-on-primary font-headline font-semibold hover:brightness-110 shadow-lg shadow-primary/20 transition-all disabled:opacity-40 active:scale-[0.98] mb-3"
+      >
+        {creating ? "..." : "Generate Token"}
+      </button>
+
+      {/* Or custom passphrase */}
+      <p className="text-xs text-on-surface-variant mb-1.5">Or choose a custom passphrase:</p>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={passphrase}
+          onChange={(e) => { setPassphrase(e.target.value); setCreated(null); }}
+          placeholder="e.g. pizza123"
+          className="flex-1 px-3 py-2.5 bg-surface-container border border-outline-variant/20 rounded-xl text-on-surface text-sm font-mono placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+        />
+        <button
+          onClick={handleCreate}
+          disabled={creating || passphrase.trim().length < 3}
+          className="px-4 py-2.5 rounded-xl primary-glow text-on-primary font-headline font-semibold hover:brightness-110 shadow-lg shadow-primary/20 transition-all disabled:opacity-40 active:scale-[0.98] flex-shrink-0"
+        >
+          {creating ? "..." : "Create"}
+        </button>
+      </div>
+
+      {created && (
+        <div className="mt-2 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20">
+          <p className="text-sm text-green-400 font-body">
+            Tell your friend: <strong className="font-mono">{created}</strong>
+            <span className="text-xs text-on-surface-variant ml-2">(expires in 1 hour)</span>
+          </p>
+        </div>
+      )}
+
+      {activeInvites.length > 0 && (
+        <div className="mt-4 space-y-1">
+          <p className="text-xs text-on-surface-variant font-label uppercase tracking-wider mb-1">
+            Active invites
+          </p>
+          {activeInvites.map((inv) => (
+            <div
+              key={inv.id}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-container text-xs"
+            >
+              <code className="flex-1 text-on-surface font-mono truncate">{inv.token}</code>
+              <span className="text-on-surface-variant whitespace-nowrap">
+                {inv.permanent ? "∞" : `${inv.use_count}/${inv.max_uses}`}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>

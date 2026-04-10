@@ -394,3 +394,269 @@ Before marking the bridge-docs task complete, confirm:
 - Puppetting mode requires each Concord user to individually log into
   Discord via the bridge bot. Whether to force that on or keep the simpler
   relay-bot mode as the default is a UX decision for the first deployment.
+
+## 11. Desktop Mode (Embedded Bridge)
+
+INS-024 Waves 3–5 added a desktop-mode deployment path: the bridge runs as
+a `bubblewrap`-sandboxed child process of the Concord Tauri desktop app, not
+as a Docker container. This section documents the desktop-mode architecture.
+
+### 11.1 Architecture overview
+
+In desktop mode, the Concord Tauri application manages the full bridge
+lifecycle:
+
+1. An embedded tuwunel Matrix homeserver runs as a child process
+   (`MatrixFederationTransport`).
+2. The mautrix-discord bridge runs as a second child process
+   (`DiscordBridgeTransport`) wrapped in `bubblewrap` (`bwrap`) for sandbox
+   isolation.
+3. The bridge connects to tuwunel over the loopback network
+   (`127.0.0.1:<port>`) using the Application Service registration.
+4. The cross-transport pre-pass in `ServitudeHandle::start` wires the
+   appservice registration path into tuwunel via `CONDUWUIT_APPSERVICES`
+   before either process starts.
+
+### 11.2 Binary discovery
+
+The mautrix-discord binary is located using the same discovery order as the
+tuwunel binary:
+
+1. `MAUTRIX_DISCORD_BIN` environment variable (dev override)
+2. `<current_exe_dir>/resources/discord_bridge/mautrix-discord` (bundled)
+3. `<current_exe_dir>/mautrix-discord` (sibling binary)
+4. `PATH` lookup (last resort)
+
+### 11.3 Sandbox boundary (bubblewrap)
+
+The bridge runs inside a `bubblewrap` namespace jail with the following
+configuration:
+
+| Flag | Purpose |
+|------|---------|
+| `--unshare-user` | Separate user namespace (no uid mapping to host) |
+| `--unshare-pid` | Separate PID namespace |
+| `--unshare-ipc` | Separate IPC namespace |
+| `--unshare-uts` | Separate UTS namespace |
+| `--unshare-cgroup` | Separate cgroup namespace |
+| `--clearenv` | Wipe all host environment variables |
+| `--cap-drop ALL` | Drop all Linux capabilities |
+| `--die-with-parent` | SIGKILL the bridge if Concord exits |
+| `--new-session` | Separate session (no terminal control) |
+| `--share-net` | **Required** — bridge needs loopback + Discord gateway |
+
+Read-only mounts (whitelist):
+
+- `/usr` → `/usr`
+- `/lib` → `/lib`
+- `/lib64` → `/lib64`
+- `/etc/ssl` → `/etc/ssl`
+- `/etc/resolv.conf` → `/etc/resolv.conf`
+- `/etc/ca-certificates` → `/etc/ca-certificates`
+- `<host mautrix-discord binary>` → `/usr/local/bin/mautrix-discord`
+
+Single read-write mount:
+
+- `<bridge data dir>` → `/data`
+
+**No `/home` access.** The bridge cannot read, write, or traverse any path
+under `/home`. This is enforced by the whitelist-only mount set and verified
+by automated tests (`test_build_sandboxed_argv_does_not_leak_host_home`,
+`test_sandbox_blocks_home_read`).
+
+If `bwrap` is not installed, the bridge **refuses to start**. There is no
+silent unsandboxed fallback — this is a commercial-scope hard requirement.
+
+### 11.4 Token storage
+
+- **Discord bot token**: stored via `tauri-plugin-stronghold` (argon2 KDF)
+  on the frontend side, written to `config.yaml` (0600 permissions) in the
+  bridge data directory when the user configures the bridge.
+- **AS/HS tokens**: generated as 32-byte cryptographically random hex strings
+  by the Rust backend. Written to both `config.yaml` and `registration.yaml`
+  (0600 permissions).
+- **Discord user token** (puppeting mode): flows directly from Discord to
+  the bridge process via QR code login. The Concord app never sees or stores
+  this token. It lives in the bridge's SQLite database inside the sandboxed
+  data directory.
+
+### 11.5 Data directory layout
+
+`$XDG_DATA_HOME/concord/discord-bridge/` (default:
+`~/.local/share/concord/discord-bridge/`):
+
+```
+discord-bridge/
+  config.yaml           — bridge configuration (0600)
+  registration.yaml     — AS registration for tuwunel (0600)
+  mautrix-discord.db    — bridge SQLite state (mautrix-owned)
+```
+
+The directory itself is created with mode 0700.
+
+### 11.6 BridgesTab UI
+
+The desktop app includes a 5-step setup walkthrough in
+`Settings > Bridges > Discord Bridge`:
+
+1. **Create Discord Application** — link to developer portal
+2. **Enable Required Intents** — Server Members + Message Content
+3. **Paste Bot Token** — securely stored, never logged
+4. **Invite Bot to Server** — OAuth2 URL generation guide
+5. **Enable Bridge** — toggle in the UI, persisted to settings store
+
+User-mode (puppeting) is available via a separate section gated behind
+`DiscordTosModal` — the user must check a consent checkbox and the acceptance
+timestamp is recorded as an audit trail.
+
+### 11.7 Non-critical transport behavior
+
+The Discord bridge is a **non-critical** transport. If it fails to start or
+crashes at runtime:
+
+- The servitude handle stays in `Running` state.
+- The failure is recorded in `ServitudeHandle::degraded_transports()`.
+- The UI shows "Bridge degraded" with the failure reason.
+- All other transports (including tuwunel) continue operating normally.
+- Bridged Matrix rooms continue to relay among their Matrix-side
+  participants; only the Discord relay is paused.
+
+## 12. Docker vs Desktop Comparison
+
+| Aspect | Docker Mode | Desktop Mode |
+|--------|------------|--------------|
+| Sandbox | Docker container isolation | bubblewrap (bwrap) Linux namespaces |
+| Binary source | `dock.mau.dev/mautrix/discord:<tag>` | Bundled in Tauri resources |
+| Token storage | `config/discord-bridge.env` (host file, gitignored) | Stronghold vault (encrypted on disk) |
+| AS registration | Shared Docker volume mount | Generated in `$XDG_DATA_HOME/concord/discord-bridge/` |
+| tuwunel connection | `http://tuwunel:8008` (Docker internal DNS) | `http://127.0.0.1:<port>` (loopback) |
+| Network isolation | Docker bridge network, no host port exposed | bwrap `--share-net` (loopback + egress only) |
+| Lifecycle management | `docker compose up/down` | Servitude transport start/stop via Tauri commands |
+| Blast radius | Container crash/restart, other containers unaffected | Non-critical transport → `degraded` state, tuwunel unaffected |
+| Configuration UI | Manual YAML editing + env file | BridgesTab walkthrough in Settings |
+| OS support | Any Docker-capable host | **Linux only** (bwrap dependency) |
+| Bridge state persistence | Docker named volume | `$XDG_DATA_HOME` directory |
+
+## 13. Threat Model — Credential Containment
+
+This section documents which processes have access to which secrets in both
+deployment modes. The design principle is **minimum privilege**: each process
+sees only the credentials it needs to function.
+
+### 13.1 Discord bot token
+
+| Property | Value |
+|----------|-------|
+| Who sees it | mautrix-discord process only |
+| Storage | `config.yaml` (0600) in bridge data dir |
+| Passed to tuwunel? | **No** |
+| Passed to concord-api? | **No** |
+| Appears in logs? | **No** — enforced by `redact_for_logging()` |
+| Rotation | User enters new token in BridgesTab (desktop) or edits env file (Docker) |
+
+### 13.2 AS token / HS token
+
+| Property | Value |
+|----------|-------|
+| Who sees it | tuwunel + mautrix-discord (shared secret for AS authentication) |
+| Storage | `registration.yaml` (0600) + `config.yaml` (0600) |
+| tuwunel reads from | `CONDUWUIT_APPSERVICES` env var → registration YAML path |
+| Bridge reads from | `config.yaml` and `-r` flag inside sandbox |
+| Appears in logs? | **No** — enforced by `redact_for_logging()` (Rust) and `redact_for_logging()` (Python) |
+| Rotation | Regenerate registration → restart both tuwunel and bridge |
+
+### 13.3 Discord user token (puppeting mode)
+
+| Property | Value |
+|----------|-------|
+| Who sees it | mautrix-discord process only |
+| How obtained | QR code login flow inside the bridge |
+| Storage | Bridge's SQLite database (`mautrix-discord.db`) inside sandbox |
+| Concord app sees it? | **No** — the token flows Discord → bridge, never through Concord |
+| Rotation | User re-authenticates via the bridge bot |
+
+### 13.4 Stronghold vault
+
+The Stronghold vault is an encrypted on-disk store managed by
+`tauri-plugin-stronghold` with argon2 KDF. It stores the bot token for the
+BridgesTab UI's "has token been set" check. The vault is a secondary store
+— the primary copy of the bot token is `config.yaml`. The vault is local to
+the desktop app and is not accessible to tuwunel or the bridge process.
+
+## 14. Runbook Addendum — Desktop Mode
+
+### 14.1 tuwunel AS hot-reload
+
+**Not supported.** Tuwunel (conduwuit) loads Application Service registrations
+at startup only. After any of the following changes, the servitude must be
+stopped and restarted:
+
+- AS token rotation (regenerating `registration.yaml`)
+- Changing the bridge's namespace regexes
+- Adding or removing a bridge
+
+A restart causes a **~5 second Matrix federation blip** while tuwunel
+reinitializes its RocksDB state and re-registers the AS namespaces.
+
+### 14.2 Token rotation (desktop mode)
+
+1. User opens `Settings > Bridges > Discord Bridge`.
+2. User generates a new token in the Discord developer portal (this
+   invalidates the old token on Discord's side immediately).
+3. User pastes the new token in the BridgesTab token input.
+4. `config.yaml` and `registration.yaml` are rewritten with the new token
+   and fresh AS/HS tokens.
+5. User must stop and restart the servitude via `Settings > Node Hosting`
+   (stop → start) for tuwunel to pick up the new registration.
+
+### 14.3 Bundle-size impact
+
+| Component | Approximate size |
+|-----------|-----------------|
+| mautrix-discord Go binary (static) | ~15–20 MB |
+| tuwunel binary | ~25–30 MB |
+| Concord Tauri app (without bridges) | ~40–45 MB |
+| **Total AppImage target** | **~90 MB** |
+
+The mautrix-discord binary is statically compiled (Go produces fully static
+binaries by default). No Go runtime dependencies are needed inside the
+sandbox.
+
+### 14.4 Debugging the desktop bridge
+
+1. Check the servitude status in `Settings > Node Hosting`. If the Discord
+   bridge shows as "degraded", the failure reason is displayed.
+2. Check the Concord app logs for `concord::bridge` log entries.
+3. Verify `bwrap` is installed: `which bwrap` — if missing, the bridge
+   refuses to start with an actionable error message.
+4. Verify the mautrix-discord binary is bundled: check for the file at
+   `<app_dir>/resources/discord_bridge/mautrix-discord`.
+5. Check `$XDG_DATA_HOME/concord/discord-bridge/config.yaml` for correct
+   bot token and server address.
+
+## 15. Dependency License Audit (Refreshed INS-024 Wave 5)
+
+### mautrix-discord
+
+- **License**: AGPLv3
+- **Version**: upstream `dock.mau.dev/mautrix/discord` (Docker) / Go binary
+  (desktop)
+- **Status**: No version change since initial audit (section 3). Analysis
+  remains valid.
+- **Key finding**: AGPLv3 obligations apply only to the bridge process itself,
+  which is process-isolated from Concord's own codebase. No linking, no code
+  commingling. Operators who enable the bridge are pulling/running upstream
+  AGPLv3 software. See section 3 for the full analysis.
+
+### bubblewrap (bwrap)
+
+- **License**: GPLv2 (LGPLv2+ for the library portion)
+- **Distribution**: System package — NOT bundled with Concord. Users install
+  it via their package manager (`apt install bubblewrap`, `pacman -S
+  bubblewrap`).
+- **Implication**: No distribution obligation for Concord. The GPLv2
+  obligations rest with the system package distributors (Debian, Arch, etc.),
+  not with Concord.
+- **Desktop-mode dependency**: bubblewrap is a hard requirement for the
+  desktop bridge. Without it, the bridge refuses to start. This is documented
+  in the error message and in section 11.3.

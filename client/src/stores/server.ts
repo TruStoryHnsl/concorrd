@@ -223,7 +223,19 @@ export const useServerStore = create<ServerState>((set, get) => ({
       if (room.getMyMembership() !== "join") continue;
       if (managed.has(room.roomId)) continue;
       if (room.getDMInviter?.()) continue;
-      if (localDomain && room.roomId.endsWith(`:${localDomain}`)) continue;
+      if (localDomain && room.roomId.endsWith(`:${localDomain}`)) {
+        // Local-domain rooms are normally filtered out (they're either
+        // Concord-managed or orphans from deleted servers). BUT bridge-
+        // created rooms (Discord guilds via mautrix-discord) also live
+        // on the local domain — they're Matrix rooms created by the
+        // bridge process on the embedded homeserver. Detect them by
+        // checking for space membership: bridge guilds are spaces, and
+        // bridge channels declare a space parent.
+        const isSpace = room.getType?.() === "m.space";
+        const hasSpaceParent =
+          (room.currentState?.getStateEvents("m.space.parent") ?? []).length > 0;
+        if (!isSpace && !hasSpaceParent) continue;
+      }
       joinedFederated.push(room);
     }
 
@@ -433,16 +445,24 @@ export const useServerStore = create<ServerState>((set, get) => ({
         name = colonIdx >= 0 ? parentId.slice(colonIdx + 1) : parentId;
       }
 
+      // Detect Discord bridge: local-domain spaces are bridge-created
+      // (Concord itself doesn't use Matrix spaces — it uses the API).
+      // Currently Discord is the only bridge, so local-domain space =
+      // Discord guild. Refine this if more bridges are added.
+      const isLocalSpace =
+        localDomain && parentId.endsWith(`:${localDomain}`);
+
       synthetic.push({
         id: `${FEDERATED_SERVER_ID_PREFIX}${parentId}`,
         name,
         icon_url: null,
         owner_id: userId,
         visibility: "public",
-        abbreviation: name.charAt(0).toUpperCase() || "#",
+        abbreviation: isLocalSpace ? "D" : name.charAt(0).toUpperCase() || "#",
         media_uploads_enabled: false,
         channels,
         federated: true,
+        ...(isLocalSpace && { bridgeType: "discord" as const }),
       });
     }
 
@@ -581,6 +601,13 @@ export const useServerStore = create<ServerState>((set, get) => ({
       // AND lives on the LOCAL homeserver. Federated rooms live on
       // other homeservers and must NOT be leaved by this pass.
       if (!room.roomId.endsWith(`:${localDomain}`)) continue;
+      // Bridge rooms (spaces and their children) live on the local
+      // domain but must NOT be cleaned up — they're managed by the
+      // bridge, not Concord. Skip them.
+      const isSpace = room.getType?.() === "m.space";
+      const hasSpaceParent =
+        (room.currentState?.getStateEvents("m.space.parent") ?? []).length > 0;
+      if (isSpace || hasSpaceParent) continue;
       toLeave.push(room.roomId);
     }
 

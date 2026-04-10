@@ -29,6 +29,12 @@ export interface Server {
    * non-local rooms with a distinct color.
    */
   federated?: boolean;
+  /**
+   * Client-only marker for bridge-created servers. Set during
+   * `hydrateFederatedRooms` when the synthetic server wraps rooms
+   * created by a bridge (e.g., Discord guilds via mautrix-discord).
+   */
+  bridgeType?: "discord";
 }
 
 export interface Invite {
@@ -132,6 +138,18 @@ async function apiFetch<T>(
   return resp.json();
 }
 
+export interface ServerExtension {
+  id: string;
+  name: string;
+  url: string;
+  icon: string;
+  description: string;
+}
+
+export async function listExtensions(accessToken: string): Promise<ServerExtension[]> {
+  return apiFetch("/extensions", {}, accessToken);
+}
+
 export async function listServers(accessToken: string): Promise<Server[]> {
   return apiFetch("/servers", {}, accessToken);
 }
@@ -164,7 +182,7 @@ export async function createChannel(
 export async function createInvite(
   serverId: string,
   accessToken: string,
-  options?: { permanent?: boolean; expires_in_hours?: number; max_uses?: number },
+  options?: { passphrase?: string; permanent?: boolean; expires_in_hours?: number; max_uses?: number },
 ): Promise<Invite> {
   return apiFetch(
     "/invites",
@@ -177,6 +195,20 @@ export async function createInvite(
     },
     accessToken,
   );
+}
+
+export async function getAuthCode(
+  serverId: string,
+  accessToken: string,
+): Promise<{ code: string; ttl_seconds: number; server_id: string }> {
+  return apiFetch(`/invites/auth-code/${serverId}`, {}, accessToken);
+}
+
+export async function listInvites(
+  serverId: string,
+  accessToken: string,
+): Promise<Invite[]> {
+  return apiFetch(`/invites/${serverId}`, {}, accessToken);
 }
 
 export async function validateInvite(token: string): Promise<InviteValidation> {

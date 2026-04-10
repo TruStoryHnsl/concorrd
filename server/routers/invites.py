@@ -14,14 +14,20 @@ from models import InviteToken, Server, ServerMember, ServerBan, Channel
 from routers.servers import get_user_id, get_access_token
 from services.matrix_admin import join_room
 from services.email import send_invite_email, is_configured as email_configured
+from services.auth_code import generate_auth_code, validate_auth_code, seconds_until_rotation
 
 router = APIRouter(prefix="/api/invites", tags=["invites"])
 
 
 class InviteCreate(BaseModel):
     server_id: str
-    max_uses: int = Field(default=10, ge=1, le=1000)
-    expires_in_hours: int = Field(default=168, ge=1, le=8760)  # max 1 year
+    # Custom passphrase — if provided, used as the token instead of a
+    # random string. Lets users pick simple passwords like "pizza123"
+    # to tell a friend verbally. If omitted, a secure random token is
+    # generated (for shareable links).
+    passphrase: str | None = Field(default=None, min_length=3, max_length=64)
+    max_uses: int = Field(default=1, ge=1, le=1000)
+    expires_in_hours: int = Field(default=1, ge=1, le=8760)  # default 1 hour
     permanent: bool = False
 
 
@@ -58,6 +64,14 @@ async def create_invite(
     if not server:
         raise HTTPException(404, "Server not found")
 
+    # If user provided a custom passphrase, check it's not already in use
+    if body.passphrase:
+        existing = (await db.execute(
+            select(InviteToken).where(InviteToken.token == body.passphrase)
+        )).scalar_one_or_none()
+        if existing and existing.is_valid:
+            raise HTTPException(409, "That passphrase is already in use")
+
     from datetime import timedelta
     invite = InviteToken(
         server_id=body.server_id,
@@ -66,6 +80,9 @@ async def create_invite(
         permanent=body.permanent,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=body.expires_in_hours),
     )
+    # Override the default random token with the custom passphrase
+    if body.passphrase:
+        invite.token = body.passphrase
     db.add(invite)
     await db.commit()
     await db.refresh(invite)
@@ -104,6 +121,85 @@ async def validate_invite(
         server_name=invite.server.name,
         server_id=invite.server_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Rolling auth codes (INS-020)
+# ---------------------------------------------------------------------------
+
+@router.get("/auth-code/{server_id}")
+async def get_auth_code(
+    server_id: str,
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the current rolling auth code for a server. Members only.
+
+    Returns the 6-char alphabetic code + seconds until next rotation.
+    All members see the same code at the same time.
+    """
+    await require_server_member(server_id, user_id, db)
+
+    server = await db.get(Server, server_id)
+    if not server:
+        raise HTTPException(404, "Server not found")
+
+    # Lazy-init the secret for servers created before auth codes existed
+    if not server.auth_code_secret:
+        import secrets as _secrets
+        server.auth_code_secret = _secrets.token_hex(32)
+        await db.commit()
+        await db.refresh(server)
+
+    code = generate_auth_code(server.auth_code_secret)
+    ttl = seconds_until_rotation()
+
+    return {
+        "code": code,
+        "ttl_seconds": ttl,
+        "server_id": server_id,
+    }
+
+
+@router.post("/validate-with-code/{token}")
+async def validate_invite_with_code(
+    token: str,
+    auth_code: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Validate an invite token + rolling auth code. Public endpoint.
+
+    Both must be valid for the response to return valid=true.
+    Used by native apps connecting via the Add Source flow.
+    """
+    result = await db.execute(
+        select(InviteToken)
+        .options(selectinload(InviteToken.server))
+        .where(InviteToken.token == token)
+    )
+    invite = result.scalar_one_or_none()
+
+    if not invite or not invite.is_valid:
+        return {"valid": False, "reason": "invalid_token"}
+
+    server = invite.server
+    if not server:
+        return {"valid": False, "reason": "server_not_found"}
+
+    # Lazy-init
+    if not server.auth_code_secret:
+        import secrets as _secrets
+        server.auth_code_secret = _secrets.token_hex(32)
+        await db.commit()
+
+    if not validate_auth_code(server.auth_code_secret, auth_code):
+        return {"valid": False, "reason": "invalid_code"}
+
+    return {
+        "valid": True,
+        "server_name": server.name,
+        "server_id": server.id,
+    }
 
 
 @router.get("/{server_id}", response_model=list[InviteOut])

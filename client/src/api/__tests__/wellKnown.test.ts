@@ -19,37 +19,34 @@ import {
  * class keeps the setup light; the helper only calls `.status`,
  * `.ok`, and `.json()`.
  */
+const jsonHeaders = { get: (k: string) => k === "content-type" ? "application/json" : null };
+
 function jsonResponse(
   status: number,
   body: unknown,
-): { status: number; ok: boolean; json: () => Promise<unknown> } {
+) {
   return {
     status,
     ok: status >= 200 && status < 300,
+    headers: jsonHeaders,
     json: async () => body,
   };
 }
 
-function notFound(): {
-  status: number;
-  ok: boolean;
-  json: () => Promise<unknown>;
-} {
+function notFound() {
   return {
     status: 404,
     ok: false,
+    headers: jsonHeaders,
     json: async () => ({}),
   };
 }
 
-function malformed(): {
-  status: number;
-  ok: boolean;
-  json: () => Promise<unknown>;
-} {
+function malformed() {
   return {
     status: 200,
     ok: true,
+    headers: jsonHeaders,
     json: async () => {
       throw new SyntaxError("Unexpected token");
     },

@@ -84,24 +84,48 @@ html, body, #root {
   --concord-chat-font-size: 14px;
 }
 
-/* ── Mobile Horizontal Scroll Lock ──
- * On phones the chat layout must never pan left/right at default zoom —
- * a stray wide message, code block, or markdown table used to push the
- * viewport sideways and the user could scroll the entire UI horizontally.
- * `overflow-x: hidden` clips the overflow; `touch-action: pan-y pinch-zoom`
- * tells the browser the only legal touch gestures are vertical scrolling
- * and pinch-to-zoom — horizontal swipes are no-ops, but pinch-zoom is
- * preserved so users can still zoom out for accessibility.
+/* ── Viewport Height Chain (INS-020) ──
+ * The chain html → body → #root must ALL have explicit height so
+ * Tailwind's h-full (height: 100%) in ChatLayout resolves against
+ * the actual viewport. Without this, iOS WKWebView's content may
+ * collapse or not fill the safe-area viewport. dvh (dynamic viewport
+ * height) handles iOS's retractable URL bar + home indicator correctly.
+ */
+html {
+  height: 100%;
+}
+/* In browsers (Safari, Chrome) 100dvh tracks the dynamic viewport
+ * and prevents the layout from collapsing when the URL bar retracts.
+ * In Tauri iOS, the WKWebView is safe-area-constrained but 100dvh
+ * reports the full screen height — the mismatch pushes the bottom
+ * nav bar off-screen. Skip dvh in the native shell; height:100%
+ * already resolves correctly against the webview bounds. */
+@supports (height: 100dvh) {
+  html:not(.tauri) { min-height: 100dvh; }
+}
+#root {
+  height: 100%;
+}
+
+/* ── Mobile Layout Fixes ──
+ * overflow-x:hidden prevents stray wide content from scrolling the
+ * entire viewport horizontally. touch-action:manipulation allows both
+ * horizontal AND vertical panning (needed for the scroll-snap page
+ * strip in ChatLayout) while disabling the 300ms double-tap-to-zoom
+ * delay. The old pan-y restriction blocked scroll-snap from working
+ * because the CSS spec intersects touch-action values across the
+ * ancestor chain.
  */
 @media (max-width: 768px) {
   html, body, #root {
     overflow-x: hidden;
     max-width: 100vw;
-    touch-action: pan-y pinch-zoom;
+    touch-action: manipulation;
   }
 }
 
 body {
+  height: 100%;
   font-family: "Manrope", sans-serif;
   background-color: #0c0e11;
   color: #f9f9fd;
@@ -302,6 +326,7 @@ textarea,
 .concord-mobile-nav-wrap {
   /* container so the nav floats above the safe-area inset */
   pointer-events: none;
+  background: #0c0e11;
 }
 .concord-mobile-nav-wrap > * {
   pointer-events: auto;
@@ -348,13 +373,15 @@ textarea,
 
 /* ── INS-016: Mobile Pill Row + Dashboard Sheet ── */
 .concord-mobile-pill-row {
-  background: rgba(23, 26, 29, 0.72);
+  /* INS-020: solid opaque background instead of glass-panel translucency.
+     On iOS WKWebView, backdrop-filter picked up the native UIView's gray
+     background through the semi-transparent surface, creating a visible
+     gray box over the pills. Opaque background eliminates the issue. */
+  background: #171a1d;
   border: 1px solid rgba(164, 165, 255, 0.12);
   box-shadow:
     0 8px 24px rgba(0, 0, 0, 0.45),
     0 0 0 1px rgba(164, 165, 255, 0.04);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
-  backdrop-filter: blur(20px) saturate(140%);
 }
 .concord-mobile-pill {
   /* capsule pill look — icon-only, labelled via aria-label */

@@ -29,7 +29,7 @@ import { MessageInput } from "../chat/MessageInput";
 import { TypingIndicator } from "../chat/TypingIndicator";
 import { VoiceChannel } from "../voice/VoiceChannel";
 import { SettingsPanel } from "../settings/SettingsModal";
-import { ServerSettingsPanel } from "../settings/ServerSettingsModal";
+// ServerSettingsPanel is now folded into the unified SettingsPanel (INS-012)
 import { BugReportModal } from "../BugReportModal";
 import { StatsModal } from "../StatsModal";
 
@@ -465,20 +465,14 @@ export function ChatLayout() {
           </SilentBoundary>
         )}
         {mobileView === "settings" && (
-          // Both SettingsPanel and ServerSettingsPanel use `flex-1 flex flex-col min-h-0`
+          // INS-012: Unified SettingsPanel handles both user + server settings.
           // as their outer wrapper, which only behaves correctly inside a flex container.
           // The parent on line 300 is a block div, so we need an explicit flex shell here
           // (mirrors the chat branch a few lines below). Without this wrapper, the inner
           // tab-content `flex-1 overflow-y-auto` collapses to zero height and the panel
           // becomes unscrollable on mobile.
           <div className="h-full flex flex-col min-h-0">
-            {settingsOpen ? (
-              <SettingsPanel />
-            ) : serverSettingsId ? (
-              <ServerSettingsPanel serverId={serverSettingsId} />
-            ) : (
-              <SettingsPanel />
-            )}
+            <SettingsPanel />
           </div>
         )}
         {mobileView === "chat" && (
@@ -534,25 +528,6 @@ export function ChatLayout() {
             </button>
           </div>
           <SettingsPanel />
-        </>
-      );
-    }
-
-    if (serverSettingsId) {
-      return (
-        <>
-          <div className="h-12 flex items-center px-4 justify-between bg-surface-container-low flex-shrink-0">
-            <h2 className="font-headline font-semibold">
-              {servers.find((s) => s.id === serverSettingsId)?.name ?? "Server"} — Settings
-            </h2>
-            <button
-              onClick={closeServerSettings}
-              className="text-sm text-on-surface-variant hover:text-on-surface transition-colors font-label"
-            >
-              Back
-            </button>
-          </div>
-          <ServerSettingsPanel serverId={serverSettingsId} />
         </>
       );
     }

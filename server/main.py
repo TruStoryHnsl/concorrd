@@ -18,7 +18,7 @@ logging.basicConfig(
 
 from database import init_db
 from errors import ConcordError, ErrorResponse
-from routers import servers, invites, registration, voice, soundboard, webhooks, admin, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown
+from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_bridges, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions
 
 
 @asynccontextmanager
@@ -315,6 +315,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning("Lobby welcome setup failed: %s", e)
+
+    # Load extensions catalog
+    from routers.extensions import init_catalog
+    init_catalog()
 
     yield
 
@@ -644,6 +648,8 @@ app.include_router(dms.router)
 app.include_router(nodes.router)
 app.include_router(explore.router)
 app.include_router(wellknown.router)
+app.include_router(admin_bridges.router)
+app.include_router(extensions.router)
 
 
 @app.get("/api/health")

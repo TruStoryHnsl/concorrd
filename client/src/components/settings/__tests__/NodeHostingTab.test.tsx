@@ -41,7 +41,7 @@ describe("<NodeHostingTab />", () => {
 
   it("renders the browser banner and disables both buttons when Tauri is absent", async () => {
     mockedIsTauri.mockReturnValue(false);
-    mockedStatus.mockResolvedValue("stopped");
+    mockedStatus.mockResolvedValue({ state: "stopped", degraded_transports: {} });
 
     render(<NodeHostingTab />);
 
@@ -69,7 +69,7 @@ describe("<NodeHostingTab />", () => {
 
   it("in Tauri mode, surfaces the Stopped state and enables Start", async () => {
     mockedIsTauri.mockReturnValue(true);
-    mockedStatus.mockResolvedValue("stopped");
+    mockedStatus.mockResolvedValue({ state: "stopped", degraded_transports: {} });
 
     render(<NodeHostingTab />);
 
@@ -91,8 +91,8 @@ describe("<NodeHostingTab />", () => {
     // First status() call (on mount) returns stopped. Second call
     // (post-Start refresh) returns running.
     mockedStatus
-      .mockResolvedValueOnce("stopped")
-      .mockResolvedValueOnce("running");
+      .mockResolvedValueOnce({ state: "stopped", degraded_transports: {} })
+      .mockResolvedValueOnce({ state: "running", degraded_transports: {} });
     mockedStart.mockResolvedValue();
 
     const user = userEvent.setup();
@@ -119,8 +119,8 @@ describe("<NodeHostingTab />", () => {
     mockedIsTauri.mockReturnValue(true);
     // Mount: running. After stop: stopped.
     mockedStatus
-      .mockResolvedValueOnce("running")
-      .mockResolvedValueOnce("stopped");
+      .mockResolvedValueOnce({ state: "running", degraded_transports: {} })
+      .mockResolvedValueOnce({ state: "stopped", degraded_transports: {} });
     mockedStop.mockResolvedValue();
 
     const user = userEvent.setup();
@@ -141,13 +141,60 @@ describe("<NodeHostingTab />", () => {
     expect(mockedStop).toHaveBeenCalledTimes(1);
   });
 
+  it("shows degraded transports warning when present in status response", async () => {
+    mockedIsTauri.mockReturnValue(true);
+    mockedStatus.mockResolvedValue({
+      state: "running",
+      degraded_transports: {
+        discord_bridge: "binary not found: mautrix-discord",
+      },
+    });
+
+    render(<NodeHostingTab />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("node-hosting-degraded"),
+      ).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/discord_bridge/)).toBeInTheDocument();
+    expect(screen.getByText(/binary not found/)).toBeInTheDocument();
+
+    // Status should still show Running because degraded transports
+    // don't prevent the servitude from operating.
+    expect(screen.getByTestId("node-hosting-status")).toHaveTextContent(
+      "Hosting enabled (transports pending)",
+    );
+  });
+
+  it("does not show degraded warning when degraded_transports is empty", async () => {
+    mockedIsTauri.mockReturnValue(true);
+    mockedStatus.mockResolvedValue({
+      state: "running",
+      degraded_transports: {},
+    });
+
+    render(<NodeHostingTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("node-hosting-status")).toHaveTextContent(
+        "Hosting enabled (transports pending)",
+      );
+    });
+
+    expect(
+      screen.queryByTestId("node-hosting-degraded"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows an error banner when servitudeStart rejects, and the Retry button refetches status", async () => {
     mockedIsTauri.mockReturnValue(true);
     mockedStatus
       // initial mount: Stopped (so Start is enabled)
-      .mockResolvedValueOnce("stopped")
+      .mockResolvedValueOnce({ state: "stopped", degraded_transports: {} })
       // retry call after clicking Retry: Stopped again (recovery)
-      .mockResolvedValueOnce("stopped");
+      .mockResolvedValueOnce({ state: "stopped", degraded_transports: {} });
     mockedStart.mockRejectedValueOnce(new Error("transport not available"));
 
     const user = userEvent.setup();

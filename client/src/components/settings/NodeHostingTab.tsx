@@ -41,7 +41,7 @@ const POLL_INTERVAL_MS = 3000;
 
 type UiStatus =
   | { kind: "loading" }
-  | { kind: "ready"; state: ServitudeState }
+  | { kind: "ready"; state: ServitudeState; degraded: Record<string, string> }
   | { kind: "error"; message: string };
 
 export function NodeHostingTab() {
@@ -52,9 +52,13 @@ export function NodeHostingTab() {
 
   const refresh = useCallback(async () => {
     try {
-      const state = await servitudeStatus();
+      const response = await servitudeStatus();
       if (!mountedRef.current) return;
-      setStatus({ kind: "ready", state });
+      setStatus({
+        kind: "ready",
+        state: response.state,
+        degraded: response.degraded_transports,
+      });
     } catch (err) {
       if (!mountedRef.current) return;
       setStatus({
@@ -203,6 +207,29 @@ export function NodeHostingTab() {
           </button>
         </div>
       </div>
+
+      {/* Degraded transports (INS-024 Wave 4) */}
+      {status.kind === "ready" &&
+        Object.keys(status.degraded).length > 0 && (
+          <div
+            className="rounded-md border border-warning/30 bg-warning/10 px-4 py-3 space-y-1"
+            data-testid="node-hosting-degraded"
+          >
+            <p className="text-sm text-warning font-medium">
+              Degraded transports
+            </p>
+            {Object.entries(status.degraded).map(([name, reason]) => (
+              <div key={name} className="flex items-start gap-2">
+                <span className="text-xs text-on-surface font-medium shrink-0">
+                  {name}:
+                </span>
+                <span className="text-xs text-on-surface-variant break-all">
+                  {reason}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
 
       {status.kind === "error" && (
         <div
