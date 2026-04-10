@@ -280,7 +280,7 @@ export function MessageInput({
               <button
                 type="button"
                 onClick={() => fileRef.current?.click()}
-                className="btn-press p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center text-on-surface-variant hover:text-on-surface active:text-primary transition-colors flex-shrink-0 rounded-xl"
+                className="concord-file-upload-btn btn-press p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center text-on-surface-variant hover:text-on-surface active:text-primary transition-colors flex-shrink-0 rounded-xl"
                 title="Upload file"
               >
                 <span className="material-symbols-outlined text-xl">attach_file</span>
@@ -306,6 +306,8 @@ export function MessageInput({
             autoComplete="off"
             autoCorrect="on"
             spellCheck
+            data-focusable="true"
+            data-focus-group="chat-input"
             placeholder={
               editingMessage
                 ? "Edit your message..."
@@ -321,6 +323,8 @@ export function MessageInput({
             <button
               type="submit"
               disabled={sending}
+              data-focusable="true"
+              data-focus-group="chat-input"
               className="btn-press p-2 text-primary hover:text-primary-container disabled:text-outline transition-colors flex-shrink-0"
               title="Send"
             >

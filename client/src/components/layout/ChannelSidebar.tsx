@@ -23,6 +23,8 @@ import { useSettingsStore } from "../../stores/settings";
 import { Avatar } from "../ui/Avatar";
 import { useUnreadCounts } from "../../hooks/useUnreadCounts";
 import { useVoiceParticipants } from "../../hooks/useVoiceParticipants";
+import { usePlatform } from "../../hooks/usePlatform";
+import { useDpadNav } from "../../hooks/useDpadNav";
 import { InviteModal } from "../server/InviteModal";
 
 interface ChannelSidebarProps {
@@ -47,6 +49,10 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile, onChannelSe
   const addToast = useToastStore((s) => s.addToast);
 
   const unreadCounts = useUnreadCounts();
+
+  // TV DPAD navigation — roving tabindex for the channel list.
+  const { isTV } = usePlatform();
+  useDpadNav({ enabled: isTV, group: "channels" });
 
   const server = servers.find((s) => s.id === activeServerId);
   const voiceRoomIds = useMemo(
@@ -562,7 +568,7 @@ function SortableChannelRow({
         <button
           {...attributes}
           {...listeners}
-          className="text-outline hover:text-on-surface cursor-grab active:cursor-grabbing touch-none flex-shrink-0 px-0.5"
+          className="concord-drag-handle text-outline hover:text-on-surface cursor-grab active:cursor-grabbing touch-none flex-shrink-0 px-0.5"
           title="Drag to reorder"
           aria-label="Drag to reorder channel"
         >
@@ -593,6 +599,8 @@ function SortableChannelRow({
       ) : (
         <button
           onClick={onChannelClick}
+          data-focusable="true"
+          data-focus-group="channels"
           className={`flex-1 min-w-0 text-left px-3 py-2 rounded-xl text-sm transition-all flex items-center gap-2 font-body ${
             isActive
               ? "bg-surface-container-highest text-on-surface"

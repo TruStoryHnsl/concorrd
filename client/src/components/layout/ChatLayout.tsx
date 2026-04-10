@@ -15,6 +15,7 @@ import { useAuthStore } from "../../stores/auth";
 import { useServerStore } from "../../stores/server";
 import { useServerConfigStore } from "../../stores/serverConfig";
 import { usePlatform } from "../../hooks/usePlatform";
+import { useDpadNav } from "../../hooks/useDpadNav";
 import { useSendReadReceipt } from "../../hooks/useUnreadCounts";
 import { useNotifications } from "../../hooks/useNotifications";
 import { useSettingsStore } from "../../stores/settings";
@@ -90,6 +91,11 @@ export function ChatLayout() {
   // stable regardless of transient viewport width changes.
   const platform = usePlatform();
   const prefersTabletLayout = platform.isIPad;
+
+  // TV DPAD navigation — top-level handler for back/escape and
+  // cross-group navigation. Sub-components (ServerSidebar,
+  // ChannelSidebar) register their own group-scoped handlers.
+  useDpadNav({ enabled: platform.isTV, group: "main" });
 
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
   const [showBugReport, setShowBugReport] = useState(false);
@@ -639,17 +645,24 @@ export function ChatLayout() {
             onRemoveReaction={removeReaction}
           />
           <TypingIndicator typingUsers={typingUsers} />
-          <MessageInput
-            onSend={sendMessage}
-            onSubmitEdit={editMessage}
-            onSendFile={sendFile}
-            uploading={uploading}
-            editingMessage={editingMessage}
-            onCancelEdit={() => setEditingMessage(null)}
-            onKeystroke={onKeystroke}
-            onStopTyping={onStopTyping}
-            roomName={dmConversation.other_user_id.split(":")[0].replace("@", "")}
-          />
+          {platform.isTV ? (
+            <div className="concord-tv-readonly-banner flex-shrink-0">
+              <span className="material-symbols-outlined text-base">tv</span>
+              <span className="font-body">Read-only on TV — use a phone or desktop to send messages</span>
+            </div>
+          ) : (
+            <MessageInput
+              onSend={sendMessage}
+              onSubmitEdit={editMessage}
+              onSendFile={sendFile}
+              uploading={uploading}
+              editingMessage={editingMessage}
+              onCancelEdit={() => setEditingMessage(null)}
+              onKeystroke={onKeystroke}
+              onStopTyping={onStopTyping}
+              roomName={dmConversation.other_user_id.split(":")[0].replace("@", "")}
+            />
+          )}
         </>
       );
     }
@@ -680,17 +693,24 @@ export function ChatLayout() {
             onRemoveReaction={removeReaction}
           />
           <TypingIndicator typingUsers={typingUsers} />
-          <MessageInput
-            onSend={sendMessage}
-            onSubmitEdit={editMessage}
-            onSendFile={activeServer?.media_uploads_enabled !== false ? sendFile : undefined}
-            uploading={uploading}
-            editingMessage={editingMessage}
-            onCancelEdit={() => setEditingMessage(null)}
-            onKeystroke={onKeystroke}
-            onStopTyping={onStopTyping}
-            roomName={activeChannel.name}
-          />
+          {platform.isTV ? (
+            <div className="concord-tv-readonly-banner flex-shrink-0">
+              <span className="material-symbols-outlined text-base">tv</span>
+              <span className="font-body">Read-only on TV — use a phone or desktop to send messages</span>
+            </div>
+          ) : (
+            <MessageInput
+              onSend={sendMessage}
+              onSubmitEdit={editMessage}
+              onSendFile={activeServer?.media_uploads_enabled !== false ? sendFile : undefined}
+              uploading={uploading}
+              editingMessage={editingMessage}
+              onCancelEdit={() => setEditingMessage(null)}
+              onKeystroke={onKeystroke}
+              onStopTyping={onStopTyping}
+              roomName={activeChannel.name}
+            />
+          )}
         </>
       );
     }

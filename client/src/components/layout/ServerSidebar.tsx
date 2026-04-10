@@ -28,6 +28,8 @@ import { useUnreadCounts } from "../../hooks/useUnreadCounts";
 import { usePresenceMap } from "../../hooks/usePresence";
 import { NewServerModal } from "../server/NewServerModal";
 import { ExploreModal } from "../server/ExploreModal";
+import { usePlatform } from "../../hooks/usePlatform";
+import { useDpadNav } from "../../hooks/useDpadNav";
 
 /**
  * INS-002B: Server-list drag reorder.
@@ -88,6 +90,10 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   const unreadCounts = useUnreadCounts();
   const [showNewServer, setShowNewServer] = useState(false);
   const [exploreOpen, setExploreOpen] = useState(false);
+
+  // TV DPAD navigation — roving tabindex for the server icon column.
+  const { isTV } = usePlatform();
+  useDpadNav({ enabled: isTV, group: "servers" });
 
   // INS-002B: user-preferred order, loaded from localStorage keyed on the
   // current user id. Held in state so drag operations can optimistically
@@ -650,7 +656,9 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         <button
           onClick={handleDMClick}
           title="Direct Messages"
-          className={`btn-press w-12 h-12 flex items-center justify-center transition-all ${
+          data-focusable="true"
+          data-focus-group="servers"
+          className={`concord-server-icon btn-press w-12 h-12 flex items-center justify-center transition-all ${
             dmActive
               ? "primary-glow text-on-primary rounded-xl"
               : "bg-surface-container-high text-on-surface-variant rounded-2xl hover:rounded-xl hover:bg-surface-container-highest hover:text-on-surface"
@@ -703,7 +711,9 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
                     onClick={() => handleServerClick(server.id)}
                     title={isFederated ? `${server.name} (federated)` : server.name}
                     aria-label={isFederated ? `${server.name} (federated server)` : server.name}
-                    className={`btn-press w-12 h-12 flex items-center justify-center text-sm font-headline font-bold transition-all ${
+                    data-focusable="true"
+                    data-focus-group="servers"
+                    className={`concord-server-icon btn-press w-12 h-12 flex items-center justify-center text-sm font-headline font-bold transition-all ${
                       isActive
                         ? isFederated
                           ? "bg-tertiary text-on-tertiary rounded-xl shadow-[0_0_12px_rgba(var(--tertiary-rgb,180,120,255),0.35)]"
@@ -750,7 +760,9 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
       <button
         onClick={() => setShowNewServer(true)}
         title="Add Server"
-        className="btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-secondary/10 hover:text-secondary hover:rounded-xl flex items-center justify-center transition-all flex-shrink-0"
+        data-focusable="true"
+        data-focus-group="servers"
+        className="concord-server-icon btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-secondary/10 hover:text-secondary hover:rounded-xl flex items-center justify-center transition-all flex-shrink-0"
       >
         <span className="material-symbols-outlined text-xl">add</span>
       </button>
@@ -840,7 +852,9 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
                   ? `${server.name} Concord instance`
                   : `${server.name} federated Matrix server`
               }
-              className={`btn-press w-12 h-12 flex items-center justify-center text-sm font-headline font-bold transition-all ${
+              data-focusable="true"
+              data-focus-group="servers"
+              className={`concord-server-icon btn-press w-12 h-12 flex items-center justify-center text-sm font-headline font-bold transition-all ${
                 isActive ? activeClass : inactiveClass
               } ${placeholder ? "cursor-default" : ""}`}
             >
@@ -888,7 +902,9 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         onClick={() => setExploreOpen(true)}
         title="Explore"
         aria-label="Explore federated servers"
-        className="btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-tertiary/15 hover:text-tertiary hover:rounded-xl flex items-center justify-center transition-all flex-shrink-0"
+        data-focusable="true"
+        data-focus-group="servers"
+        className="concord-server-icon btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-tertiary/15 hover:text-tertiary hover:rounded-xl flex items-center justify-center transition-all flex-shrink-0"
       >
         <span className="material-symbols-outlined text-xl">public</span>
       </button>

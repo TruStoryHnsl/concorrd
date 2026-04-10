@@ -301,4 +301,73 @@ describe("<ServerPickerScreen />", () => {
     );
     expect(screen.getByText(/non-HTTPS URLs/i)).toBeInTheDocument();
   });
+
+  describe("TV mode (isTV: true)", () => {
+    beforeEach(() => {
+      // Simulate a TV environment by injecting the concordTVHost bridge
+      // object that the tvOS WKWebView shell injects at document-start.
+      // usePlatform() detects Apple TV via `"concordTVHost" in window`.
+      (window as Record<string, unknown>).concordTVHost = {};
+      // TV detection also relies on matchMedia returning pointer:none
+      // for remote-only devices and a large screen.
+      Object.defineProperty(window, "innerWidth", {
+        writable: true,
+        configurable: true,
+        value: 1920,
+      });
+      Object.defineProperty(window, "innerHeight", {
+        writable: true,
+        configurable: true,
+        value: 1080,
+      });
+    });
+
+    afterEach(() => {
+      delete (window as Record<string, unknown>).concordTVHost;
+      Object.defineProperty(window, "innerWidth", {
+        writable: true,
+        configurable: true,
+        value: 1024,
+      });
+      Object.defineProperty(window, "innerHeight", {
+        writable: true,
+        configurable: true,
+        value: 768,
+      });
+    });
+
+    it("renders with data-tv-mode attribute when running on TV", () => {
+      render(<ServerPickerScreen onConnected={vi.fn()} />);
+
+      const root = screen.getByTestId("server-picker-screen");
+      expect(root).toHaveAttribute("data-tv-mode");
+    });
+
+    it("applies wider layout class for TV 10-foot viewing", () => {
+      render(<ServerPickerScreen onConnected={vi.fn()} />);
+
+      const root = screen.getByTestId("server-picker-screen");
+      expect(root.className).toContain("tv-picker-layout");
+    });
+
+    it("still renders the hostname input and allows interaction on TV", async () => {
+      const cfg = makeConfig();
+      mockedDiscover.mockResolvedValueOnce(cfg);
+
+      const user = userEvent.setup();
+      render(<ServerPickerScreen onConnected={vi.fn()} />);
+
+      const input = screen.getByTestId("server-picker-hostname-input");
+      expect(input).toBeInTheDocument();
+
+      await user.type(input, "concorrd.example");
+      expect(screen.getByTestId("server-picker-connect-button")).toBeEnabled();
+
+      await user.click(screen.getByTestId("server-picker-connect-button"));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("server-picker-success")).toBeInTheDocument();
+      });
+    });
+  });
 });

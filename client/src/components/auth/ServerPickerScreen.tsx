@@ -8,6 +8,7 @@ import {
   type HomeserverConfig,
 } from "../../api/wellKnown";
 import { useServerConfigStore } from "../../stores/serverConfig";
+import { usePlatform } from "../../hooks/usePlatform";
 
 /**
  * First-launch server picker for native Concord builds (INS-027).
@@ -98,6 +99,7 @@ export function ServerPickerScreen({ onConnected }: Props) {
   const [pasteBlob, setPasteBlob] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const setHomeserver = useServerConfigStore((s) => s.setHomeserver);
+  const { isTV } = usePlatform();
 
   const handleConnect = useCallback(
     async (e: React.FormEvent) => {
@@ -199,8 +201,8 @@ export function ServerPickerScreen({ onConnected }: Props) {
   }, [pasteBlob]);
 
   return (
-    <div className="h-screen bg-surface flex items-center justify-center mesh-background" data-testid="server-picker-screen">
-      <div className="relative z-10 w-full max-w-md px-6">
+    <div className={`h-screen bg-surface flex items-center justify-center mesh-background${isTV ? " tv-picker-layout" : ""}`} data-testid="server-picker-screen" data-tv-mode={isTV || undefined}>
+      <div className={`relative z-10 w-full px-6 ${isTV ? "max-w-xl" : "max-w-md"}`}>
         <div className="text-center mb-8">
           <h1 className="text-3xl font-headline font-bold text-on-surface mb-2">
             Concord
