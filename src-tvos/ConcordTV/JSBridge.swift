@@ -144,9 +144,12 @@ final class ConcordJSBridge: NSObject, ConcordBridgeProtocol {
             }
         }
 
-        // On tvOS, prefersEphemeralWebBrowserSession avoids persisting
-        // cookies from the auth flow into the system browser state.
+        // Avoid persisting cookies from the auth flow into browser state.
+        // prefersEphemeralWebBrowserSession is unavailable on tvOS —
+        // Apple TV has no persistent browser state, so this is moot.
+        #if !os(tvOS)
         session.prefersEphemeralWebBrowserSession = true
+        #endif
         session.start()
     }
 }
