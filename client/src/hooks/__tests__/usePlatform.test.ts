@@ -114,6 +114,7 @@ afterEach(() => {
   realWindow.innerWidth = ORIGINAL_WINDOW.innerWidth;
   realWindow.innerHeight = ORIGINAL_WINDOW.innerHeight;
   delete realWindow.__TAURI__;
+  delete realWindow.concordTVHost;
 });
 
 describe("getPlatformFlags", () => {
@@ -236,6 +237,83 @@ describe("getPlatformFlags", () => {
     });
 
     expect(getPlatformFlags().isTV).toBe(true);
+  });
+
+  it("detects Apple TV via concordTVHost bridge object", () => {
+    stubNavigator({
+      userAgent: "Mozilla/5.0 (tvOS device)",
+      platform: "",
+      maxTouchPoints: 0,
+    });
+    stubWindow({
+      innerWidth: 1920,
+      innerHeight: 1080,
+      matchMedia: {
+        "(pointer: fine)": false,
+        "(pointer: coarse)": false,
+        "(pointer: none)": true,
+      },
+    });
+    // Simulate the Swift-injected bridge object
+    const realWindow = window as unknown as Record<string, unknown>;
+    realWindow.concordTVHost = {
+      setServerConfig: () => {},
+      getServerConfig: () => null,
+      focusChanged: () => {},
+      openAuthURL: () => {},
+      _focusCallbacks: [],
+    };
+
+    const flags = getPlatformFlags();
+
+    expect(flags.isAppleTV).toBe(true);
+    expect(flags.isTV).toBe(true);
+    // Apple TV should NOT be classified as mobile.
+    expect(flags.isMobile).toBe(false);
+  });
+
+  it("detects Apple TV via UA string 'AppleTV'", () => {
+    stubNavigator({
+      userAgent:
+        "Mozilla/5.0 (AppleTV; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+      platform: "",
+      maxTouchPoints: 0,
+    });
+    stubWindow({
+      innerWidth: 1920,
+      innerHeight: 1080,
+      matchMedia: {
+        "(pointer: fine)": false,
+        "(pointer: coarse)": false,
+        "(pointer: none)": true,
+      },
+    });
+
+    const flags = getPlatformFlags();
+
+    expect(flags.isAppleTV).toBe(true);
+    expect(flags.isTV).toBe(true);
+    expect(flags.isMobile).toBe(false);
+  });
+
+  it("isAppleTV is false on regular desktop browser", () => {
+    stubNavigator({
+      userAgent: "Mozilla/5.0 desktop",
+      platform: "MacIntel",
+      maxTouchPoints: 0,
+    });
+    stubWindow({
+      innerWidth: 1440,
+      innerHeight: 900,
+      matchMedia: {
+        "(pointer: fine)": true,
+      },
+    });
+
+    const flags = getPlatformFlags();
+
+    expect(flags.isAppleTV).toBe(false);
+    expect(flags.isTV).toBe(false);
   });
 
   it("recognises the Tauri runtime", () => {

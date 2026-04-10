@@ -46,15 +46,29 @@ export default function App() {
   // implicit origin-based server to fall back to. The decision is
   // extracted into `computeInitialServerConnected` for unit testing.
   const hasNewConfig = useServerConfigStore((s) => s.config !== null);
-  const { isMobile } = usePlatform();
+  const { isMobile, isTV, isAppleTV } = usePlatform();
   const [serverConnected, setServerConnected] = useState(() =>
     computeInitialServerConnected({
       isDesktop: isDesktopMode(),
       isMobile,
+      isTV,
       hasNewConfig,
       hasLegacyUrl: hasServerUrl(),
     }),
   );
+
+  // TV mode: set the data-tv attribute on <html> so TV-specific CSS
+  // (focus rings, font sizing, hidden controls) activates. This
+  // bridges the runtime detection from usePlatform() into the
+  // CSS cascade without requiring any component-level class toggling.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (isTV) {
+      document.documentElement.setAttribute("data-tv", "true");
+    } else {
+      document.documentElement.removeAttribute("data-tv");
+    }
+  }, [isTV]);
 
   const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
   const isLoading = useAuthStore((s) => s.isLoading);

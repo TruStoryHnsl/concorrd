@@ -19,10 +19,12 @@ import { useMutedSpeaking } from "../../hooks/useMutedSpeaking";
 import { useToastStore } from "../../stores/toast";
 import { updateDisplayName, getVoiceParticipants, getChannelLockStatus, verifyChannelPin, startVoteKick, getActiveVoteKicks, lockChannel, unlockChannel, getMyKickCount } from "../../api/concord";
 import { SoundboardPanel } from "./SoundboardPanel";
+import { TVVoiceUnavailableBanner } from "./TVVoiceUnavailableBanner";
 import { Avatar } from "../ui/Avatar";
 import { PinDialog } from "../moderation/PinDialog";
 import { VoteKickBanner } from "../moderation/VoteKickBanner";
 import { BanOverlay } from "../moderation/BanOverlay";
+import { usePlatform } from "../../hooks/usePlatform";
 
 interface VoiceChannelProps {
   roomId: string;
@@ -31,6 +33,7 @@ interface VoiceChannelProps {
 }
 
 export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProps) {
+  const { isAppleTV } = usePlatform();
   const accessToken = useAuthStore((s) => s.accessToken);
   const echoCancellation = useSettingsStore((s) => s.echoCancellation);
   const noiseSuppression = useSettingsStore((s) => s.noiseSuppression);
@@ -134,6 +137,7 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
     const needsPin = isLocked && !pinVerified;
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4">
+        {isAppleTV && <TVVoiceUnavailableBanner />}
         <p className="text-on-surface-variant flex items-center gap-2">
           {isLocked && (
             <svg className="w-4 h-4 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -184,10 +188,10 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
         ) : (
           <button
             onClick={handleJoin}
-            disabled={connecting || (voiceConnected && voiceChannelId !== roomId)}
+            disabled={isAppleTV || connecting || (voiceConnected && voiceChannelId !== roomId)}
             className="px-6 py-3 bg-secondary-container hover:bg-secondary-container disabled:opacity-40 text-on-surface font-medium rounded-lg transition-colors"
           >
-            {connecting ? "Connecting..." : "Join Voice"}
+            {isAppleTV ? "Voice Unavailable" : connecting ? "Connecting..." : "Join Voice"}
           </button>
         )}
         {error && <p className="text-error text-sm">{error}</p>}

@@ -33,6 +33,8 @@ export interface GateInputs {
   isDesktop: boolean;
   /** True when the viewport / UA indicates a mobile device. */
   isMobile: boolean;
+  /** True when running on a TV device (Apple TV, Google TV, etc.). */
+  isTV?: boolean;
   /** True when the INS-027 serverConfig store has a HomeserverConfig. */
   hasNewConfig: boolean;
   /**
@@ -49,7 +51,7 @@ export interface GateInputs {
  * picker should be shown first.
  */
 export function computeInitialServerConnected(inputs: GateInputs): boolean {
-  const { isDesktop, isMobile, hasNewConfig, hasLegacyUrl } = inputs;
+  const { isDesktop, isMobile, isTV = false, hasNewConfig, hasLegacyUrl } = inputs;
 
   // Short-circuit: any existing homeserver configuration means the
   // picker is not needed, regardless of platform.
@@ -57,9 +59,9 @@ export function computeInitialServerConnected(inputs: GateInputs): boolean {
 
   // Platforms that have an implicit origin-based server association
   // (desktop web via Caddy) can boot straight into the shell.
-  if (!isDesktop && !isMobile) return true;
+  if (!isDesktop && !isMobile && !isTV) return true;
 
-  // Tauri desktop, Tauri mobile, or mobile web with no config —
+  // Tauri desktop, Tauri mobile, mobile web, or TV with no config —
   // show the picker.
   return false;
 }

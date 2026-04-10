@@ -61,6 +61,8 @@ export interface PlatformFlags {
   isIPad: boolean;
   /** TV device (Google TV, Android TV, Fire TV, LG webOS, Samsung Tizen…). */
   isTV: boolean;
+  /** Apple TV specifically — running inside the tvOS WKWebView shell. */
+  isAppleTV: boolean;
   /** A precise pointing device is available (mouse, pencil, trackpad). */
   hasPointer: boolean;
   /** Only coarse pointers (fingers) — no mouse at all. */
@@ -79,6 +81,7 @@ const DEFAULT_FLAGS: PlatformFlags = {
   isAndroid: false,
   isIPad: false,
   isTV: false,
+  isAppleTV: false,
   hasPointer: true,
   hasTouchOnly: false,
 };
@@ -106,10 +109,16 @@ function detectPlatform(): PlatformFlags {
 
   const isAndroid = /Android/i.test(ua);
 
+  // Apple TV detection — the tvOS WKWebView shell injects
+  // `window.concordTVHost` at document-start. This is the most
+  // reliable signal. Fall back to UA "AppleTV" for edge cases.
+  const isAppleTV =
+    ("concordTVHost" in window) || /AppleTV/i.test(ua);
+
   // TV detection — UA strings first, then matchMedia fallback.
   const tvUaSignals =
     /\b(TV|BRAVIA|SmartTV|Smart-TV|AppleTV|Tizen|WebOS|Hbbtv|GoogleTV|Android TV)\b/i;
-  const isTVFromUA = tvUaSignals.test(ua);
+  const isTVFromUA = tvUaSignals.test(ua) || isAppleTV;
 
   let hasPointer = true;
   let hasTouchOnly = false;
@@ -141,6 +150,7 @@ function detectPlatform(): PlatformFlags {
     isAndroid,
     isIPad,
     isTV,
+    isAppleTV,
     hasPointer,
     hasTouchOnly,
   };

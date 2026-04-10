@@ -461,3 +461,54 @@ html[data-tv="true"] [data-focusable="true"]:focus-visible {
   transform: scale(1.05);
   transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* =================================================================
+ * TV-mode 10-foot UI overrides
+ *
+ * Applied when the React root sets `data-tv="true"` on <html>
+ * (via the isTV flag from usePlatform()). These rules adapt the
+ * existing chat UI for a 1080p/4K display viewed from 8-12 feet.
+ * ================================================================= */
+
+/* Base font size bump — 24px makes body text readable from 10 ft. */
+html[data-tv="true"] {
+  font-size: 24px;
+}
+
+/* Sidebar icons need to be bigger for 10-ft visibility. */
+html[data-tv="true"] .concord-server-icon,
+html[data-tv="true"] .concord-sidebar-icon {
+  width: 56px;
+  height: 56px;
+  font-size: 28px;
+}
+
+/* Interactive elements need generous hit targets for focus-ring
+ * visibility (the Siri Remote moves focus between elements, so
+ * the focus ring IS the interaction affordance). */
+html[data-tv="true"] button,
+html[data-tv="true"] a,
+html[data-tv="true"] [role="button"],
+html[data-tv="true"] input,
+html[data-tv="true"] select,
+html[data-tv="true"] textarea {
+  min-height: 48px;
+  min-width: 48px;
+}
+
+/* Message list needs more breathing room. */
+html[data-tv="true"] .concord-message-body {
+  font-size: 1.1rem;
+  line-height: 1.6;
+}
+
+/* Hide features that are unavailable or nonsensical on TV:
+ *   - File upload (no filesystem picker on tvOS)
+ *   - Camera controls (no camera on Apple TV)
+ *   - Drag handles (no touch on TV) */
+html[data-tv="true"] .concord-file-upload-btn,
+html[data-tv="true"] .concord-camera-btn,
+html[data-tv="true"] .concord-drag-handle,
+html[data-tv="true"] [data-tv-hidden="true"] {
+  display: none !important;
+}

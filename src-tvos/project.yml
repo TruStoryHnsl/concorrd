@@ -1,0 +1,66 @@
+name: concord-tvos
+options:
+  bundleIdPrefix: com.concord.chat
+  deploymentTarget:
+    tvOS: "17.0"
+  xcodeVersion: "15.0"
+configs:
+  debug: debug
+  release: release
+settingGroups:
+  app:
+    base:
+      PRODUCT_NAME: Concord
+      PRODUCT_BUNDLE_IDENTIFIER: com.concord.chat.tv
+targets:
+  concord-tvos:
+    type: application
+    platform: tvOS
+    sources:
+      - path: concord-tvos
+        excludes:
+          - Resources/**
+          - Assets.xcassets/TopShelfImage.imageset/**
+    resources:
+      - path: concord-tvos/Assets.xcassets
+      - path: concord-tvos/Resources
+        buildPhase: resources
+        type: folder
+        optional: true
+    info:
+      path: concord-tvos/Info.plist
+      properties:
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UIDeviceFamily: [3]
+        LSRequiresIPhoneOS: false
+        UIUserInterfaceStyle: Dark
+        NSLocalNetworkUsageDescription: "Concord discovers other people on the same network so you can chat without a server."
+        NSBonjourServices:
+          - "_concord._tcp"
+          - "_concord._udp"
+        NSMicrophoneUsageDescription: "Concord needs microphone access to use voice channels."
+    entitlements:
+      path: concord-tvos/concord_tvos.entitlements
+      properties:
+        com.apple.developer.networking.multicast: true
+        com.apple.security.application-groups: []
+        keychain-access-groups:
+          - "$(AppIdentifierPrefix)com.concord.chat.tv"
+    settings:
+      base:
+        ENABLE_BITCODE: false
+        ARCHS: [arm64]
+        VALID_ARCHS: arm64
+        TARGETED_DEVICE_FAMILY: "3"
+        SWIFT_VERSION: "5.9"
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
+      groups: [app]
+    scheme:
+      environmentVariables:
+        CONCORD_TV_MODE: "true"
+    dependencies:
+      - sdk: WebKit.framework
+      - sdk: UIKit.framework
+      - sdk: Security.framework
+      - sdk: AuthenticationServices.framework
