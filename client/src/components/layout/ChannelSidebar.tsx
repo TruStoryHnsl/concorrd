@@ -720,7 +720,10 @@ function UserBar({
   logout: () => void;
 }) {
   const openSettings = useSettingsStore((s) => s.openSettings);
-  const isNative = typeof window !== "undefined" && "__TAURI__" in window;
+  // `__TAURI_INTERNALS__` is the canonical Tauri v2 global; see the
+  // comment in `client/src/api/serverUrl.ts` for the full history.
+  const isNative =
+    typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
   // "Switch server" — full disconnect from the current Concord instance.
   // Clears the INS-027 serverConfig store (which also bridges the
