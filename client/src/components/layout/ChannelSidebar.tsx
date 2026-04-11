@@ -719,7 +719,8 @@ export function UserBar({
 }) {
   const openSettings = useSettingsStore((s) => s.openSettings);
   const clearHomeserver = useServerConfigStore((s) => s.clearHomeserver);
-  const isNative = typeof window !== "undefined" && "__TAURI__" in window;
+  const isNative =
+    typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
   // "Switch server" — full disconnect from the current Concord
   // instance. Does everything `logout` does (ends Matrix session,

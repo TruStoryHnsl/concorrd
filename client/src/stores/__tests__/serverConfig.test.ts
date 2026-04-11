@@ -4,8 +4,13 @@ import type { HomeserverConfig } from "../../api/wellKnown";
 
 // The Tauri-side persistence bridge `setServerUrl` is mocked out
 // unconditionally — we don't want tests running Tauri `invoke` calls.
-// Individual tests toggle `__TAURI__` on globalThis to exercise both
-// the web and native branches of `setHomeserver` / `clearHomeserver`.
+// Individual tests toggle `__TAURI_INTERNALS__` on globalThis to
+// exercise both the web and native branches of `setHomeserver` /
+// `clearHomeserver`. `__TAURI_INTERNALS__` is the real Tauri v2 global
+// that `@tauri-apps/api` consults — the legacy `__TAURI__` key used in
+// earlier tests was wrong and hid a production regression where the
+// real native app was always treated as web mode (see the 2026-04-10
+// root-cause writeup in serverUrl.ts for the full story).
 // The real `setServerUrl` is async and the store chains `.catch()` on
 // its return value, so the mock must return a real Promise (not the
 // default `undefined` from a bare `vi.fn()`).
@@ -49,7 +54,7 @@ describe("useServerConfigStore", () => {
     // Ensure the Tauri sentinel is removed by default. Tests that
     // exercise the Tauri branch set it explicitly via vi.stubGlobal.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    delete (window as any).__TAURI__;
+    delete (window as any).__TAURI_INTERNALS__;
   });
 
   afterEach(() => {
@@ -91,7 +96,7 @@ describe("useServerConfigStore", () => {
     expect(useServerConfigStore.getState().selectedHost()).toBeNull();
   });
 
-  it("does NOT call the Tauri bridge in web mode (no __TAURI__ global)", async () => {
+  it("does NOT call the Tauri bridge in web mode (no __TAURI_INTERNALS__ global)", async () => {
     expect(isTauriRuntime()).toBe(false);
 
     useServerConfigStore.getState().setHomeserver(sampleConfig());
@@ -106,7 +111,7 @@ describe("useServerConfigStore", () => {
     // Simulate a Tauri runtime by setting the sentinel on the real
     // window (not a stub). We clean this up in beforeEach.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).__TAURI__ = {};
+    (window as any).__TAURI_INTERNALS__ = {};
     expect(isTauriRuntime()).toBe(true);
 
     const cfg = sampleConfig();
@@ -120,7 +125,7 @@ describe("useServerConfigStore", () => {
 
   it("clearHomeserver in native mode bridges a blank string to Tauri", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).__TAURI__ = {};
+    (window as any).__TAURI_INTERNALS__ = {};
 
     useServerConfigStore.getState().setHomeserver(sampleConfig());
     vi.mocked(setServerUrlMock).mockClear();

@@ -16,8 +16,19 @@
 
 import { useServerConfigStore } from "../stores/serverConfig";
 
-// Detect Tauri environment
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+// Detect Tauri environment.
+//
+// Tauri v2 injects `window.__TAURI_INTERNALS__` — that's the canonical
+// global the `@tauri-apps/api` package itself consults (`core.cjs` calls
+// `window.__TAURI_INTERNALS__.invoke(...)`). The legacy `window.__TAURI__`
+// from Tauri v1 is ONLY present when `app.withGlobalTauri: true` is
+// explicitly opted into in `tauri.conf.json`, which this project does
+// not set. Checking the v1 key here always returned `false` in the real
+// native webview, causing `hasServerUrl()` to short-circuit `true` and
+// bypass the first-launch server picker. Fixed per the INS-027 regression
+// investigation on 2026-04-10.
+const isTauri =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 // Cached server URL — set on app startup in desktop mode
 let _serverUrl = "";

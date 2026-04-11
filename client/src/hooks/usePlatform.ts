@@ -8,9 +8,10 @@
  * Detection strategy (layered fallbacks — no build-time branching, so
  * the same bundle can ship to web + Tauri + mobile + TV):
  *
- *   1. `isTauri` — `__TAURI__` key on `window`. Matches the convention
- *      used by `api/serverUrl.ts`. Lazy at render time so jsdom tests
- *      can stub it.
+ *   1. `isTauri` — `__TAURI_INTERNALS__` key on `window` (the canonical
+ *      Tauri v2 global, see `api/serverUrl.ts` for the explanation of
+ *      why the v1 `__TAURI__` key is not used). Lazy at render time so
+ *      jsdom tests can stub it.
  *
  *   2. `isIOS` / `isAndroid` — user-agent substring match. The Tauri v2
  *      iOS and Android webviews expose their real platform in the UA
@@ -98,7 +99,11 @@ function detectPlatform(): PlatformFlags {
   const platform = (navigator as { platform?: string }).platform || "";
   const maxTouchPoints = navigator.maxTouchPoints || 0;
 
-  const isTauri = "__TAURI__" in window;
+  // `__TAURI_INTERNALS__` is the canonical Tauri v2 global — the v1
+  // `__TAURI__` key is only injected when `app.withGlobalTauri: true` is
+  // explicitly opted into (it isn't, in this project). See the detailed
+  // comment in `serverUrl.ts`.
+  const isTauri = "__TAURI_INTERNALS__" in window;
 
   const isIOSOld = /iPad|iPhone|iPod/.test(ua);
   // iPadOS 13+ reports as Macintosh. Use touchscreen presence to
@@ -170,7 +175,7 @@ export function usePlatform(): PlatformFlags {
 
   useEffect(() => {
     // Re-evaluate once on mount in case the first render was SSR or
-    // before `__TAURI__` injection completed.
+    // before `__TAURI_INTERNALS__` injection completed.
     setFlags(detectPlatform());
 
     if (typeof window === "undefined") return;

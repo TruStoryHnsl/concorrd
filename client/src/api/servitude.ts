@@ -23,7 +23,10 @@
  * underlying global without needing to reset module state.
  */
 export function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI__" in window;
+  // `__TAURI_INTERNALS__` is the canonical Tauri v2 global; see the
+  // comment in `serverUrl.ts` for the full explanation of why the v1
+  // `__TAURI__` key was wrong.
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 /**
