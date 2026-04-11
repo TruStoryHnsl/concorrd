@@ -1166,6 +1166,74 @@ export async function applyFederationChanges(
   );
 }
 
+// --- Service node configuration (INS-023) ---
+
+/**
+ * Structural role this Concord instance plays in the mesh. Mirrors the
+ * `NodeRole` literal union in `server/services/service_node_config.py`
+ * — keep the two in sync or the admin UI will silently drop new
+ * roles.
+ */
+export type ServiceNodeRole = "frontend-only" | "hybrid" | "anchor";
+
+/**
+ * Admin-only service-node config response. Contains the full set of
+ * resource-contribution knobs — CPU%, bandwidth cap, storage cap —
+ * plus the structural role flags. Never fetched without auth; never
+ * exposed via the unauthenticated well-known document.
+ */
+export interface ServiceNodeConfig {
+  max_cpu_percent: number;
+  max_bandwidth_mbps: number;
+  max_storage_gb: number;
+  tunnel_anchor_enabled: boolean;
+  node_role: ServiceNodeRole;
+  /**
+   * Hard-coded server-side maxima for sliders / numeric inputs. The
+   * server exposes them inline so the admin UI doesn't have to ship
+   * its own copy of the module-level constants and fall out of sync.
+   */
+  limits: {
+    max_cpu_percent: number;
+    max_bandwidth_mbps: number;
+    max_storage_gb: number;
+    allowed_roles: ServiceNodeRole[];
+  };
+}
+
+/**
+ * Write-side payload — identical shape minus the server-controlled
+ * `limits` block. The server validates every field via Pydantic
+ * constraints that mirror the `ServiceNodeConfig.validate()`
+ * dataclass on disk.
+ */
+export interface ServiceNodeConfigUpdate {
+  max_cpu_percent: number;
+  max_bandwidth_mbps: number;
+  max_storage_gb: number;
+  tunnel_anchor_enabled: boolean;
+  node_role: ServiceNodeRole;
+}
+
+/** GET /api/admin/service-node — admin only. */
+export async function getServiceNodeConfig(
+  accessToken: string,
+): Promise<ServiceNodeConfig> {
+  return apiFetch("/admin/service-node", {}, accessToken);
+}
+
+/** PUT /api/admin/service-node — admin only, full-document replace. */
+export async function updateServiceNodeConfig(
+  body: ServiceNodeConfigUpdate,
+  accessToken: string,
+): Promise<ServiceNodeConfig> {
+  return apiFetch(
+    "/admin/service-node",
+    { method: "PUT", body: JSON.stringify(body) },
+    accessToken,
+  );
+}
+
 // --- Explore (federated peers) ---
 
 export interface ExploreServerEntry {
