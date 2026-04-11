@@ -55,8 +55,11 @@ class SilentBoundary extends Component<{ children: ReactNode; fallback?: ReactNo
 
 type MobileView = "sources" | "servers" | "channels" | "chat" | "actions" | "dms" | "settings";
 
-/** True when running inside a Tauri native shell (iOS, Android, desktop). */
-const isNativeApp = typeof window !== "undefined" && "__TAURI__" in window;
+/** True when running inside a Tauri native shell (iOS, Android, desktop).
+ *  `__TAURI_INTERNALS__` is the canonical Tauri v2 global — see the
+ *  comment in `client/src/api/serverUrl.ts` for the full history. */
+const isNativeApp =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export function ChatLayout() {
   const syncing = useMatrixSync();

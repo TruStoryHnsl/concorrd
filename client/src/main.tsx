@@ -5,7 +5,11 @@ import App from "./App";
 import { initServerUrl } from "./api/serverUrl";
 import { useSourcesStore } from "./stores/sources";
 
-const isNative = typeof window !== "undefined" && "__TAURI__" in window;
+// `__TAURI_INTERNALS__` is the canonical Tauri v2 global — see the
+// comment in `client/src/api/serverUrl.ts` for the full explanation of
+// why the v1 `__TAURI__` key is wrong.
+const isNative =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 // Tag <html> with .tauri class so CSS can branch on native vs. web.
 // Must run before React mounts — CSS rules like `html:not(.tauri)`

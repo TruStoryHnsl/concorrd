@@ -168,7 +168,10 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   // their source is enabled. The primary instance host comes from
   // serverConfig; federated servers are matched by their hostname
   // (extracted from the synthetic server id or room id).
-  const isNative = typeof window !== "undefined" && "__TAURI__" in window;
+  // `__TAURI_INTERNALS__` — canonical Tauri v2 global. See the
+  // explanation in `client/src/api/serverUrl.ts`.
+  const isNative =
+    typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const allSources = useSourcesStore((s) => s.sources);
   const primaryHost = useServerConfigStore((s) => s.config?.host ?? "");
   const enabledHosts = useMemo(() => {

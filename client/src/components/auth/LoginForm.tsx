@@ -246,8 +246,10 @@ export function LoginForm() {
           </div>
         </form>
 
-        {/* Download client — hidden on native builds (the user IS the native client) */}
-        {!("__TAURI__" in window) && (
+        {/* Download client — hidden on native builds (the user IS the native client).
+            `__TAURI_INTERNALS__` is the canonical Tauri v2 global; see the
+            comment in `client/src/api/serverUrl.ts` for the history. */}
+        {!("__TAURI_INTERNALS__" in window) && (
         <div className="mt-8 text-center">
           {!showDownloads ? (
             <button
