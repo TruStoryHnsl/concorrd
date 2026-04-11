@@ -243,7 +243,6 @@ export default function App() {
   // (1s, 2s, 4s) before giving up and clearing the pending session.
   const voiceReconnectHandled = useRef(false);
   const voiceConnect = useVoiceStore((s) => s.connect);
-  const voiceConnectionState = useVoiceStore((s) => s.connectionState);
   useEffect(() => {
     if (!isLoggedIn || !accessToken || voiceReconnectHandled.current) return;
     if (voiceConnected) return; // already connected

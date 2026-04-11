@@ -60,6 +60,10 @@ export interface HomeserverConfig {
   features?: string[];
   /** Optional STUN/TURN server hints for pre-auth connectivity checks. */
   turn_servers?: Array<{ urls: string | string[]; username?: string; credential?: string }>;
+  /** Optional node role for Concord hosting (e.g. "anchor", "leaf"). */
+  node_role?: string;
+  /** Whether this instance acts as a tunnel anchor for other nodes. */
+  tunnel_anchor?: boolean;
 }
 
 /** Raised when the target host cannot be reached at all (DNS/network). */

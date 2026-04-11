@@ -114,8 +114,8 @@ export function getServerConfig(): Promise<ServerConfig | null> {
     // The native side calls window.__concordGetServerConfigCallback
     // with the JSON payload or null.
     const callbackName = "__concordGetServerConfigCallback";
-    (window as Record<string, unknown>)[callbackName] = (config: ServerConfig | null) => {
-      delete (window as Record<string, unknown>)[callbackName];
+    (window as unknown as Record<string, unknown>)[callbackName] = (config: ServerConfig | null) => {
+      delete (window as unknown as Record<string, unknown>)[callbackName];
       resolve(config ?? null);
     };
     handler.postMessage({ callbackName });

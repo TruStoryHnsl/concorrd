@@ -31,7 +31,6 @@ import ExtensionEmbed from "../extension/ExtensionEmbed";
 import ExtensionMenu from "../extension/ExtensionMenu";
 import { ServerSidebar } from "./ServerSidebar";
 import { ChannelSidebar, UserBar } from "./ChannelSidebar";
-import { SourcesPanel } from "./SourcesPanel";
 import { DMSidebar } from "../dm/DMSidebar";
 import { MessageList } from "../chat/MessageList";
 import { MessageInput } from "../chat/MessageInput";
@@ -133,8 +132,14 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // quick-action handlers (they close the old sheet). The value isn't
   // read because mobile's ActionsPanel replaced the sheet overlay.
   const [, setDashboardSheetOpen] = useState(false);
-  // INS-020: Add-source flow modal
+  // INS-020: Add-source flow modal. The `onAddSource` prop is an
+  // App.tsx escape hatch so the hollow-shell boot can open this
+  // modal from outside; internally, tiles call `setAddSourceOpen`.
   const [addSourceOpen, setAddSourceOpen] = useState(false);
+  const openAddSource = useCallback(() => {
+    setAddSourceOpen(true);
+    onAddSource?.();
+  }, [onAddSource]);
 
   // Resizable channel sidebar (desktop only)
   const SIDEBAR_MIN = 160;
@@ -440,7 +445,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       return (
         <div className="h-full flex overflow-hidden bg-surface text-on-surface">
           <SourcesPanel
-            onAddSource={() => setAddSourceOpen(true)}
+            onAddSource={openAddSource}
           />
         </div>
       );
@@ -472,7 +477,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                 </button>
               ))}
               <button
-                onClick={() => setAddSourceOpen(true)}
+                onClick={openAddSource}
                 title="Add source"
                 className="w-10 h-10 rounded-xl border border-dashed border-outline-variant/30 hover:border-primary/40 hover:bg-surface-container flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-colors flex-shrink-0"
               >
@@ -715,13 +720,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             />
           ) : (
             <div className="h-full flex flex-col min-h-0">
-              {settingsOpen ? (
-                <SettingsPanel />
-              ) : serverSettingsId ? (
-                <ServerSettingsPanel serverId={serverSettingsId} />
-              ) : (
-                <SettingsPanel />
-              )}
+              <SettingsPanel />
             </div>
           )
         ) : (
@@ -741,7 +740,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             {isNativeApp && (
               <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
                 <SourcesPanel
-                  onAddSource={() => setAddSourceOpen(true)}
+                  onAddSource={openAddSource}
                   onSourceSelect={() => scrollToPanel(1)}
                 />
               </div>

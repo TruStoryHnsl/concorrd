@@ -31,7 +31,7 @@ interface ChannelSidebarProps {
   onChannelSelect?: (roomId: string) => void;
 }
 
-export const ChannelSidebar = memo(function ChannelSidebar({ mobile, onChannelSelect }: ChannelSidebarProps) {
+export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, onChannelSelect }: ChannelSidebarProps) {
   const servers = useServerStore((s) => s.servers);
   const activeServerId = useServerStore((s) => s.activeServerId);
   const activeChannelId = useServerStore((s) => s.activeChannelId);
@@ -44,7 +44,6 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile, onChannelSe
   const leaveServerFn = useServerStore((s) => s.leaveServer);
   const userId = useAuthStore((s) => s.userId);
   const accessToken = useAuthStore((s) => s.accessToken);
-  const logout = useAuthStore((s) => s.logout);
   const addToast = useToastStore((s) => s.addToast);
 
   // TV mode — a 10-foot rendering flag pulled from the platform hook.

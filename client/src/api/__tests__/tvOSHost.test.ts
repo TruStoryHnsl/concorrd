@@ -28,20 +28,20 @@ function installBridge() {
     concordFocusChanged: { postMessage: vi.fn() },
     concordOpenAuthURL: { postMessage: vi.fn() },
   };
-  (window as Record<string, unknown>).webkit = {
+  (window as unknown as Record<string, unknown>).webkit = {
     messageHandlers: handlers,
   };
   return handlers;
 }
 
 function removeBridge() {
-  delete (window as Record<string, unknown>).webkit;
+  delete (window as unknown as Record<string, unknown>).webkit;
 }
 
 afterEach(() => {
   removeBridge();
   // Clean up any lingering callback
-  delete (window as Record<string, unknown>).__concordGetServerConfigCallback;
+  delete (window as unknown as Record<string, unknown>).__concordGetServerConfigCallback;
 });
 
 // ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ describe("isTvOSBridgeAvailable", () => {
   });
 
   it("returns false when webkit exists but handlers are missing", () => {
-    (window as Record<string, unknown>).webkit = {};
+    (window as unknown as Record<string, unknown>).webkit = {};
     expect(isTvOSBridgeAvailable()).toBe(false);
   });
 });
@@ -125,7 +125,7 @@ describe("bridge present (tvOS)", () => {
     // Simulate the native side calling the callback after postMessage
     handlers.concordGetServerConfig.postMessage.mockImplementation(
       (body: { callbackName: string }) => {
-        const cb = (window as Record<string, (c: ServerConfig) => void>)[body.callbackName];
+        const cb = (window as unknown as Record<string, (c: ServerConfig) => void>)[body.callbackName];
         cb(expectedConfig);
       },
     );
@@ -136,7 +136,7 @@ describe("bridge present (tvOS)", () => {
     expect(result).toEqual(expectedConfig);
     // Callback should be cleaned up
     expect(
-      (window as Record<string, unknown>).__concordGetServerConfigCallback,
+      (window as unknown as Record<string, unknown>).__concordGetServerConfigCallback,
     ).toBeUndefined();
   });
 
@@ -145,7 +145,7 @@ describe("bridge present (tvOS)", () => {
 
     handlers.concordGetServerConfig.postMessage.mockImplementation(
       (body: { callbackName: string }) => {
-        const cb = (window as Record<string, (c: null) => void>)[body.callbackName];
+        const cb = (window as unknown as Record<string, (c: null) => void>)[body.callbackName];
         cb(null);
       },
     );

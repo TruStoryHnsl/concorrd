@@ -18,6 +18,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useServerStore } from "../../stores/server";
+import { useSourcesStore } from "../../stores/sources";
+import { useServerConfigStore } from "../../stores/serverConfig";
 import { useDMStore } from "../../stores/dm";
 import { useAuthStore } from "../../stores/auth";
 import {
@@ -43,12 +45,6 @@ const SERVER_ORDER_STORAGE_KEY_PREFIX = "concord_server_order";
 // Separate persistence bucket for the vanilla Matrix federated
 // stack at the bottom of the sidebar. Stored independently from the
 // main list so the two drag orderings don't interfere — the main
-// list contains server ids for local + Concord-federated entries,
-// while this one only contains matrix-federated ids (either live
-// `federated:<roomId>` or placeholder `federated-placeholder:<host>`
-// forms).
-const MATRIX_FEDERATED_ORDER_STORAGE_KEY_PREFIX =
-  "concord_matrix_federated_order";
 
 function readStoredOrder(
   prefix: string,
@@ -85,17 +81,6 @@ const readStoredServerOrder = (userId: string | null) =>
   readStoredOrder(SERVER_ORDER_STORAGE_KEY_PREFIX, userId);
 const writeStoredServerOrder = (userId: string | null, order: string[]) =>
   writeStoredOrder(SERVER_ORDER_STORAGE_KEY_PREFIX, userId, order);
-const readStoredMatrixFederatedOrder = (userId: string | null) =>
-  readStoredOrder(MATRIX_FEDERATED_ORDER_STORAGE_KEY_PREFIX, userId);
-const writeStoredMatrixFederatedOrder = (
-  userId: string | null,
-  order: string[],
-) =>
-  writeStoredOrder(
-    MATRIX_FEDERATED_ORDER_STORAGE_KEY_PREFIX,
-    userId,
-    order,
-  );
 
 interface ServerSidebarProps {
   mobile?: boolean;
@@ -133,12 +118,6 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   // above. When unset, the stack falls back to the original
   // reverse-join ordering (oldest above Explore, newest at the top
   // of the federated section).
-  const [preferredMatrixOrder, setPreferredMatrixOrder] = useState<
-    string[] | null
-  >(() => readStoredMatrixFederatedOrder(currentUserId));
-  useEffect(() => {
-    setPreferredMatrixOrder(readStoredMatrixFederatedOrder(currentUserId));
-  }, [currentUserId]);
 
   // Split the server list into three buckets:
   //   1. Local Concord-managed servers (this instance owns them).
@@ -208,9 +187,9 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   // handled separately and do NOT participate in drag-reorder —
   // their position is deterministic from join order.
   const orderedServers = useMemo(() => {
-    if (!preferredOrder || preferredOrder.length === 0) return concordServers;
-    const byId = new Map(concordServers.map((s) => [s.id, s] as const));
-    const placed: typeof concordServers = [];
+    if (!preferredOrder || preferredOrder.length === 0) return localServers;
+    const byId = new Map(localServers.map((s) => [s.id, s] as const));
+    const placed: typeof localServers = [];
     const placedIds = new Set<string>();
     for (const id of preferredOrder) {
       const srv = byId.get(id);
@@ -219,11 +198,17 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         placedIds.add(id);
       }
     }
-    const unplaced = concordServers
+    const unplaced = localServers
       .filter((s) => !placedIds.has(s.id))
       .sort((a, b) => a.name.localeCompare(b.name));
     return [...placed, ...unplaced];
-  }, [concordServers, preferredOrder]);
+  }, [localServers, preferredOrder]);
+
+  // Under the 2026-04-11 architecture, Concord-federated servers are
+  // their own Sources — not a special visual category. This set is
+  // kept for the server tile's `isFromConcordFederation` check but
+  // is always empty under the new model.
+  const concordFederatedIds = new Set<string>();
 
   // Federated stack: now only reflects live server entries from the
   // active source's Matrix client state. Under the 2026-04-11
@@ -283,27 +268,6 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
 
   // Drag-end handler for the vanilla Matrix federated stack. Same
   // shape as `handleDragEnd` above but writes to the matrix-
-  // federated-specific localStorage key so the two draggable
-  // surfaces don't cross-contaminate their orderings.
-  const handleMatrixFederatedDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-      if (!over || active.id === over.id) return;
-      const oldIndex = federatedStack.findIndex(
-        (e) => e.server.id === active.id,
-      );
-      const newIndex = federatedStack.findIndex(
-        (e) => e.server.id === over.id,
-      );
-      if (oldIndex === -1 || newIndex === -1) return;
-      const next = arrayMove(federatedStack, oldIndex, newIndex);
-      const nextIds = next.map((e) => e.server.id);
-      setPreferredMatrixOrder(nextIds);
-      writeStoredMatrixFederatedOrder(currentUserId, nextIds);
-    },
-    [federatedStack, currentUserId],
-  );
-
   // Per-server "needs attention" flag: true iff any channel in the
   // server has a highlight-worthy notification (Matrix mention, keyword
   // alert, etc.). Drives the yellow dot on the server tile. Plain

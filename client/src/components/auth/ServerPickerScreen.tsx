@@ -371,9 +371,9 @@ export function ServerPickerScreen({ onConnected }: Props) {
         try {
           const s = await servitudeStatus();
           if (hostingGenerationRef.current !== generation) return;
-          const next = stageFor(s);
+          const next = stageFor(s.state);
           setState({ phase: "hosting", stage: next.stage, message: next.message });
-          if (s === "running") {
+          if (s.state === "running") {
             // Synthesise a local HomeserverConfig. The port is the
             // default 8765 — operators who changed it in Settings →
             // Node Hosting need to reconnect via that tab for now;
@@ -400,7 +400,7 @@ export function ServerPickerScreen({ onConnected }: Props) {
             onConnected();
             return;
           }
-          if (s === "stopping") {
+          if (s.state === "stopping") {
             return; // already reflected in state above
           }
         } catch (err) {
