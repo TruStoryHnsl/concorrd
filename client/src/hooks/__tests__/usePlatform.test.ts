@@ -93,9 +93,15 @@ function stubWindow(opts: {
   realWindow.innerHeight = opts.innerHeight ?? 768;
   realWindow.matchMedia = mql;
   if (opts.tauri) {
-    realWindow.__TAURI__ = { invoke: () => {} };
+    // Match the real Tauri v2 global — `@tauri-apps/api` itself reads
+    // from `__TAURI_INTERNALS__`, and the production detection code in
+    // `usePlatform.ts` / `serverUrl.ts` / `serverConfig.ts` / etc. all
+    // check this key. Using the v1 `__TAURI__` name here was how the
+    // original INS-020 regression hid behind green tests — the real
+    // native build never saw that key, so `isTauri` was always false.
+    realWindow.__TAURI_INTERNALS__ = { invoke: () => {} };
   } else {
-    delete realWindow.__TAURI__;
+    delete realWindow.__TAURI_INTERNALS__;
   }
 }
 
@@ -113,7 +119,7 @@ afterEach(() => {
   realWindow.matchMedia = ORIGINAL_WINDOW.matchMedia;
   realWindow.innerWidth = ORIGINAL_WINDOW.innerWidth;
   realWindow.innerHeight = ORIGINAL_WINDOW.innerHeight;
-  delete realWindow.__TAURI__;
+  delete realWindow.__TAURI_INTERNALS__;
 });
 
 describe("getPlatformFlags", () => {
