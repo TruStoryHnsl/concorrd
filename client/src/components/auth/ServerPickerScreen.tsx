@@ -8,6 +8,7 @@ import {
   type HomeserverConfig,
 } from "../../api/wellKnown";
 import { useServerConfigStore } from "../../stores/serverConfig";
+import { usePlatform } from "../../hooks/usePlatform";
 
 /**
  * First-launch server picker for native Concord builds (INS-027).
@@ -45,11 +46,36 @@ interface Props {
   onConnected: () => void;
 }
 
+/**
+ * Which path into the picker the user took. Threaded through every
+ * phase so UI copy (placeholder text, helper hints, error guidance)
+ * can adapt: the Host path pre-fills `localhost:8080` and speaks in
+ * "your local Concord stack" language, the Join path speaks in "the
+ * instance's operator" language.
+ */
+type ServerOrigin = "join" | "host";
+
+/**
+ * UI state machine for the first-launch flow.
+ *
+ *   menu        → top-level "Join or Host" choice (desktop only;
+ *                 mobile and browser builds skip straight to `input`
+ *                 because hosting a full Concord stack requires a
+ *                 machine that can run Docker Compose).
+ *   input       → hostname text field + form.
+ *   connecting  → spinner while `discoverHomeserver()` runs.
+ *   success     → discovered config preview + Confirm / Change.
+ *   error       → failure message + retry. On the Host path, the
+ *                 error screen also shows `docker compose up -d`
+ *                 instructions so the user knows how to start a
+ *                 local stack.
+ */
 type UiState =
-  | { phase: "input" }
-  | { phase: "connecting" }
-  | { phase: "success"; discovered: HomeserverConfig; apiBaseOverride: string }
-  | { phase: "error"; message: string; recoverable: boolean };
+  | { phase: "menu" }
+  | { phase: "input"; origin: ServerOrigin }
+  | { phase: "connecting"; origin: ServerOrigin }
+  | { phase: "success"; discovered: HomeserverConfig; apiBaseOverride: string; origin: ServerOrigin }
+  | { phase: "error"; message: string; recoverable: boolean; origin: ServerOrigin };
 
 /**
  * Map a thrown error from {@link discoverHomeserver} to a UI-friendly
@@ -93,8 +119,20 @@ function formatDiscoveryError(err: unknown): {
 }
 
 export function ServerPickerScreen({ onConnected }: Props) {
+  const { isTauri, isMobile } = usePlatform();
+  // Hosting is a desktop-only affordance. Mobile Tauri builds, mobile
+  // web, and TV all skip the Join/Host menu entirely and go straight
+  // to the hostname input. Hosting requires a machine that can run
+  // the full Concord stack (Docker Compose) locally, which phones and
+  // TVs cannot.
+  const canHost = isTauri && !isMobile;
+
   const [host, setHost] = useState("");
-  const [state, setState] = useState<UiState>({ phase: "input" });
+  // Initial phase: show the top-level menu on platforms that can host,
+  // otherwise go directly to the Join hostname input.
+  const [state, setState] = useState<UiState>(() =>
+    canHost ? { phase: "menu" } : { phase: "input", origin: "join" },
+  );
   const [pasteBlob, setPasteBlob] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const setHomeserver = useServerConfigStore((s) => s.setHomeserver);
@@ -105,20 +143,23 @@ export function ServerPickerScreen({ onConnected }: Props) {
       const trimmed = host.trim();
       if (trimmed.length === 0) return;
 
-      setState({ phase: "connecting" });
+      const origin: ServerOrigin =
+        state.phase === "input" ? state.origin : "join";
+      setState({ phase: "connecting", origin });
       try {
         const discovered = await discoverHomeserver(trimmed);
         setState({
           phase: "success",
           discovered,
           apiBaseOverride: discovered.api_base,
+          origin,
         });
       } catch (err) {
         const { message, recoverable } = formatDiscoveryError(err);
-        setState({ phase: "error", message, recoverable });
+        setState({ phase: "error", message, recoverable, origin });
       }
     },
-    [host],
+    [host, state],
   );
 
   const handleConfirm = useCallback(() => {
@@ -136,13 +177,46 @@ export function ServerPickerScreen({ onConnected }: Props) {
     onConnected();
   }, [state, setHomeserver, onConnected]);
 
+  // "Back" from the input / error screens: on hosts that can host,
+  // return to the top-level menu; on mobile-only builds, clear state
+  // and stay in the input form (since the menu is skipped there).
   const handleReset = useCallback(() => {
-    setState({ phase: "input" });
+    if (canHost) {
+      setState({ phase: "menu" });
+      setHost("");
+    } else {
+      setState({ phase: "input", origin: "join" });
+    }
+  }, [canHost]);
+
+  // "Change" from the success screen: return to the hostname input,
+  // preserving the origin so the user doesn't have to re-pick Join
+  // vs Host every time they fix a typo.
+  const handleEditHost = useCallback(() => {
+    if (state.phase !== "success") return;
+    setState({ phase: "input", origin: state.origin });
+  }, [state]);
+
+  const handleChooseJoin = useCallback(() => {
+    setHost("");
+    setState({ phase: "input", origin: "join" });
+  }, []);
+
+  // "Host your own" kicks the user into the hostname input with
+  // `localhost:8080` pre-filled — that's where the Docker Compose
+  // stack lands by default. If discovery fails, the error screen
+  // shows `docker compose up -d` instructions so the user knows
+  // how to start a stack. A full one-click launcher is deferred.
+  const handleChooseHost = useCallback(() => {
+    setHost("localhost:8080");
+    setState({ phase: "input", origin: "host" });
   }, []);
 
   const handlePasteBlob = useCallback(() => {
     const raw = pasteBlob.trim();
     if (raw.length === 0) return;
+    const origin: ServerOrigin =
+      state.phase === "input" ? state.origin : "join";
     try {
       // Accept either plain JSON or a `concord://` URL with a JSON fragment.
       let jsonText = raw;
@@ -167,6 +241,7 @@ export function ServerPickerScreen({ onConnected }: Props) {
           phase: "error",
           message: "Pasted config is missing required fields (host, homeserver_url, api_base).",
           recoverable: true,
+          origin,
         });
         return;
       }
@@ -178,6 +253,7 @@ export function ServerPickerScreen({ onConnected }: Props) {
           phase: "error",
           message: "Pasted config has non-HTTPS URLs. Only https:// is allowed.",
           recoverable: true,
+          origin,
         });
         return;
       }
@@ -185,6 +261,7 @@ export function ServerPickerScreen({ onConnected }: Props) {
         phase: "success",
         discovered: cfg,
         apiBaseOverride: cfg.api_base,
+        origin,
       });
     } catch (err) {
       setState({
@@ -194,9 +271,33 @@ export function ServerPickerScreen({ onConnected }: Props) {
             ? `Paste couldn't be parsed: ${err.message}`
             : "Paste couldn't be parsed.",
         recoverable: true,
+        origin,
       });
     }
-  }, [pasteBlob]);
+  }, [pasteBlob, state]);
+
+  // Subtitle copy adapts to where the user is in the flow. The menu
+  // reads as a top-level welcome; everything else frames the action.
+  const subtitle = (() => {
+    switch (state.phase) {
+      case "menu":
+        return "Join a Concord community or host your own.";
+      case "input":
+        return state.origin === "host"
+          ? "Connect to your local Concord instance."
+          : "Connect to an existing Concord server.";
+      case "connecting":
+        return state.origin === "host"
+          ? "Looking for your local instance…"
+          : "Discovering endpoints…";
+      case "success":
+        return "Ready to connect.";
+      case "error":
+        return state.origin === "host"
+          ? "Couldn't find a local instance."
+          : "Couldn't reach that server.";
+    }
+  })();
 
   return (
     <div className="h-screen bg-surface flex items-center justify-center mesh-background" data-testid="server-picker-screen">
@@ -206,39 +307,99 @@ export function ServerPickerScreen({ onConnected }: Props) {
             Concord
           </h1>
           <p className="text-on-surface-variant text-sm font-body">
-            Connect to a Concord server
+            {subtitle}
           </p>
         </div>
+
+        {state.phase === "menu" && (
+          <div className="space-y-3" data-testid="server-picker-menu">
+            <button
+              type="button"
+              onClick={handleChooseJoin}
+              data-testid="server-picker-choose-join"
+              className="w-full p-5 bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 rounded-xl text-left transition-colors"
+            >
+              <div className="flex items-start gap-3">
+                <span className="material-symbols-outlined text-primary text-2xl shrink-0 mt-0.5">
+                  login
+                </span>
+                <div>
+                  <div className="text-base font-medium text-on-surface mb-0.5">
+                    Join an existing instance
+                  </div>
+                  <div className="text-xs text-on-surface-variant">
+                    Enter the hostname of a Concord server a friend or community runs.
+                  </div>
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleChooseHost}
+              data-testid="server-picker-choose-host"
+              className="w-full p-5 bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 rounded-xl text-left transition-colors"
+            >
+              <div className="flex items-start gap-3">
+                <span className="material-symbols-outlined text-primary text-2xl shrink-0 mt-0.5">
+                  dns
+                </span>
+                <div>
+                  <div className="text-base font-medium text-on-surface mb-0.5">
+                    Host your own
+                  </div>
+                  <div className="text-xs text-on-surface-variant">
+                    Connect to a local Concord stack running on this machine. Requires <code>docker compose up</code> in the Concord repo.
+                  </div>
+                </div>
+              </div>
+            </button>
+          </div>
+        )}
 
         {state.phase === "input" && (
           <form onSubmit={handleConnect} className="space-y-4" data-testid="server-picker-input-form">
             <div>
               <label className="block text-sm font-medium text-on-surface mb-1.5">
-                Hostname
+                {state.origin === "host" ? "Local address" : "Hostname"}
               </label>
               <input
                 type="text"
                 value={host}
                 onChange={(e) => setHost(e.target.value)}
-                placeholder="chat.example.com"
+                placeholder={state.origin === "host" ? "localhost:8080" : "chat.example.com"}
                 autoFocus
                 required
                 data-testid="server-picker-hostname-input"
                 className="w-full px-4 py-3 bg-surface-container border border-outline-variant rounded-lg text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/30 font-mono text-sm"
               />
               <p className="text-xs text-on-surface-variant mt-1.5">
-                Enter a hostname with no scheme — we'll discover the Concord API endpoints automatically.
+                {state.origin === "host"
+                  ? "Default docker-compose deployments run on localhost:8080. Change if you set a custom port."
+                  : "Enter a hostname with no scheme — we'll discover the Concord API endpoints automatically."}
               </p>
             </div>
 
-            <button
-              type="submit"
-              disabled={host.trim().length === 0}
-              data-testid="server-picker-connect-button"
-              className="w-full py-3 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface font-medium rounded-lg transition-all text-sm"
-            >
-              Connect
-            </button>
+            <div className="flex gap-2">
+              {canHost && (
+                <button
+                  type="button"
+                  onClick={handleReset}
+                  data-testid="server-picker-back-to-menu-button"
+                  className="px-4 py-3 bg-surface-container-high hover:bg-surface-container-highest text-on-surface rounded-lg text-sm font-medium"
+                >
+                  Back
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={host.trim().length === 0}
+                data-testid="server-picker-connect-button"
+                className="flex-1 py-3 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface font-medium rounded-lg transition-all text-sm"
+              >
+                Connect
+              </button>
+            </div>
 
             <div className="border-t border-outline-variant/20 pt-4">
               <details className="text-sm">
@@ -283,10 +444,23 @@ export function ServerPickerScreen({ onConnected }: Props) {
         {state.phase === "error" && (
           <div className="space-y-4" data-testid="server-picker-error">
             <div className="px-4 py-3 rounded-lg bg-error-container/10 border border-error/20">
-              <p className="text-sm text-error font-medium">Discovery failed</p>
+              <p className="text-sm text-error font-medium">
+                {state.origin === "host" ? "No local instance found" : "Discovery failed"}
+              </p>
               <p className="text-sm text-on-surface-variant mt-1 break-words">
                 {state.message}
               </p>
+              {state.origin === "host" && (
+                <div className="mt-3 pt-3 border-t border-outline-variant/20">
+                  <p className="text-xs text-on-surface-variant mb-2">
+                    To host your own instance, clone the Concord repo and run:
+                  </p>
+                  <pre className="text-xs bg-surface-container-high rounded px-2 py-1.5 font-mono text-on-surface overflow-x-auto">docker compose up -d</pre>
+                  <p className="text-xs text-on-surface-variant mt-2">
+                    Then retry this screen. The stack listens on port 8080 by default.
+                  </p>
+                </div>
+              )}
             </div>
             <button
               type="button"
@@ -294,7 +468,7 @@ export function ServerPickerScreen({ onConnected }: Props) {
               data-testid="server-picker-retry-button"
               className="w-full py-3 bg-surface-container-high hover:bg-surface-container-highest text-on-surface rounded-lg text-sm font-medium"
             >
-              Try again
+              {canHost ? "Back to menu" : "Try again"}
             </button>
           </div>
         )}
@@ -370,7 +544,7 @@ export function ServerPickerScreen({ onConnected }: Props) {
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={handleReset}
+                onClick={handleEditHost}
                 data-testid="server-picker-change-button"
                 className="flex-1 py-3 bg-surface-container-high hover:bg-surface-container-highest text-on-surface rounded-lg text-sm font-medium"
               >
