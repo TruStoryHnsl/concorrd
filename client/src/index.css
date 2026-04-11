@@ -41,6 +41,23 @@
   --color-secondary-dim: #a1e1cf;
   --color-secondary-container: #0b5345;
 
+  /* ── Logo base colours ──
+   * The Concord brand mark (`<ConcordLogo />`) is an inline SVG with
+   * two fills driven by these variables. They are intentionally
+   * aliased to the current theme's primary + secondary so the logo
+   * reflects whichever palette is active.
+   *
+   * A future theme picker will swap `--color-primary` /
+   * `--color-secondary` (these aliases follow automatically), OR can
+   * override `--color-logo-primary` / `--color-logo-secondary`
+   * directly to give the logo a distinct accent pair that differs
+   * from the surrounding UI chrome.
+   *
+   * Keep as `var(...)` references so the alias chain stays live —
+   * a flat hex copy would break theme-picker propagation. */
+  --color-logo-primary: var(--color-primary);
+  --color-logo-secondary: var(--color-secondary);
+
   /* ── On-Secondary ── */
   --color-on-secondary: #195c4e;
   --color-on-secondary-container: #a1e1cf;

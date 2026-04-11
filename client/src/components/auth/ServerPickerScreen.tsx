@@ -9,6 +9,7 @@ import {
 } from "../../api/wellKnown";
 import { useServerConfigStore } from "../../stores/serverConfig";
 import { usePlatform } from "../../hooks/usePlatform";
+import { ConcordLogo } from "../brand/ConcordLogo";
 
 /**
  * First-launch server picker for native Concord builds (INS-027).
@@ -303,6 +304,7 @@ export function ServerPickerScreen({ onConnected }: Props) {
     <div className="h-screen bg-surface flex items-center justify-center mesh-background" data-testid="server-picker-screen">
       <div className="relative z-10 w-full max-w-md px-6">
         <div className="text-center mb-8">
+          <ConcordLogo size={72} className="mx-auto mb-4" />
           <h1 className="text-3xl font-headline font-bold text-on-surface mb-2">
             Concord
           </h1>

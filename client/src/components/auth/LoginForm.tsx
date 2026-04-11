@@ -3,6 +3,7 @@ import { loginWithPassword } from "../../api/matrix";
 import { registerUser, validateInvite, getInstanceInfo, getTOTPStatus, loginVerifyTOTP } from "../../api/concord";
 import { useAuthStore } from "../../stores/auth";
 import { INVITE_STORAGE_KEY } from "../../App";
+import { ConcordLogo } from "../brand/ConcordLogo";
 
 export function LoginForm() {
   const login = useAuthStore((s) => s.login);
@@ -272,10 +273,9 @@ export function LoginForm() {
           style={{ backgroundColor: "var(--color-surface)" }}
         >
           <div className="text-center">
-            <img
-              src="/logo.png"
-              alt=""
-              className="w-24 h-24 mx-auto mb-4 object-contain animate-[fadeSlideUp_0.6s_ease-out]"
+            <ConcordLogo
+              size={96}
+              className="mx-auto mb-4 animate-[fadeSlideUp_0.6s_ease-out]"
             />
             <h1 className="text-5xl font-headline font-bold text-primary mb-3 animate-[fadeSlideUp_0.6s_ease-out_0.1s_both]">
               {instanceName}

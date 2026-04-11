@@ -1,5 +1,5 @@
 """
-Generate favicon assets from the real concord logo.
+Generate favicon assets from the Concord master logo.
 
 Run from the concord project root:
     python3 branding/generate_favicons.py
@@ -11,14 +11,17 @@ Outputs to client/public/:
     favicon-48.png      — 48x48
     apple-touch-icon.png — 192x192
     favicon.ico         — multi-size 16/32/48 bundle
-    logo.png            — full 540x480 source (for LoginForm <img>)
+    logo.png            — full-size source (for LoginForm <img> fallback)
 
-Why this exists as a script: the source logo is semi-transparent mint
-green on a noisy canvas. A raw LANCZOS downscale turns it into a faint
-ghost at tab size. This script does alpha-clamp + contrast-boost +
-tight-crop BEFORE the downsample so the emerald mesh mark stays visible
-at 16x16. Same approach as orrapus/branding/generate_favicons.py but
-targeted at concord's G-dominant green palette.
+The source at `branding/logo.png` is the clean, transparent master
+logo — already properly alpha-channelled and tight-cropped. This
+script just resizes it to each target size with an unsharp-mask pass
+on the very small variants so the glyph stays crisp at 16x16.
+
+Prior mesh-era versions of this script did a green-channel extraction
+to clean up a noisy mint-green source; that step is no longer needed
+and would mangle the current multi-colour glyph, so it was removed.
+The legacy cleanup helper lives in git history (pre-2026-04-10).
 """
 from __future__ import annotations
 from pathlib import Path
@@ -29,27 +32,6 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "branding" / "logo.png"
 PUBLIC = ROOT / "client" / "public"
 ASSETS = ROOT / "client" / "src" / "assets"
-
-# Brand primary for contrast-boost blend target — #08C838 Mesh Emerald
-BRAND_PRIMARY = np.array([8, 200, 56], dtype=np.float32)
-
-
-def build_clean_glyph(src: Image.Image) -> Image.Image:
-    """Alpha-clamp glyph pixels and blend toward brand emerald."""
-    arr = np.array(src).astype(np.float32)
-    r, g, b, a = arr[..., 0], arr[..., 1], arr[..., 2], arr[..., 3]
-    glyphness = g - np.maximum(r, b)
-    is_glyph = (glyphness > 15) & (a > 30)
-
-    new_alpha = np.zeros_like(a)
-    new_alpha[is_glyph] = 255.0
-
-    out_rgb = arr[..., :3].copy()
-    blend = is_glyph[..., None]
-    out_rgb = np.where(blend, out_rgb * 0.4 + BRAND_PRIMARY * 0.6, out_rgb)
-
-    stacked = np.dstack([out_rgb, new_alpha]).clip(0, 255).astype(np.uint8)
-    return Image.fromarray(stacked, "RGBA")
 
 
 def tight_crop_square(img: Image.Image) -> Image.Image:
@@ -94,8 +76,7 @@ def main() -> None:
     src = Image.open(SRC).convert("RGBA")
     print(f"source: {SRC} {src.size}")
 
-    clean = build_clean_glyph(src)
-    square = tight_crop_square(clean)
+    square = tight_crop_square(src)
     print(f"squared transparent: {square.size}")
 
     sizes = {
