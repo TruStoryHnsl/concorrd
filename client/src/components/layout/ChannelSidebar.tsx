@@ -720,6 +720,35 @@ function UserBar({
   logout: () => void;
 }) {
   const openSettings = useSettingsStore((s) => s.openSettings);
+  const isNative = typeof window !== "undefined" && "__TAURI__" in window;
+
+  // "Switch server" — full disconnect from the current Concord instance.
+  // Clears the INS-027 serverConfig store (which also bridges the
+  // blank string through to Tauri's persisted `server_url`), then
+  // logs the user out and reloads the webview.
+  //
+  // The reload is necessary because `App.tsx` computes
+  // `serverConnected` once at mount via `computeInitialServerConnected`;
+  // without a fresh mount the picker never re-appears and the user
+  // would see the LoginForm pointed at the same host instead of
+  // being able to choose a different one.
+  //
+  // Dynamic import of the serverConfig store keeps ChannelSidebar's
+  // static dependency graph lean — this path only fires on explicit
+  // user click, so paying the sync-import cost on every render would
+  // be wasteful.
+  //
+  // Native-only: in the browser the origin IS the server — switching
+  // would mean navigating to a different domain, which is outside
+  // this app's responsibility.
+  const handleSwitchServer = async () => {
+    const { useServerConfigStore } = await import("../../stores/serverConfig");
+    useServerConfigStore.getState().clearHomeserver();
+    logout();
+    if (typeof window !== "undefined") {
+      window.location.reload();
+    }
+  };
 
   return (
     <div className="p-3 bg-surface-container flex items-center justify-between">
@@ -737,9 +766,19 @@ function UserBar({
         >
           <span className="material-symbols-outlined text-lg">settings</span>
         </button>
+        {isNative && (
+          <button
+            onClick={handleSwitchServer}
+            title="Disconnect from this instance and return to the server picker"
+            className="flex items-center gap-1 px-2 py-1 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
+          >
+            <span className="material-symbols-outlined text-lg">swap_horiz</span>
+          </button>
+        )}
         <button
           onClick={logout}
           className="px-2 py-1 rounded-lg text-xs text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors font-label"
+          title="Sign out of your account on this instance"
         >
           Logout
         </button>
