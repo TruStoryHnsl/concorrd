@@ -87,7 +87,7 @@ using the as_token to look up the appservice record. The ``_discord_``
 prefix is reserved for virtual users (puppets); the bridge bot itself
 uses the plain ``discordbot`` name."""
 
-DISCORD_BRIDGE_USER_NAMESPACE_REGEX = r"@_discord_.*"
+DISCORD_BRIDGE_USER_NAMESPACE_REGEX = r"@(discordbot|_discord_.*):"
 """Exclusive namespace for bridged virtual users. The leading underscore
 is the industry convention that matches mautrix-bridges upstream and
 prevents collisions with non-bridge user ids."""
