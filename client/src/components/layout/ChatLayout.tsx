@@ -33,6 +33,7 @@ import { ServerSidebar } from "./ServerSidebar";
 import { ChannelSidebar, UserBar } from "./ChannelSidebar";
 import { DMSidebar } from "../dm/DMSidebar";
 import { ExploreModal } from "../server/ExploreModal";
+import { DiscordSourceBrowser } from "../sources/DiscordSourceBrowser";
 import { MessageList } from "../chat/MessageList";
 import { MessageInput } from "../chat/MessageInput";
 import { TypingIndicator } from "../chat/TypingIndicator";
@@ -149,6 +150,21 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const [exploreOpen, setExploreOpen] = useState(false);
   const openExplore = useCallback(() => setExploreOpen(true), []);
   const closeExplore = useCallback(() => setExploreOpen(false), []);
+
+  // Source browser — opened when the user clicks a source tile.
+  // Currently only `discord-bot` sources have a browser; others are no-ops.
+  const [sourceBrowserSourceId, setSourceBrowserSourceId] = useState<string | null>(null);
+  const sources = useSourcesStore((s) => s.sources);
+  const openSourceBrowser = useCallback(
+    (sourceId: string) => {
+      const source = sources.find((s) => s.id === sourceId);
+      if (source?.platform === "discord-bot") {
+        setSourceBrowserSourceId(sourceId);
+      }
+      // Other platforms: clicking just selects, no browser yet
+    },
+    [sources],
+  );
 
   // Resizable channel sidebar (desktop only)
   const SIDEBAR_MIN = 160;
@@ -497,7 +513,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                 shows all connected Concord instances. Explore tile
                 lives in the SourcesPanel footer per the 2026-04-11 spec. */}
             <div className="w-14 flex-shrink-0">
-              <SourcesPanel onAddSource={openAddSource} onExplore={openExplore} />
+              <SourcesPanel onAddSource={openAddSource} onExplore={openExplore} onSourceOpen={openSourceBrowser} />
             </div>
 
             {/* Sidebar collapse toggle — visible when extension is active */}
@@ -772,6 +788,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                   onAddSource={openAddSource}
                   onSourceSelect={() => scrollToPanel(1)}
                   onExplore={openExplore}
+                  onSourceOpen={openSourceBrowser}
                 />
               </div>
             )}
@@ -1175,6 +1192,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             setAddSourceOpen(false);
             if (scrollStripRef.current) scrollToPanel(1);
           }}
+        />
+      )}
+      {/* Source browser — opened by clicking a source tile */}
+      {sourceBrowserSourceId && (
+        <DiscordSourceBrowser
+          onClose={() => setSourceBrowserSourceId(null)}
         />
       )}
     </>

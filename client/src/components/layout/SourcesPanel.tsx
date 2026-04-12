@@ -56,10 +56,13 @@ function sourceTile(source: ConcordSource): {
 export function SourcesPanel({
   onAddSource,
   onSourceSelect,
+  onSourceOpen,
   onExplore,
 }: {
   onAddSource: () => void;
   onSourceSelect?: (sourceId: string) => void;
+  /** Called when a tile is clicked — opens the source browser for that source. */
+  onSourceOpen?: (sourceId: string) => void;
   onExplore?: () => void;
 }) {
   const sources = useSourcesStore((s) => s.sources);
@@ -70,6 +73,7 @@ export function SourcesPanel({
   const handleSelect = (id: string) => {
     setActiveId(id);
     onSourceSelect?.(id);
+    onSourceOpen?.(id);
   };
 
   // Render sources bottom-up: latest addition at top of list, but we
