@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import { LiveKitRoom } from "@livekit/components-react";
 import { useAuthStore } from "./stores/auth";
 import { useServerStore } from "./stores/server";
+import { useSourcesStore } from "./stores/sources";
 import { useToastStore } from "./stores/toast";
 import { useVoiceStore, getPendingVoiceSession, clearPendingVoiceSession, MAX_RECONNECT_ATTEMPTS, RECONNECT_BASE_DELAY_MS } from "./stores/voice";
 import { useSettingsStore } from "./stores/settings";
@@ -342,7 +343,22 @@ export default function App() {
   // `serverConnected` and `setServerConnected` remain as state so the
   // existing modal-success path can still flip App out of any transient
   // states — but they no longer gate ChatLayout visibility.
-  const [addSourceModalOpen, setAddSourceModalOpen] = useState(false);
+  // Cold-launch picker: native builds with zero connected sources
+  // auto-open the picker modal on first render. The user can either
+  // pick one of the source types (Concord / Matrix / Discord / Host)
+  // or hit Skip to dismiss and reach the hollow shell. Returning
+  // users (with at least one persisted source) skip this auto-open
+  // and go straight to their existing shell.
+  //
+  // The auto-open lives in the useState initializer so it only fires
+  // on the first render of this component instance. Subsequent
+  // re-opens happen via the explicit `+ Add Source` tile in the
+  // Sources column.
+  const [addSourceModalOpen, setAddSourceModalOpen] = useState(() => {
+    if (typeof window === "undefined") return false;
+    if (!("__TAURI_INTERNALS__" in window)) return false;
+    return useSourcesStore.getState().sources.length === 0;
+  });
   const openAddSourceModal = useCallback(() => setAddSourceModalOpen(true), []);
   // Cancelling the modal must also reset `serverConnected` back to
   // `false`. Without this, the modal's internal ternary —
@@ -441,7 +457,10 @@ export default function App() {
             isLoggedIn`) is handled by the useEffect above which
             auto-closes the modal. */}
         {!serverConnected ? (
-          <ServerPickerScreen onConnected={() => setServerConnected(true)} />
+          <ServerPickerScreen
+            onConnected={() => setServerConnected(true)}
+            onSkip={closeAddSourceModal}
+          />
         ) : !isLoggedIn ? (
           <LoginForm />
         ) : null}

@@ -414,4 +414,76 @@ describe("<ServerPickerScreen />", () => {
       expect(change.getAttribute("data-focusable")).toBe("true");
     });
   });
+
+  // ------------------------------------------------------------------
+  // Top-level menu (INS-027 follow-up: Matrix + Discord + Skip)
+  //
+  // The picker shows its top-level "Join / Matrix / Discord / Host"
+  // menu only on platforms that can host (`isTauri && !isMobile`).
+  // On non-host platforms it skips the menu and renders the hostname
+  // input immediately, so these tests have to flip `isTauri: true`
+  // before rendering.
+  // ------------------------------------------------------------------
+
+  describe("desktop menu (Matrix / Discord / Skip)", () => {
+    beforeEach(() => {
+      mockPlatformFlags({ isTauri: true, isMobile: false });
+    });
+
+    it("renders all four picker cards on cold launch", () => {
+      render(<ServerPickerScreen onConnected={vi.fn()} />);
+      expect(screen.getByTestId("server-picker-menu")).toBeInTheDocument();
+      expect(screen.getByTestId("server-picker-choose-join")).toBeInTheDocument();
+      expect(screen.getByTestId("server-picker-choose-matrix")).toBeInTheDocument();
+      expect(screen.getByTestId("server-picker-choose-discord")).toBeInTheDocument();
+      expect(screen.getByTestId("server-picker-choose-host")).toBeInTheDocument();
+    });
+
+    it("shows the Skip link when onSkip is provided and fires it on click", async () => {
+      const onSkip = vi.fn();
+      const user = userEvent.setup();
+      render(<ServerPickerScreen onConnected={vi.fn()} onSkip={onSkip} />);
+
+      const skip = screen.getByTestId("server-picker-skip");
+      expect(skip).toBeInTheDocument();
+      await user.click(skip);
+      expect(onSkip).toHaveBeenCalledTimes(1);
+    });
+
+    it("hides the Skip link when onSkip is not provided", () => {
+      render(<ServerPickerScreen onConnected={vi.fn()} />);
+      expect(screen.queryByTestId("server-picker-skip")).not.toBeInTheDocument();
+    });
+
+    it("Matrix card synthesizes a config WITHOUT calling discoverHomeserver", async () => {
+      const user = userEvent.setup();
+      render(<ServerPickerScreen onConnected={vi.fn()} />);
+
+      await user.click(screen.getByTestId("server-picker-choose-matrix"));
+      const input = screen.getByTestId("server-picker-hostname-input");
+      await user.type(input, "matrix.org");
+      await user.click(screen.getByTestId("server-picker-connect-button"));
+
+      // Matrix path skips Concord well-known discovery entirely.
+      expect(mockedDiscover).not.toHaveBeenCalled();
+      await waitFor(() =>
+        expect(screen.getByTestId("server-picker-success")).toBeInTheDocument(),
+      );
+      expect(screen.getByTestId("server-picker-host")).toHaveTextContent("matrix.org");
+      expect(screen.getByTestId("server-picker-api-base")).toHaveTextContent(
+        "https://matrix.org",
+      );
+    });
+
+    it("Discord card lands on the bridge-required info screen", async () => {
+      const user = userEvent.setup();
+      render(<ServerPickerScreen onConnected={vi.fn()} />);
+
+      await user.click(screen.getByTestId("server-picker-choose-discord"));
+      expect(screen.getByTestId("server-picker-error")).toBeInTheDocument();
+      expect(
+        screen.getByText(/Discord support runs as a bridge/i),
+      ).toBeInTheDocument();
+    });
+  });
 });

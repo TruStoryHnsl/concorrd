@@ -52,6 +52,13 @@ import {
 
 interface Props {
   onConnected: () => void;
+  /**
+   * Optional callback fired when the user chooses to skip the picker
+   * entirely (the "Skip for now" link at the bottom of the menu).
+   * App.tsx wires this to `closeAddSourceModal` so the user lands on
+   * the hollow shell without committing to any source.
+   */
+  onSkip?: () => void;
 }
 
 /**
@@ -59,19 +66,32 @@ interface Props {
  * phase so UI copy (placeholder text, helper hints, error guidance)
  * can adapt:
  *
- *   "join"  — the user wants to connect to an existing Concord
- *             instance run by someone else (friend, community,
- *             public directory). Hostname input flow.
- *   "host"  — the user wants THIS device to be the server. The
- *             picker starts the embedded servitude (bundled
- *             tuwunel Matrix homeserver) as a child process and
- *             connects to `http://localhost:<port>` once it's up.
+ *   "join"   — the user wants to connect to an existing Concord
+ *              instance run by someone else (friend, community,
+ *              public directory). Hostname input flow that runs
+ *              Concord well-known discovery.
+ *   "matrix" — the user wants to connect to a vanilla Matrix
+ *              homeserver as a first-class Source. Same hostname
+ *              input flow as "join" but skips the Concord
+ *              well-known probe and synthesises a minimal config
+ *              directly from the typed hostname. Concord-specific
+ *              features (server list, voice channels) won't light
+ *              up; the rooms column populates from Matrix joins.
+ *   "host"   — the user wants THIS device to be the server. The
+ *              picker starts the embedded servitude (bundled
+ *              tuwunel Matrix homeserver) as a child process and
+ *              connects to `http://localhost:<port>` once it's up.
+ *   "discord" — the user wants to talk to Discord. There is no
+ *              standalone Discord path: mautrix-discord is a
+ *              bridge that needs a Matrix homeserver underneath,
+ *              so this origin lands the user on an info screen
+ *              that nudges them back into Join / Matrix / Host.
  *   "bridge" — escape hatch: connect to an externally-managed
  *              Docker Compose stack that the user has already
  *              started at `localhost:8080`. Full-fidelity Concord
  *              stack, but the user is responsible for starting it.
  */
-type ServerOrigin = "join" | "host" | "bridge";
+type ServerOrigin = "join" | "matrix" | "host" | "discord" | "bridge";
 
 /**
  * UI state machine for the first-launch flow.
@@ -140,7 +160,7 @@ function formatDiscoveryError(err: unknown): {
   return { message: String(err), recoverable: true };
 }
 
-export function ServerPickerScreen({ onConnected }: Props) {
+export function ServerPickerScreen({ onConnected, onSkip }: Props) {
   const { isTauri, isMobile } = usePlatform();
   // Hosting is a desktop-only affordance. Mobile Tauri builds, mobile
   // web, and TV all skip the Join/Host menu entirely and go straight
@@ -193,6 +213,32 @@ export function ServerPickerScreen({ onConnected }: Props) {
       const origin: ServerOrigin =
         state.phase === "input" ? state.origin : "join";
       setState({ phase: "connecting", origin });
+
+      // Matrix origin: skip the Concord well-known probe entirely.
+      // A vanilla Matrix homeserver doesn't serve `/.well-known/concord/client`,
+      // so `discoverHomeserver` would fail. Synthesize a minimal config from
+      // the typed hostname so the user can land on the hollow shell with the
+      // Matrix instance attached as a Source. Real `.well-known/matrix/client`
+      // delegation discovery is a follow-up — for now we assume the typed
+      // hostname IS the homeserver.
+      if (origin === "matrix") {
+        const matrixHost = trimmed.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+        const config: HomeserverConfig = {
+          host: matrixHost,
+          homeserver_url: `https://${matrixHost}`,
+          api_base: `https://${matrixHost}`,
+          instance_name: matrixHost,
+          features: [],
+        };
+        setState({
+          phase: "success",
+          discovered: config,
+          apiBaseOverride: config.api_base,
+          origin,
+        });
+        return;
+      }
+
       try {
         const discovered = await discoverHomeserver(trimmed);
         setState({
@@ -264,6 +310,31 @@ export function ServerPickerScreen({ onConnected }: Props) {
   const handleChooseJoin = useCallback(() => {
     setHost("");
     setState({ phase: "input", origin: "join" });
+  }, []);
+
+  // "Join a Matrix instance" — same hostname-input UX as Concord join,
+  // but `handleConnect` will skip the Concord well-known probe for the
+  // matrix origin and synthesise a HomeserverConfig directly. The user
+  // ends up with a Matrix homeserver attached as a first-class Source.
+  const handleChooseMatrix = useCallback(() => {
+    setHost("");
+    setState({ phase: "input", origin: "matrix" });
+  }, []);
+
+  // "Connect to Discord" is a placeholder that explains the bridge
+  // dependency. mautrix-discord runs on top of a Matrix homeserver, so
+  // there is no standalone Discord path — the user has to land on a
+  // Matrix or Concord source first and then enable the Discord bridge
+  // from Settings → Bridges → Discord. Surface that as an info screen
+  // instead of pretending to do something we can't do here.
+  const handleChooseDiscord = useCallback(() => {
+    setState({
+      phase: "error",
+      message:
+        "Discord support runs as a bridge on top of a Matrix homeserver. Connect to a Concord or Matrix source first, then enable the Discord bridge in Settings → Bridges → Discord.",
+      recoverable: true,
+      origin: "discord",
+    });
   }, []);
 
   // "Host your own" → start the embedded servitude as a child
@@ -508,23 +579,23 @@ export function ServerPickerScreen({ onConnected }: Props) {
   const subtitle = (() => {
     switch (state.phase) {
       case "menu":
-        return "Join a Concord community or host your own.";
+        return "Join, bridge, or host — pick how you want to start.";
       case "hosting":
         return "Spinning up your local instance.";
       case "input":
-        return state.origin === "bridge"
-          ? "Connect to your local Docker Compose stack."
-          : "Connect to an existing Concord server.";
+        if (state.origin === "bridge") return "Connect to your local Docker Compose stack.";
+        if (state.origin === "matrix") return "Connect to an existing Matrix homeserver.";
+        return "Connect to an existing Concord server.";
       case "connecting":
-        return state.origin === "bridge"
-          ? "Looking for your local stack…"
-          : "Discovering endpoints…";
+        if (state.origin === "bridge") return "Looking for your local stack…";
+        if (state.origin === "matrix") return "Building Matrix homeserver config…";
+        return "Discovering endpoints…";
       case "success":
         return "Ready to connect.";
       case "error":
-        return state.origin === "bridge"
-          ? "Couldn't find a local stack."
-          : "Couldn't reach that server.";
+        if (state.origin === "bridge") return "Couldn't find a local stack.";
+        if (state.origin === "discord") return "Discord needs a bridge.";
+        return "Couldn't reach that server.";
     }
   })();
 
@@ -584,6 +655,48 @@ export function ServerPickerScreen({ onConnected }: Props) {
 
             <button
               type="button"
+              onClick={handleChooseMatrix}
+              data-testid="server-picker-choose-matrix"
+              className="w-full p-5 bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 rounded-xl text-left transition-colors"
+            >
+              <div className="flex items-start gap-3">
+                <span className="material-symbols-outlined text-primary text-2xl shrink-0 mt-0.5">
+                  hub
+                </span>
+                <div>
+                  <div className="text-base font-medium text-on-surface mb-0.5">
+                    Join a Matrix instance
+                  </div>
+                  <div className="text-xs text-on-surface-variant">
+                    Attach a vanilla Matrix homeserver as a source. Concord-specific features won't light up, but rooms work.
+                  </div>
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleChooseDiscord}
+              data-testid="server-picker-choose-discord"
+              className="w-full p-5 bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 rounded-xl text-left transition-colors"
+            >
+              <div className="flex items-start gap-3">
+                <span className="material-symbols-outlined text-primary text-2xl shrink-0 mt-0.5">
+                  forum
+                </span>
+                <div>
+                  <div className="text-base font-medium text-on-surface mb-0.5">
+                    Connect to Discord
+                  </div>
+                  <div className="text-xs text-on-surface-variant">
+                    Bridge Discord servers into Concord. Requires a Matrix or Concord source first.
+                  </div>
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
               onClick={handleChooseHost}
               data-testid="server-picker-choose-host"
               className="w-full p-5 bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 rounded-xl text-left transition-colors"
@@ -605,6 +718,17 @@ export function ServerPickerScreen({ onConnected }: Props) {
                 </div>
               </div>
             </button>
+
+            {onSkip && (
+              <button
+                type="button"
+                onClick={onSkip}
+                data-testid="server-picker-skip"
+                className="w-full text-center text-xs text-on-surface-variant hover:text-on-surface pt-2 pb-1 transition-colors"
+              >
+                Skip for now — explore the empty shell
+              </button>
+            )}
 
             <details className="pt-1">
               <summary className="cursor-pointer text-xs text-on-surface-variant hover:text-on-surface px-2">
@@ -710,14 +834,24 @@ export function ServerPickerScreen({ onConnected }: Props) {
           <form onSubmit={handleConnect} className="space-y-4" data-testid="server-picker-input-form">
             <div>
               <label className="block text-sm font-medium text-on-surface mb-1.5">
-                {state.origin === "bridge" ? "Local address" : "Hostname"}
+                {state.origin === "bridge"
+                  ? "Local address"
+                  : state.origin === "matrix"
+                    ? "Matrix homeserver"
+                    : "Hostname"}
               </label>
               <input
                 type="text"
                 ref={hostInputRef}
                 value={host}
                 onChange={(e) => setHost(e.target.value)}
-                placeholder={state.origin === "bridge" ? "localhost:8080" : "chat.example.com"}
+                placeholder={
+                  state.origin === "bridge"
+                    ? "localhost:8080"
+                    : state.origin === "matrix"
+                      ? "matrix.org"
+                      : "chat.example.com"
+                }
                 autoFocus
                 required
                 data-testid="server-picker-hostname-input"
@@ -727,7 +861,9 @@ export function ServerPickerScreen({ onConnected }: Props) {
               <p className="text-xs text-on-surface-variant mt-1.5">
                 {state.origin === "bridge"
                   ? "Default docker-compose deployments run on localhost:8080. Change if you set a custom port."
-                  : "Enter a hostname with no scheme — we'll discover the Concord API endpoints automatically."}
+                  : state.origin === "matrix"
+                    ? "Enter a Matrix homeserver hostname. We won't probe for Concord endpoints — Concord-specific features won't be available, but Matrix rooms will work."
+                    : "Enter a hostname with no scheme — we'll discover the Concord API endpoints automatically."}
               </p>
             </div>
 
@@ -797,7 +933,11 @@ export function ServerPickerScreen({ onConnected }: Props) {
           <div className="space-y-4" data-testid="server-picker-error">
             <div className="px-4 py-3 rounded-lg bg-error-container/10 border border-error/20">
               <p className="text-sm text-error font-medium">
-                {state.origin === "bridge" ? "No local stack found" : "Discovery failed"}
+                {state.origin === "bridge"
+                  ? "No local stack found"
+                  : state.origin === "discord"
+                    ? "Discord requires a bridge"
+                    : "Discovery failed"}
               </p>
               <p className="text-sm text-on-surface-variant mt-1 break-words">
                 {state.message}

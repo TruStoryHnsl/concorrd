@@ -32,6 +32,7 @@ import ExtensionMenu from "../extension/ExtensionMenu";
 import { ServerSidebar } from "./ServerSidebar";
 import { ChannelSidebar, UserBar } from "./ChannelSidebar";
 import { DMSidebar } from "../dm/DMSidebar";
+import { ExploreModal } from "../server/ExploreModal";
 import { MessageList } from "../chat/MessageList";
 import { MessageInput } from "../chat/MessageInput";
 import { TypingIndicator } from "../chat/TypingIndicator";
@@ -140,6 +141,14 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     setAddSourceOpen(true);
     onAddSource?.();
   }, [onAddSource]);
+  // Explore modal state. Hoisted from ServerSidebar to ChatLayout
+  // so the SourcesPanel — which now owns the Explore tile per the
+  // 2026-04-11 spec — can open the modal from inside the Sources
+  // column. ServerSidebar's own Explore button is removed in the
+  // desktop render path; mobile still owns its own button.
+  const [exploreOpen, setExploreOpen] = useState(false);
+  const openExplore = useCallback(() => setExploreOpen(true), []);
+  const closeExplore = useCallback(() => setExploreOpen(false), []);
 
   // Resizable channel sidebar (desktop only)
   const SIDEBAR_MIN = 160;
@@ -431,108 +440,169 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     if (settingsOpen || serverSettingsId) setMobileView("settings");
   }, [settingsOpen, serverSettingsId]);
 
-  // Desktop layout
+  // Desktop layout.
+  //
+  // Structure (2026-04-11 user spec):
+  //
+  //   ┌──────────────────────────────────────────┬─┬──────────────────────┐
+  //   │ LEFT STACK (flex-col, flex-shrink-0)    │ │ MAIN CONTENT (flex-1)│
+  //   │ ┌─────────┬───────┬───────┐             │ │                      │
+  //   │ │ Sources │ Srvr  │ Chan. │             │ │ Chat pane /          │
+  //   │ │ panel   │ rail  │ side- │             │ │ empty state          │
+  //   │ │ (+ tile,│       │ bar   │             │ │                      │
+  //   │ │ Explore │       │       │             │ │                      │
+  //   │ │ at btm) │       │       │             │ │                      │
+  //   │ ├─────────┴───────┴───────┤             │ │                      │
+  //   │ │  UserBar (only if logged in)          │ │                      │
+  //   │ └───────────────────────────────────────┘ │                      │
+  //   └──────────────────────────────────────────┴─┴──────────────────────┘
+  //                                              ^
+  //                                              └ resize handle
+  //
+  // Rules baked into this layout:
+  //
+  //   1. ALWAYS render the full multi-pane shell, even with zero sources.
+  //      The previous "if (hasNoSources) return <SourcesPanel/>" early
+  //      return was a mobile-only behavior that leaked into desktop and
+  //      hid every other panel — fixed.
+  //   2. Sources column = full SourcesPanel component (NOT the narrow
+  //      icon column). Has its own + tile and now also owns the Explore
+  //      affordance via the `onExplore` callback.
+  //   3. Explore moved out of ServerSidebar into the Sources column
+  //      footer. ChatLayout owns the modal state.
+  //   4. UserBar renders ONLY when `userId` is set (logged in). On a
+  //      cold launch where the user hasn't authenticated yet, the
+  //      bottom of the left stack is empty.
+  //   5. UserBar is INSIDE the left stack, not outside it. Its width is
+  //      automatically the sum of the three columns above it (plus the
+  //      Sources column when native), so it stops cleanly at the resize
+  //      handle / main pane boundary instead of spanning the whole
+  //      window. Regression from the reintegration merge, restored.
   const renderDesktopLayout = () => {
     const extensionActive = !!activeExtension && !dmActive;
     const showSidebar = !extensionActive || !sidebarCollapsed;
-    const sources = useSourcesStore.getState().sources;
-    const hasNoSources = isNativeApp && sources.length === 0;
-
-    // Native desktop with no sources: show the Sources empty state full-screen
-    // instead of the normal multi-pane layout. Same first-launch experience
-    // as mobile — the user needs to connect to at least one instance first.
-    if (hasNoSources) {
-      return (
-        <div className="h-full flex overflow-hidden bg-surface text-on-surface">
-          <SourcesPanel
-            onAddSource={openAddSource}
-          />
-        </div>
-      );
-    }
+    const sources = useSourcesStore((s) => s.sources);
 
     return (
-      <div className="h-full flex flex-col overflow-hidden bg-surface text-on-surface">
-        {/* Main row: sidebars + content */}
-        <div className="flex-1 flex min-h-0">
-          {/* Sources sidebar — native desktop only. Narrow column of
-              connected instance icons, same data as the mobile Sources
-              panel but rendered as compact icons. */}
-          {isNativeApp && (
-            <div className="w-14 flex-shrink-0 bg-surface-container-low border-r border-outline-variant/10 flex flex-col items-center py-2 gap-2 overflow-y-auto">
-              {sources.map((source) => (
+      <div className="h-full flex overflow-hidden bg-surface text-on-surface">
+        {/* LEFT STACK — columns on top, UserBar below.
+            `flex-shrink-0` is load-bearing: without it a narrow viewport
+            (split screen, small tablet) can compress the stack below the
+            sum of its children's intrinsic widths and the UserBar ends
+            up narrower than the columns above it. */}
+        <div className="flex flex-col min-h-0 flex-shrink-0">
+          <div className="flex flex-1 min-h-0">
+            {/* Sources column — native desktop only. Narrow icon
+                column with one tile per connected source, an
+                `+ Add Source` tile, and an Explore tile at the
+                bottom. The wider SourcesPanel component is used on
+                MOBILE (and the picker overlay), not here. Hidden on
+                web builds because the browser's origin IS the
+                source and a picker column has no meaning. */}
+            {isNativeApp && (
+              <div className="w-14 flex-shrink-0 bg-surface-container-low border-r border-outline-variant/10 flex flex-col items-center py-2 gap-2 overflow-y-auto">
+                {/* Source tiles — stack from the bottom upward via
+                    flex-col-reverse so the most recently added
+                    source sits closest to the footer. */}
+                <div className="flex flex-col-reverse gap-2 w-full items-center flex-1">
+                  {sources.map((source) => (
+                    <button
+                      key={source.id}
+                      onClick={() => useSourcesStore.getState().toggleSource(source.id)}
+                      title={`${source.instanceName || source.host}${source.enabled ? " (click to hide)" : " (click to show)"}`}
+                      className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-150 flex-shrink-0 ${
+                        source.enabled
+                          ? "bg-surface-container-high hover:bg-surface-container-highest text-on-surface ring-1 ring-primary/30"
+                          : "bg-surface-container-low text-on-surface-variant/30"
+                      }`}
+                    >
+                      <span className="text-xs font-headline font-bold uppercase">
+                        {(source.instanceName || source.host).slice(0, 2)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                {/* Footer: + Add Source, Explore. Always visible. */}
                 <button
-                  key={source.id}
-                  onClick={() => useSourcesStore.getState().toggleSource(source.id)}
-                  title={`${source.instanceName || source.host}${source.enabled ? " (click to hide)" : " (click to show)"}`}
-                  className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-150 flex-shrink-0 ${
-                    source.enabled
-                      ? "bg-surface-container-high hover:bg-surface-container-highest text-on-surface ring-1 ring-primary/30"
-                      : "bg-surface-container-low text-on-surface-variant/30"
-                  }`}
+                  onClick={openAddSource}
+                  title="Add source"
+                  className="w-10 h-10 rounded-xl border border-dashed border-outline-variant/30 hover:border-primary/40 hover:bg-surface-container flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-colors flex-shrink-0"
                 >
-                  <span className="text-xs font-headline font-bold uppercase">
-                    {(source.instanceName || source.host).slice(0, 2)}
-                  </span>
+                  <span className="material-symbols-outlined text-lg">add</span>
                 </button>
-              ))}
+                <button
+                  onClick={openExplore}
+                  title="Explore federated servers"
+                  aria-label="Explore"
+                  className="w-10 h-10 rounded-xl bg-surface-container hover:bg-surface-container-high flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-colors flex-shrink-0"
+                >
+                  <span className="material-symbols-outlined text-lg">explore</span>
+                </button>
+              </div>
+            )}
+
+            {/* Sidebar collapse toggle — visible when extension is active */}
+            {extensionActive && (
               <button
-                onClick={openAddSource}
-                title="Add source"
-                className="w-10 h-10 rounded-xl border border-dashed border-outline-variant/30 hover:border-primary/40 hover:bg-surface-container flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-colors flex-shrink-0"
+                onClick={() => setSidebarCollapsed((c) => !c)}
+                className="flex-shrink-0 w-6 flex items-center justify-center bg-surface-container-low/60 backdrop-blur-sm hover:bg-surface-container-high/80 transition-colors z-10 border-r border-outline-variant/10"
+                aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+                title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
               >
-                <span className="material-symbols-outlined text-lg">add</span>
+                <span
+                  className="material-symbols-outlined text-sm text-on-surface-variant/70 transition-transform duration-200"
+                  style={{ transform: sidebarCollapsed ? "rotate(0deg)" : "rotate(180deg)" }}
+                >
+                  chevron_right
+                </span>
               </button>
+            )}
+
+            {/* Server sidebar */}
+            {showSidebar && (
+              <>
+                <SilentBoundary>
+                  <ServerSidebar />
+                </SilentBoundary>
+
+                {/* Channel / DM sidebar */}
+                <div className="flex min-h-0" style={{ width: sidebarWidth, minWidth: SIDEBAR_MIN, maxWidth: SIDEBAR_MAX }}>
+                  <SilentBoundary>
+                    {dmActive ? <DMSidebar /> : <ChannelSidebar />}
+                  </SilentBoundary>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* User banner — only when logged in. Sits inside the left
+              stack so its width matches the sum of the columns above
+              and stops at the resize handle. */}
+          {userId && (
+            <div className="flex-shrink-0 border-t border-outline-variant/20">
+              <UserBar userId={userId} logout={logout} />
             </div>
           )}
-
-          {/* Sidebar collapse toggle — visible when extension is active */}
-          {extensionActive && (
-            <button
-              onClick={() => setSidebarCollapsed((c) => !c)}
-              className="flex-shrink-0 w-6 flex items-center justify-center bg-surface-container-low/60 backdrop-blur-sm hover:bg-surface-container-high/80 transition-colors z-10 border-r border-outline-variant/10"
-              aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-              title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-            >
-              <span
-                className="material-symbols-outlined text-sm text-on-surface-variant/70 transition-transform duration-200"
-                style={{ transform: sidebarCollapsed ? "rotate(0deg)" : "rotate(180deg)" }}
-              >
-                chevron_right
-              </span>
-            </button>
-          )}
-
-          {/* Server sidebar */}
-          {showSidebar && (
-            <>
-              <SilentBoundary>
-                <ServerSidebar />
-              </SilentBoundary>
-
-              {/* Channel / DM sidebar */}
-              <div className="flex min-h-0" style={{ width: sidebarWidth, minWidth: SIDEBAR_MIN, maxWidth: SIDEBAR_MAX }}>
-                <SilentBoundary>
-                  {dmActive ? <DMSidebar /> : <ChannelSidebar />}
-                </SilentBoundary>
-              </div>
-
-              {/* Resize handle */}
-              <div
-                onMouseDown={handleResizeStart}
-                className="w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors flex-shrink-0"
-              />
-            </>
-          )}
-
-          {/* Main content */}
-          <div className="flex-1 flex flex-col min-h-0 min-w-0">
-            {renderMainContent()}
-          </div>
         </div>
 
-        {/* Full-width user bar at the bottom of the window */}
-        <UserBar userId={userId} logout={logout} />
+        {/* Resize handle (only when sidebar visible) */}
+        {showSidebar && (
+          <div
+            onMouseDown={handleResizeStart}
+            className="w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors flex-shrink-0"
+          />
+        )}
+
+        {/* Main content */}
+        <div className="flex-1 flex flex-col min-h-0 min-w-0">
+          {renderMainContent()}
+        </div>
+
+        {/* Explore modal — opened from the Sources column's bottom
+            tile (was previously opened from ServerSidebar; the state
+            now lives at the ChatLayout level so SourcesPanel can
+            trigger it). */}
+        <ExploreModal isOpen={exploreOpen} onClose={closeExplore} />
       </div>
     );
   };

@@ -1,13 +1,36 @@
 /**
  * SourcesPanel — the leftmost panel on native apps (INS-020).
  *
- * Displays connected Concord instances ("sources") with toggle switches
- * to enable/disable their visibility in the server column. Includes the
- * Explore button for discovering new instances and an Add Source button.
+ * Architecture (2026-04-11 spec):
  *
- * Sources are toggleable: tap the toggle to hide/show a source's servers
- * in the server sidebar. The server column is a filtered view of enabled
- * sources — toggle off = servers vanish instantly, toggle on = they return.
+ *   ┌────────────────┐
+ *   │ SOURCES        │  ← header
+ *   ├────────────────┤
+ *   │                │
+ *   │  source row 1  │  ← list region (scrollable). Sources stack
+ *   │  source row 2  │    from the BOTTOM, with the most-recent
+ *   │  ...           │    addition adjacent to the footer.
+ *   │                │
+ *   │ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │  ← spacer (flex-grow)
+ *   │                │
+ *   │  + Add Source  │  ← always-visible footer tile
+ *   │  Explore       │  ← always-visible footer tile
+ *   └────────────────┘
+ *
+ * The footer tiles (`+ Add Source` and `Explore`) live in their own
+ * container so they're always at the bottom of the column regardless
+ * of whether the source list is empty or full. The spacer between
+ * the list and the footer pushes the footer down on a tall column.
+ *
+ * The Explore tile used to live in the rooms (ChannelSidebar) column;
+ * it was moved here per the user spec — federated rooms / Discord
+ * rooms still stack from the bottom of the rooms column, but the
+ * "browse the federation catalog" affordance is a Sources concern.
+ *
+ * The list region uses `flex-col-reverse` so the source array's
+ * insertion order maps to bottom-up rendering: the first added source
+ * is closest to the footer, the most-recent at the top of the list.
+ * This matches the user's stated stacking direction.
  */
 
 import { useSourcesStore, type ConcordSource } from "../../stores/sources";
@@ -39,33 +62,17 @@ export function SourcesPanel({
   };
 
   return (
-    <div className="h-full bg-surface-container-low overflow-y-auto overflow-x-hidden overscroll-y-auto p-4 flex flex-col">
-      <h3 className="text-xs font-label font-medium text-on-surface-variant uppercase tracking-widest px-1 mb-4">
+    <div className="h-full bg-surface-container-low overflow-hidden flex flex-col">
+      {/* Header */}
+      <h3 className="text-xs font-label font-medium text-on-surface-variant uppercase tracking-widest px-5 pt-4 pb-2 flex-shrink-0">
         Sources
       </h3>
 
-      {sources.length === 0 ? (
-        // Empty state — first-launch experience
-        <div className="flex-1 flex flex-col items-center justify-center text-center px-4">
-          <span className="material-symbols-outlined text-5xl text-on-surface-variant/30 mb-4">
-            hub
-          </span>
-          <h2 className="text-lg font-headline font-semibold text-on-surface mb-2">
-            No sources connected
-          </h2>
-          <p className="text-sm text-on-surface-variant font-body mb-6 max-w-[280px]">
-            Connect to a Concord instance to see servers, channels, and start chatting.
-          </p>
-          <button
-            onClick={onAddSource}
-            className="primary-glow text-on-primary px-6 py-3 rounded-xl font-headline font-semibold hover:brightness-110 shadow-lg shadow-primary/20 transition-all active:scale-95"
-          >
-            + Add Source
-          </button>
-        </div>
-      ) : (
-        // Connected sources list
-        <div className="space-y-2 flex-1">
+      {/* List region — scrollable, sources stack from bottom upward.
+          `flex-col-reverse` so insertion order in the array maps to
+          bottom-up rendering. */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-3">
+        <div className="flex flex-col-reverse gap-2 py-2">
           {sources.map((source) => (
             <div
               key={source.id}
@@ -109,28 +116,32 @@ export function SourcesPanel({
               </button>
             </div>
           ))}
-
-          {/* Add more sources */}
-          <button
-            onClick={onAddSource}
-            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-dashed border-outline-variant/30 hover:border-primary/40 hover:bg-surface-container transition-colors text-on-surface-variant hover:text-on-surface active:scale-[0.98]"
-          >
-            <span className="material-symbols-outlined text-lg">add</span>
-            <span className="text-sm font-label font-medium">Add Source</span>
-          </button>
-
-          {/* Explore — discover new instances */}
-          {onExplore && (
-            <button
-              onClick={onExplore}
-              className="w-full flex items-center gap-3 px-3 py-3 rounded-xl bg-surface-container hover:bg-surface-container-high transition-colors text-on-surface-variant hover:text-on-surface active:scale-[0.98] mt-2"
-            >
-              <span className="material-symbols-outlined text-lg">explore</span>
-              <span className="text-sm font-label font-medium">Explore</span>
-            </button>
-          )}
         </div>
-      )}
+      </div>
+
+      {/* Footer — always visible at the bottom of the column.
+          The `+ Add Source` and `Explore` tiles live here so a fresh
+          launch with zero sources still presents both affordances,
+          and so they remain reachable as the source list grows. */}
+      <div className="flex-shrink-0 border-t border-outline-variant/10 px-3 py-3 space-y-2">
+        <button
+          onClick={onAddSource}
+          className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-dashed border-outline-variant/30 hover:border-primary/40 hover:bg-surface-container transition-colors text-on-surface-variant hover:text-on-surface active:scale-[0.98]"
+        >
+          <span className="material-symbols-outlined text-lg">add</span>
+          <span className="text-sm font-label font-medium">Add Source</span>
+        </button>
+
+        {onExplore && (
+          <button
+            onClick={onExplore}
+            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl bg-surface-container hover:bg-surface-container-high transition-colors text-on-surface-variant hover:text-on-surface active:scale-[0.98]"
+          >
+            <span className="material-symbols-outlined text-lg">explore</span>
+            <span className="text-sm font-label font-medium">Explore</span>
+          </button>
+        )}
+      </div>
     </div>
   );
 }

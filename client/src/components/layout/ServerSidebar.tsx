@@ -826,25 +826,21 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         );
       })}
 
-      {/* Explore federated servers — always rendered last so it
-          sits at the bottom of the natural flow. Federated servers
-          above it stack in reverse chronological order (first join
-          adjacent to this button, newest join at the top of the
-          federated section). When the sidebar overflows, the whole
-          list scrolls via the parent's overflow-y-auto. */}
-      <button
-        onClick={() => setExploreOpen(true)}
-        title="Explore"
-        aria-label="Explore federated servers"
-        className="btn-press w-12 h-12 rounded-2xl bg-surface-container-high text-on-surface-variant hover:bg-tertiary/15 hover:text-tertiary hover:rounded-xl flex items-center justify-center transition-all flex-shrink-0"
-      >
-        <span className="material-symbols-outlined text-xl">public</span>
-      </button>
+      {/* Explore button removed from desktop server rail per the
+          2026-04-11 user spec — Explore now lives at the bottom of
+          the Sources column (SourcesPanel's footer), opened by a
+          callback hoisted up to ChatLayout. The federated bridge
+          tiles still stack from the bottom of this rail upward, but
+          the catalog-discovery affordance moved to a more
+          appropriate column. */}
 
       </div>
       {/* Modals */}
       {showNewServer && <NewServerModal onClose={() => setShowNewServer(false)} />}
-      <ExploreModal isOpen={exploreOpen} onClose={() => setExploreOpen(false)} />
+      {/* ExploreModal mount removed from desktop ServerSidebar — it
+          is now mounted by ChatLayout because the open/close state
+          lives there too. The mobile render path below still owns
+          its own ExploreModal mount. */}
     </div>
   );
 });
