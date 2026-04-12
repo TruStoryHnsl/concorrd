@@ -13,6 +13,7 @@
 # "Rotate" admin action.
 config/discord-bridge.env
 config/mautrix-discord/registration.yaml
+config/mautrix-discord/config-runtime.yaml
 
 # Docker volume data
 data/

@@ -154,6 +154,15 @@ class TuwunelTomlInjectionError(BridgeConfigError):
     """
 
 
+class BridgeRuntimeConfigError(BridgeConfigError):
+    """Merge of template config.yaml with generated tokens failed.
+
+    Raised when :func:`write_bridge_runtime_config` cannot read the
+    operator-edited ``config.yaml`` template or cannot write the
+    resulting ``config-runtime.yaml``.
+    """
+
+
 # ---------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------
@@ -201,6 +210,19 @@ def registration_file_path() -> Path:
     tmp file and the target file share a directory.
     """
     return bridge_config_dir() / _REGISTRATION_FILE_NAME
+
+
+def runtime_config_file_path() -> Path:
+    """Full path to the generated ``config-runtime.yaml``.
+
+    This file is produced by :func:`write_bridge_runtime_config` by
+    merging the operator-edited ``config.yaml`` template with the
+    freshly-generated ``as_token`` / ``hs_token``. It is gitignored and
+    must never be committed — it contains live AS credentials. The bridge
+    container reads this file via ``entrypoint + command`` override in
+    ``docker-compose.yml``.
+    """
+    return bridge_config_dir() / "config-runtime.yaml"
 
 
 # ---------------------------------------------------------------------
@@ -511,6 +533,104 @@ def delete_registration_file(path: Path | None = None) -> bool:
     target.unlink()
     logger.info("bridge registration file removed: %s", target)
     return True
+
+
+# ---------------------------------------------------------------------
+# Runtime config generation (template + tokens → config-runtime.yaml)
+# ---------------------------------------------------------------------
+
+
+def write_bridge_runtime_config(
+    registration: DiscordBridgeRegistration,
+    *,
+    template_path: Path | None = None,
+    output_path: Path | None = None,
+) -> Path:
+    """Merge the operator config template with generated tokens.
+
+    The operator edits ``config/mautrix-discord/config.yaml`` (the
+    template) to set ``homeserver.domain``, ``discord.bot_token``, etc.
+    The bridge binary (v0.7.2) requires ``appservice.as_token`` and
+    ``appservice.hs_token`` in the config it reads on startup — these
+    cannot be absent or placeholder strings.
+
+    This function:
+    1. Reads the template (``config.yaml``) as YAML.
+    2. Injects ``appservice.as_token`` and ``appservice.hs_token`` from
+       the generated registration.
+    3. Writes the result atomically to ``config-runtime.yaml`` (gitignored).
+
+    The template is never mutated — the output file is always the
+    merged result. Calling this twice with the same registration is
+    idempotent (same output, same atomic swap). The bridge container
+    reads ``config-runtime.yaml`` via the ``entrypoint``/``command``
+    override in ``docker-compose.yml``; it never sees the template
+    directly.
+
+    Raises :class:`BridgeRuntimeConfigError` if the template is missing
+    or malformed, or if the output write fails.
+    """
+    config_dir = bridge_config_dir()
+    src = template_path or (config_dir / "config.yaml")
+    dst = output_path or runtime_config_file_path()
+
+    if not src.exists():
+        raise BridgeRuntimeConfigError(
+            f"Bridge config template not found at {src}. "
+            "Create config/mautrix-discord/config.yaml from the committed example."
+        )
+    try:
+        doc = yaml.safe_load(src.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise BridgeRuntimeConfigError(
+            f"Bridge config template at {src} is not valid YAML: {exc}"
+        ) from exc
+    if not isinstance(doc, dict):
+        raise BridgeRuntimeConfigError(
+            f"Bridge config template at {src} must be a YAML mapping."
+        )
+
+    # Inject tokens into the appservice section, creating it if absent.
+    if "appservice" not in doc or not isinstance(doc["appservice"], dict):
+        doc["appservice"] = {}
+    doc["appservice"]["as_token"] = registration.as_token
+    doc["appservice"]["hs_token"] = registration.hs_token
+
+    body = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False, allow_unicode=True)
+
+    try:
+        tmp_fd, tmp_path_str = tempfile.mkstemp(
+            prefix=".config-runtime-",
+            suffix=".yaml.tmp",
+            dir=str(dst.parent),
+        )
+    except OSError as exc:
+        raise BridgeRuntimeConfigError(
+            f"Cannot create tmp file in {dst.parent}: {exc}"
+        ) from exc
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp:
+            tmp.write(body)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.chmod(tmp_path, _REGISTRATION_FILE_MODE)  # 0640 — same as registration
+        os.replace(tmp_path, dst)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise BridgeRuntimeConfigError(
+            f"Failed to write runtime config at {dst}: {exc}"
+        ) from exc
+
+    logger.info(
+        "bridge runtime config written: %s",
+        redact_for_logging({"path": str(dst), "as_token": registration.as_token}),
+    )
+    return dst
 
 
 # ---------------------------------------------------------------------

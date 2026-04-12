@@ -66,6 +66,7 @@ from routers.admin import require_admin
 from routers.servers import get_user_id
 from services.bridge_config import (
     BridgeConfigError,
+    BridgeRuntimeConfigError,
     DiscordBridgeRegistration,
     RegistrationWriteError,
     TuwunelTomlInjectionError,
@@ -77,6 +78,7 @@ from services.bridge_config import (
     redact_for_logging,
     registration_file_path,
     remove_appservice_entry,
+    write_bridge_runtime_config,
     write_registration_file,
 )
 from services.docker_control import (
@@ -178,6 +180,13 @@ def _map_bridge_error(exc: BridgeConfigError) -> ConcordError:
             status_code=500,
             details={"hint": "check that config/tuwunel.toml is writeable by concord-api"},
         )
+    if isinstance(exc, BridgeRuntimeConfigError):
+        return ConcordError(
+            error_code="BRIDGE_RUNTIME_CONFIG",
+            message="Failed to generate the bridge runtime config.",
+            status_code=500,
+            details={"hint": "ensure config/mautrix-discord/config.yaml exists and is valid YAML"},
+        )
     return ConcordError(
         error_code="BRIDGE_INTERNAL",
         message="Bridge configuration step failed.",
@@ -255,6 +264,16 @@ async def _run_enable_steps(
         steps.append({"name": "write_registration", "status": "failed", "detail": str(exc)})
         return False, steps
     steps.append({"name": "write_registration", "status": "ok", "detail": None})
+
+    # Merge template config.yaml with tokens → config-runtime.yaml.
+    # The bridge binary reads config-runtime.yaml at startup (the
+    # entrypoint override in docker-compose bypasses docker-run.sh).
+    try:
+        write_bridge_runtime_config(registration)
+    except BridgeRuntimeConfigError as exc:
+        steps.append({"name": "write_runtime_config", "status": "failed", "detail": str(exc)})
+        return False, steps
+    steps.append({"name": "write_runtime_config", "status": "ok", "detail": None})
 
     try:
         ensure_appservice_entry(registration)
