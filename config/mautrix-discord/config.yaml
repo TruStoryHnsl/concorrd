@@ -45,7 +45,7 @@ appservice:
     max_open_conns: 20
     max_idle_conns: 2
 
-  id: concord_discord
+  id: concord_discord_2
   bot:
     username: discordbot
     displayname: Discord Bridge

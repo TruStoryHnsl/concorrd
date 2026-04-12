@@ -73,11 +73,11 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------
 
-DISCORD_BRIDGE_APPSERVICE_ID = "concord_discord"
+DISCORD_BRIDGE_APPSERVICE_ID = "concord_discord_2"
 """The ID used for the mautrix-discord bridge inside
-``[global.appservice.<ID>]``. Must be stable across rotations so the
-TOML injection is truly idempotent — changing this ID would leave an
-orphan stale table in ``tuwunel.toml`` that tuwunel would still load."""
+``[global.appservice.<ID>]``. If you change this ID, also update
+``config/mautrix-discord/config.yaml`` (appservice.id) and restart
+tuwunel so the new DB entry is created with the correct namespace."""
 
 DISCORD_BRIDGE_SENDER_LOCALPART = "discordbot"
 """MXID localpart for the bridge's sender user. Must match
@@ -87,10 +87,11 @@ using the as_token to look up the appservice record. The ``_discord_``
 prefix is reserved for virtual users (puppets); the bridge bot itself
 uses the plain ``discordbot`` name."""
 
-DISCORD_BRIDGE_USER_NAMESPACE_REGEX = r"@(discordbot|_discord_.*):"
-"""Exclusive namespace for bridged virtual users. The leading underscore
-is the industry convention that matches mautrix-bridges upstream and
-prevents collisions with non-bridge user ids."""
+DISCORD_BRIDGE_USER_NAMESPACE_REGEX = r"@(discordbot|_discord_[^:]*):concorrd\.com"
+"""Exclusive namespace for bridged virtual users. Anchored to the server
+name so the regex does not match users on federated homeservers. The
+leading underscore is mautrix-bridges convention for puppet users;
+``discordbot`` is the bridge's own sender bot."""
 
 DISCORD_BRIDGE_ALIAS_NAMESPACE_REGEX = r"#_discord_.*"
 """Exclusive namespace for bridged room aliases (DM rooms, guild
