@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "../../api/servitude";
+import { useAuthStore } from "../../stores/auth";
 import {
   discordBridgeSetBotToken,
   discordBridgeDisable,
@@ -8,8 +9,14 @@ import {
   discordBridgeListGuilds,
   discordBridgeGuild,
   discordBridgeUnbridgeGuild,
+  discordBridgeHttpStatus,
+  discordBridgeHttpEnable,
+  discordBridgeHttpDisable,
+  discordBridgeHttpRotate,
   type BridgeStatus,
   type DiscordGuild,
+  type HttpBridgeStatus,
+  type HttpBridgeMutationResponse,
 } from "../../api/bridges";
 import { DiscordTosModal } from "./DiscordTosModal";
 
@@ -34,6 +41,7 @@ type SetupStep = 1 | 2 | 3 | 4 | 5;
 
 export function BridgesTab() {
   const native = isTauri();
+  const accessToken = useAuthStore((s) => s.accessToken);
   const [status, setStatus] = useState<BridgeStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -126,22 +134,13 @@ export function BridgesTab() {
         </p>
       </div>
 
-      {!native && (
-        <div
-          className="rounded-md border border-outline-variant/30 bg-surface-container-high/40 px-4 py-3"
-          data-testid="bridges-browser-banner"
-        >
-          <p className="text-sm text-on-surface">
-            Bridge configuration is only available in the native Concord app.
-          </p>
-          <p className="text-xs text-on-surface-variant mt-1">
-            Install the desktop build and reopen this settings tab.
-          </p>
-        </div>
+      {/* Web/Docker bridge management — shown when not in native app */}
+      {!native && accessToken && (
+        <DockerBridgeSection accessToken={accessToken} />
       )}
 
-      {/* Discord Bridge Section */}
-      <div className="border border-outline-variant/20 rounded-lg overflow-hidden">
+      {/* Discord Bridge Section — native only */}
+      {native && <div className="border border-outline-variant/20 rounded-lg overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-low/60">
           <span className="text-xl">🎮</span>
           <div className="flex-1 min-w-0">
@@ -361,7 +360,7 @@ export function BridgesTab() {
             </StepBlock>
           </div>
         )}
-      </div>
+      </div>}
 
       {/* User-mode (Puppeting) Section — Wave 4b */}
       {native && (
@@ -382,8 +381,8 @@ export function BridgesTab() {
         </div>
       )}
 
-      {/* Error banner */}
-      {error && (
+      {/* Error banner — native only (web section handles its own errors) */}
+      {native && error && (
         <div
           className="rounded-md border border-error/30 bg-error/10 px-4 py-3"
           data-testid="bridge-error"
@@ -700,6 +699,260 @@ function UserModeSection({ onShowTos }: { onShowTos: () => void }) {
         Concord never touches your Discord token. It flows directly from
         Discord to the sandboxed bridge process.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Docker/web bridge management section.
+ *
+ * Uses the HTTP admin API (`/api/admin/bridges/discord/*`) to control
+ * the mautrix-discord container in the Concord docker-compose stack.
+ * Shown to admin users when running in the browser (non-native).
+ *
+ * The bot token is NOT managed here — it lives in
+ * `config/mautrix-discord/config.yaml` which is mounted into the
+ * container at deploy time. Instructions for configuring it are shown
+ * in the setup section.
+ */
+function DockerBridgeSection({ accessToken }: { accessToken: string }) {
+  const [status, setStatus] = useState<HttpBridgeStatus | null>(null);
+  const [lastResult, setLastResult] = useState<HttpBridgeMutationResponse | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+
+  const refresh = useCallback(async () => {
+    try {
+      const s = await discordBridgeHttpStatus(accessToken);
+      if (!mountedRef.current) return;
+      setStatus(s);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [accessToken]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    refresh();
+    return () => { mountedRef.current = false; };
+  }, [refresh]);
+
+  const handleEnable = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setLastResult(null);
+    try {
+      const result = await discordBridgeHttpEnable(accessToken);
+      if (!mountedRef.current) return;
+      setLastResult(result);
+      await refresh();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  }, [accessToken, refresh]);
+
+  const handleDisable = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setLastResult(null);
+    try {
+      const result = await discordBridgeHttpDisable(accessToken);
+      if (!mountedRef.current) return;
+      setLastResult(result);
+      await refresh();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  }, [accessToken, refresh]);
+
+  const handleRotate = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setLastResult(null);
+    try {
+      const result = await discordBridgeHttpRotate(accessToken);
+      if (!mountedRef.current) return;
+      setLastResult(result);
+      await refresh();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  }, [accessToken, refresh]);
+
+  return (
+    <div className="space-y-4" data-testid="docker-bridge-section">
+      {/* Status card */}
+      <div className="border border-outline-variant/20 rounded-lg overflow-hidden">
+        <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-low/60">
+          <span className="text-xl">🎮</span>
+          <div className="flex-1 min-w-0">
+            <h4 className="text-sm font-medium text-on-surface">Discord Bridge</h4>
+            <p className="text-xs text-on-surface-variant">
+              mautrix-discord container • managed via Docker
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {status === null ? (
+              <span className="text-xs text-on-surface-variant/50">Loading…</span>
+            ) : status.enabled ? (
+              <>
+                <span className="inline-flex items-center gap-1 text-xs text-green-500">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+                  Enabled
+                </span>
+                <button
+                  type="button"
+                  onClick={handleDisable}
+                  disabled={busy}
+                  data-testid="docker-bridge-disable-btn"
+                  className="px-3 py-1.5 bg-error/10 hover:bg-error/15 text-error text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
+                >
+                  {busy ? "…" : "Disable"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRotate}
+                  disabled={busy}
+                  data-testid="docker-bridge-rotate-btn"
+                  className="px-3 py-1.5 bg-surface-container-high hover:bg-surface-container-highest text-on-surface-variant text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
+                >
+                  Rotate tokens
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="inline-flex items-center gap-1 text-xs text-on-surface-variant/50">
+                  <span className="w-1.5 h-1.5 rounded-full bg-outline-variant/40 inline-block" />
+                  Disabled
+                </span>
+                <button
+                  type="button"
+                  onClick={handleEnable}
+                  disabled={busy}
+                  data-testid="docker-bridge-enable-btn"
+                  className="px-3 py-1.5 bg-primary/10 hover:bg-primary/15 text-primary text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
+                >
+                  {busy ? "…" : "Enable"}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Setup instructions — shown when disabled */}
+        {status !== null && !status.enabled && (
+          <div className="p-4 border-t border-outline-variant/10 space-y-3">
+            <p className="text-xs text-on-surface-variant">
+              Before enabling, make sure the Discord bot token is configured:
+            </p>
+            <ol className="text-xs text-on-surface-variant list-decimal list-inside space-y-1.5">
+              <li>
+                Create a Discord application at{" "}
+                <a
+                  href="https://discord.com/developers/applications"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline"
+                >
+                  discord.com/developers/applications
+                </a>
+              </li>
+              <li>
+                Enable <strong>Server Members Intent</strong> and{" "}
+                <strong>Message Content Intent</strong> in Bot settings
+              </li>
+              <li>
+                Add the bot token to{" "}
+                <code className="bg-surface-container-highest px-1 py-0.5 rounded text-on-surface text-[10px]">
+                  config/mautrix-discord/config.yaml
+                </code>{" "}
+                under <code className="bg-surface-container-highest px-1 py-0.5 rounded text-on-surface text-[10px]">appservice.bot.token</code>
+              </li>
+              <li>Invite the bot to your Discord server via OAuth2 URL Generator</li>
+              <li>Click <strong>Enable</strong> above</li>
+            </ol>
+          </div>
+        )}
+
+        {/* Step results */}
+        {lastResult && (
+          <div
+            className={`px-4 py-3 border-t text-xs space-y-1 ${
+              lastResult.ok
+                ? "border-primary/10 bg-primary/5"
+                : "border-error/10 bg-error/5"
+            }`}
+            data-testid="docker-bridge-result"
+          >
+            <p className={`font-medium ${lastResult.ok ? "text-primary" : "text-error"}`}>
+              {lastResult.message}
+            </p>
+            <div className="space-y-0.5 mt-1">
+              {lastResult.steps.map((step, i) => (
+                <div key={i} className="flex items-center gap-2 text-on-surface-variant">
+                  <span
+                    className={
+                      step.status === "ok"
+                        ? "text-green-500"
+                        : step.status === "failed"
+                        ? "text-error"
+                        : "text-on-surface-variant/40"
+                    }
+                  >
+                    {step.status === "ok" ? "✓" : step.status === "failed" ? "✗" : "–"}
+                  </span>
+                  <span>{step.name.replace(/_/g, " ")}</span>
+                  {step.detail && (
+                    <span className="text-on-surface-variant/60 truncate">{step.detail}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div className="px-4 py-3 border-t border-error/10 bg-error/5" data-testid="docker-bridge-error">
+            <p className="text-xs text-error font-medium">{error}</p>
+            <button
+              type="button"
+              onClick={() => { setError(null); refresh(); }}
+              className="mt-1 text-xs text-primary hover:underline"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Registration info — shown when enabled */}
+      {status?.enabled && status.appservice_id && (
+        <div className="rounded-md border border-outline-variant/15 bg-surface-container-low/40 px-4 py-3 space-y-1">
+          <p className="text-xs text-on-surface-variant font-medium">Registration</p>
+          <p className="text-[11px] text-on-surface-variant/70">
+            Appservice ID:{" "}
+            <code className="text-on-surface">{status.appservice_id}</code>
+          </p>
+          {status.sender_mxid_localpart && (
+            <p className="text-[11px] text-on-surface-variant/70">
+              Bot localpart:{" "}
+              <code className="text-on-surface">@{status.sender_mxid_localpart}:&lt;server&gt;</code>
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

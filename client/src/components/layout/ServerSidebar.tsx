@@ -27,7 +27,6 @@ import {
   useHighlightCounts,
 } from "../../hooks/useUnreadCounts";
 import { NewServerModal } from "../server/NewServerModal";
-import { ExploreModal } from "../server/ExploreModal";
 
 /**
  * INS-002B: Server-list drag reorder.
@@ -100,7 +99,6 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   const unreadCounts = useUnreadCounts();
   const highlightCounts = useHighlightCounts();
   const [showNewServer, setShowNewServer] = useState(false);
-  const [exploreOpen, setExploreOpen] = useState(false);
 
   // INS-002B: user-preferred order, loaded from localStorage keyed on the
   // current user id. Held in state so drag operations can optimistically
@@ -569,23 +567,9 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
           );
         })}
 
-        {/* Explore — always the last row in the natural flow.
-            Sidebar scrolls via the parent's overflow-y-auto when
-            content is too tall. */}
-        <button
-          onClick={() => setExploreOpen(true)}
-          className="btn-press w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-on-surface-variant hover:text-tertiary hover:bg-tertiary/5 transition-all flex-shrink-0"
-        >
-          <div className="w-10 h-10 rounded-xl bg-surface-container-highest flex items-center justify-center flex-shrink-0">
-            <span className="material-symbols-outlined text-xl">public</span>
-          </div>
-          <span className="font-body font-medium">Explore</span>
-        </button>
-
         </div>
         {/* Modals — outside both scroll regions */}
         {showNewServer && <NewServerModal onClose={() => setShowNewServer(false)} />}
-        <ExploreModal isOpen={exploreOpen} onClose={() => setExploreOpen(false)} />
       </div>
     );
   }

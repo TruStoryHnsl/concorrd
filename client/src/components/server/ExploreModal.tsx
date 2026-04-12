@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { IPublicRoomsChunkRoom } from "matrix-js-sdk";
 import { useAuthStore } from "../../stores/auth";
 import { useToastStore } from "../../stores/toast";
+import { useSourcesStore } from "../../stores/sources";
 import { listExploreServers } from "../../api/concord";
 import type { ExploreServerEntry } from "../../api/concord";
 
@@ -39,6 +40,7 @@ export function ExploreModal({ isOpen, onClose }: Props) {
   const client = useAuthStore((s) => s.client);
   const accessToken = useAuthStore((s) => s.accessToken);
   const addToast = useToastStore((s) => s.addToast);
+  const sources = useSourcesStore((s) => s.sources);
   const [serversState, setServersState] = useState<ServersLoadState>({
     status: "idle",
   });
@@ -66,15 +68,38 @@ export function ExploreModal({ isOpen, onClose }: Props) {
     }
     setServersState({ status: "loading" });
     try {
-      const entries = await listExploreServers(accessToken);
-      setServersState({ status: "success", entries });
+      const apiEntries = await listExploreServers(accessToken);
+      // Merge connected sources into the server list. Sources are Concord
+      // instances the user has added — they're browseable Matrix homeservers
+      // even if they don't appear in the local federation allowlist.
+      const sourceDomains = new Set(apiEntries.map((e) => e.domain.toLowerCase()));
+      const sourceEntries: ExploreServerEntry[] = sources
+        .filter((s) => s.enabled && !sourceDomains.has(s.host.toLowerCase()))
+        .map((s) => ({
+          domain: s.host,
+          name: s.instanceName ?? s.host,
+          description: "Connected source",
+        }));
+      setServersState({ status: "success", entries: [...sourceEntries, ...apiEntries] });
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to load federated servers";
-      setServersState({ status: "error", message });
-      addToast(message, "error");
+      // API failed — fall back to just showing sources
+      const sourceEntries: ExploreServerEntry[] = sources
+        .filter((s) => s.enabled)
+        .map((s) => ({
+          domain: s.host,
+          name: s.instanceName ?? s.host,
+          description: "Connected source",
+        }));
+      if (sourceEntries.length > 0) {
+        setServersState({ status: "success", entries: sourceEntries });
+      } else {
+        const message =
+          err instanceof Error ? err.message : "Failed to load federated servers";
+        setServersState({ status: "error", message });
+        addToast(message, "error");
+      }
     }
-  }, [accessToken, addToast]);
+  }, [accessToken, addToast, sources]);
 
   const loadRooms = useCallback(
     async (server: string) => {

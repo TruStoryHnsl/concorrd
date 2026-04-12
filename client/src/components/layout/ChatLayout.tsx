@@ -481,7 +481,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const renderDesktopLayout = () => {
     const extensionActive = !!activeExtension && !dmActive;
     const showSidebar = !extensionActive || !sidebarCollapsed;
-    const sources = useSourcesStore((s) => s.sources);
 
     return (
       <div className="h-full flex overflow-hidden bg-surface text-on-surface">
@@ -492,54 +491,14 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             up narrower than the columns above it. */}
         <div className="flex flex-col min-h-0 flex-shrink-0">
           <div className="flex flex-1 min-h-0">
-            {/* Sources column — native desktop only. Narrow icon
-                column with one tile per connected source, an
-                `+ Add Source` tile, and an Explore tile at the
-                bottom. The wider SourcesPanel component is used on
-                MOBILE (and the picker overlay), not here. Hidden on
-                web builds because the browser's origin IS the
-                source and a picker column has no meaning. */}
-            {isNativeApp && (
-              <div className="w-14 flex-shrink-0 bg-surface-container-low border-r border-outline-variant/10 flex flex-col items-center py-2 gap-2 overflow-y-auto">
-                {/* Source tiles — stack from the bottom upward via
-                    flex-col-reverse so the most recently added
-                    source sits closest to the footer. */}
-                <div className="flex flex-col-reverse gap-2 w-full items-center flex-1">
-                  {sources.map((source) => (
-                    <button
-                      key={source.id}
-                      onClick={() => useSourcesStore.getState().toggleSource(source.id)}
-                      title={`${source.instanceName || source.host}${source.enabled ? " (click to hide)" : " (click to show)"}`}
-                      className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-150 flex-shrink-0 ${
-                        source.enabled
-                          ? "bg-surface-container-high hover:bg-surface-container-highest text-on-surface ring-1 ring-primary/30"
-                          : "bg-surface-container-low text-on-surface-variant/30"
-                      }`}
-                    >
-                      <span className="text-xs font-headline font-bold uppercase">
-                        {(source.instanceName || source.host).slice(0, 2)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                {/* Footer: + Add Source, Explore. Always visible. */}
-                <button
-                  onClick={openAddSource}
-                  title="Add source"
-                  className="w-10 h-10 rounded-xl border border-dashed border-outline-variant/30 hover:border-primary/40 hover:bg-surface-container flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-colors flex-shrink-0"
-                >
-                  <span className="material-symbols-outlined text-lg">add</span>
-                </button>
-                <button
-                  onClick={openExplore}
-                  title="Explore federated servers"
-                  aria-label="Explore"
-                  className="w-10 h-10 rounded-xl bg-surface-container hover:bg-surface-container-high flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-colors flex-shrink-0"
-                >
-                  <span className="material-symbols-outlined text-lg">explore</span>
-                </button>
-              </div>
-            )}
+            {/* Sources column — shown on all builds (web and native).
+                On web, the Concord instance at the current origin is
+                auto-populated as the single source. On native, this
+                shows all connected Concord instances. Explore tile
+                lives in the SourcesPanel footer per the 2026-04-11 spec. */}
+            <div className="w-52 flex-shrink-0 border-r border-outline-variant/10">
+              <SourcesPanel onAddSource={openAddSource} onExplore={openExplore} />
+            </div>
 
             {/* Sidebar collapse toggle — visible when extension is active */}
             {extensionActive && (
@@ -812,6 +771,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                 <SourcesPanel
                   onAddSource={openAddSource}
                   onSourceSelect={() => scrollToPanel(1)}
+                  onExplore={openExplore}
                 />
               </div>
             )}

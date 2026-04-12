@@ -76,9 +76,13 @@ export function SettingsPanel() {
       tabs.push({ key: "node", label: "Node", icon: "dns", group: "user" });
       tabs.push({ key: "bridges", label: "Bridges", icon: "hub", group: "user" });
     }
+    // Show bridges tab on web too when user is admin (docker bridge management)
+    if (!isTauri && isAdmin) {
+      tabs.push({ key: "bridges", label: "Bridges", icon: "hub", group: "user" });
+    }
     tabs.push({ key: "about", label: "About", icon: "info", group: "user" });
     return tabs;
-  }, [isTauri, isMobile]);
+  }, [isTauri, isMobile, isAdmin]);
 
   // Server settings tabs — only when a server is selected
   const serverTabs = useMemo(() => {

@@ -22,15 +22,41 @@ if (isNative) {
 // Initialize server URL before rendering (resolves immediately in web mode,
 // loads from Tauri store in desktop mode)
 initServerUrl().then(() => {
-  // INS-020: On native first launch, auto-populate the Sources store
-  // from the active session (serverConfig + federated instances).
+  // INS-020: Auto-populate the Sources store on startup.
   // Runs once — if sources are already populated, this is a no-op.
-  // Must run AFTER initServerUrl (which hydrates the legacy server URL)
-  // and AFTER zustand persist middleware has hydrated from localStorage.
-  if (isNative) {
-    // Small delay to ensure zustand persist hydration is complete
-    setTimeout(() => useSourcesStore.getState().migrateFromSession(), 0);
-  }
+  // Must run AFTER initServerUrl and AFTER zustand persist hydration.
+  setTimeout(() => {
+    if (isNative) {
+      // Native: populate from persisted serverConfig (picker-confirm writes it)
+      useSourcesStore.getState().migrateFromSession();
+    } else if (typeof window !== "undefined") {
+      // Web: origin IS the source. Build config from page location so the
+      // Sources panel shows the current Concord instance without a picker.
+      const { hostname, origin } = window.location;
+      if (hostname) {
+        useSourcesStore.getState().ensurePrimarySource({
+          host: hostname,
+          api_base: `${origin}/api`,
+          homeserver_url: origin,
+          instance_name: undefined,
+        });
+        // Async: try to get instance_name from well-known, then update
+        fetch("/.well-known/concord/client")
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+          .then((body: { instance_name?: string } | null) => {
+            if (body?.instance_name) {
+              useSourcesStore.getState().ensurePrimarySource({
+                host: hostname,
+                api_base: `${origin}/api`,
+                homeserver_url: origin,
+                instance_name: body.instance_name,
+              });
+            }
+          });
+      }
+    }
+  }, 0);
 
   createRoot(document.getElementById("root")!).render(
     <StrictMode>

@@ -1,13 +1,112 @@
 /**
- * Discord bridge control surface — typed wrappers for the Tauri bridge
- * commands added in INS-024 Wave 4.
+ * Discord bridge control surface.
  *
- * Mirrors the pattern in `servitude.ts`: each function guards against
- * non-Tauri (browser) environments and returns a typed result. The Rust
- * side lives in `src-tauri/src/bridge_commands.rs`.
+ * Two paths:
+ *
+ * 1. Native (Tauri): typed wrappers around Tauri bridge commands
+ *    (`src-tauri/src/bridge_commands.rs`). For standalone Concord installs.
+ *
+ * 2. Web / Docker: typed wrappers around the Concord API HTTP endpoints
+ *    (`/api/admin/bridges/discord/*`). For the docker-compose deployment.
+ *    Uses the same admin-gated REST surface as the server's bridge management
+ *    (admin_bridges.py).
  */
 
+import { getApiBase } from "./serverUrl";
 import { isTauri } from "./servitude";
+
+// ---------------------------------------------------------------------------
+// HTTP API types (docker / web path)
+// ---------------------------------------------------------------------------
+
+export interface HttpBridgeStatus {
+  enabled: boolean;
+  appservice_id: string | null;
+  sender_mxid_localpart: string | null;
+  user_namespace_regex: string | null;
+  alias_namespace_regex: string | null;
+  registration_file_path: string | null;
+}
+
+export interface HttpBridgeMutationStep {
+  name: string;
+  status: "ok" | "skipped" | "failed";
+  detail: string | null;
+}
+
+export interface HttpBridgeMutationResponse {
+  action: "enable" | "disable" | "rotate";
+  ok: boolean;
+  steps: HttpBridgeMutationStep[];
+  message: string;
+}
+
+async function bridgeApiFetch<T>(
+  path: string,
+  accessToken: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const resp = await fetch(`${getApiBase()}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+      ...((options.headers as Record<string, string>) ?? {}),
+    },
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    const message =
+      typeof err.detail === "string"
+        ? err.detail
+        : err.error ?? "API error";
+    throw new Error(message);
+  }
+  return resp.json();
+}
+
+// ---------------------------------------------------------------------------
+// HTTP bridge API (docker / web)
+// ---------------------------------------------------------------------------
+
+export async function discordBridgeHttpStatus(
+  accessToken: string,
+): Promise<HttpBridgeStatus> {
+  return bridgeApiFetch<HttpBridgeStatus>(
+    "/admin/bridges/discord/status",
+    accessToken,
+  );
+}
+
+export async function discordBridgeHttpEnable(
+  accessToken: string,
+): Promise<HttpBridgeMutationResponse> {
+  return bridgeApiFetch<HttpBridgeMutationResponse>(
+    "/admin/bridges/discord/enable",
+    accessToken,
+    { method: "POST", body: "{}" },
+  );
+}
+
+export async function discordBridgeHttpDisable(
+  accessToken: string,
+): Promise<HttpBridgeMutationResponse> {
+  return bridgeApiFetch<HttpBridgeMutationResponse>(
+    "/admin/bridges/discord/disable",
+    accessToken,
+    { method: "POST", body: "{}" },
+  );
+}
+
+export async function discordBridgeHttpRotate(
+  accessToken: string,
+): Promise<HttpBridgeMutationResponse> {
+  return bridgeApiFetch<HttpBridgeMutationResponse>(
+    "/admin/bridges/discord/rotate",
+    accessToken,
+    { method: "POST", body: "{}" },
+  );
+}
 
 /**
  * Bridge status shape returned by `discord_bridge_status`.
