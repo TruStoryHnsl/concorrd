@@ -79,10 +79,13 @@ DISCORD_BRIDGE_APPSERVICE_ID = "concord_discord"
 TOML injection is truly idempotent — changing this ID would leave an
 orphan stale table in ``tuwunel.toml`` that tuwunel would still load."""
 
-DISCORD_BRIDGE_SENDER_LOCALPART = "_discord_bot"
-"""MXID localpart for the bridge's sender user. Matches mautrix-discord
-default (``appservice.bot_username`` in mautrix-discord's config.yaml)
-so the two sides agree without explicit config plumbing."""
+DISCORD_BRIDGE_SENDER_LOCALPART = "discordbot"
+"""MXID localpart for the bridge's sender user. Must match
+``appservice.bot.username`` in ``config/mautrix-discord/config.yaml``
+exactly — tuwunel validates the /register username against this value
+using the as_token to look up the appservice record. The ``_discord_``
+prefix is reserved for virtual users (puppets); the bridge bot itself
+uses the plain ``discordbot`` name."""
 
 DISCORD_BRIDGE_USER_NAMESPACE_REGEX = r"@_discord_.*"
 """Exclusive namespace for bridged virtual users. The leading underscore
@@ -463,6 +466,7 @@ class DiscordBridgeRegistration:
         identity.
         """
         return {
+            "id": self.id,  # tuwunel 1.5+ validates id field matches section key
             "url": self.url,
             "as_token": self.as_token,
             "hs_token": self.hs_token,
