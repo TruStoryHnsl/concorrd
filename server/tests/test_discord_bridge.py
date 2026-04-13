@@ -52,6 +52,16 @@ def bridge_tmp_dir(
 
     from services import bridge_config as bc_mod
 
+    (cfg / "mautrix-discord" / "config.yaml").write_text(
+        "homeserver: {}\nappservice: {}\ndiscord: {}\n",
+        encoding="utf-8",
+    )
+    (cfg / "mautrix-discord" / "bot-token").write_text(
+        "test-discord-bot-token",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bc_mod.os, "chown", lambda *_args, **_kwargs: None)
+
     tuwunel_path = tmp_path / "tuwunel.toml"
     # ``ensure_appservice_entry`` reads TUWUNEL_CONFIG_PATH from the
     # module namespace at call time, so monkeypatch on the module.
@@ -76,6 +86,14 @@ def mock_docker(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
     monkeypatch.setattr(ab_mod, "start_compose_service", start_mock)
     monkeypatch.setattr(ab_mod, "stop_compose_service", stop_mock)
     return {"restart": restart_mock, "start": start_mock, "stop": stop_mock}
+
+
+class _FakeDiscordResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
 
 
 # ---------------------------------------------------------------------
@@ -152,6 +170,37 @@ async def test_status_reports_disabled_when_no_registration(
     logout()
 
 
+async def test_get_channel_classifies_voice_channel(
+    client: AsyncClient,
+    bridge_tmp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from routers import admin_bridges as ab_mod
+
+    def fake_urlopen(_req: object, timeout: int = 10) -> _FakeDiscordResponse:
+        assert timeout == 10
+        return _FakeDiscordResponse({
+            "id": "234567890123456789",
+            "guild_id": "123456789012345678",
+            "name": "General Voice",
+            "type": 2,
+        })
+
+    monkeypatch.setattr(ab_mod.urllib.request, "urlopen", fake_urlopen)
+
+    login_as("@test_admin:test.local")
+    resp = await client.get("/api/admin/bridges/discord/channels/234567890123456789")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "id": "234567890123456789",
+        "guild_id": "123456789012345678",
+        "name": "General Voice",
+        "type": 2,
+        "kind": "voice",
+    }
+    logout()
+
+
 # ---------------------------------------------------------------------
 # POST /enable
 # ---------------------------------------------------------------------
@@ -177,7 +226,9 @@ async def test_enable_writes_registration_then_tuwunel_then_restarts(
     assert body["ok"] is True
     step_names = [s["name"] for s in body["steps"]]
     assert step_names == [
+        "check_bot_token",
         "write_registration",
+        "write_runtime_config",
         "inject_tuwunel_toml",
         "restart_conduwuit",
         "start_bridge",
@@ -354,7 +405,7 @@ async def test_tokens_never_appear_in_status_response(
     login_as("@test_admin:test.local")
     await client.post("/api/admin/bridges/discord/enable", json={})
 
-    from services.bridge_config import read_registration_file
+    from services.bridge_config import DISCORD_BRIDGE_APPSERVICE_ID, read_registration_file
 
     reg = read_registration_file()
     assert reg is not None
@@ -365,7 +416,7 @@ async def test_tokens_never_appear_in_status_response(
     assert reg.hs_token not in raw, "hs_token leaked into status response"
     body = resp.json()
     assert body["enabled"] is True
-    assert body["appservice_id"] == "concord_discord"
+    assert body["appservice_id"] == DISCORD_BRIDGE_APPSERVICE_ID
     logout()
 
 

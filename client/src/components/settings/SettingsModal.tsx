@@ -84,9 +84,15 @@ export function SettingsPanel() {
     return tabs;
   }, [isTauri, isMobile, isAdmin]);
 
-  // Server settings tabs — only when a server is selected
+  // Server settings tabs — only for API-backed servers (not synthetic bridge/federated)
   const serverTabs = useMemo(() => {
     if (!activeServer) return [];
+    if (activeServer.bridgeType === "discord") {
+      return [{ key: "server-bridge", label: "Discord", icon: "hub", group: "server" as const }];
+    }
+    if (activeServer.federated) {
+      return [{ key: "server-federation", label: "Federation", icon: "language", group: "server" as const }];
+    }
     const tabs: TabDef[] = [
       { key: "server-general", label: "General", icon: "settings", group: "server" },
       { key: "server-members", label: "Members", icon: "group", group: "server" },
@@ -117,6 +123,12 @@ export function SettingsPanel() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [close]);
+
+  useEffect(() => {
+    if (!serverSettingsId || serverTabs.length === 0) return;
+    if (serverTabs.some((tab) => tab.key === activeTab)) return;
+    setTab(serverTabs[0].key as typeof activeTab);
+  }, [activeTab, serverSettingsId, serverTabs, setTab]);
 
   const adminTab: TabDef | null = isAdmin
     ? { key: "admin", label: "Admin", icon: "shield_person", group: "user" }

@@ -3,7 +3,8 @@
  *
  * Design: narrow dark column (w-14), square tiles per source,
  * no text labels. Each tile has a title tooltip. Active source
- * gets a white left-side pill indicator. Footer: Add + Explore tiles.
+ * gets a white left-side pill indicator. Header: Explore. Footer:
+ * Add Source below the registered source stack.
  *
  * Tile colors:
  *   concord / default → primary brand color, first letter
@@ -43,11 +44,7 @@ function sourceTile(source: ConcordSource): {
     default:
       return {
         bg: "bg-primary",
-        icon: (
-          <span className="text-on-primary text-sm font-bold">
-            {label.charAt(0).toUpperCase()}
-          </span>
-        ),
+        icon: <span className="text-on-primary text-sm font-bold">{label.charAt(0).toUpperCase()}</span>,
         label,
       };
   }
@@ -76,12 +73,26 @@ export function SourcesPanel({
     onSourceOpen?.(id);
   };
 
-  // Render sources bottom-up: latest addition at top of list, but we
-  // keep insertion order and rely on flex-col-reverse for bottom-up stacking.
   return (
-    <div className="h-full w-full bg-neutral-950 flex flex-col items-center py-3 gap-0">
-      {/* Source tiles — scrollable, bottom-up */}
-      <div className="flex-1 min-h-0 overflow-y-auto w-full flex flex-col-reverse items-center gap-2 py-1 scrollbar-none">
+    <div className="h-full w-full bg-surface flex flex-col items-center py-3 gap-0">
+      <div className="flex-shrink-0 flex flex-col items-center gap-2 pb-2 pt-1">
+        {onExplore && (
+          <button
+            onClick={onExplore}
+            title="Explore"
+            className="w-10 h-10 rounded-xl hover:rounded-2xl bg-surface-container-high hover:bg-surface-container-highest flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-all duration-150"
+          >
+            <span className="material-symbols-outlined text-xl">explore</span>
+          </button>
+        )}
+      </div>
+
+      {(onExplore || sources.length > 0) && (
+        <div className="w-8 h-px bg-outline-variant/20 flex-shrink-0 my-1" />
+      )}
+
+      {/* Source tiles — scrollable, top-down */}
+      <div className="flex-1 min-h-0 overflow-y-auto w-full flex flex-col items-center gap-2 py-1 scrollbar-none">
         {sources.map((source) => {
           const { bg, icon, label } = sourceTile(source);
           const isActive = activeId === source.id;
@@ -112,29 +123,14 @@ export function SourcesPanel({
         })}
       </div>
 
-      {/* Divider */}
-      {sources.length > 0 && (
-        <div className="w-8 h-px bg-white/15 flex-shrink-0 my-1" />
-      )}
-
-      {/* Footer tiles: Add Source + Explore */}
-      <div className="flex-shrink-0 flex flex-col items-center gap-2 pb-1 pt-1">
+      <div className="flex-shrink-0 pt-2">
         <button
           onClick={onAddSource}
           title="Add Source"
-          className="w-10 h-10 rounded-xl hover:rounded-2xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/60 hover:text-white transition-all duration-150"
+          className="w-10 h-10 rounded-xl hover:rounded-2xl bg-surface-container-high hover:bg-surface-container-highest flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-all duration-150"
         >
           <span className="material-symbols-outlined text-xl">add</span>
         </button>
-        {onExplore && (
-          <button
-            onClick={onExplore}
-            title="Explore"
-            className="w-10 h-10 rounded-xl hover:rounded-2xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/60 hover:text-white transition-all duration-150"
-          >
-            <span className="material-symbols-outlined text-xl">explore</span>
-          </button>
-        )}
       </div>
     </div>
   );

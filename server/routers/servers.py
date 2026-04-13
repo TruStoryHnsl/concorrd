@@ -628,8 +628,8 @@ async def delete_server(
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a server. Owner only. Cascades to channels, members, invites, soundboard clips."""
-    await require_server_owner(server_id, user_id, db)
+    """Delete a server. Owner/admin. Cascades to channels, members, invites, soundboard clips."""
+    await require_server_admin(server_id, user_id, db)
 
     server = await db.get(Server, server_id)
     if not server:

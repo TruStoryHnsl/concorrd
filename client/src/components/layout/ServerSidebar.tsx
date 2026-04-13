@@ -18,10 +18,9 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useServerStore } from "../../stores/server";
-import { useSourcesStore } from "../../stores/sources";
-import { useServerConfigStore } from "../../stores/serverConfig";
 import { useDMStore } from "../../stores/dm";
 import { useAuthStore } from "../../stores/auth";
+import { useSourcesStore } from "../../stores/sources";
 import {
   useUnreadCounts,
   useHighlightCounts,
@@ -140,42 +139,44 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   // (extracted from the synthetic server id or room id).
   // `__TAURI_INTERNALS__` — canonical Tauri v2 global. See the
   // explanation in `client/src/api/serverUrl.ts`.
-  const isNative =
-    typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const allSources = useSourcesStore((s) => s.sources);
-  const primaryHost = useServerConfigStore((s) => s.config?.host ?? "");
-  const enabledHosts = useMemo(() => {
-    if (!isNative) return null; // web: no source filtering
-    const hosts = new Set<string>();
-    for (const src of allSources) {
-      if (src.enabled) hosts.add(src.host.toLowerCase());
-    }
-    return hosts;
-  }, [isNative, allSources]);
 
-  // Is the primary Concord instance enabled?
-  const primaryEnabled = !enabledHosts || enabledHosts.has(primaryHost.toLowerCase());
+  // Which source platforms are enabled? Each platform type is independent.
+  const enabledPlatforms = useMemo(() => {
+    const platforms = new Set<string>();
+    for (const src of allSources) {
+      if (src.enabled) platforms.add(src.platform ?? "concord");
+    }
+    // Bootstrap: no sources yet → show concord servers
+    if (allSources.length === 0) platforms.add("concord");
+    return platforms;
+  }, [allSources]);
 
   const localServers = useMemo(
     () => {
-      const all = servers.filter((s) => s.federated !== true);
-      return primaryEnabled ? all : [];
+      return servers.filter((s) => {
+        if (s.federated) return false;
+        if (s.bridgeType === "discord") {
+          return enabledPlatforms.has("discord-bot") || enabledPlatforms.has("discord-account");
+        }
+        // Native Concord servers
+        return enabledPlatforms.has("concord");
+      });
     },
-    [servers, primaryEnabled],
+    [servers, enabledPlatforms],
   );
   const federatedServers = useMemo(
     () => {
-      const all = servers.filter((s) => s.federated === true);
-      if (!enabledHosts) return all; // web: show all
-      return all.filter((s) => {
-        // Extract hostname from the server's first channel room_id
-        // format: "!xxx:hostname" → hostname
-        const roomId = s.channels?.[0]?.matrix_room_id ?? "";
-        const hostPart = roomId.split(":")[1]?.toLowerCase() ?? "";
-        return enabledHosts.has(hostPart);
+      return servers.filter((s) => {
+        if (!s.federated) return false;
+        if (s.bridgeType === "discord") {
+          return enabledPlatforms.has("discord-bot") || enabledPlatforms.has("discord-account");
+        }
+        // Matrix federated servers
+        return enabledPlatforms.has("matrix");
       });
     },
-    [servers, enabledHosts],
+    [servers, enabledPlatforms],
   );
 
   // Compute the display order for CONCORD servers only: any server
@@ -582,9 +583,8 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   // `flex-shrink: 1` causes tiles to squish before the scrollbar
   // ever appears.
   return (
-    <div className="w-16 bg-surface" style={{ height: "100%" }}>
-      {/* ── Top scroll region: DMs + local servers ── */}
-      <div className="overflow-y-auto overflow-x-hidden py-3 flex flex-col items-center gap-2 [&>*]:shrink-0" style={{ height: "50%" }}>
+    <div className="w-14 bg-surface" style={{ height: "100%" }}>
+      <div className="h-full overflow-y-auto overflow-x-hidden py-3 flex flex-col items-center gap-2 [&>*]:shrink-0">
       {/* DM button */}
       <div className="relative group">
         <div className={`absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-r-full bg-primary transition-all ${
@@ -631,11 +631,8 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
             // `isFromConcordFederation` as the explicit flag so the
             // styling branches stay readable.
             const isFromConcordFederation = concordFederatedIds.has(server.id);
+            const isDiscordBridge = server.bridgeType === "discord";
             const isDisconnected = !syncing;
-            // Status dot precedence: disconnected (red) > needs attention
-            // (yellow) > unread (primary). Only ONE dot renders at a time.
-            // The green "members online" dot was removed — activity is now
-            // surfaced at the channel row level inside ChannelSidebar.
             const statusDot = isDisconnected
               ? "red"
               : hasHighlight
@@ -643,6 +640,8 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
                 : hasUnreads
                   ? "unread"
                   : null;
+            // Color scheme: Discord = blurple, Concord-fed = secondary, default = primary
+            const accentBar = isDiscordBridge ? "bg-[#5865F2]" : isFromConcordFederation ? "bg-secondary" : "bg-primary";
             return (
               <SortableServerRow
                 key={server.id}
@@ -654,57 +653,47 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
                     isDisconnected ? "opacity-55 grayscale" : ""
                   }`}
                 >
-                  {/* Active indicator bar — secondary palette for
-                      Concord-federated tiles so the left rail hint
-                      matches the tile's highlight treatment, primary
-                      for native local servers. */}
-                  <div className={`absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-r-full transition-all ${
-                    isFromConcordFederation ? "bg-secondary" : "bg-primary"
-                  } ${
+                  <div className={`absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-r-full transition-all ${accentBar} ${
                     isActive ? "h-8" : hasUnreads ? "h-2" : "h-0 group-hover:h-5"
                   }`} />
                   <button
                     onClick={() => handleServerClick(server.id)}
                     title={
                       isDisconnected
-                        ? `${server.name} — disconnected (drag to reorder)`
-                        : isFromConcordFederation
-                          ? `${server.name} — another Concord instance (drag to reorder)`
-                          : `${server.name} — drag to reorder`
+                        ? `${server.name} — disconnected`
+                        : isDiscordBridge
+                          ? `${server.name} — Discord`
+                          : server.name
                     }
-                    aria-label={
-                      isFromConcordFederation
-                        ? `${server.name} (Concord instance)`
-                        : server.name
-                    }
+                    aria-label={server.name}
                     className={`btn-press w-12 h-12 flex items-center justify-center text-sm font-headline font-bold transition-all ${
                       isActive
-                        ? isFromConcordFederation
-                          ? "bg-secondary text-on-secondary rounded-xl shadow-[0_0_12px_rgba(120,220,180,0.35)]"
-                          : "primary-glow text-on-primary rounded-xl"
-                        : isFromConcordFederation
-                          ? "bg-secondary/15 text-secondary rounded-2xl hover:rounded-xl hover:bg-secondary/25 ring-1 ring-secondary/40"
-                          : "bg-surface-container-high text-on-surface-variant rounded-2xl hover:rounded-xl hover:bg-surface-container-highest hover:text-on-surface"
+                        ? isDiscordBridge
+                          ? "bg-[#5865F2] text-white rounded-xl shadow-[0_0_12px_rgba(88,101,242,0.4)]"
+                          : isFromConcordFederation
+                            ? "bg-secondary text-on-secondary rounded-xl shadow-[0_0_12px_rgba(120,220,180,0.35)]"
+                            : "primary-glow text-on-primary rounded-xl"
+                        : isDiscordBridge
+                          ? "bg-[#5865F2]/20 text-[#5865F2] rounded-2xl hover:rounded-xl hover:bg-[#5865F2]/35 ring-1 ring-[#5865F2]/40"
+                          : isFromConcordFederation
+                            ? "bg-secondary/15 text-secondary rounded-2xl hover:rounded-xl hover:bg-secondary/25 ring-1 ring-secondary/40"
+                            : "bg-surface-container-high text-on-surface-variant rounded-2xl hover:rounded-xl hover:bg-surface-container-highest hover:text-on-surface"
                     }`}
                   >
                     {server.abbreviation || server.name.charAt(0).toUpperCase()}
                   </button>
-                  {isFromConcordFederation && (
-                    /* Small "C" monogram badge at top-left marks this
-                       tile as another Concord instance reached via
-                       federation. Same treatment the bottom-stack
-                       Concord-federated tiles used to carry, ported
-                       up so the visual language stays consistent. */
+                  {(isDiscordBridge || isFromConcordFederation) && (
                     <div
-                      className="absolute -top-0.5 -left-0.5 w-4 h-4 bg-secondary rounded-full border-2 border-surface flex items-center justify-center"
+                      className={`absolute -top-0.5 -left-0.5 w-4 h-4 rounded-full border-2 border-surface flex items-center justify-center ${
+                        isDiscordBridge ? "bg-[#5865F2]" : "bg-secondary"
+                      }`}
                       aria-hidden="true"
                     >
-                      <span
-                        className="font-headline font-bold text-on-secondary"
-                        style={{ fontSize: "8px", lineHeight: 1 }}
-                      >
-                        C
-                      </span>
+                      {isDiscordBridge ? (
+                        <span className="material-symbols-outlined text-white" style={{ fontSize: "10px" }}>videogame_asset</span>
+                      ) : (
+                        <span className="font-headline font-bold text-on-secondary" style={{ fontSize: "8px", lineHeight: 1 }}>C</span>
+                      )}
                     </div>
                   )}
                   {/* Single status dot, top-right. Precedence established
@@ -744,23 +733,14 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         <span className="material-symbols-outlined text-xl">add</span>
       </button>
 
-      </div>
-      {/* ── Bottom region: federated + Explore ── */}
-      <div className="overflow-y-auto overflow-x-hidden py-2 flex flex-col items-center gap-2 [&>*]:shrink-0 border-t border-outline-variant/20" style={{ height: "50%" }}>
+      {federatedStack.length > 0 && (
+        <div className="w-8 h-px bg-outline-variant/20 my-1 flex-shrink-0" />
+      )}
 
-      {/* Bridge-space tiles, stacked upward from Explore.
-          These are the only non-Concord entries remaining in the
-          sidebar: local-homeserver `m.space` rooms produced by
-          bridges (currently only mautrix-discord). They belong
-          to the active source's own bridge infrastructure and do
-          not represent cross-instance Matrix federation.
-          Everything else — the Concord/Matrix federation
-          distinction, the persistent catalog, placeholder tiles
-          during sync, the search filter — was removed along with
-          the federatedInstances store. */}
       {federatedStack.map((entry) => {
         const { server } = entry;
         const isActive = !dmActive && activeServerId === server.id;
+        const isDiscordBridge = server.bridgeType === "discord";
         const hasUnreads =
           !isActive &&
           "channels" in server &&
@@ -768,20 +748,23 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
             (ch: { matrix_room_id: string }) =>
               (unreadCounts.get(ch.matrix_room_id) ?? 0) > 0,
           );
-        const inactiveClass =
-          "bg-tertiary/15 text-tertiary rounded-2xl hover:rounded-xl hover:bg-tertiary/25 ring-1 ring-tertiary/40";
-        const activeClass =
-          "bg-tertiary text-on-tertiary rounded-xl shadow-[0_0_12px_rgba(180,120,255,0.35)]";
+        // Discord = blurple, Matrix = green
+        const accent = isDiscordBridge ? "#5865F2" : "#22c55e";
+        const inactiveClass = isDiscordBridge
+          ? "bg-[#5865F2]/20 text-[#5865F2] rounded-2xl hover:rounded-xl hover:bg-[#5865F2]/35 ring-1 ring-[#5865F2]/40"
+          : "bg-green-500/15 text-green-400 rounded-2xl hover:rounded-xl hover:bg-green-500/25 ring-1 ring-green-500/40";
+        const activeClass = isDiscordBridge
+          ? "bg-[#5865F2] text-white rounded-xl shadow-[0_0_12px_rgba(88,101,242,0.4)]"
+          : "bg-green-600 text-white rounded-xl shadow-[0_0_12px_rgba(34,197,94,0.35)]";
         return (
           <div key={server.id} className="relative group flex-shrink-0">
             <div
-              className={`absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-r-full bg-tertiary transition-all ${
-                isActive ? "h-8" : hasUnreads ? "h-2" : "h-0 group-hover:h-5"
-              }`}
+              className="absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-r-full transition-all"
+              style={{ backgroundColor: accent, height: isActive ? 32 : hasUnreads ? 8 : 0 }}
             />
             <button
               onClick={() => handleServerClick(server.id)}
-              title={`${server.name} (bridge)`}
+              title={`${server.name}${isDiscordBridge ? " (Discord)" : " (Matrix)"}`}
               aria-label={`${server.name} bridge`}
               className={`btn-press w-12 h-12 flex items-center justify-center text-sm font-headline font-bold transition-all ${
                 isActive ? activeClass : inactiveClass
@@ -789,18 +772,16 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
             >
               {server.abbreviation || server.name.charAt(0).toUpperCase()}
             </button>
-            {/* Top-left badge — a link glyph marks this tile as a
-                bridge-produced space so operators can tell it apart
-                from native Concord servers at a glance. */}
             <div
-              className="absolute -top-0.5 -left-0.5 w-4 h-4 bg-tertiary rounded-full border-2 border-surface flex items-center justify-center"
+              className="absolute -top-0.5 -left-0.5 w-4 h-4 rounded-full border-2 border-surface flex items-center justify-center"
+              style={{ backgroundColor: accent }}
               aria-hidden="true"
             >
               <span
-                className="material-symbols-outlined text-on-tertiary"
+                className="material-symbols-outlined text-white"
                 style={{ fontSize: "10px" }}
               >
-                link
+                {isDiscordBridge ? "videogame_asset" : "language"}
               </span>
             </div>
             {hasUnreads && (
@@ -809,22 +790,13 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
           </div>
         );
       })}
-
-      {/* Explore button removed from desktop server rail per the
-          2026-04-11 user spec — Explore now lives at the bottom of
-          the Sources column (SourcesPanel's footer), opened by a
-          callback hoisted up to ChatLayout. The federated bridge
-          tiles still stack from the bottom of this rail upward, but
-          the catalog-discovery affordance moved to a more
-          appropriate column. */}
-
-      </div>
       {/* Modals */}
       {showNewServer && <NewServerModal onClose={() => setShowNewServer(false)} />}
       {/* ExploreModal mount removed from desktop ServerSidebar — it
           is now mounted by ChatLayout because the open/close state
           lives there too. The mobile render path below still owns
           its own ExploreModal mount. */}
+      </div>
     </div>
   );
 });

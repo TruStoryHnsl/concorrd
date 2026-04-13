@@ -14,11 +14,19 @@ import {
   discordBridgeHttpDisable,
   discordBridgeHttpRotate,
   discordBridgeHttpSaveBotToken,
+  discordVoiceBridgeHttpDeleteRoom,
+  discordVoiceBridgeHttpListRooms,
+  discordVoiceBridgeHttpRestart,
+  discordVoiceBridgeHttpStart,
+  discordVoiceBridgeHttpStop,
+  discordVoiceBridgeHttpUpsertRoom,
   type BridgeStatus,
+  type DiscordVoiceBridgeRoom,
   type DiscordGuild,
   type HttpBridgeStatus,
   type HttpBridgeMutationResponse,
 } from "../../api/bridges";
+import { useServerStore } from "../../stores/server";
 import { DiscordTosModal } from "./DiscordTosModal";
 
 /**
@@ -1025,6 +1033,249 @@ function DockerBridgeSection({ accessToken }: { accessToken: string }) {
           )}
         </div>
       )}
+
+      {status?.enabled && (
+        <DiscordVoiceBridgeSection accessToken={accessToken} />
+      )}
+
+      {/* User-mode (Puppeting) — shown when bridge is enabled */}
+      {status?.enabled && (
+        <div className="border border-outline-variant/20 rounded-lg overflow-hidden">
+          <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-low/60">
+            <span className="text-xl">👤</span>
+            <div className="flex-1 min-w-0">
+              <h4 className="text-sm font-medium text-on-surface">Personal Discord Account</h4>
+              <p className="text-xs text-on-surface-variant">
+                Connect your own Discord account alongside the bot relay
+              </p>
+            </div>
+          </div>
+          <div className="p-4 border-t border-outline-variant/10">
+            <p className="text-xs text-on-surface-variant">
+              The bot relays messages for everyone. You can <em>also</em> connect your
+              personal Discord account so your messages appear under your own name
+              instead of through the webhook.
+            </p>
+            <ol className="text-xs text-on-surface-variant list-decimal list-inside mt-2 space-y-1.5">
+              <li>
+                Open a DM with{" "}
+                <code className="bg-surface-container-highest px-1 py-0.5 rounded text-on-surface">
+                  @discordbot
+                </code>{" "}
+                (the bridge bot) in Concord.
+              </li>
+              <li>
+                Send the message <strong>login</strong>.
+              </li>
+              <li>The bridge bot will respond with a QR code.</li>
+              <li>
+                Open Discord on your phone → <strong>Settings › Scan QR Code</strong> and scan it.
+              </li>
+            </ol>
+            <p className="text-xs text-on-surface-variant/70 mt-3 italic">
+              Both connections work in parallel — the bot relay handles users without a
+              personal login, while your own messages go through your puppeted account.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiscordVoiceBridgeSection({ accessToken }: { accessToken: string }) {
+  const voiceChannels = useServerStore((s) =>
+    s.servers.flatMap((server) =>
+      server.channels
+        .filter((channel) => channel.channel_type === "voice")
+        .map((channel) => ({
+          id: channel.id,
+          name: `${server.name} / ${channel.name}`,
+        })),
+    ),
+  );
+  const [rooms, setRooms] = useState<DiscordVoiceBridgeRoom[]>([]);
+  const [channelId, setChannelId] = useState("");
+  const [discordGuildId, setDiscordGuildId] = useState("");
+  const [discordChannelId, setDiscordChannelId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setRooms(await discordVoiceBridgeHttpListRooms(accessToken));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [accessToken]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const saveMapping = useCallback(async () => {
+    const parsedChannelId = Number(channelId);
+    if (!parsedChannelId || !discordGuildId.trim() || !discordChannelId.trim()) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      await discordVoiceBridgeHttpUpsertRoom(accessToken, {
+        channel_id: parsedChannelId,
+        discord_guild_id: discordGuildId.trim(),
+        discord_channel_id: discordChannelId.trim(),
+        enabled: true,
+      });
+      await discordVoiceBridgeHttpStart(accessToken);
+      setDiscordGuildId("");
+      setDiscordChannelId("");
+      setMessage("Voice bridge mapping saved and sidecar started.");
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [accessToken, channelId, discordGuildId, discordChannelId, refresh]);
+
+  const deleteMapping = useCallback(async (bridgeId: number) => {
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      await discordVoiceBridgeHttpDeleteRoom(accessToken, bridgeId);
+      await discordVoiceBridgeHttpStart(accessToken);
+      setMessage("Voice bridge mapping removed. The sidecar will drop it on the next config poll.");
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [accessToken, refresh]);
+
+  const restart = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await discordVoiceBridgeHttpRestart(accessToken);
+      setMessage(res.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [accessToken]);
+
+  const stop = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await discordVoiceBridgeHttpStop(accessToken);
+      setMessage(res.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [accessToken]);
+
+  return (
+    <div className="border border-outline-variant/20 rounded-lg overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-low/60">
+        <span className="text-xl">voice</span>
+        <div className="flex-1 min-w-0">
+          <h4 className="text-sm font-medium text-on-surface">Discord Voice Bridge</h4>
+          <p className="text-xs text-on-surface-variant">
+            Joins Discord voice as the bot and relays audio to the selected Concord voice channel.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={restart}
+            disabled={busy}
+            className="px-3 py-1.5 bg-primary/10 hover:bg-primary/15 text-primary text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
+          >
+            Restart voice
+          </button>
+          <button
+            type="button"
+            onClick={stop}
+            disabled={busy}
+            className="px-3 py-1.5 bg-error/10 hover:bg-error/15 text-error text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
+          >
+            Stop
+          </button>
+        </div>
+      </div>
+
+      <div className="p-4 border-t border-outline-variant/10 space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <select
+            value={channelId}
+            onChange={(e) => setChannelId(e.target.value)}
+            className="px-3 py-2 bg-surface-container-highest rounded-md text-sm text-on-surface border border-outline-variant/20 focus:border-primary/50 focus:outline-none"
+          >
+            <option value="">Concord voice channel</option>
+            {voiceChannels.map((channel) => (
+              <option key={channel.id} value={channel.id}>{channel.name}</option>
+            ))}
+          </select>
+          <input
+            value={discordGuildId}
+            onChange={(e) => setDiscordGuildId(e.target.value)}
+            placeholder="Discord server ID"
+            className="px-3 py-2 bg-surface-container-highest rounded-md text-sm text-on-surface placeholder:text-on-surface-variant/50 border border-outline-variant/20 focus:border-primary/50 focus:outline-none"
+          />
+          <input
+            value={discordChannelId}
+            onChange={(e) => setDiscordChannelId(e.target.value)}
+            placeholder="Discord voice channel ID"
+            className="px-3 py-2 bg-surface-container-highest rounded-md text-sm text-on-surface placeholder:text-on-surface-variant/50 border border-outline-variant/20 focus:border-primary/50 focus:outline-none"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={saveMapping}
+          disabled={busy || !channelId || !discordGuildId.trim() || !discordChannelId.trim()}
+          className="px-4 py-2 bg-primary/10 hover:bg-primary/15 text-primary text-xs rounded-md transition-colors disabled:opacity-40"
+        >
+          Save voice mapping
+        </button>
+
+        {rooms.length > 0 && (
+          <div className="space-y-2">
+            {rooms.map((room) => (
+              <div key={room.id} className="flex items-center gap-3 px-3 py-2 bg-surface-container-low/50 rounded-md">
+                <div className="flex-1 min-w-0 text-xs text-on-surface-variant">
+                  <p>
+                    Concord channel #{room.channel_id} {"->"} Discord channel {room.discord_channel_id}
+                  </p>
+                  <p className="text-on-surface-variant/60">Guild {room.discord_guild_id}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => deleteMapping(room.id)}
+                  disabled={busy}
+                  className="px-3 py-1.5 bg-error/10 hover:bg-error/15 text-error text-xs rounded-md transition-colors disabled:opacity-40"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {message && <p className="text-xs text-primary">{message}</p>}
+        {error && <p className="text-xs text-error">{error}</p>}
+        <p className="text-[11px] text-on-surface-variant/70">
+          Enable Discord developer mode, then right-click the Discord server and voice channel to copy their IDs.
+        </p>
+      </div>
     </div>
   );
 }

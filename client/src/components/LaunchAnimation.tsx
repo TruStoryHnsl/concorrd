@@ -26,10 +26,9 @@
  *      for the same duration every time.
  *
  * Design constraints:
- *   - No external image assets — the logomark is a CSS-only monogram
- *     wrapped in a material-symbols `hub` glyph. Keeps the launch
- *     path off the network and lets the splash work in edge cases
- *     where bundle assets haven't loaded yet.
+ *   - No external image assets. Keeps the launch path off the
+ *     network and lets the splash work in edge cases where bundle
+ *     assets haven't loaded yet.
  *   - No reliance on tailwind's custom color tokens — every color is
  *     inlined as a hex literal so the splash still renders if the
  *     stylesheet is still fetching.
@@ -41,6 +40,7 @@
  * by this component + the `index.html` inline `<style>`.
  */
 import { useEffect, useRef, useState } from "react";
+import { ConcordLogo } from "./brand/ConcordLogo";
 
 export interface LaunchAnimationProps {
   /**
@@ -170,27 +170,21 @@ export function LaunchAnimation({
         transition: "opacity 250ms ease-out",
       }}
     >
-      <div
+        <div
         style={{
           width: "96px",
           height: "96px",
           borderRadius: "24px",
           background:
-            "radial-gradient(circle at 30% 30%, rgba(124, 77, 255, 0.35), rgba(12, 14, 17, 0) 70%)",
-          border: "1px solid rgba(124, 77, 255, 0.35)",
+            "radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--color-logo-primary, #a4a5ff) 35%, transparent), rgba(12, 14, 17, 0) 70%)",
+          border: "1px solid color-mix(in srgb, var(--color-logo-secondary, #afefdd) 40%, transparent)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
           animation: "concord-launch-pulse 1600ms ease-in-out infinite",
         }}
       >
-        <span
-          className="material-symbols-outlined"
-          style={{ fontSize: "48px", color: "#a4a5ff" }}
-          aria-hidden="true"
-        >
-          hub
-        </span>
+        <ConcordLogo size={56} title="Concord" />
       </div>
       <div
         style={{

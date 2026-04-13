@@ -42,6 +42,30 @@ export interface HttpBridgeMutationResponse {
   message: string;
 }
 
+export interface DiscordVoiceBridgeRoom {
+  id: number;
+  server_id: string;
+  channel_id: number;
+  matrix_room_id: string;
+  discord_guild_id: string;
+  discord_channel_id: string;
+  enabled: boolean;
+}
+
+export interface DiscordVoiceBridgeMutation {
+  ok: boolean;
+  message: string;
+  docker?: Record<string, unknown> | null;
+}
+
+export interface DiscordChannelInfo {
+  id: string;
+  guild_id: string | null;
+  name: string;
+  type: number;
+  kind: "text" | "voice" | "unsupported";
+}
+
 async function bridgeApiFetch<T>(
   path: string,
   accessToken: string,
@@ -130,12 +154,97 @@ export async function discordBridgeHttpLoginRelay(
   );
 }
 
+export async function discordBridgeHttpListGuilds(
+  accessToken: string,
+): Promise<{ id: string; name: string; icon: string | null }[]> {
+  return bridgeApiFetch<{ id: string; name: string; icon: string | null }[]>(
+    "/admin/bridges/discord/guilds",
+    accessToken,
+  );
+}
+
+export async function discordBridgeHttpGetChannel(
+  accessToken: string,
+  channelId: string,
+): Promise<DiscordChannelInfo> {
+  return bridgeApiFetch<DiscordChannelInfo>(
+    `/admin/bridges/discord/channels/${encodeURIComponent(channelId)}`,
+    accessToken,
+  );
+}
+
 export async function discordBridgeHttpGetInviteUrl(
   accessToken: string,
 ): Promise<{ app_id: string; invite_url: string }> {
   return bridgeApiFetch<{ app_id: string; invite_url: string }>(
     "/admin/bridges/discord/bot-invite-url",
     accessToken,
+  );
+}
+
+export async function discordVoiceBridgeHttpListRooms(
+  accessToken: string,
+): Promise<DiscordVoiceBridgeRoom[]> {
+  return bridgeApiFetch<DiscordVoiceBridgeRoom[]>(
+    "/admin/bridges/discord/voice/rooms",
+    accessToken,
+  );
+}
+
+export async function discordVoiceBridgeHttpUpsertRoom(
+  accessToken: string,
+  body: {
+    channel_id: number;
+    discord_guild_id: string;
+    discord_channel_id: string;
+    enabled?: boolean;
+  },
+): Promise<DiscordVoiceBridgeRoom> {
+  return bridgeApiFetch<DiscordVoiceBridgeRoom>(
+    "/admin/bridges/discord/voice/rooms",
+    accessToken,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export async function discordVoiceBridgeHttpDeleteRoom(
+  accessToken: string,
+  bridgeId: number,
+): Promise<DiscordVoiceBridgeMutation> {
+  return bridgeApiFetch<DiscordVoiceBridgeMutation>(
+    `/admin/bridges/discord/voice/rooms/${bridgeId}`,
+    accessToken,
+    { method: "DELETE" },
+  );
+}
+
+export async function discordVoiceBridgeHttpRestart(
+  accessToken: string,
+): Promise<DiscordVoiceBridgeMutation> {
+  return bridgeApiFetch<DiscordVoiceBridgeMutation>(
+    "/admin/bridges/discord/voice/restart",
+    accessToken,
+    { method: "POST" },
+  );
+}
+
+export async function discordVoiceBridgeHttpStart(
+  accessToken: string,
+): Promise<DiscordVoiceBridgeMutation> {
+  return bridgeApiFetch<DiscordVoiceBridgeMutation>(
+    "/admin/bridges/discord/voice/start",
+    accessToken,
+    { method: "POST" },
+  );
+}
+
+export async function discordVoiceBridgeHttpStop(
+  accessToken: string,
+): Promise<DiscordVoiceBridgeMutation> {
+  return bridgeApiFetch<DiscordVoiceBridgeMutation>(
+    "/admin/bridges/discord/voice/stop",
+    accessToken,
+    { method: "POST" },
   );
 }
 

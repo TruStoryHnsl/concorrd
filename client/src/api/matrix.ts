@@ -1,16 +1,34 @@
 import * as sdk from "matrix-js-sdk";
 import { getHomeserverUrl } from "./serverUrl";
 
+function buildStoreKey(userId: string, homeserverUrl: string): string {
+  const scope = `${userId}|${homeserverUrl}`.replace(/[^A-Za-z0-9_.-]+/g, "_");
+  return `concord_matrix_store_${scope}`;
+}
+
 export function createMatrixClient(
   accessToken: string,
   userId: string,
   deviceId: string,
 ): sdk.MatrixClient {
+  const baseUrl = getHomeserverUrl();
+  const store =
+    typeof window !== "undefined" &&
+    typeof window.indexedDB !== "undefined" &&
+    typeof window.localStorage !== "undefined"
+      ? new sdk.IndexedDBStore({
+          indexedDB: window.indexedDB,
+          localStorage: window.localStorage,
+          dbName: buildStoreKey(userId, baseUrl),
+        })
+      : undefined;
+
   const client = sdk.createClient({
-    baseUrl: getHomeserverUrl(),
+    baseUrl,
     accessToken,
     userId,
     deviceId,
+    store,
   });
   return client;
 }

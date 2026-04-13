@@ -236,7 +236,8 @@ how to fall back.
 | Discord → Matrix | Embed (link preview) | Yes | Flattened to message body with link; original embed dropped |
 | Discord → Matrix | Sticker | Yes (as image) | Discord sticker URL re-uploaded as `m.image` |
 | Discord → Matrix | Thread creation | Yes | Mapped to Matrix threads (`m.thread`) |
-| Discord → Matrix | Voice state change (join/leave call) | **No** | Out of scope; LiveKit owns Matrix voice |
+| Discord → Matrix | Voice audio | Optional sidecar | `concord-discord-voice-bridge` relays configured Discord voice channels into Concord LiveKit rooms |
+| Discord → Matrix | Voice state change (join/leave call) | **No** | The text appservice ignores state-only voice events |
 | Discord → Matrix | Guild member join/leave | Yes | Emitted as `m.room.member` join/leave on the virtual user |
 | Discord → Matrix | Typing indicator | Yes | `m.typing` |
 | Discord → Matrix | Presence | **No** | Too noisy; dropped |
@@ -248,7 +249,8 @@ how to fall back.
 | Matrix → Discord | Reply (`m.in_reply_to`) | Yes | Mapped to Discord reply reference |
 | Matrix → Discord | Thread reply | Yes where Discord supports it |
 | Matrix → Discord | Typing indicator | Yes | Discord typing API |
-| Matrix → Discord | Voice invites | **No** | LiveKit is Matrix-only |
+| Matrix → Discord | LiveKit voice audio | Optional sidecar | `concord-discord-voice-bridge` publishes the Concord room mix into the configured Discord voice channel |
+| Matrix → Discord | Voice invites | **No** | Invite semantics are not bridged |
 | Matrix → Discord | Read receipts | **No** | Discord has no matching concept |
 
 Mentions are translated in both directions: `@alice` on Matrix becomes
@@ -358,8 +360,10 @@ users and bridged rooms remain in the Matrix database as ghosts — run
   (INS-025) shows federated *Matrix* servers only; Discord guilds are
   exposed as regular rooms inside the local homeserver, not as federated
   peers.
-- Does not bridge voice/video. LiveKit is the Matrix voice provider;
-  Discord voice channels are ignored.
+- The mautrix-discord appservice does not bridge voice/video. Discord
+  voice is handled by the optional `concord-discord-voice-bridge` sidecar,
+  which joins configured Discord voice channels as the bot and joins the
+  corresponding Concord LiveKit rooms as a synthetic participant.
 - Does not relay presence or read receipts, to keep the event volume
   predictable.
 - Does not give the bridge any access to `concord-api`. Concord's

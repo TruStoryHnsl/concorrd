@@ -43,6 +43,8 @@ import { SettingsPanel } from "../settings/SettingsModal";
 // ServerSettingsPanel is now folded into the unified SettingsPanel (INS-012)
 import { BugReportModal } from "../BugReportModal";
 import { StatsModal } from "../StatsModal";
+import { discordBridgeHttpListGuilds, discordVoiceBridgeHttpListRooms } from "../../api/bridges";
+import { getRoomDiagnostics, type RoomDiagnostics } from "../../api/concord";
 
 /** Lightweight error boundary that silently recovers instead of hiding content. */
 class SilentBoundary extends Component<{ children: ReactNode; fallback?: ReactNode }, { ok: boolean }> {
@@ -65,6 +67,10 @@ type MobileView = "sources" | "servers" | "channels" | "chat" | "actions" | "dms
 const isNativeApp =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+function lastChannelStorageKey(userId: string | null): string {
+  return userId ? `concord_last_channel:${userId}` : "concord_last_channel";
+}
+
 /**
  * ChatLayout — the top-level shell.
  *
@@ -84,6 +90,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const activeChannelId = useServerStore((s) => s.activeChannelId);
   const servers = useServerStore((s) => s.servers);
   const activeServerId = useServerStore((s) => s.activeServerId);
+  const ensureDiscordGuild = useServerStore((s) => s.ensureDiscordGuild);
 
   // DM state
   const dmActive = useDMStore((s) => s.dmActive);
@@ -104,6 +111,8 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const typingUsers = useTypingUsers(activeRoomId);
   const { onKeystroke, onStopTyping } = useSendTyping(activeRoomId);
   useNotifications();
+  const [roomDiagnostics, setRoomDiagnostics] = useState<RoomDiagnostics | null>(null);
+  const [roomDiagnosticsLoading, setRoomDiagnosticsLoading] = useState(false);
 
   // INS-020 iPad layout — when running on an iPad (native Tauri iOS
   // build or web browser with iPad-class touch screen), force the
@@ -121,7 +130,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
   const [showBugReport, setShowBugReport] = useState(false);
-  const [showStats, setShowStats] = useState(false);
+  const [statsTarget, setStatsTarget] = useState<{ type: "user" } | { type: "server"; serverId: string } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
 
   // Mobile view state — replaces the old drawer system
@@ -216,12 +225,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     if (!dmActive && activeServerId && activeChannelId) {
       try {
         localStorage.setItem(
-          "concord_last_channel",
+          lastChannelStorageKey(userId),
           JSON.stringify({ serverId: activeServerId, roomId: activeChannelId }),
         );
       } catch {}
     }
-  }, [dmActive, activeServerId, activeChannelId]);
+  }, [dmActive, activeServerId, activeChannelId, userId]);
 
   const activeServer = useMemo(
     () => servers.find((s) => s.id === activeServerId),
@@ -233,6 +242,57 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   );
   const isVoiceChannel = activeChannel?.channel_type === "voice";
   const isOwner = activeServer?.owner_id === userId;
+  const emptyState = useMemo(() => {
+    if (!activeRoomId) return undefined;
+    if (roomDiagnosticsLoading) {
+      return (
+        <div className="max-w-xl px-6 py-5 rounded-lg border border-outline-variant/20 bg-surface-container text-left">
+          <p className="text-sm font-medium text-on-surface">No messages loaded yet</p>
+          <p className="mt-2 text-xs text-on-surface-variant">
+            Inspecting room binding and homeserver history access for {activeRoomId}.
+          </p>
+        </div>
+      );
+    }
+    if (!roomDiagnostics) return undefined;
+    return (
+      <div className="max-w-2xl px-6 py-5 rounded-lg border border-outline-variant/20 bg-surface-container text-left">
+        <p className="text-sm font-semibold text-on-surface">Room diagnostics</p>
+        <p className="mt-2 text-xs text-on-surface-variant break-all">
+          room: {roomDiagnostics.room_id}
+        </p>
+        <p className="mt-1 text-sm text-on-surface-variant">
+          {roomDiagnostics.summary}
+        </p>
+        <p className="mt-2 text-xs text-on-surface-variant">
+          inference: {roomDiagnostics.inference}
+        </p>
+        <div className="mt-3 space-y-2">
+          {roomDiagnostics.steps.map((step) => (
+            <div
+              key={step.step}
+              className="rounded-md border border-outline-variant/15 bg-surface px-3 py-2"
+            >
+              <div className="flex items-center gap-2 text-xs">
+                <span className={step.ok ? "text-[#4ade80]" : "text-[#f87171]"}>
+                  {step.ok ? "OK" : "FAIL"}
+                </span>
+                <span className="font-medium text-on-surface">{step.step}</span>
+                <span className="text-on-surface-variant">
+                  {step.status ?? "no-status"}
+                </span>
+              </div>
+              {step.detail && (
+                <p className="mt-1 text-[11px] text-on-surface-variant break-all">
+                  {step.detail}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }, [activeRoomId, roomDiagnostics, roomDiagnosticsLoading]);
   const settingsOpen = useSettingsStore((s) => s.settingsOpen);
   const closeSettings = useSettingsStore((s) => s.closeSettings);
   const serverSettingsId = useSettingsStore((s) => s.serverSettingsId);
@@ -343,16 +403,137 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   const loadMembers = useServerStore((s) => s.loadMembers);
   const [serversLoaded, setServersLoaded] = useState(false);
+  const discordVoiceProjectionHandled = useRef<string | null>(null);
+  const startupRestoreHandled = useRef<string | null>(null);
+  const origSetActiveChannel = useServerStore((s) => s.setActiveChannel);
+  const setActiveServer = useServerStore((s) => s.setActiveServer);
+  const setActiveDM = useDMStore((s) => s.setActiveDM);
+  const addToast = useToastStore((s) => s.addToast);
+  const setDMActive = useDMStore((s) => s.setDMActive);
 
   const loadCatalog = useExtensionStore((s) => s.loadCatalog);
 
   useEffect(() => {
-    if (accessToken && syncing && !serversLoaded) {
-      loadServers(accessToken).then(() => setServersLoaded(true));
-      loadConversations(accessToken);
-      loadCatalog(accessToken);
+    if (!accessToken || serversLoaded) return;
+    let cancelled = false;
+    Promise.allSettled([
+      loadServers(accessToken),
+      loadConversations(accessToken),
+      loadCatalog(accessToken),
+    ]).finally(() => {
+      if (!cancelled) setServersLoaded(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, serversLoaded, loadServers, loadConversations, loadCatalog]);
+
+  useEffect(() => {
+    if (!accessToken || !activeRoomId || messages.length > 0) {
+      setRoomDiagnostics(null);
+      setRoomDiagnosticsLoading(false);
+      return;
     }
-  }, [accessToken, syncing, serversLoaded, loadServers, loadConversations, loadCatalog]);
+
+    let cancelled = false;
+    setRoomDiagnosticsLoading(true);
+    getRoomDiagnostics(activeRoomId, accessToken)
+      .then((diag) => {
+        if (!cancelled) setRoomDiagnostics(diag);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setRoomDiagnostics({
+            room_id: activeRoomId,
+            user_id: userId ?? "",
+            binding: { kind: "unknown" },
+            inference: "diagnostic_request_failed",
+            summary: err instanceof Error ? err.message : "Room diagnostics failed",
+            steps: [],
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setRoomDiagnosticsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, activeRoomId, messages.length, userId]);
+
+  useEffect(() => {
+    if (!accessToken || !serversLoaded || !userId) return;
+    if (discordVoiceProjectionHandled.current === userId) return;
+    discordVoiceProjectionHandled.current = userId;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const [rooms, guilds] = await Promise.all([
+          discordVoiceBridgeHttpListRooms(accessToken),
+          discordBridgeHttpListGuilds(accessToken).catch(() => []),
+        ]);
+        if (cancelled) return;
+
+        const latestServers = useServerStore.getState().servers;
+        for (const room of rooms) {
+          if (!room.enabled) continue;
+          const localChannel = latestServers
+            .flatMap((server) => server.channels)
+            .find(
+              (channel) =>
+                channel.id === room.channel_id ||
+                channel.matrix_room_id === room.matrix_room_id,
+            );
+          if (!localChannel) continue;
+          ensureDiscordGuild({
+            guildId: room.discord_guild_id,
+            guildName:
+              guilds.find((guild) => guild.id === room.discord_guild_id)?.name ??
+              `Guild ${room.discord_guild_id}`,
+            channel: {
+              id: localChannel.id,
+              roomId: room.matrix_room_id,
+              name: localChannel.name,
+              channelType: "voice",
+            },
+            preferBridgeServer: true,
+            activate: false,
+          });
+        }
+      } catch {
+        discordVoiceProjectionHandled.current = null;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, ensureDiscordGuild, serversLoaded, userId]);
+
+  useEffect(() => {
+    if (!serversLoaded || !userId) return;
+    if (startupRestoreHandled.current === userId) return;
+
+    try {
+      const raw = localStorage.getItem(lastChannelStorageKey(userId));
+      if (!raw) {
+        startupRestoreHandled.current = userId;
+        return;
+      }
+      const parsed = JSON.parse(raw) as { serverId?: string; roomId?: string };
+      const server = servers.find((s) => s.id === parsed.serverId);
+      const channel = server?.channels.find((c) => c.matrix_room_id === parsed.roomId);
+      if (!server || !channel) return;
+      startupRestoreHandled.current = userId;
+      setDMActive(false);
+      setActiveServer(server.id);
+      origSetActiveChannel(channel.matrix_room_id);
+    } catch {
+      startupRestoreHandled.current = userId;
+    }
+  }, [serversLoaded, userId, servers, setDMActive, setActiveServer, origSetActiveChannel]);
 
   useEffect(() => {
     if (accessToken && activeServerId) {
@@ -361,22 +542,16 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   }, [accessToken, activeServerId, loadMembers]);
 
   // When selecting a channel on mobile, auto-switch to chat view
-  const origSetActiveChannel = useServerStore((s) => s.setActiveChannel);
   const handleMobileChannelSelect = useCallback((roomId: string) => {
     origSetActiveChannel(roomId);
     setMobileView("chat");
   }, [origSetActiveChannel]);
 
   // When selecting a DM on mobile, switch to chat view
-  const setActiveDM = useDMStore((s) => s.setActiveDM);
   const handleMobileDMSelect = useCallback((roomId: string) => {
     setActiveDM(roomId);
     setMobileView("chat");
   }, [setActiveDM]);
-
-  const addToast = useToastStore((s) => s.addToast);
-  const setActiveServer = useServerStore((s) => s.setActiveServer);
-  const setDMActive = useDMStore((s) => s.setDMActive);
 
   /* ── TASK 26: Mobile dashboard quick actions ── */
 
@@ -386,7 +561,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const handleReconnectLastChannel = useCallback(() => {
     setDashboardSheetOpen(false);
     try {
-      const raw = localStorage.getItem("concord_last_channel");
+      const raw = localStorage.getItem(lastChannelStorageKey(userId));
       if (raw) {
         const parsed = JSON.parse(raw) as { serverId?: string; roomId?: string };
         const server = servers.find((s) => s.id === parsed.serverId);
@@ -411,7 +586,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     } else {
       addToast("No channel to reconnect to — join a server first");
     }
-  }, [servers, origSetActiveChannel, setActiveServer, setDMActive, addToast]);
+  }, [servers, origSetActiveChannel, setActiveServer, setDMActive, addToast, userId]);
 
   // 2) Host text/voice/video exchange: there is no dedicated "host" handler
   //    yet — the existing affordance is ChannelSidebar's "+ Add Channel"
@@ -496,19 +671,27 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       <div className="h-full flex overflow-hidden bg-surface text-on-surface">
         {/* LEFT STACK — sidebar columns. Collapses to zero width when hidden. */}
         {showSidebar && (
-          <div className="flex min-h-0 flex-shrink-0">
+          <div className="flex min-h-0 flex-shrink-0 bg-surface">
+            <div className="w-14 flex-shrink-0">
+              <SilentBoundary>
+                <SourcesPanel
+                  onAddSource={openAddSource}
+                  onSourceOpen={openSourceBrowser}
+                  onExplore={openExplore}
+                />
+              </SilentBoundary>
+            </div>
+
             <SilentBoundary>
-              <ServerSidebar
-                onAddSource={openAddSource}
-                onExplore={openExplore}
-                onSourceOpen={openSourceBrowser}
-              />
+              <ServerSidebar />
             </SilentBoundary>
 
             {/* Channel / DM sidebar */}
             <div className="flex min-h-0" style={{ width: sidebarWidth, minWidth: SIDEBAR_MIN, maxWidth: SIDEBAR_MAX }}>
               <SilentBoundary>
-                {dmActive ? <DMSidebar /> : <ChannelSidebar />}
+                {dmActive ? <DMSidebar /> : <ChannelSidebar onServerTitleClick={() => {
+                  if (activeServerId) setStatsTarget({ type: "server", serverId: activeServerId });
+                }} />}
               </SilentBoundary>
             </div>
 
@@ -674,13 +857,13 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         <div className="hidden min-[361px]:flex items-center gap-1 flex-shrink-0">
           <ConnectedHostLabel compact />
           <TopBarIconButton icon="help" label="Help" onClick={() => setShowHelp(true)} />
-          <TopBarIconButton icon="bar_chart" label="Your stats" onClick={() => setShowStats(true)} />
+          <TopBarIconButton icon="bar_chart" label="Your stats" onClick={() => setStatsTarget({ type: "user" })} />
           <TopBarIconButton icon="bug_report" label="Report a bug" onClick={() => setShowBugReport(true)} />
         </div>
         <div className="flex min-[361px]:hidden flex-shrink-0">
           <TopBarOverflowMenu
             onHelp={() => setShowHelp(true)}
-            onStats={() => setShowStats(true)}
+            onStats={() => setStatsTarget({ type: "user" })}
             onBug={() => setShowBugReport(true)}
           />
         </div>
@@ -915,7 +1098,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                 <TopBarIconButton ref={extensionBtnRef} icon="extension" label="Extensions" onClick={() => setExtensionMenuOpen(!extensionMenuOpen)} />
               )}
               <TopBarIconButton icon="help" label="Help" onClick={() => setShowHelp(true)} />
-              <TopBarIconButton icon="bar_chart" label="Your stats" onClick={() => setShowStats(true)} />
+                  <TopBarIconButton icon="bar_chart" label="Your stats" onClick={() => setStatsTarget({ type: "user" })} />
               <TopBarIconButton icon="bug_report" label="Report a bug" onClick={() => setShowBugReport(true)} />
               {/* Sidebar toggle */}
               <TopBarIconButton
@@ -927,7 +1110,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             {/* User banner — click to open stats popup */}
             {userId && (
               <button
-                onClick={() => setShowStats(true)}
+                onClick={() => setStatsTarget({ type: "user" })}
                 className="flex items-center gap-1.5 ml-1 pl-2 border-l border-outline-variant/20 hover:bg-surface-container-high rounded-lg px-2 py-1 transition-colors"
                 title="Your stats"
               >
@@ -989,6 +1172,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             onStartEdit={setEditingMessage}
             onReact={sendReaction}
             onRemoveReaction={removeReaction}
+            emptyState={emptyState}
           />
           <TypingIndicator typingUsers={typingUsers} />
           <MessageInput
@@ -1032,6 +1216,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             onStartEdit={setEditingMessage}
             onReact={sendReaction}
             onRemoveReaction={removeReaction}
+            emptyState={emptyState}
           />
           <TypingIndicator typingUsers={typingUsers} />
           <MessageInput
@@ -1073,6 +1258,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             onStartEdit={setEditingMessage}
             onReact={sendReaction}
             onRemoveReaction={removeReaction}
+            emptyState={emptyState}
           />
           <TypingIndicator typingUsers={typingUsers} />
           <MessageInput
@@ -1188,7 +1374,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       )}
 
       {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} />}
-      {showStats && <StatsModal onClose={() => setShowStats(false)} />}
+      {statsTarget && (
+        <StatsModal
+          onClose={() => setStatsTarget(null)}
+          serverId={statsTarget.type === "server" ? statsTarget.serverId : undefined}
+        />
+      )}
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
       <ExtensionMenu
         open={extensionMenuOpen}

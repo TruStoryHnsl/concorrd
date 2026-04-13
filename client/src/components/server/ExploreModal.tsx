@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { IPublicRoomsChunkRoom } from "matrix-js-sdk";
 import { useAuthStore } from "../../stores/auth";
 import { useToastStore } from "../../stores/toast";
-import { useSourcesStore } from "../../stores/sources";
+import { useSourcesStore, type ConcordSource } from "../../stores/sources";
 import { listExploreServers } from "../../api/concord";
 import type { ExploreServerEntry } from "../../api/concord";
 
@@ -36,6 +36,122 @@ type View =
   | { mode: "servers" }
   | { mode: "rooms"; server: ExploreServerEntry };
 
+type ExploreDiagnostic = {
+  title: string;
+  summary: string;
+  suggestions: string[];
+};
+
+function normalizeMatrixError(err: unknown): {
+  message: string;
+  errcode: string | null;
+  statusCode: number | null;
+} {
+  if (!err || typeof err !== "object") {
+    return {
+      message: err instanceof Error ? err.message : "Unknown Matrix error",
+      errcode: null,
+      statusCode: null,
+    };
+  }
+
+  const candidate = err as {
+    message?: string;
+    errcode?: string;
+    data?: { errcode?: string; error?: string };
+    httpStatus?: number;
+    statusCode?: number;
+  };
+
+  return {
+    message: candidate.data?.error || candidate.message || "Unknown Matrix error",
+    errcode: candidate.errcode || candidate.data?.errcode || null,
+    statusCode: candidate.statusCode || candidate.httpStatus || null,
+  };
+}
+
+function buildDiagnostic({
+  phase,
+  server,
+  source,
+  error,
+}: {
+  phase: "browse" | "join";
+  server: ExploreServerEntry;
+  source?: ConcordSource;
+  error: ReturnType<typeof normalizeMatrixError>;
+}): ExploreDiagnostic {
+  const text = `${error.errcode ?? ""} ${error.message}`.toLowerCase();
+  const suggestions: string[] = [];
+  let title = phase === "browse" ? "Couldn’t load public rooms" : "Join failed";
+  let summary = error.message;
+
+  if (error.errcode === "M_UNKNOWN_TOKEN" || text.includes("unknown token")) {
+    title = "Your Matrix session expired";
+    summary = "The current Concord session is no longer accepted by the homeserver.";
+    suggestions.push("Sign out and sign back in.");
+    suggestions.push("Retry after the session has resynced.");
+  } else if (
+    error.errcode === "M_GUEST_ACCESS_FORBIDDEN" ||
+    text.includes("guest access") ||
+    text.includes("guest users may not")
+  ) {
+    title = phase === "browse" ? "This server blocks guest browsing" : "Guests cannot join this room";
+    summary = `${server.domain} requires a full Matrix account for this action.`;
+    suggestions.push(`Use an actual Matrix account on ${server.domain} or another trusted homeserver.`);
+    suggestions.push("If the room is invite-only, get an invite before retrying.");
+  } else if (
+    error.errcode === "M_FORBIDDEN" ||
+    text.includes("forbidden") ||
+    text.includes("invite") ||
+    text.includes("join rule") ||
+    text.includes("restricted")
+  ) {
+    title = phase === "browse" ? "Public room listing is restricted" : "This room rejected the join";
+    summary = "The homeserver received the request but your account is not allowed through the room's join rules.";
+    suggestions.push("Check whether the room is invite-only or space-restricted.");
+    suggestions.push("Retry with an account that the remote homeserver recognizes.");
+  } else if (
+    error.errcode === "M_NOT_FOUND" ||
+    text.includes("no known servers") ||
+    text.includes("not found") ||
+    text.includes("alias")
+  ) {
+    title = phase === "browse" ? "This server did not expose a room directory" : "Concord could not route the join";
+    summary = "The room alias or federation path was not resolvable from the current account.";
+    suggestions.push("Verify the room still exists and is federated with your current homeserver.");
+    suggestions.push("Ask for a direct invite if the room was shared manually.");
+  } else if (
+    error.errcode === "M_LIMIT_EXCEEDED" ||
+    text.includes("rate limit") ||
+    text.includes("too many requests")
+  ) {
+    title = "The homeserver rate-limited the request";
+    summary = "The remote server asked Concord to back off for a moment.";
+    suggestions.push("Wait a few seconds and retry.");
+  } else if (error.statusCode === 401 || error.statusCode === 403) {
+    title = "The homeserver rejected the request";
+    summary = "Authentication or permission checks failed before the request could complete.";
+    suggestions.push("Verify that your current Matrix account is allowed to browse or join there.");
+  } else if (error.statusCode === 502 || error.statusCode === 503 || text.includes("timeout")) {
+    title = "The remote homeserver did not answer cleanly";
+    summary = "This looks like a federation or availability problem on the remote side.";
+    suggestions.push("Retry later.");
+    suggestions.push("Test the same room from a regular Matrix client to confirm the remote server is healthy.");
+  }
+
+  if (source && !source.accessToken) {
+    suggestions.push(
+      `Source ${source.instanceName ?? source.host} is registered, but this browser does not hold a Matrix login for it yet. Cross-server joins still run through your current session.`,
+    );
+  }
+  if (!source && phase === "join") {
+    suggestions.push(`Add ${server.domain} as a source if you want Concord to track that homeserver explicitly.`);
+  }
+
+  return { title, summary, suggestions: Array.from(new Set(suggestions)) };
+}
+
 export function ExploreModal({ isOpen, onClose }: Props) {
   const client = useAuthStore((s) => s.client);
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -49,6 +165,7 @@ export function ExploreModal({ isOpen, onClose }: Props) {
     status: "loading",
   });
   const [joiningRoomId, setJoiningRoomId] = useState<string | null>(null);
+  const [diagnostic, setDiagnostic] = useState<ExploreDiagnostic | null>(null);
 
   // Close on Escape — mirrors the convention used by NewServerModal /
   // InviteModal so keyboard behavior stays consistent across the app.
@@ -102,25 +219,33 @@ export function ExploreModal({ isOpen, onClose }: Props) {
   }, [accessToken, addToast, sources]);
 
   const loadRooms = useCallback(
-    async (server: string) => {
+    async (server: ExploreServerEntry) => {
       if (!client) {
         setRoomsState({ status: "error", message: "Not signed in" });
         return;
       }
       setRoomsState({ status: "loading" });
+      setDiagnostic(null);
       try {
-        const res = await client.publicRooms({ server, limit: 50 });
+        const res = await client.publicRooms({ server: server.domain, limit: 50 });
         setRoomsState({ status: "success", rooms: res.chunk });
       } catch (err) {
-        const message =
-          err instanceof Error
-            ? err.message
-            : "Failed to load public rooms";
+        const normalized = normalizeMatrixError(err);
+        const source = sources.find((entry) => entry.host.toLowerCase() === server.domain.toLowerCase());
+        const message = normalized.message || "Failed to load public rooms";
         setRoomsState({ status: "error", message });
+        setDiagnostic(
+          buildDiagnostic({
+            phase: "browse",
+            server,
+            source,
+            error: normalized,
+          }),
+        );
         addToast(message, "error");
       }
     },
-    [client, addToast],
+    [client, addToast, sources],
   );
 
   // Refetch every time the modal opens. The list is small and
@@ -129,22 +254,26 @@ export function ExploreModal({ isOpen, onClose }: Props) {
   useEffect(() => {
     if (isOpen) {
       setView({ mode: "servers" });
+      setDiagnostic(null);
       loadServers();
     } else {
       setServersState({ status: "idle" });
+      setDiagnostic(null);
     }
   }, [isOpen, loadServers]);
 
   const handleBrowseRooms = useCallback(
     (server: ExploreServerEntry) => {
       setView({ mode: "rooms", server });
-      loadRooms(server.domain);
+      setDiagnostic(null);
+      loadRooms(server);
     },
     [loadRooms],
   );
 
   const handleBackToServers = useCallback(() => {
     setView({ mode: "servers" });
+    setDiagnostic(null);
   }, []);
 
   const handleJoinRoom = useCallback(
@@ -155,19 +284,33 @@ export function ExploreModal({ isOpen, onClose }: Props) {
       // to the room_id with an explicit viaServers hint for federation.
       const target = room.canonical_alias ?? room.room_id;
       setJoiningRoomId(room.room_id);
+      setDiagnostic(null);
       try {
         await client.joinRoom(target, { viaServers: [server] });
         addToast(`Joined ${room.name ?? target}`, "success");
         onClose();
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : "Failed to join room";
+        const normalized = normalizeMatrixError(err);
+        const source = sources.find((entry) => entry.host.toLowerCase() === server.toLowerCase());
+        const message = normalized.message || "Failed to join room";
+        setDiagnostic(
+          buildDiagnostic({
+            phase: "join",
+            server: {
+              domain: server,
+              name: server,
+              description: source ? "Connected source" : null,
+            },
+            source,
+            error: normalized,
+          }),
+        );
         addToast(message, "error");
       } finally {
         setJoiningRoomId(null);
       }
     },
-    [client, addToast, onClose],
+    [client, addToast, onClose, sources],
   );
 
   if (!isOpen) return null;
@@ -235,6 +378,7 @@ export function ExploreModal({ isOpen, onClose }: Props) {
         </div>
 
         <div className="p-4">
+          {diagnostic && <DiagnosticPanel diagnostic={diagnostic} />}
           {view.mode === "servers" ? (
             <ServersBody
               state={serversState}
@@ -244,7 +388,7 @@ export function ExploreModal({ isOpen, onClose }: Props) {
           ) : (
             <RoomsBody
               state={roomsState}
-              onRetry={() => loadRooms(view.server.domain)}
+              onRetry={() => loadRooms(view.server)}
               onJoin={(room) => handleJoinRoom(room, view.server.domain)}
               joiningRoomId={joiningRoomId}
             />
@@ -260,6 +404,22 @@ export function ExploreModal({ isOpen, onClose }: Props) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function DiagnosticPanel({ diagnostic }: { diagnostic: ExploreDiagnostic }) {
+  return (
+    <div className="mb-4 rounded-lg border border-error/20 bg-error/10 px-4 py-3">
+      <p className="text-sm font-semibold text-on-surface">{diagnostic.title}</p>
+      <p className="mt-1 text-xs text-on-surface-variant">{diagnostic.summary}</p>
+      {diagnostic.suggestions.length > 0 && (
+        <ul className="mt-3 space-y-1 text-xs text-on-surface-variant">
+          {diagnostic.suggestions.map((suggestion) => (
+            <li key={suggestion}>• {suggestion}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

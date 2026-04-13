@@ -82,6 +82,9 @@ bridge:
   # relay mode is disabled. Replace "concorrd.com" with your actual
   # CONDUWUIT_SERVER_NAME if you're not running concorrd.com.
   permissions:
+    # Admin users can run bridge management commands like set-relay.
+    # Add your Matrix user ID here to manage the bridge from chat.
+    "@corr:concorrd.com": admin
     "concorrd.com": user
 
 # Discord credentials (CONFIGURE THIS — required to connect the bridge).

@@ -142,6 +142,52 @@ services:
     networks:
       - concord
 
+  # Bot-based Discord voice ↔ Concord LiveKit bridge.
+  #
+  # This is deliberately separate from the mautrix-discord appservice
+  # above. mautrix owns Matrix text/media relay; this sidecar owns raw
+  # realtime audio. It reads the same operator-supplied Discord bot token
+  # file, joins configured Discord voice channels as the bot, and joins
+  # the corresponding Concord LiveKit rooms as a synthetic participant.
+  concord-discord-voice-bridge:
+    build: ./discord-voice-bridge
+    restart: unless-stopped
+    depends_on:
+      livekit:
+        condition: service_healthy
+    environment:
+      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      DISCORD_BOT_TOKEN_FILE: /etc/concord-bridge/bot-token
+      DISCORD_VOICE_ROOMS_FILE: /etc/concord-voice/rooms.json
+      DISCORD_VOICE_HEALTH_PORT: 3098
+    volumes:
+      # Read-only access to bot-token only via the directory mount. The
+      # sidecar does not need AS tokens or the mautrix SQLite database.
+      - ./config/mautrix-discord:/etc/concord-bridge:ro
+      - ./config/discord-voice-bridge:/etc/concord-voice:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3098').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - concord
+
   # Minimal-privilege proxy that lets concord-api restart the conduwuit
   # container when the federation allowlist changes. Only CONTAINERS list
   # and POST (restart) are enabled — no image, volume, or network access.

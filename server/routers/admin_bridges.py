@@ -56,9 +56,11 @@ at all.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from typing import Any, Literal
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -99,6 +101,22 @@ from services.docker_control import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/bridges/discord", tags=["admin", "bridges"])
+
+_DISCORD_API_URL = "https://discord.com/api/v10"
+_DISCORD_API_USER_AGENT = "Concord Discord Bridge (https://concorrd.com, 0.1)"
+
+
+async def _discord_api_get(path: str, token: str) -> Any:
+    headers = {
+        "Authorization": f"Bot {token}",
+        "User-Agent": _DISCORD_API_USER_AGENT,
+    }
+    async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
+        resp = await client.get(f"{_DISCORD_API_URL}{path}")
+    if resp.status_code == 403:
+        logger.warning("Discord API 403 on %s: %s", path, resp.text[:240])
+    resp.raise_for_status()
+    return resp.json()
 
 
 # ---------------------------------------------------------------------
@@ -168,6 +186,14 @@ class NoBodyRequest(BaseModel):
 class BotTokenRequest(BaseModel):
     token: str = Field(min_length=1, max_length=512)
     model_config = {"extra": "forbid"}
+
+
+class DiscordChannelInfo(BaseModel):
+    id: str
+    guild_id: str | None = None
+    name: str
+    type: int
+    kind: Literal["text", "voice", "unsupported"]
 
 
 # ---------------------------------------------------------------------
@@ -497,8 +523,9 @@ async def discord_bridge_set_bot_token(
 # Permissions sum for standard mautrix-discord operation:
 #   View Channels (1024) + Send Messages (2048) + Manage Messages (8192) +
 #   Embed Links (16384) + Attach Files (32768) + Read Message History (65536) +
-#   Add Reactions (64) + Use External Emojis (262144) + Manage Webhooks (536870912)
-_DISCORD_BOT_PERMISSIONS = 537259072
+#   Add Reactions (64) + Use External Emojis (262144) + Manage Webhooks (536870912) +
+#   Connect (1048576) + Speak (2097152) for the optional voice bridge sidecar.
+_DISCORD_BOT_PERMISSIONS = 540404800
 
 
 @router.get("/bot-invite-url")
@@ -542,6 +569,97 @@ async def discord_bridge_bot_invite_url(
         f"&permissions={_DISCORD_BOT_PERMISSIONS}"
     )
     return {"app_id": app_id, "invite_url": invite_url}
+
+
+# ---------------------------------------------------------------------
+# GET /guilds — list Discord guilds visible to the bot
+# ---------------------------------------------------------------------
+
+
+@router.get("/guilds")
+async def discord_bridge_list_guilds(
+    user_id: str = Depends(get_user_id),
+) -> list:
+    """Return Discord guilds the bot is a member of."""
+    require_admin(user_id)
+
+    token = read_discord_bot_token()
+    if not token:
+        logger.warning("guilds endpoint called but no bot token: user=%s", user_id)
+        return []
+
+    try:
+        guilds = await _discord_api_get("/users/@me/guilds", token)
+        return [
+            {"id": g["id"], "name": g["name"], "icon": g.get("icon")}
+            for g in guilds
+        ]
+    except Exception as exc:
+        logger.error("Discord API error in guilds: %s", exc)
+        return []
+
+
+@router.get("/channels/{channel_id}", response_model=DiscordChannelInfo)
+async def discord_bridge_get_channel(
+    channel_id: str,
+    user_id: str = Depends(get_user_id),
+) -> DiscordChannelInfo:
+    """Return enough Discord channel metadata to choose text vs voice flow."""
+    require_admin(user_id)
+    if not channel_id.isdigit() or not (17 <= len(channel_id) <= 20):
+        raise HTTPException(status_code=422, detail="Discord channel ID must be a snowflake")
+
+    token = read_discord_bot_token()
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="No bot token configured. Save a token via POST /bot-token first.",
+        )
+
+    try:
+        channel = await _discord_api_get(f"/channels/{channel_id}", token)
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        body = exc.response.text[:240]
+        if status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail="Discord channel not found or the bot cannot see it.",
+            ) from exc
+        if status_code == 403:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "The Discord API refused the channel inspect request. "
+                    "Make sure the bot has View Channel access to that voice channel. "
+                    f"Discord response: {body}"
+                ),
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"Discord API returned HTTP {status_code} while reading the channel.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Discord API error while reading the channel: {exc}",
+        ) from exc
+
+    channel_type = int(channel.get("type", -1))
+    if channel_type in (2, 13):
+        kind: Literal["text", "voice", "unsupported"] = "voice"
+    elif channel_type in (0, 5):
+        kind = "text"
+    else:
+        kind = "unsupported"
+
+    return DiscordChannelInfo(
+        id=str(channel["id"]),
+        guild_id=str(channel["guild_id"]) if channel.get("guild_id") else None,
+        name=str(channel.get("name") or channel_id),
+        type=channel_type,
+        kind=kind,
+    )
 
 
 # ---------------------------------------------------------------------

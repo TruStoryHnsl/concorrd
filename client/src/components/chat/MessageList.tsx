@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useCallback, useState } from "react";
+import { memo, useEffect, useRef, useCallback, useState, type ReactNode } from "react";
 import type { ChatMessage } from "../../hooks/useMatrix";
 import { Avatar } from "../ui/Avatar";
 import { FederationBadge } from "../ui/FederationBadge";
@@ -18,6 +18,7 @@ interface MessageListProps {
   onStartEdit: (message: ChatMessage) => void;
   onReact: (eventId: string, emoji: string) => Promise<void>;
   onRemoveReaction: (reactionEventId: string) => Promise<void>;
+  emptyState?: ReactNode;
 }
 
 function formatTime(ts: number): string {
@@ -69,6 +70,7 @@ export const MessageList = memo(function MessageList({
   onStartEdit,
   onReact,
   onRemoveReaction,
+  emptyState,
 }: MessageListProps) {
   const localServer = useLocalServerName();
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -150,7 +152,7 @@ export const MessageList = memo(function MessageList({
   if (messages.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-on-surface-variant font-body">
-        No messages yet. Say something!
+        {emptyState ?? "No messages yet. Say something!"}
       </div>
     );
   }

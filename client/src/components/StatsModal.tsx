@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuthStore } from "../stores/auth";
+import { useServerStore } from "../stores/server";
 import { getMyStats, type UserStats, type StatsDay } from "../api/concord";
 
 function formatDuration(seconds: number): string {
@@ -86,21 +87,109 @@ function BarChart({
   );
 }
 
-export function StatsModal({ onClose }: { onClose: () => void }) {
+export function StatsModal({ onClose, serverId }: { onClose: () => void; serverId?: string }) {
   const accessToken = useAuthStore((s) => s.accessToken);
+  const userId = useAuthStore((s) => s.userId);
+  const server = useServerStore((s) =>
+    serverId ? s.servers.find((entry) => entry.id === serverId) ?? null : null,
+  );
+  const members = useServerStore((s) => (serverId ? s.members[serverId] ?? [] : []));
   const [stats, setStats] = useState<UserStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("voice");
   const [days, setDays] = useState(30);
 
   useEffect(() => {
+    if (serverId) {
+      setLoading(false);
+      return;
+    }
     if (!accessToken) return;
     setLoading(true);
     getMyStats(accessToken, days)
       .then(setStats)
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [accessToken, days]);
+  }, [accessToken, days, serverId]);
+
+  if (serverId && server) {
+    const textChannels = server.channels.filter((channel) => channel.channel_type === "text").length;
+    const voiceChannels = server.channels.filter((channel) => channel.channel_type === "voice").length;
+    const memberCount = members.length;
+    const role =
+      server.owner_id === userId
+        ? "Owner"
+        : members.find((member) => member.user_id === userId)?.role ?? "Member";
+    const serverKind = server.bridgeType === "discord"
+      ? "Discord bridge"
+      : server.federated
+        ? "Federated"
+        : "Concord";
+
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+        onClick={(e) => e.target === e.currentTarget && onClose()}
+      >
+        <div className="bg-surface border border-outline-variant/15 rounded-lg shadow-xl w-full max-w-lg mx-4">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-outline-variant/15">
+            <h2 className="text-lg font-semibold text-on-surface">{server.name} Stats</h2>
+            <button
+              onClick={onClose}
+              className="text-on-surface-variant hover:text-on-surface transition-colors"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="p-4 space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-surface-container rounded-lg p-3 border border-outline-variant/15">
+                <p className="text-xs text-on-surface-variant">Channels</p>
+                <p className="text-xl font-bold text-primary">{server.channels.length}</p>
+              </div>
+              <div className="bg-surface-container rounded-lg p-3 border border-outline-variant/15">
+                <p className="text-xs text-on-surface-variant">Members Loaded</p>
+                <p className="text-xl font-bold text-secondary">{memberCount}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-surface-container rounded-lg p-3 border border-outline-variant/15">
+                <p className="text-xs text-on-surface-variant">Text Channels</p>
+                <p className="text-lg font-semibold text-on-surface">{textChannels}</p>
+              </div>
+              <div className="bg-surface-container rounded-lg p-3 border border-outline-variant/15">
+                <p className="text-xs text-on-surface-variant">Voice Channels</p>
+                <p className="text-lg font-semibold text-on-surface">{voiceChannels}</p>
+              </div>
+            </div>
+
+            <div className="bg-surface-container rounded-lg p-4 border border-outline-variant/15 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-on-surface-variant">Server Type</span>
+                <span className="text-sm text-on-surface font-medium">{serverKind}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-on-surface-variant">Your Role</span>
+                <span className="text-sm text-on-surface font-medium">{role}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-on-surface-variant">Visibility</span>
+                <span className="text-sm text-on-surface font-medium capitalize">{server.visibility}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-on-surface-variant">Media Uploads</span>
+                <span className="text-sm text-on-surface font-medium">{server.media_uploads_enabled ? "Enabled" : "Disabled"}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useServerStore } from "../../stores/server";
 import { useAuthStore } from "../../stores/auth";
+import { useSettingsStore } from "../../stores/settings";
 import { useToastStore } from "../../stores/toast";
 import { FederationBadge } from "../ui/FederationBadge";
 import { useLocalServerName } from "../../hooks/useFederation";
@@ -49,11 +50,11 @@ export function ServerSettingsPanel({ serverId }: Props) {
   const server = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
   const accessToken = useAuthStore((s) => s.accessToken);
   const userId = useAuthStore((s) => s.userId);
+  const members = useServerStore((s) => s.members[serverId] ?? []);
 
   if (!server || !accessToken) return null;
 
   const isOwner = server.owner_id === userId;
-  const members = useServerStore((s) => s.members[serverId] ?? []);
   const myMember = members.find((m) => m.user_id === userId);
   const isAdmin = isOwner || myMember?.role === "admin";
   const tabs: { key: Tab; label: string }[] = [
@@ -121,6 +122,12 @@ export function ServerSettingsContent({
 
   return (
     <>
+      {activeTab === "bridge" && (
+        <BridgeServerTab serverId={serverId} />
+      )}
+      {activeTab === "federation" && (
+        <FederatedServerTab serverId={serverId} />
+      )}
       {activeTab === "general" && (
         <GeneralTab serverId={serverId} accessToken={accessToken} />
       )}
@@ -146,16 +153,113 @@ export function ServerSettingsContent({
   );
 }
 
+function BridgeServerTab({ serverId }: { serverId: string }) {
+  const server = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
+  if (!server) return null;
+
+  const voiceChannels = server.channels.filter((channel) => channel.channel_type === "voice");
+  const textChannels = server.channels.filter((channel) => channel.channel_type !== "voice");
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-xl font-semibold text-on-surface">Discord Bridge</h3>
+        <p className="text-sm text-on-surface-variant mt-1">
+          This server is a Discord-backed projection. Discord owns the room catalog and Concord reflects it here.
+        </p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <InfoCard label="Guild" value={server.name} />
+        <InfoCard label="Guild ID" value={server.discordGuildId ?? "Unknown"} mono />
+        <InfoCard label="Text Rooms" value={`${textChannels.length}`} />
+        <InfoCard label="Voice Rooms" value={`${voiceChannels.length}`} />
+      </div>
+
+      <section className="space-y-2">
+        <h4 className="text-sm font-semibold text-on-surface">Behavior</h4>
+        <ul className="space-y-1 text-sm text-on-surface-variant">
+          <li>Messages, members, and channel structure come from the Discord bridge.</li>
+          <li>Permissions and join failures usually have to be resolved in Discord, not here.</li>
+          <li>Voice links attach Concord voice transport to the Discord voice room you mapped.</li>
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+function FederatedServerTab({ serverId }: { serverId: string }) {
+  const server = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
+  if (!server) return null;
+
+  const homeserver = server.id.startsWith("federated:")
+    ? server.id.slice("federated:".length)
+    : server.name;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-xl font-semibold text-on-surface">Federation</h3>
+        <p className="text-sm text-on-surface-variant mt-1">
+          This server is a Matrix federation wrapper, not a local Concord server. Room access is controlled by the remote homeserver.
+        </p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <InfoCard label="Homeserver" value={homeserver} mono />
+        <InfoCard label="Visible Rooms" value={`${server.channels.length}`} />
+      </div>
+
+      <section className="space-y-2">
+        <h4 className="text-sm font-semibold text-on-surface">Behavior</h4>
+        <ul className="space-y-1 text-sm text-on-surface-variant">
+          <li>Joining depends on that homeserver's join rules, federation policy, and your Matrix account.</li>
+          <li>Use Explore to browse public rooms and inspect join errors before assuming the bridge is broken.</li>
+          <li>There is no local delete or membership management surface for federated wrappers.</li>
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+function InfoCard({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="rounded-lg bg-surface-container-low border border-outline-variant/15 px-4 py-3">
+      <p className="text-[11px] uppercase tracking-wide text-on-surface-variant/70">{label}</p>
+      <p className={`mt-1 text-sm text-on-surface break-all ${mono ? "font-mono" : ""}`}>{value}</p>
+    </div>
+  );
+}
+
 function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: string }) {
   const server = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
   const updateServer = useServerStore((s) => s.updateServer);
+  const deleteServer = useServerStore((s) => s.deleteServer);
   const addToast = useToastStore((s) => s.addToast);
+  const userId = useAuthStore((s) => s.userId);
+  const members = useServerStore((s) => s.members[serverId] ?? []);
+  const closeSettings = useSettingsStore((s) => s.closeSettings);
+  const closeServerSettings = useSettingsStore((s) => s.closeServerSettings);
 
   const [name, setName] = useState(server?.name ?? "");
   const [abbreviation, setAbbreviation] = useState(server?.abbreviation ?? "");
   const [visibility, setVisibility] = useState(server?.visibility ?? "private");
   const [mediaUploads, setMediaUploads] = useState(server?.media_uploads_enabled ?? true);
   const [saving, setSaving] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  const isOwner = server?.owner_id === userId;
+  const isAdmin = isOwner || members.some((member) => member.user_id === userId && member.role === "admin");
+  const canDelete = !!server && isAdmin;
 
   const handleSave = async () => {
     setSaving(true);
@@ -181,6 +285,21 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
       addToast(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!server || !canDelete || deleteConfirmation !== server.name) return;
+    setDeleting(true);
+    try {
+      await deleteServer(server.id, accessToken);
+      closeServerSettings();
+      closeSettings();
+      addToast("Server deleted", "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to delete server");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -286,6 +405,32 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
       >
         {saving ? "Saving..." : "Save Changes"}
       </button>
+
+      {server && canDelete && (
+        <section className="pt-6 border-t border-outline-variant/15 space-y-3">
+          <div>
+            <h4 className="text-sm font-semibold text-error">Delete Server</h4>
+            <p className="text-xs text-on-surface-variant mt-1">
+              Type <span className="text-on-surface font-medium">{server.name}</span> to confirm permanent deletion.
+            </p>
+          </div>
+          <input
+            type="text"
+            value={deleteConfirmation}
+            onChange={(e) => setDeleteConfirmation(e.target.value)}
+            placeholder={server.name}
+            className="w-full px-3 py-2 bg-surface-container border border-error/25 rounded text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-error/30"
+          />
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={deleting || deleteConfirmation !== server.name}
+            className="px-4 py-2 rounded text-sm font-medium bg-error text-white disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {deleting ? "Deleting..." : "Delete Server"}
+          </button>
+        </section>
+      )}
     </div>
   );
 }

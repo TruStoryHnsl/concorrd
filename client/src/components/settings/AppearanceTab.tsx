@@ -27,6 +27,8 @@ import {
   CHAT_FONT_SIZE_MIN,
   CHAT_FONT_SIZE_MAX,
   CHAT_FONT_SIZE_DEFAULT,
+  THEME_PRESETS,
+  type ThemePreset,
 } from "../../stores/settings";
 import { Slider } from "../ui/Slider";
 
@@ -39,9 +41,38 @@ import { Slider } from "../ui/Slider";
 const PREVIEW_SAMPLE =
   "The quick brown fox jumps over the lazy dog. A wizard's job is to vex chumps quickly in fog.";
 
+const THEME_META: Record<ThemePreset, {
+  label: string;
+  description: string;
+  swatches: [string, string, string];
+}> = {
+  "kinetic-node": {
+    label: "Kinetic Node",
+    description: "Indigo, mint, graphite.",
+    swatches: ["#a4a5ff", "#afefdd", "#171a1d"],
+  },
+  "verdant-signal": {
+    label: "Verdant Signal",
+    description: "Emerald, ice blue, deep pine.",
+    swatches: ["#7de0b7", "#8bc8ff", "#17211f"],
+  },
+  "ember-circuit": {
+    label: "Ember Circuit",
+    description: "Copper, amber, charcoal.",
+    swatches: ["#ff9a6b", "#ffd66e", "#231c18"],
+  },
+  "arctic-current": {
+    label: "Arctic Current",
+    description: "Sky, aqua, slate.",
+    swatches: ["#7bc8ff", "#91f0d0", "#182027"],
+  },
+};
+
 export function AppearanceTab() {
   const chatFontSize = useSettingsStore((s) => s.chatFontSize);
   const setChatFontSize = useSettingsStore((s) => s.setChatFontSize);
+  const themePreset = useSettingsStore((s) => s.themePreset);
+  const setThemePreset = useSettingsStore((s) => s.setThemePreset);
 
   // The numeric input is a plain controlled `<input type="number">`;
   // we forward every change through `setChatFontSize`, which clamps
@@ -136,6 +167,53 @@ export function AppearanceTab() {
           >
             {PREVIEW_SAMPLE}
           </p>
+        </div>
+      </section>
+
+      <section aria-labelledby="theme-preset-heading" className="flex flex-col gap-3">
+        <div className="flex items-baseline justify-between gap-3">
+          <div>
+            <h3 id="theme-preset-heading" className="text-sm font-medium text-on-surface">
+              Color theme
+            </h3>
+            <p className="text-xs text-on-surface-variant mt-1">
+              Changes the application palette and the Concord logo colors together.
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {THEME_PRESETS.map((preset) => {
+            const meta = THEME_META[preset];
+            const active = themePreset === preset;
+            return (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => setThemePreset(preset)}
+                className={`text-left p-3 rounded-lg border transition-colors ${
+                  active
+                    ? "bg-surface-container-high border-primary/50"
+                    : "bg-surface-container border-outline-variant/20 hover:bg-surface-container-high"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-on-surface">{meta.label}</div>
+                    <div className="text-xs text-on-surface-variant mt-1">{meta.description}</div>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {meta.swatches.map((color) => (
+                      <span
+                        key={color}
+                        className="w-4 h-4 rounded-full border border-black/20"
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       </section>
     </div>

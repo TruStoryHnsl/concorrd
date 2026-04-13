@@ -29,19 +29,18 @@ import { InviteModal } from "../server/InviteModal";
 interface ChannelSidebarProps {
   mobile?: boolean;
   onChannelSelect?: (roomId: string) => void;
+  onServerTitleClick?: () => void;
 }
 
-export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, onChannelSelect }: ChannelSidebarProps) {
+export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, onChannelSelect, onServerTitleClick }: ChannelSidebarProps) {
   const servers = useServerStore((s) => s.servers);
   const activeServerId = useServerStore((s) => s.activeServerId);
   const activeChannelId = useServerStore((s) => s.activeChannelId);
   const setActiveChannel = useServerStore((s) => s.setActiveChannel);
   const createChannelFn = useServerStore((s) => s.createChannel);
-  const deleteServerFn = useServerStore((s) => s.deleteServer);
   const deleteChannelFn = useServerStore((s) => s.deleteChannel);
   const renameChannelFn = useServerStore((s) => s.renameChannel);
   const reorderChannelsFn = useServerStore((s) => s.reorderChannels);
-  const leaveServerFn = useServerStore((s) => s.leaveServer);
   const userId = useAuthStore((s) => s.userId);
   const accessToken = useAuthStore((s) => s.accessToken);
   const addToast = useToastStore((s) => s.addToast);
@@ -81,8 +80,6 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
   const [channelName, setChannelName] = useState("");
   const [channelType, setChannelType] = useState<"text" | "voice">("text");
   const [showInviteModal, setShowInviteModal] = useState(false);
-  const [showServerMenu, setShowServerMenu] = useState(false);
-  const [confirmDeleteServer, setConfirmDeleteServer] = useState(false);
   const [confirmDeleteChannelId, setConfirmDeleteChannelId] = useState<number | null>(null);
   const [renamingChannelId, setRenamingChannelId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -123,10 +120,8 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
     );
   }
 
-  const isSynthetic = !!server.bridgeType || !!server.federated;
   const isOwner = server.owner_id === userId;
-  const canManage = isOwner && !isSynthetic;
-  const canDelete = isOwner || isSynthetic;
+  const canOpenSettings = true;
   const textChannels = server.channels.filter((c) => c.channel_type === "text");
   const voiceChannels = server.channels.filter((c) => c.channel_type === "voice");
 
@@ -140,18 +135,6 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
       setShowNewChannel(false);
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Failed to create channel");
-    }
-  };
-
-  const handleDeleteServer = async () => {
-    if (!accessToken) return;
-    try {
-      await deleteServerFn(server.id, accessToken);
-      addToast("Server deleted", "success");
-      setShowServerMenu(false);
-      setConfirmDeleteServer(false);
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to delete server");
     }
   };
 
@@ -194,17 +177,6 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
       addToast(err instanceof Error ? err.message : "Failed to rename channel");
     }
     cancelRenameChannel();
-  };
-
-  const handleLeaveServer = async () => {
-    if (!accessToken) return;
-    try {
-      await leaveServerFn(server.id, accessToken);
-      addToast("Left server", "info");
-      setShowServerMenu(false);
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to leave server");
-    }
   };
 
   const cycleNotificationLevel = (roomId: string) => {
@@ -318,14 +290,16 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
     <div className="w-full flex flex-col min-h-0 bg-surface-container-low">
       {/* Server header */}
       <div className="p-3 flex items-center justify-between relative">
-        <h2
-          className="text-sm font-headline font-semibold text-on-surface truncate cursor-pointer hover:text-on-surface-variant transition-colors"
-          onClick={() => setShowServerMenu(!showServerMenu)}
+        <button
+          type="button"
+          className="min-w-0 text-left text-sm font-headline font-semibold text-on-surface truncate cursor-pointer hover:text-on-surface-variant transition-colors"
+          onClick={() => onServerTitleClick?.()}
+          title="Server stats"
         >
           {server.name}
-        </h2>
+        </button>
         <div className="flex items-center gap-1">
-          {canManage && (
+          {canOpenSettings && (
             <button
               onClick={() => openServerSettings(server.id)}
               title="Server Settings"
@@ -342,53 +316,6 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
             Invite
           </button>
         </div>
-
-        {/* Server context menu */}
-        {showServerMenu && (
-          <div className="absolute top-full left-0 right-0 z-10 glass-panel rounded-xl shadow-lg mt-1 mx-2 overflow-hidden">
-            {canDelete ? (
-              confirmDeleteServer ? (
-                <div className="p-3 text-center">
-                  <p className="text-xs text-error mb-2 font-body">Delete "{server.name}"?</p>
-                  <div className="flex gap-1">
-                    <button
-                      onClick={handleDeleteServer}
-                      className="flex-1 text-xs py-1.5 bg-error-container text-on-error-container rounded-lg font-label"
-                    >
-                      Delete
-                    </button>
-                    <button
-                      onClick={() => setConfirmDeleteServer(false)}
-                      className="flex-1 text-xs py-1.5 bg-surface-container-highest text-on-surface-variant rounded-lg font-label"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setConfirmDeleteServer(true)}
-                  className="w-full text-left px-3 py-2.5 text-sm text-error hover:bg-surface-container-high transition-colors font-body"
-                >
-                  Delete Server
-                </button>
-              )
-            ) : (
-              <button
-                onClick={handleLeaveServer}
-                className="w-full text-left px-3 py-2.5 text-sm text-error hover:bg-surface-container-high transition-colors font-body"
-              >
-                Leave Server
-              </button>
-            )}
-            <button
-              onClick={() => { setShowServerMenu(false); setConfirmDeleteServer(false); }}
-              className="w-full text-left px-3 py-2.5 text-sm text-on-surface-variant hover:bg-surface-container-high transition-colors font-body"
-            >
-              Close
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Channel list */}

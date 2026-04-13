@@ -28,6 +28,11 @@ import { useToastStore } from "./toast";
  */
 const FEDERATED_SERVER_ID_PREFIX = "federated:";
 
+function discordGuildIdFromAlias(alias: string | null | undefined): string | null {
+  const match = alias?.match(/^#_discord_(\d+)_\d+:/);
+  return match?.[1] ?? null;
+}
+
 /**
  * Minimal shape of a matrix-js-sdk MatrixClient that
  * `hydrateFederatedRooms` depends on. We don't import the full
@@ -53,6 +58,7 @@ export interface FederatedRoomLike {
    * tests' ability to return explicit nulls.
    */
   getDMInviter?(): string | null | undefined;
+  getCanonicalAlias?(): string | null | undefined;
   /**
    * Returns `"m.space"` for space rooms, `undefined` (or another
    * room type) for regular rooms. Optional in the interface so
@@ -163,7 +169,9 @@ interface ServerState {
   ensureDiscordGuild: (guild: {
     guildId: string;
     guildName: string;
-    channel: { roomId: string; name: string };
+    channel: { roomId: string; name: string; channelType?: string; id?: number };
+    preferBridgeServer?: boolean;
+    activate?: boolean;
   }) => string;
 
   activeServer: () => Server | undefined;
@@ -441,6 +449,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
       });
 
       const channels: Channel[] = [];
+      let discordGuildId: string | null = null;
       let position = 0;
       for (const childId of orderedChildIds) {
         const childRoom = roomById.get(childId);
@@ -453,6 +462,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
         // federated state back into the rail.
         if (!childId.endsWith(`:${localDomain}`)) continue;
         const channelName = childRoom.name || childId;
+        discordGuildId ??= discordGuildIdFromAlias(childRoom.getCanonicalAlias?.());
         channels.push({
           // id=0 + unique position is a sentinel for synthetic channels.
           // No UI code keys off `Channel.id` for federated entries;
@@ -497,6 +507,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
         channels,
         federated: true,
         ...(isLocalSpace && { bridgeType: "discord" as const }),
+        ...(discordGuildId && { discordGuildId }),
       });
     }
 
@@ -529,6 +540,44 @@ export const useServerStore = create<ServerState>((set, get) => ({
     // with channel rooms as its children). Federated spaces on
     // other homeservers are treated the same as any other federated
     // room now: not rendered as a tile.
+
+    const discordVoiceOverlays = servers
+      .filter((s) => s.bridgeType === "discord" && s.discordGuildId)
+      .flatMap((s) =>
+        s.channels
+          .filter((channel) => channel.channel_type === "voice")
+          .map((channel) => ({ guildId: s.discordGuildId!, channel })),
+      );
+
+    for (const overlay of discordVoiceOverlays) {
+      let target = synthetic.find(
+        (server) =>
+          server.bridgeType === "discord" &&
+          server.discordGuildId === overlay.guildId,
+      );
+      if (!target) {
+        target = {
+          id: `${FEDERATED_SERVER_ID_PREFIX}discord_${overlay.guildId}`,
+          name: `Guild ${overlay.guildId}`,
+          icon_url: null,
+          owner_id: userId,
+          visibility: "public",
+          abbreviation: "D",
+          media_uploads_enabled: false,
+          channels: [],
+          federated: true,
+          bridgeType: "discord" as const,
+          discordGuildId: overlay.guildId,
+        };
+        synthetic.push(target);
+      }
+      if (!target.channels.some((channel) => channel.matrix_room_id === overlay.channel.matrix_room_id)) {
+        target.channels.push({
+          ...overlay.channel,
+          position: target.channels.length,
+        });
+      }
+    }
 
     set({ servers: [...concordServers, ...synthetic] });
   },
@@ -826,8 +875,10 @@ export const useServerStore = create<ServerState>((set, get) => ({
     set({ activeChannelId: matrixRoomId });
   },
 
-  ensureDiscordGuild: ({ guildId, guildName, channel }) => {
+  ensureDiscordGuild: ({ guildId, guildName, channel, preferBridgeServer, activate = true }) => {
     const { servers } = get();
+    const channelType = channel.channelType ?? "text";
+    const channelId = channel.id ?? 0;
 
     // Prefer any existing server that already contains this channel —
     // hydrateFederatedRooms uses Matrix space IDs (federated:!room:domain)
@@ -835,6 +886,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
     // by channel roomId lets us find the hydration entry regardless of
     // which ID scheme it was created with, preventing duplicate tiles.
     const hostServer = servers.find((s) =>
+      (!preferBridgeServer || s.bridgeType === "discord") &&
       s.channels.some((c) => c.matrix_room_id === channel.roomId),
     );
 
@@ -852,14 +904,16 @@ export const useServerStore = create<ServerState>((set, get) => ({
           ),
         });
       }
-      set({ activeServerId: hostServer.id, activeChannelId: channel.roomId });
+      if (activate) set({ activeServerId: hostServer.id, activeChannelId: channel.roomId });
       return hostServer.id;
     }
 
     // No existing server has this channel yet. Check for a
     // discord_<guildId> placeholder created in a prior call.
     const serverId = `${FEDERATED_SERVER_ID_PREFIX}discord_${guildId}`;
-    const existing = servers.find((s) => s.id === serverId);
+    const existing =
+      servers.find((s) => s.bridgeType === "discord" && s.discordGuildId === guildId) ??
+      servers.find((s) => s.id === serverId);
 
     if (existing) {
       const hasChannel = existing.channels.some(
@@ -872,18 +926,19 @@ export const useServerStore = create<ServerState>((set, get) => ({
       if (!hasChannel || betterName) {
         set({
           servers: servers.map((s) =>
-            s.id === serverId
+            s.id === existing.id
               ? {
                   ...s,
                   ...(betterName ? { name: guildName } : {}),
+                  discordGuildId: guildId,
                   channels: hasChannel
                     ? s.channels
                     : [
                         ...s.channels,
                         {
-                          id: 0,
+                          id: channelId,
                           name: channel.name,
-                          channel_type: "text",
+                          channel_type: channelType,
                           matrix_room_id: channel.roomId,
                           position: s.channels.length,
                         },
@@ -910,21 +965,23 @@ export const useServerStore = create<ServerState>((set, get) => ({
             media_uploads_enabled: false,
             channels: [
               {
-                id: 0,
+                id: channelId,
                 name: channel.name,
-                channel_type: "text",
+                channel_type: channelType,
                 matrix_room_id: channel.roomId,
                 position: 0,
               },
             ],
             bridgeType: "discord" as const,
+            discordGuildId: guildId,
           },
         ],
       });
     }
 
-    set({ activeServerId: serverId, activeChannelId: channel.roomId });
-    return serverId;
+    const targetServerId = existing?.id ?? serverId;
+    if (activate) set({ activeServerId: targetServerId, activeChannelId: channel.roomId });
+    return targetServerId;
   },
 
   activeServer: () => {

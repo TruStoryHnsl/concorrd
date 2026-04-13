@@ -805,6 +805,23 @@ def ensure_appservice_entry(
 
     global_table = dict(existing.get("global", {}))
     appservice_table = dict(global_table.get("appservice", {}))
+    # Remove stale entries with the same sender_localpart but a different ID.
+    # These are left behind when the appservice ID is rotated (e.g.
+    # concord_discord → concord_discord_2) and would cause tuwunel to reject
+    # the bridge's AS token with "Appservices can only ping themselves".
+    stale_ids = [
+        k for k, v in appservice_table.items()
+        if k != registration.id
+        and isinstance(v, dict)
+        and v.get("sender_localpart") == registration.sender_localpart
+    ]
+    for stale_id in stale_ids:
+        logger.info(
+            "removing stale appservice entry %s (superseded by %s)",
+            stale_id,
+            registration.id,
+        )
+        del appservice_table[stale_id]
     appservice_table[registration.id] = registration.to_tuwunel_global_appservice_table()
     global_table["appservice"] = appservice_table
 

@@ -5,6 +5,11 @@ import { useAuthStore } from "./auth";
 const VOICE_SESSION_KEY = "concord_voice_session";
 const VOICE_STATS_SESSION_KEY = "concord_voice_stats_session";
 
+function userScopedStorageKey(base: string): string {
+  const userId = useAuthStore.getState().userId;
+  return userId ? `${base}:${userId}` : base;
+}
+
 /** Connection lifecycle states for voice. */
 export type VoiceConnectionState =
   | "disconnected"
@@ -53,7 +58,9 @@ interface VoiceState {
 /** Read a pending voice session from sessionStorage (if any). */
 export function getPendingVoiceSession(): VoiceSession | null {
   try {
-    const raw = sessionStorage.getItem(VOICE_SESSION_KEY);
+    const raw =
+      localStorage.getItem(userScopedStorageKey(VOICE_SESSION_KEY)) ??
+      sessionStorage.getItem(VOICE_SESSION_KEY);
     if (!raw) return null;
     return JSON.parse(raw) as VoiceSession;
   } catch {
@@ -63,6 +70,7 @@ export function getPendingVoiceSession(): VoiceSession | null {
 
 /** Clear the pending voice session (called after successful reconnect or explicit disconnect). */
 export function clearPendingVoiceSession(): void {
+  localStorage.removeItem(userScopedStorageKey(VOICE_SESSION_KEY));
   sessionStorage.removeItem(VOICE_SESSION_KEY);
 }
 
@@ -99,9 +107,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       roomName: params.roomName,
     };
     try {
+      localStorage.setItem(userScopedStorageKey(VOICE_SESSION_KEY), JSON.stringify(session));
       sessionStorage.setItem(VOICE_SESSION_KEY, JSON.stringify(session));
     } catch {
-      // sessionStorage full or unavailable — non-critical
+      // storage unavailable — non-critical
     }
 
     set({

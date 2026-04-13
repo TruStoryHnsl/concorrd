@@ -6,6 +6,8 @@ import { useAuthStore } from "../stores/auth";
 import { useToastStore } from "../stores/toast";
 import { mxcToHttp } from "../api/media";
 
+const storeStartupByClient = new WeakMap<object, Promise<void>>();
+
 // Maximum events kept per room timeline to prevent unbounded memory growth.
 // matrix-js-sdk's MemoryStore accumulates every synced event forever — on a
 // long-running session this can consume hundreds of MB.
@@ -123,11 +125,31 @@ export function useMatrixSync() {
     };
 
     client.on(ClientEvent.Sync, onSync);
-    client.startClient({
-      initialSyncLimit: 20,
-      lazyLoadMembers: true,
-      pollTimeout: 30000,
-    }).catch((err) => {
+
+    const startPromise = (() => {
+      const store = (client as unknown as { store?: { startup?: () => Promise<void> } }).store;
+      const startup =
+        store?.startup
+          ? storeStartupByClient.get(client) ??
+            store.startup()
+              .catch((err) => {
+                console.warn("Matrix store startup failed, continuing without cache:", err);
+              })
+              .then(() => {})
+          : Promise.resolve();
+      if (store?.startup && !storeStartupByClient.has(client)) {
+        storeStartupByClient.set(client, startup);
+      }
+      return startup.then(() =>
+        client.startClient({
+          initialSyncLimit: 20,
+          lazyLoadMembers: true,
+          pollTimeout: 30000,
+        }),
+      );
+    })();
+
+    startPromise.catch((err) => {
       console.error("Matrix startClient failed:", err);
       useToastStore.getState().addToast("Failed to connect to chat server");
     });
@@ -558,7 +580,9 @@ export function useRoomMessages(roomId: string | null): RoomMessagesResult {
     // has since moved to.
     const room = client.getRoom(roomId);
     let cancelled = false;
-    if (room && room.getLiveTimeline().getEvents().length === 0) {
+    const timelineEvents = room?.getLiveTimeline().getEvents() ?? [];
+    const hasMessages = timelineEvents.some((e) => e.getType() === "m.room.message");
+    if (room && !hasMessages) {
       setIsPaginating(true);
       const timeline = room.getLiveTimeline();
       client

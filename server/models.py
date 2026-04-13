@@ -187,6 +187,26 @@ class VoiceSession(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class DiscordVoiceBridge(Base):
+    __tablename__ = "discord_voice_bridges"
+    __table_args__ = (
+        UniqueConstraint("matrix_room_id", name="uq_discord_voice_bridge_matrix_room"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    server_id: Mapped[str] = mapped_column(String, ForeignKey("servers.id"), nullable=False)
+    channel_id: Mapped[int] = mapped_column(Integer, ForeignKey("channels.id"), nullable=False)
+    matrix_room_id: Mapped[str] = mapped_column(String, nullable=False)
+    discord_guild_id: Mapped[str] = mapped_column(String, nullable=False)
+    discord_channel_id: Mapped[str] = mapped_column(String, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    server: Mapped["Server"] = relationship()
+    channel: Mapped["Channel"] = relationship()
+
+
 class MessageCount(Base):
     __tablename__ = "message_counts"
     __table_args__ = (

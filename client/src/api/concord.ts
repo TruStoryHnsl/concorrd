@@ -35,6 +35,11 @@ export interface Server {
    * created by a bridge (e.g., Discord guilds via mautrix-discord).
    */
   bridgeType?: "discord";
+  /**
+   * Client-only Discord guild identifier for bridge-created synthetic
+   * servers. Used to merge voice-room overlays into the guild tile.
+   */
+  discordGuildId?: string;
 }
 
 export interface Invite {
@@ -1087,6 +1092,36 @@ export interface DMConversation {
   created_at: string | null;
 }
 
+export interface RoomDiagnosticStep {
+  step: string;
+  ok: boolean;
+  status: number | null;
+  detail: string;
+}
+
+export interface RoomDiagnostics {
+  room_id: string;
+  user_id: string;
+  binding:
+    | {
+        kind: "server_channel";
+        server_id: string;
+        server_name: string;
+        channel_id: number;
+        channel_name: string;
+        channel_type: string;
+      }
+    | {
+        kind: "dm";
+        conversation_id: number;
+        other_user_id: string;
+      }
+    | { kind: "unknown" };
+  inference: string;
+  summary: string;
+  steps: RoomDiagnosticStep[];
+}
+
 export async function listDMs(
   accessToken: string,
 ): Promise<DMConversation[]> {
@@ -1102,6 +1137,13 @@ export async function createDM(
     { method: "POST", body: JSON.stringify({ target_user_id: targetUserId }) },
     accessToken,
   );
+}
+
+export async function getRoomDiagnostics(
+  roomId: string,
+  accessToken: string,
+): Promise<RoomDiagnostics> {
+  return apiFetch(`/rooms/${encodeURIComponent(roomId)}/diagnostics`, {}, accessToken);
 }
 
 // --- Federation ---

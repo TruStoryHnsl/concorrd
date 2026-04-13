@@ -18,7 +18,7 @@ logging.basicConfig(
 
 from database import init_db
 from errors import ConcordError, ErrorResponse
-from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_bridges, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions
+from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_bridges, admin_discord_voice, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms
 
 
 @asynccontextmanager
@@ -96,6 +96,22 @@ async def lifespan(app: FastAPI):
                         started_at DATETIME NOT NULL,
                         ended_at DATETIME,
                         duration_seconds INTEGER
+                    )
+                """))
+
+            # Discord voice bridge mappings table
+            if not insp.has_table("discord_voice_bridges"):
+                connection.execute(text("""
+                    CREATE TABLE discord_voice_bridges (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        server_id VARCHAR NOT NULL REFERENCES servers(id),
+                        channel_id INTEGER NOT NULL REFERENCES channels(id),
+                        matrix_room_id VARCHAR NOT NULL UNIQUE,
+                        discord_guild_id VARCHAR NOT NULL,
+                        discord_channel_id VARCHAR NOT NULL,
+                        enabled BOOLEAN DEFAULT 1,
+                        created_by VARCHAR NOT NULL,
+                        created_at DATETIME
                     )
                 """))
 
@@ -634,6 +650,7 @@ app.include_router(soundboard.router)
 app.include_router(webhooks.router)
 app.include_router(admin.router)
 app.include_router(admin_bridges.router)
+app.include_router(admin_discord_voice.router)
 app.include_router(direct_invites.router)
 app.include_router(stats.router)
 app.include_router(totp.router)
@@ -645,6 +662,7 @@ app.include_router(nodes.router)
 app.include_router(explore.router)
 app.include_router(wellknown.router)
 app.include_router(extensions.router)
+app.include_router(rooms.router)
 
 
 @app.get("/api/health")

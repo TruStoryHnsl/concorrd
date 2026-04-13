@@ -34,6 +34,34 @@ if (initialInviteToken) {
 
 export { INVITE_STORAGE_KEY };
 
+function buildConcordFavicon(primary: string, secondary: string): string {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+      <defs>
+        <mask id="primary-mask">
+          <rect x="0" y="0" width="512" height="512" fill="white" />
+          <circle cx="192" cy="320" r="168" fill="black" />
+          <rect x="0" y="0" width="512" height="256" fill="white" />
+        </mask>
+        <mask id="secondary-mask">
+          <rect x="0" y="0" width="512" height="512" fill="white" />
+          <circle cx="320" cy="192" r="168" fill="black" />
+          <rect x="0" y="256" width="512" height="256" fill="white" />
+        </mask>
+      </defs>
+      <g mask="url(#primary-mask)">
+        <circle cx="320" cy="192" r="120" fill="none" stroke="${primary}" stroke-width="48" />
+      </g>
+      <circle cx="288" cy="172" r="28" fill="${primary}" />
+      <g mask="url(#secondary-mask)">
+        <circle cx="192" cy="320" r="120" fill="none" stroke="${secondary}" stroke-width="48" />
+      </g>
+      <circle cx="224" cy="340" r="28" fill="${secondary}" />
+    </svg>
+  `.trim();
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
 export default function App() {
   // Desktop/native mode: require a server picker pass before anything
   // else. Native apps ALWAYS start hollow — no pre-configured server,
@@ -97,6 +125,7 @@ export default function App() {
   // Runs once on mount (with the hydrated value from localStorage) and
   // again whenever the user moves the slider in Settings → Appearance.
   const chatFontSize = useSettingsStore((s) => s.chatFontSize);
+  const themePreset = useSettingsStore((s) => s.themePreset);
   useEffect(() => {
     if (typeof document === "undefined") return;
     document.documentElement.style.setProperty(
@@ -104,6 +133,28 @@ export default function App() {
       `${chatFontSize}px`,
     );
   }, [chatFontSize]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.setAttribute("data-theme", themePreset);
+  }, [themePreset]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const styles = window.getComputedStyle(document.documentElement);
+    const primary = styles.getPropertyValue("--color-logo-primary").trim() || "#a4a5ff";
+    const secondary = styles.getPropertyValue("--color-logo-secondary").trim() || "#afefdd";
+    const surface = styles.getPropertyValue("--color-surface").trim() || "#0c0e11";
+    const faviconHref = buildConcordFavicon(primary, secondary);
+
+    document.querySelectorAll<HTMLLinkElement>('link[rel="icon"]').forEach((link) => {
+      link.href = faviconHref;
+      link.type = "image/svg+xml";
+    });
+
+    const themeMeta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    if (themeMeta) themeMeta.content = surface;
+  }, [themePreset]);
 
   // TV mode: set the data-tv attribute on <html> so all TV CSS rules
   // in styles/tv.css and the focus ring styles in index.css activate.

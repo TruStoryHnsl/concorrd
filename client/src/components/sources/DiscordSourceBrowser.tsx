@@ -10,19 +10,26 @@
  *   done            — success, optionally navigate to the new room
  *   error           — failure with back button
  *
- * Linking mechanism (client-side, no backend):
- *   1. Find or create a DM room with @discordbot:<server_domain>
- *   2. Send "bridge <channel_id>" to that DM
- *   3. Poll client.getRooms() for up to 12s for a room whose canonical alias
- *      matches _discord_\d+_<channelId>:
- *   4. Optionally send a test message to the portal room
+ * Linking mechanism:
+ *   - Text channels are bridged by DM-ing "bridge <channel_id>" to
+ *     @discordbot and waiting for the mautrix portal room.
+ *   - Voice/stage channels are mapped to a Concord voice channel and
+ *     relayed by the Discord voice sidecar.
  */
 
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useAuthStore } from "../../stores/auth";
 import { useServerStore } from "../../stores/server";
 import { useDMStore } from "../../stores/dm";
-import { discordBridgeHttpGetInviteUrl, discordBridgeHttpLoginRelay, discordBridgeHttpListGuilds } from "../../api/bridges";
+import {
+  discordBridgeHttpGetChannel,
+  discordBridgeHttpGetInviteUrl,
+  discordBridgeHttpLoginRelay,
+  discordBridgeHttpListGuilds,
+  discordVoiceBridgeHttpListRooms,
+  discordVoiceBridgeHttpStart,
+  discordVoiceBridgeHttpUpsertRoom,
+} from "../../api/bridges";
 
 // ── Alias parser ────────────────────────────────────────────────────────────
 
@@ -67,6 +74,11 @@ function detectDiscordBridge(room: { currentState?: { getStateEvents?(type: stri
   return null;
 }
 
+function safeConcordChannelName(name: string, fallback: string): string {
+  const cleaned = name.replace(/[^A-Za-z0-9_\- ]+/g, " ").replace(/\s+/g, " ").trim();
+  return (cleaned || fallback).slice(0, 100);
+}
+
 // ── Wait for bridge portal ───────────────────────────────────────────────────
 
 async function waitForPortal(
@@ -102,6 +114,14 @@ interface GuildGroup {
   guildId: string;
   guildName: string;
   channels: BridgedChannel[];
+}
+
+interface LinkStep {
+  key: string;
+  label: string;
+  status: "pending" | "ok" | "failed";
+  detail?: string;
+  elapsedMs?: number;
 }
 
 type Screen =
@@ -151,11 +171,53 @@ function Header({
   );
 }
 
+function LinkStepList({ steps }: { steps: LinkStep[] }) {
+  if (!steps.length) return null;
+  return (
+    <div className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-high/60 p-3 text-left">
+      <p className="text-xs font-medium text-on-surface mb-2">Connection trace</p>
+      <div className="space-y-2">
+        {steps.map((step) => (
+          <div key={step.key} className="flex gap-2 text-xs">
+            <span
+              className={`mt-0.5 inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-[10px] ${
+                step.status === "ok"
+                  ? "bg-green-500/15 text-green-500"
+                  : step.status === "failed"
+                    ? "bg-error/15 text-error"
+                    : "bg-[#5865F2]/15 text-[#5865F2]"
+              }`}
+            >
+              {step.status === "ok" ? "✓" : step.status === "failed" ? "!" : "..."}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-on-surface">{step.label}</span>
+                {step.elapsedMs !== undefined && (
+                  <span className="text-on-surface-variant/60">{step.elapsedMs}ms</span>
+                )}
+              </div>
+              {step.detail && (
+                <p className="mt-0.5 break-words font-mono text-[11px] text-on-surface-variant">
+                  {step.detail}
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ───────────────────────────────────────────────────────────
 
 export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
   const client = useAuthStore((s) => s.client);
   const userId = useAuthStore((s) => s.userId);
+  const servers = useServerStore((s) => s.servers);
+  const activeServerId = useServerStore((s) => s.activeServerId);
+  const activeChannelId = useServerStore((s) => s.activeChannelId);
   const setActiveChannel = useServerStore((s) => s.setActiveChannel);
   const ensureDiscordGuild = useServerStore((s) => s.ensureDiscordGuild);
   const setDMActive = useDMStore((s) => s.setDMActive);
@@ -167,7 +229,10 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
   const [sendTestMsg, setSendTestMsg] = useState(true);
   const [testMsg, setTestMsg] = useState("✓ Concord bridge is working!");
   const [linkedRoom, setLinkedRoom] = useState<{ roomId: string; name: string } | null>(null);
+  const [linkedKind, setLinkedKind] = useState<"text" | "voice">("text");
   const [error, setError] = useState("");
+  const [linkSteps, setLinkSteps] = useState<LinkStep[]>([]);
+  const voiceOverlayLoadedForToken = useRef<string | null>(null);
 
   // Invite URL — fetched lazily when the invite-bot screen is opened.
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
@@ -299,6 +364,65 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
     [guildGroups, resolvedGuildNames],
   );
 
+  useEffect(() => {
+    if (!accessToken || servers.length === 0) return;
+    if (voiceOverlayLoadedForToken.current === accessToken) return;
+    voiceOverlayLoadedForToken.current = accessToken;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const [rooms, guilds] = await Promise.all([
+          discordVoiceBridgeHttpListRooms(accessToken),
+          discordBridgeHttpListGuilds(accessToken).catch(() => []),
+        ]);
+        if (cancelled) return;
+
+        const latestServers = useServerStore.getState().servers;
+        for (const room of rooms) {
+          if (!room.enabled) continue;
+          const alreadyProjected = latestServers.some(
+            (server) =>
+              server.bridgeType === "discord" &&
+              server.discordGuildId === room.discord_guild_id &&
+              server.channels.some((channel) => channel.matrix_room_id === room.matrix_room_id),
+          );
+          if (alreadyProjected) continue;
+
+          const localChannel = latestServers
+            .flatMap((server) => server.channels)
+            .find(
+              (channel) =>
+                channel.id === room.channel_id ||
+                channel.matrix_room_id === room.matrix_room_id,
+            );
+          if (!localChannel) continue;
+
+          ensureDiscordGuild({
+            guildId: room.discord_guild_id,
+            guildName:
+              resolvedGuildNames.get(room.discord_guild_id) ??
+              guilds.find((guild) => guild.id === room.discord_guild_id)?.name ??
+              `Guild ${room.discord_guild_id}`,
+            channel: {
+              id: localChannel.id,
+              roomId: room.matrix_room_id,
+              name: localChannel.name,
+              channelType: "voice",
+            },
+            preferBridgeServer: true,
+          });
+        }
+      } catch {
+        voiceOverlayLoadedForToken.current = null;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, ensureDiscordGuild, resolvedGuildNames, servers.length]);
+
   // ── Navigate to a bridged room ─────────────────────────────────────────────
 
   const navigateTo = useCallback(
@@ -338,6 +462,38 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
   // ── Link flow ─────────────────────────────────────────────────────────────
 
   const handleLink = useCallback(async () => {
+    const steps: LinkStep[] = [];
+    const stepStartedAt = new Map<string, number>();
+    const syncSteps = () => setLinkSteps([...steps]);
+    const startStep = (key: string, label: string, detail?: string) => {
+      const existing = steps.find((step) => step.key === key);
+      stepStartedAt.set(key, performance.now());
+      if (existing) {
+        existing.label = label;
+        existing.detail = detail;
+        existing.status = "pending";
+        delete existing.elapsedMs;
+      } else {
+        steps.push({ key, label, status: "pending", detail });
+      }
+      syncSteps();
+    };
+    const finishStep = (key: string, status: "ok" | "failed", detail?: string) => {
+      const existing = steps.find((step) => step.key === key);
+      if (!existing) return;
+      existing.status = status;
+      existing.detail = detail ?? existing.detail;
+      const started = stepStartedAt.get(key);
+      if (started !== undefined) existing.elapsedMs = Math.round(performance.now() - started);
+      syncSteps();
+    };
+    const failCurrentStep = (key: string, error: unknown): never => {
+      const message = error instanceof Error ? error.message : String(error);
+      finishStep(key, "failed", message);
+      throw error;
+    };
+
+    setLinkSteps([]);
     if (!client || !userId) {
       setError("Not connected to Matrix.");
       setScreen("error");
@@ -354,10 +510,105 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
     setScreen("linking");
 
     try {
+      if (accessToken) {
+        startStep("inspect-discord-channel", "Inspect Discord channel", `channel_id=${trimmedId}`);
+        const info = await discordBridgeHttpGetChannel(accessToken, trimmedId)
+          .catch((err) => failCurrentStep("inspect-discord-channel", err));
+        finishStep(
+          "inspect-discord-channel",
+          "ok",
+          `kind=${info.kind}; type=${info.type}; guild=${info.guild_id ?? "none"}; name=${info.name}`,
+        );
+        if (info.kind === "voice") {
+          startStep("select-concord-voice", "Select Concord voice channel");
+          const activeServer = servers.find((server) => server.id === activeServerId);
+          if (!activeServer || activeServer.bridgeType || activeServer.federated) {
+            const err = new Error(
+              "Select one of your Concord servers before linking a Discord voice channel. " +
+              "Voice channels need a Concord voice room to join.",
+            );
+            finishStep("select-concord-voice", "failed", err.message);
+            throw err;
+          }
+          if (!info.guild_id) {
+            const err = new Error("Discord did not return a server ID for that voice channel.");
+            finishStep("select-concord-voice", "failed", err.message);
+            throw err;
+          }
+          const discordGuildId = info.guild_id;
+
+          const fallbackName = `discord voice ${trimmedId.slice(-4)}`;
+          const voiceName = safeConcordChannelName(info.name, fallbackName);
+          const activeVoiceChannel = activeServer.channels.find(
+            (channel) =>
+              channel.channel_type === "voice" &&
+              channel.matrix_room_id === activeChannelId,
+          );
+          const matchingVoiceChannel = activeServer.channels.find(
+            (channel) => channel.channel_type === "voice" && channel.name === voiceName,
+          );
+          const firstVoiceChannel = activeServer.channels.find(
+            (channel) => channel.channel_type === "voice",
+          );
+          const voiceChannel = activeVoiceChannel ?? matchingVoiceChannel ?? firstVoiceChannel;
+          if (!voiceChannel) {
+            const err = new Error(
+              "This Concord server has no voice channels yet. Create a Concord voice channel first, then link the Discord voice channel again.",
+            );
+            finishStep("select-concord-voice", "failed", err.message);
+            throw err;
+          }
+          finishStep(
+            "select-concord-voice",
+            "ok",
+            `server=${activeServer.name}; channel=${voiceChannel.name}; matrix_room=${voiceChannel.matrix_room_id}`,
+          );
+
+          startStep("write-voice-mapping", "Write Discord voice mapping");
+          await discordVoiceBridgeHttpUpsertRoom(accessToken, {
+            channel_id: voiceChannel.id,
+            discord_guild_id: discordGuildId,
+            discord_channel_id: info.id,
+            enabled: true,
+          }).catch((err) => failCurrentStep("write-voice-mapping", err));
+          finishStep("write-voice-mapping", "ok", `discord_channel=${info.id}`);
+
+          startStep("start-voice-sidecar", "Start Discord voice sidecar");
+          const startResult = await discordVoiceBridgeHttpStart(accessToken)
+            .catch((err) => failCurrentStep("start-voice-sidecar", err));
+          finishStep("start-voice-sidecar", "ok", startResult.message);
+
+          setDMActive(false);
+          const guildName =
+            resolvedGuildNames.get(discordGuildId) ??
+            discordGuilds.find((guild) => guild.id === discordGuildId)?.name ??
+            `Guild ${discordGuildId}`;
+          ensureDiscordGuild({
+            guildId: discordGuildId,
+            guildName,
+            channel: {
+              id: voiceChannel.id,
+              roomId: voiceChannel.matrix_room_id,
+              name: voiceChannel.name,
+              channelType: "voice",
+            },
+            preferBridgeServer: true,
+          });
+          setLinkedKind("voice");
+          setLinkedRoom({ roomId: voiceChannel.matrix_room_id, name: voiceChannel.name });
+          setScreen("done");
+          return;
+        }
+        if (info.kind === "unsupported") {
+          failCurrentStep("inspect-discord-channel", new Error("That Discord channel type is not supported by the bridge."));
+        }
+      }
+
       // Derive bot user ID from our own Matrix user ID
       const serverDomain = userId.includes(":") ? userId.split(":")[1] : "";
       const botUserId = `@discordbot:${serverDomain}`;
 
+      startStep("create-bridge-room", "Create Matrix room for bridge command", `invite=${botUserId}`);
       // Create a FRESH room for this bridge command. mautrix-discord's
       // `bridge` command turns the CURRENT room into the portal for the
       // specified channel. We must NOT send it in the management DM or
@@ -366,28 +617,39 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
         invite: [botUserId],
         // @ts-expect-error — matrix-js-sdk accepts string literal
         preset: "trusted_private_chat",
-      });
+      }).catch((err) => failCurrentStep("create-bridge-room", err));
       const bridgeRoomId = bridgeRoom.room_id;
+      finishStep("create-bridge-room", "ok", `room=${bridgeRoomId}`);
       // Wait for the bot to accept the invite
+      startStep("wait-for-discordbot", "Wait for discordbot invite handling", "fixed 2s grace period");
       await new Promise((r) => setTimeout(r, 2000));
+      finishStep("wait-for-discordbot", "ok");
 
       // Ensure the bridge bot is logged into Discord.
       if (accessToken) {
+        startStep("login-relay", "Send login relay to bridge bot");
         try {
           await discordBridgeHttpLoginRelay(accessToken);
           await new Promise((r) => setTimeout(r, 4000));
+          finishStep("login-relay", "ok", "relay accepted; waited 4s for Discord handshake");
         } catch {
           // Non-fatal — bridge may already be logged in from a previous session.
+          finishStep("login-relay", "ok", "skipped or already logged in");
         }
       }
 
       // Send the bridge command in the dedicated room
-      await client.sendTextMessage(bridgeRoomId, `bridge ${trimmedId}`);
+      startStep("send-bridge-command", "Send bridge command", `room=${bridgeRoomId}; command=bridge ${trimmedId}`);
+      await client.sendTextMessage(bridgeRoomId, `bridge ${trimmedId}`)
+        .catch((err) => failCurrentStep("send-bridge-command", err));
+      finishStep("send-bridge-command", "ok");
 
       // Wait for the portal room to be created
+      startStep("wait-for-portal", "Wait for Matrix portal room", "timeout=20s");
       const portal = await waitForPortal(client, trimmedId);
 
       if (!portal) {
+        finishStep("wait-for-portal", "failed", "No joined portal room with matching Discord channel alias after 20s.");
         setError(
           "Bridge command sent, but the portal room wasn't created within 20 seconds. " +
           "The most common cause is that the bot is not a member of that Discord server — " +
@@ -396,19 +658,39 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
         setScreen("error");
         return;
       }
+      finishStep("wait-for-portal", "ok", `room=${portal.roomId}; name=${portal.name}`);
 
       // Optionally send test message
       if (sendTestMsg && testMsg.trim()) {
-        await client.sendTextMessage(portal.roomId, testMsg.trim());
+        startStep("send-test-message", "Send test message", `room=${portal.roomId}`);
+        await client.sendTextMessage(portal.roomId, testMsg.trim())
+          .catch((err) => failCurrentStep("send-test-message", err));
+        finishStep("send-test-message", "ok");
       }
 
       setLinkedRoom(portal);
+      setLinkedKind("text");
       setScreen("done");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
       setScreen("error");
     }
-  }, [client, userId, channelId, sendTestMsg, testMsg]);
+  }, [
+    accessToken,
+    activeChannelId,
+    activeServerId,
+    channelId,
+    client,
+    discordGuilds,
+    ensureDiscordGuild,
+    resolvedGuildNames,
+    sendTestMsg,
+    servers,
+    setActiveChannel,
+    setDMActive,
+    testMsg,
+    userId,
+  ]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -827,10 +1109,11 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
           <div className="flex flex-col items-center gap-4 py-10">
             <span className="inline-block w-8 h-8 border-2 border-outline-variant border-t-[#5865F2] rounded-full animate-spin" />
             <p className="text-sm text-on-surface-variant text-center">
-              Sending bridge command…
+              Connecting Discord channel...
               <br />
-              <span className="text-xs">Waiting for portal room (up to 12s)</span>
+              <span className="text-xs">Text channels create portal rooms. Voice channels connect through LiveKit.</span>
             </p>
+            <LinkStepList steps={linkSteps} />
           </div>
         )}
 
@@ -843,9 +1126,13 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
                 <span className="material-symbols-outlined text-[#5865F2] text-xl flex-shrink-0 mt-0.5">check_circle</span>
                 <div className="text-sm">
                   <p className="font-medium text-on-surface">
-                    {linkedRoom?.name ?? "Portal room created"}
+                    {linkedRoom?.name ?? (linkedKind === "voice" ? "Voice channel connected" : "Portal room created")}
                   </p>
-                  {sendTestMsg && (
+                  {linkedKind === "voice" ? (
+                    <p className="text-xs text-on-surface-variant mt-0.5">
+                      Join this Concord voice channel to participate in the Discord voice room.
+                    </p>
+                  ) : sendTestMsg && (
                     <p className="text-xs text-on-surface-variant mt-0.5">
                       Test message sent — check Discord to confirm the bot posted it.
                     </p>
@@ -853,8 +1140,11 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
                 </div>
               </div>
               <p className="text-xs text-on-surface-variant">
-                The channel is now bridged. Messages will sync between Discord and Concord in both directions.
+                {linkedKind === "voice"
+                  ? "The Discord voice channel is mapped to a Concord voice channel. The sidecar will keep the audio bridge synced."
+                  : "The channel is now bridged. Messages will sync between Discord and Concord in both directions."}
               </p>
+              <LinkStepList steps={linkSteps} />
               {linkedRoom && (
                 <button
                   onClick={() => navigateTo(linkedRoom.roomId)}
@@ -868,6 +1158,7 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
                   setScreen("browse");
                   setChannelId("");
                   setLinkedRoom(null);
+                  setLinkedKind("text");
                 }}
                 className="w-full py-2 bg-surface-container-high hover:bg-surface-container-highest text-on-surface rounded-lg text-sm transition-colors"
               >
@@ -885,6 +1176,7 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
               <div className="rounded-lg bg-error/10 border border-error/20 px-4 py-3">
                 <p className="text-sm text-error">{error}</p>
               </div>
+              <LinkStepList steps={linkSteps} />
               {/* If error looks like a bot-membership issue, offer a direct shortcut */}
               {error.includes("not a member") && (
                 <button
