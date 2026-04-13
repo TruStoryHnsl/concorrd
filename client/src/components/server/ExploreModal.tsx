@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IPublicRoomsChunkRoom } from "matrix-js-sdk";
 import { useAuthStore } from "../../stores/auth";
 import { useToastStore } from "../../stores/toast";
@@ -167,12 +167,16 @@ export function ExploreModal({ isOpen, onClose }: Props) {
   const [joiningRoomId, setJoiningRoomId] = useState<string | null>(null);
   const [diagnostic, setDiagnostic] = useState<ExploreDiagnostic | null>(null);
 
-  const browseableSources = sources.filter(
-    (source) =>
-      source.enabled &&
-      (source.platform === undefined ||
-        source.platform === "concord" ||
-        source.platform === "matrix"),
+  const browseableSources = useMemo(
+    () =>
+      sources.filter(
+        (source) =>
+          source.enabled &&
+          (source.platform === undefined ||
+            source.platform === "concord" ||
+            source.platform === "matrix"),
+      ),
+    [sources],
   );
 
   // Close on Escape — mirrors the convention used by NewServerModal /
@@ -198,8 +202,8 @@ export function ExploreModal({ isOpen, onClose }: Props) {
       // instances the user has added — they're browseable Matrix homeservers
       // even if they don't appear in the local federation allowlist.
       const sourceDomains = new Set(apiEntries.map((e) => e.domain.toLowerCase()));
-      const sourceEntries: ExploreServerEntry[] = sources
-        .filter((s) => browseableSources.includes(s) && !sourceDomains.has(s.host.toLowerCase()))
+      const sourceEntries: ExploreServerEntry[] = browseableSources
+        .filter((s) => !sourceDomains.has(s.host.toLowerCase()))
         .map((s) => ({
           domain: s.host,
           name: s.instanceName ?? s.host,
@@ -223,7 +227,7 @@ export function ExploreModal({ isOpen, onClose }: Props) {
         addToast(message, "error");
       }
     }
-  }, [accessToken, addToast, browseableSources, sources]);
+  }, [accessToken, addToast, browseableSources]);
 
   const loadRooms = useCallback(
     async (server: ExploreServerEntry) => {
