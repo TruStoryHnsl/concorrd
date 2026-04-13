@@ -41,6 +41,8 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
   const voiceConnected = useVoiceStore((s) => s.connected);
   const voiceChannelId = useVoiceStore((s) => s.channelId);
   const connect = useVoiceStore((s) => s.connect);
+  const activeServer = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
+  const activeChannelId = useServerStore((s) => s.activeChannelId);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorDiag, setErrorDiag] = useState<string | null>(null);
@@ -50,10 +52,7 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
   const [pinVerified, setPinVerified] = useState(false);
 
   // Check lock status
-  const activeChannel = useServerStore((s) => {
-    const server = s.servers.find((sv) => sv.id === serverId);
-    return server?.channels.find((c) => c.matrix_room_id === roomId);
-  });
+  const activeChannel = activeServer?.channels.find((c) => c.matrix_room_id === roomId);
 
   useEffect(() => {
     if (!accessToken || !activeChannel) return;
@@ -134,9 +133,26 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
         livekitUrl: lkUrl,
         iceServers: result.ice_servers?.length ? result.ice_servers : [],
         serverId,
+        serverName: activeServer?.name ?? null,
         channelId: roomId,
         channelName,
         roomName: roomId,
+        returnChannelId:
+          activeServer?.channels.find(
+            (channel) =>
+              channel.matrix_room_id === activeChannelId &&
+              channel.channel_type !== "voice",
+          )?.matrix_room_id ??
+          activeServer?.channels.find((channel) => channel.channel_type !== "voice")?.matrix_room_id ??
+          null,
+        returnChannelName:
+          activeServer?.channels.find(
+            (channel) =>
+              channel.matrix_room_id === activeChannelId &&
+              channel.channel_type !== "voice",
+          )?.name ??
+          activeServer?.channels.find((channel) => channel.channel_type !== "voice")?.name ??
+          null,
         micGranted,
       });
     } catch (err) {
@@ -165,7 +181,19 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
     } finally {
       setConnecting(false);
     }
-  }, [roomId, accessToken, echoCancellation, noiseSuppression, autoGainControl, preferredInputDeviceId, serverId, channelName, connect]);
+  }, [
+    roomId,
+    accessToken,
+    echoCancellation,
+    noiseSuppression,
+    autoGainControl,
+    preferredInputDeviceId,
+    serverId,
+    channelName,
+    connect,
+    activeServer,
+    activeChannelId,
+  ]);
 
   // Show join screen if not connected to THIS channel
   if (!voiceConnected || voiceChannelId !== roomId) {

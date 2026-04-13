@@ -259,7 +259,10 @@ async function startBridge(client, roomConfig) {
     .on(RoomEvent.TrackUnsubscribed, onTrackUnsubscribed)
     .on(RoomEvent.Disconnected, () => log("livekit room disconnected", bridgeId));
 
+  let stopped = false;
   const stop = async () => {
+    if (stopped) return;
+    stopped = true;
     log("stopping voice bridge", bridgeId);
     discordConnection.receiver.speaking.off("start", onDiscordSpeaking);
     lkRoom.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
@@ -269,11 +272,33 @@ async function startBridge(client, roomConfig) {
     discordToLiveKitMixer.endInput();
     liveKitToDiscordMixer.endInput();
     discordAudioOut.end();
-    discordPlayer.stop(true);
-    discordConnection.destroy();
-    await lkRoom.disconnect();
-    await source.close();
-    await track.close();
+    try {
+      discordPlayer.stop(true);
+    } catch (error) {
+      log("discord player stop failed", bridgeId, error);
+    }
+    try {
+      if (discordConnection.state.status !== VoiceConnectionStatus.Destroyed) {
+        discordConnection.destroy();
+      }
+    } catch (error) {
+      log("discord connection destroy failed", bridgeId, error);
+    }
+    try {
+      await lkRoom.disconnect();
+    } catch (error) {
+      log("livekit disconnect failed", bridgeId, error);
+    }
+    try {
+      await source.close();
+    } catch (error) {
+      log("livekit source close failed", bridgeId, error);
+    }
+    try {
+      await track.close();
+    } catch (error) {
+      log("livekit track close failed", bridgeId, error);
+    }
     await Promise.allSettled(tasks);
     await discordToLiveKitMixer.aclose();
     await liveKitToDiscordMixer.aclose();
@@ -293,7 +318,7 @@ async function reconcile(client) {
   for (const [key, bridge] of active.entries()) {
     const next = desired.get(key);
     if (!next || JSON.stringify(next) !== JSON.stringify(bridge.roomConfig)) {
-      await bridge.stop();
+      await bridge.stop().catch((error) => log("stop failed", key, error));
       active.delete(key);
     }
   }

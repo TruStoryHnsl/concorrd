@@ -351,15 +351,20 @@ export default function App() {
           livekitUrl: lkUrl,
           iceServers: result.ice_servers?.length ? result.ice_servers : [],
           serverId: session.serverId,
+          serverName: session.serverName ?? null,
           channelId: session.channelId,
           channelName: session.channelName,
           roomName: session.roomName,
+          returnChannelId: session.returnChannelId ?? null,
+          returnChannelName: session.returnChannelName ?? null,
           micGranted: micGrantedLocal,
         });
 
-        // Navigate back to the voice channel
+        // Restore the associated text channel when we have one.
         setActiveServer(session.serverId);
-        useServerStore.getState().setActiveChannel(session.channelId);
+        useServerStore.getState().setActiveChannel(
+          session.returnChannelId ?? session.channelId,
+        );
       } catch (err) {
         console.error(`Voice reconnect attempt ${attempt + 1} failed:`, err);
         return attemptReconnect(attempt + 1);

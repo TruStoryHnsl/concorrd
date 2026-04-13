@@ -579,13 +579,28 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
           finishStep("start-voice-sidecar", "ok", startResult.message);
 
           setDMActive(false);
-          const guildName =
+          let guildName =
             resolvedGuildNames.get(discordGuildId) ??
             discordGuilds.find((guild) => guild.id === discordGuildId)?.name ??
-            `Guild ${discordGuildId}`;
+            null;
+          if (!guildName && accessToken) {
+            try {
+              const freshGuilds = await discordBridgeHttpListGuilds(accessToken);
+              guildName = freshGuilds.find((guild) => guild.id === discordGuildId)?.name ?? null;
+              if (guildName) {
+                setResolvedGuildNames((prev) => {
+                  const next = new Map(prev);
+                  next.set(discordGuildId, guildName!);
+                  return next;
+                });
+              }
+            } catch {
+              // Non-fatal — keep the fallback label below.
+            }
+          }
           ensureDiscordGuild({
             guildId: discordGuildId,
-            guildName,
+            guildName: guildName ?? `Guild ${discordGuildId}`,
             channel: {
               id: voiceChannel.id,
               roomId: voiceChannel.matrix_room_id,

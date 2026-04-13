@@ -20,9 +20,12 @@ export type VoiceConnectionState =
 
 interface VoiceSession {
   serverId: string;
+  serverName?: string | null;
   channelId: string;
   channelName: string;
   roomName: string;
+  returnChannelId?: string | null;
+  returnChannelName?: string | null;
 }
 
 interface VoiceState {
@@ -33,9 +36,12 @@ interface VoiceState {
   livekitUrl: string | null;
   iceServers: RTCIceServer[];
   serverId: string | null;
+  serverName: string | null;
   channelId: string | null; // matrix_room_id
   channelName: string | null;
   roomName: string | null; // LiveKit room name (same as matrix room id)
+  returnChannelId: string | null;
+  returnChannelName: string | null;
   micGranted: boolean;
   statsSessionId: number | null;
 
@@ -44,9 +50,12 @@ interface VoiceState {
     livekitUrl: string;
     iceServers: RTCIceServer[];
     serverId: string;
+    serverName?: string | null;
     channelId: string;
     channelName: string;
     roomName: string;
+    returnChannelId?: string | null;
+    returnChannelName?: string | null;
     micGranted: boolean;
   }) => void;
   disconnect: () => void;
@@ -88,9 +97,12 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   livekitUrl: null,
   iceServers: [],
   serverId: null,
+  serverName: null,
   channelId: null,
   channelName: null,
   roomName: null,
+  returnChannelId: null,
+  returnChannelName: null,
   micGranted: false,
   statsSessionId: null,
 
@@ -102,9 +114,12 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     // Persist session info so we can reconnect after page refresh
     const session: VoiceSession = {
       serverId: params.serverId,
+      serverName: params.serverName ?? null,
       channelId: params.channelId,
       channelName: params.channelName,
       roomName: params.roomName,
+      returnChannelId: params.returnChannelId ?? null,
+      returnChannelName: params.returnChannelName ?? null,
     };
     try {
       localStorage.setItem(userScopedStorageKey(VOICE_SESSION_KEY), JSON.stringify(session));
@@ -154,9 +169,12 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       livekitUrl: null,
       iceServers: [],
       serverId: null,
+      serverName: null,
       channelId: null,
       channelName: null,
       roomName: null,
+      returnChannelId: null,
+      returnChannelName: null,
       micGranted: false,
       statsSessionId: null,
     });

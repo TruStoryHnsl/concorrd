@@ -13,6 +13,7 @@ export function VoiceConnectionBar() {
   const reconnectAttempt = useVoiceStore((s) => s.reconnectAttempt);
   const channelName = useVoiceStore((s) => s.channelName);
   const serverId = useVoiceStore((s) => s.serverId);
+  const rememberedServerName = useVoiceStore((s) => s.serverName);
   const channelId = useVoiceStore((s) => s.channelId);
   const disconnect = useVoiceStore((s) => s.disconnect);
   const servers = useServerStore((s) => s.servers);
@@ -27,7 +28,10 @@ export function VoiceConnectionBar() {
   if (!connected && !showReconnecting && !showFailed) return null;
   if (connected && activeChannelId === channelId) return null;
 
-  const serverName = servers.find((s) => s.id === serverId)?.name ?? "Server";
+  const serverName =
+    servers.find((s) => s.id === serverId)?.name ??
+    rememberedServerName ??
+    "Server";
 
   // Reconnecting indicator
   if (showReconnecting) {
