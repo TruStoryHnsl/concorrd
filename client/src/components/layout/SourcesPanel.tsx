@@ -68,14 +68,15 @@ export function SourcesPanel({
 
   useEffect(() => {
     if (!menu) return;
-    const handleClose = () => setMenu(null);
-    window.addEventListener("click", handleClose);
-    window.addEventListener("contextmenu", handleClose);
-    window.addEventListener("keydown", handleClose);
+    const handleClick = () => setMenu(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenu(null);
+    };
+    window.addEventListener("click", handleClick);
+    window.addEventListener("keydown", handleKeyDown);
     return () => {
-      window.removeEventListener("click", handleClose);
-      window.removeEventListener("contextmenu", handleClose);
-      window.removeEventListener("keydown", handleClose);
+      window.removeEventListener("click", handleClick);
+      window.removeEventListener("keydown", handleKeyDown);
     };
   }, [menu]);
 
@@ -122,6 +123,7 @@ export function SourcesPanel({
                 onClick={() => handleToggle(source.id)}
                 onContextMenu={(event) => {
                   event.preventDefault();
+                  event.stopPropagation();
                   setMenu({ sourceId: source.id, x: event.clientX, y: event.clientY });
                 }}
                 title={label}
