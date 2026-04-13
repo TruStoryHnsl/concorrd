@@ -155,16 +155,6 @@ interface ServerState {
   setActiveChannel: (matrixRoomId: string) => void;
   loadMembers: (serverId: string, accessToken: string) => Promise<void>;
   updateServer: (serverId: string, updates: Partial<Server>) => void;
-  /**
-   * Ensure a synthetic Discord guild server exists in the store and
-   * navigate to it + the given channel. If the guild server already
-   * exists, the channel is added if missing. Returns the server ID.
-   */
-  ensureDiscordGuild: (guild: {
-    guildId: string;
-    guildName: string;
-    channel: { roomId: string; name: string };
-  }) => string;
 
   activeServer: () => Server | undefined;
   activeChannel: () => Channel | undefined;
@@ -425,11 +415,6 @@ export const useServerStore = create<ServerState>((set, get) => ({
       // Hard gate: local homeserver only.
       if (!localDomain || !parentId.endsWith(`:${localDomain}`)) continue;
 
-      // Skip bridge organizational spaces ("Discord", "Direct Messages")
-      // that are top-level containers, not actual guild channels.
-      const spaceName = parentIdToName.get(parentId) ?? "";
-      if (spaceName === "Discord" || spaceName === "Direct Messages") continue;
-
       // Dedupe child ids while preserving insertion order —
       // m.space.child + m.space.parent walks can both point at the
       // same room, and we only want to render it once per space.
@@ -689,12 +674,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
   },
 
   deleteServer: async (serverId, accessToken) => {
-    // Synthetic servers (Discord guilds, federated) have no API record —
-    // just remove from client state without hitting the API.
-    const isSynthetic = serverId.startsWith(FEDERATED_SERVER_ID_PREFIX);
-    if (!isSynthetic) {
-      await apiDeleteServer(serverId, accessToken);
-    }
+    await apiDeleteServer(serverId, accessToken);
     const { servers, activeServerId } = get();
     const remaining = servers.filter((s) => s.id !== serverId);
     const newActive = activeServerId === serverId ? remaining[0] ?? null : null;
@@ -824,78 +804,6 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   setActiveChannel: (matrixRoomId) => {
     set({ activeChannelId: matrixRoomId });
-  },
-
-  ensureDiscordGuild: ({ guildId, guildName, channel }) => {
-    const serverId = `${FEDERATED_SERVER_ID_PREFIX}discord_${guildId}`;
-    const { servers } = get();
-    const existing = servers.find((s) => s.id === serverId);
-
-    if (existing) {
-      const hasChannel = existing.channels.some(
-        (c) => c.matrix_room_id === channel.roomId,
-      );
-      const betterName =
-        guildName &&
-        !guildName.startsWith("Guild ") &&
-        existing.name.startsWith("Guild ");
-      if (!hasChannel || betterName) {
-        set({
-          servers: servers.map((s) =>
-            s.id === serverId
-              ? {
-                  ...s,
-                  ...(betterName ? { name: guildName } : {}),
-                  channels: hasChannel
-                    ? s.channels
-                    : [
-                        ...s.channels,
-                        {
-                          id: 0,
-                          name: channel.name,
-                          channel_type: "text",
-                          matrix_room_id: channel.roomId,
-                          position: s.channels.length,
-                        },
-                      ],
-                }
-              : s,
-          ),
-        });
-      }
-    } else {
-      // Create Discord guild as a non-federated server so it persists
-      // across hydrateFederatedRooms syncs (which wipe all federated entries).
-      const userId = servers[0]?.owner_id ?? "";
-      set({
-        servers: [
-          ...servers,
-          {
-            id: serverId,
-            name: guildName,
-            icon_url: null,
-            owner_id: userId,
-            visibility: "public",
-            abbreviation: null,
-            media_uploads_enabled: false,
-            channels: [
-              {
-                id: 0,
-                name: channel.name,
-                channel_type: "text",
-                matrix_room_id: channel.roomId,
-                position: 0,
-              },
-            ],
-            bridgeType: "discord" as const,
-          },
-        ],
-      });
-    }
-
-    // Navigate
-    set({ activeServerId: serverId, activeChannelId: channel.roomId });
-    return serverId;
   },
 
   activeServer: () => {
