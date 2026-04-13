@@ -212,7 +212,7 @@ export const useSettingsStore = create<SettingsState>()(
       setThemePreset: (preset) => set({ themePreset: preset }),
       openSettings: (tab) =>
         set({ settingsOpen: true, serverSettingsId: null, settingsTab: tab ?? "audio" }),
-      closeSettings: () => set({ settingsOpen: false }),
+      closeSettings: () => set({ settingsOpen: false, serverSettingsId: null }),
       setSettingsTab: (tab) => set({ settingsTab: tab }),
       openServerSettings: (serverId) => {
         const server = useServerStore.getState().servers.find((entry) => entry.id === serverId);

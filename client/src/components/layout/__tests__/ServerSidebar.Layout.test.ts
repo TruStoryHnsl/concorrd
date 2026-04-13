@@ -25,4 +25,14 @@ describe("rail layout contracts", () => {
     expect(sourcesPanelSource).toContain("title=\"Explore\"");
     expect(sourcesPanelSource).not.toContain("ADD_EXPLORE_TILE_ID");
   });
+
+  it("constrains draggable rails to vertical motion only", () => {
+    expect(serverSidebarSource).toContain("const constrainedTransform = transform ? { ...transform, x: 0 } : null;");
+    expect(sourcesPanelSource).toContain("const constrainedTransform = transform ? { ...transform, x: 0 } : null;");
+  });
+
+  it("keeps the source rail compact after the shell-size rollback", () => {
+    expect(sourcesPanelSource).toContain("className={`group w-8 h-8");
+    expect(sourcesPanelSource).toContain("className=\"w-8 h-8 rounded-xl");
+  });
 });

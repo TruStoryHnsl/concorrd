@@ -662,7 +662,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
                 {topRailIds.map(renderMobileRailItem)}
               </div>
               <div className="flex-1 min-h-4" aria-hidden="true" />
-              <div className="space-y-0.5">
+              <div className="space-y-0.5 pb-1">
                 {bottomRailIds.map(renderMobileRailItem)}
               </div>
             </div>
@@ -720,7 +720,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
               {topRailIds.map(renderDesktopRailItem)}
             </div>
             <div className="flex-1 min-h-4" aria-hidden="true" />
-            <div className="w-full flex flex-col items-center gap-2">
+            <div className="w-full flex flex-col items-center gap-2 pb-1">
               {bottomRailIds.map(renderDesktopRailItem)}
             </div>
           </div>
@@ -769,8 +769,9 @@ function SortableServerRow({
     transition,
     isDragging,
   } = useSortable({ id, disabled });
+  const constrainedTransform = transform ? { ...transform, x: 0 } : null;
   const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
+    transform: CSS.Transform.toString(constrainedTransform),
     transition,
     opacity: isDragging ? 0.5 : 1,
     touchAction: orientation === "icon" ? "none" : undefined,

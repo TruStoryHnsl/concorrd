@@ -25,11 +25,36 @@ import { Avatar } from "../ui/Avatar";
 import { PinDialog } from "../moderation/PinDialog";
 import { VoteKickBanner } from "../moderation/VoteKickBanner";
 import { BanOverlay } from "../moderation/BanOverlay";
+import {
+  splitDiscordVoiceBridgeParticipants,
+} from "./discordVoiceBridge";
 
 interface VoiceChannelProps {
   roomId: string;
   channelName: string;
   serverId: string;
+}
+
+function DiscordVoiceBridgeStatusBadge({
+  connected,
+  compact = false,
+}: {
+  connected: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs font-label ${
+        connected
+          ? "border-emerald-400/40 bg-emerald-500/12 text-emerald-300"
+          : "border-outline-variant/25 bg-surface-container-high text-on-surface-variant"
+      }`}
+      title={connected ? "Discord voice bridge connected" : "Discord voice bridge idle"}
+    >
+      <span className="material-symbols-outlined text-sm">link</span>
+      {compact ? "Bridge" : "Discord bridge"}
+    </span>
+  );
 }
 
 export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProps) {
@@ -75,6 +100,10 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
     const interval = setInterval(fetchParticipants, 5000);
     return () => clearInterval(interval);
   }, [accessToken, roomId, voiceConnected, voiceChannelId]);
+  const {
+    bridgeConnected: previewBridgeConnected,
+    visibleParticipants: visiblePreviewParticipants,
+  } = splitDiscordVoiceBridgeParticipants(previewParticipants);
 
   const handleJoin = useCallback(async () => {
     if (!accessToken) return;
@@ -198,6 +227,7 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
   // Show join screen if not connected to THIS channel
   if (!voiceConnected || voiceChannelId !== roomId) {
     const needsPin = isLocked && !pinVerified;
+    const discordBridgeExpected = activeServer?.bridgeType === "discord";
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4">
         <p className="text-on-surface-variant flex items-center gap-2">
@@ -208,13 +238,16 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
           )}
           Voice Channel: #{channelName}
         </p>
+        {discordBridgeExpected && (
+          <DiscordVoiceBridgeStatusBadge connected={previewBridgeConnected} />
+        )}
 
         {/* Participant preview */}
-        {previewParticipants.length > 0 && (
+        {visiblePreviewParticipants.length > 0 && (
           <div className="flex flex-col items-center gap-2">
-            <p className="text-xs text-on-surface-variant">{previewParticipants.length} in channel</p>
+            <p className="text-xs text-on-surface-variant">{visiblePreviewParticipants.length} in channel</p>
             <div className={`flex gap-3 ${needsPin ? "opacity-40 blur-[2px]" : ""}`}>
-              {previewParticipants.map((p) => (
+              {visiblePreviewParticipants.map((p) => (
                 <div key={p.identity} className="flex flex-col items-center gap-1">
                   <Avatar userId={p.identity} size="lg" />
                   <span className="text-xs text-on-surface-variant max-w-[80px] truncate">
@@ -226,7 +259,7 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
           </div>
         )}
 
-        {previewParticipants.length === 0 && (
+        {visiblePreviewParticipants.length === 0 && (
           <p className="text-on-surface-variant/50 text-sm">No one in this channel yet</p>
         )}
 
@@ -338,6 +371,11 @@ function VoiceRoomUI({
   const toggleUserMuted = useSettingsStore((s) => s.toggleUserMuted);
   const accessToken = useAuthStore((s) => s.accessToken);
   const addToast = useToastStore((s) => s.addToast);
+  const activeServer = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
+  const {
+    bridgeConnected: discordBridgeConnected,
+    visibleParticipants,
+  } = splitDiscordVoiceBridgeParticipants(participants);
 
   // Vote kick state
   const [activeVotes, setActiveVotes] = useState<{ id: number; channel_id: string; target_user_id: string; initiated_by: string; yes_count: number; no_count: number; total_eligible: number }[]>([]);
@@ -393,7 +431,7 @@ function VoiceRoomUI({
     if (!channelId) return;
     try {
       // total_eligible = everyone except the target
-      const eligible = participants.length - 1;
+      const eligible = visibleParticipants.length - 1;
       await startVoteKick(serverId, channelId, targetUserId, eligible, accessToken);
       addToast("Vote kick started");
     } catch (err) {
@@ -422,7 +460,7 @@ function VoiceRoomUI({
   }, [accessToken, activeChannel]);
 
   // Play join/leave sounds
-  useVoiceNotifications(participants, localParticipant.identity, masterOutputVolume);
+  useVoiceNotifications(visibleParticipants, localParticipant.identity, masterOutputVolume);
 
   const isMicEnabled = localParticipant.isMicrophoneEnabled;
   const isCameraEnabled = localParticipant.isCameraEnabled;
@@ -516,6 +554,9 @@ function VoiceRoomUI({
           <div className="flex items-center gap-3">
             <ConnectionIndicator state={connectionState} />
             <span className="text-on-surface-variant text-sm">#{channelName}</span>
+            {activeServer?.bridgeType === "discord" && (
+              <DiscordVoiceBridgeStatusBadge connected={discordBridgeConnected} />
+            )}
           </div>
           <div className="flex items-center gap-2">
             <button onClick={toggleMic} className={`btn-press px-3 py-1.5 text-sm rounded-md transition-colors ${isMicEnabled ? "bg-surface-container hover:bg-surface-container-highest text-on-surface" : "bg-error/20 hover:bg-error-container/30 text-error"}`}>
@@ -550,6 +591,9 @@ function VoiceRoomUI({
       <div className="md:hidden px-3 py-2 border-b border-outline-variant/15 flex-shrink-0 flex items-center gap-2">
         <ConnectionIndicator state={connectionState} />
         <span className="text-on-surface-variant text-sm font-medium">#{channelName}</span>
+        {activeServer?.bridgeType === "discord" && (
+          <DiscordVoiceBridgeStatusBadge connected={discordBridgeConnected} compact />
+        )}
         {(micError || cameraError || screenShareError) && (
           <span className="text-error text-[10px] ml-auto truncate max-w-[50%]">{micError || cameraError || screenShareError}</span>
         )}
@@ -618,10 +662,10 @@ function VoiceRoomUI({
 
       {/* Participant list — split into video and audio-only groups */}
       {(() => {
-        const videoParticipants = participants.filter((p) =>
+        const videoParticipants = visibleParticipants.filter((p) =>
           cameraTracks.some((t) => t.participant.identity === p.identity),
         );
-        const audioOnlyParticipants = participants.filter(
+        const audioOnlyParticipants = visibleParticipants.filter(
           (p) => !cameraTracks.some((t) => t.participant.identity === p.identity),
         );
         const videoCount = videoParticipants.length;
@@ -629,7 +673,7 @@ function VoiceRoomUI({
         const rows = Math.ceil(videoCount / cols);
 
         // Helper to compute per-participant derived state
-        const getParticipantState = (p: (typeof participants)[number]) => {
+        const getParticipantState = (p: (typeof visibleParticipants)[number]) => {
           const isSelf = p.identity === localParticipant.identity;
           const isMuted = !p.isMicrophoneEnabled;
           const hasAudioTrack = tracks.some(
@@ -661,7 +705,7 @@ function VoiceRoomUI({
         };
 
         // Reusable volume slider + vote kick controls
-        const renderExpandedControls = (p: (typeof participants)[number], isSelf: boolean) =>
+        const renderExpandedControls = (p: (typeof visibleParticipants)[number], isSelf: boolean) =>
           !isSelf && expandedUser === p.identity && (
             <div className="w-full mt-1 space-y-1.5">
               <div className="flex items-center gap-1.5">
@@ -691,7 +735,7 @@ function VoiceRoomUI({
                   {Math.round((userVolumes[p.identity] ?? 1.0) * 100)}%
                 </span>
               </div>
-              {participants.length >= 3 && (
+              {visibleParticipants.length >= 3 && (
                 <button
                   onClick={() => handleStartVoteKick(p.identity)}
                   className="w-full text-xs py-1 bg-error/20 hover:bg-error-container/30 text-error rounded transition-colors"
@@ -882,7 +926,7 @@ function VoiceRoomUI({
               /* Original full grid when no one has camera on */
               <div className="flex-1 p-4 overflow-y-auto min-h-0">
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                  {participants.map((p) => {
+                  {visibleParticipants.map((p) => {
                     const { isSelf, isMuted, hasAudioTrack, cameraTrack, isUserMuted, showMutedSpeaking, tileBg, ringClass } = getParticipantState(p);
 
                     return (

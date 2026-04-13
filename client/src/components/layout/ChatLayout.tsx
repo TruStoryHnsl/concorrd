@@ -53,7 +53,12 @@ import {
   discordBridgeHttpListGuilds,
   discordVoiceBridgeHttpListRooms,
 } from "../../api/bridges";
-import { getRoomDiagnostics, type RoomDiagnostics } from "../../api/concord";
+import {
+  getMyStats,
+  getRoomDiagnostics,
+  type RoomDiagnostics,
+  type UserStats,
+} from "../../api/concord";
 import {
   buildMatrixSourceDraft,
   clearPendingSourceSso,
@@ -158,6 +163,8 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   );
   // Mobile account sheet (T003)
   const [accountSheetOpen, setAccountSheetOpen] = useState(false);
+  const [desktopAccountPopoverOpen, setDesktopAccountPopoverOpen] = useState(false);
+  const desktopAccountRef = useRef<HTMLDivElement>(null);
   // INS-016: Dashboard sheet state — setters are still called by desktop
   // quick-action handlers (they close the old sheet). The value isn't
   // read because mobile's ActionsPanel replaced the sheet overlay.
@@ -322,6 +329,27 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const serverSettingsId = useSettingsStore((s) => s.serverSettingsId);
   const closeServerSettings = useSettingsStore((s) => s.closeServerSettings);
   const openSettings = useSettingsStore((s) => s.openSettings);
+
+  useEffect(() => {
+    if (!desktopAccountPopoverOpen) return;
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (
+        desktopAccountRef.current &&
+        !desktopAccountRef.current.contains(event.target as Node)
+      ) {
+        setDesktopAccountPopoverOpen(false);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDesktopAccountPopoverOpen(false);
+    };
+    document.addEventListener("mousedown", handleDocumentClick);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleDocumentClick);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [desktopAccountPopoverOpen]);
 
   // TV capability banner state — shown when a TV user selects a voice channel
   const [tvBannerDismissed, setTvBannerDismissed] = useState(false);
@@ -650,6 +678,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     if (settingsOpen || serverSettingsId) setMobileView("settings");
   }, [settingsOpen, serverSettingsId]);
 
+  useEffect(() => {
+    if (settingsOpen || serverSettingsId) {
+      setDesktopAccountPopoverOpen(false);
+    }
+  }, [settingsOpen, serverSettingsId]);
+
   // Desktop layout.
   //
   // Structure (2026-04-11 user spec):
@@ -696,7 +730,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         {/* LEFT STACK — sidebar columns. Collapses to zero width when hidden. */}
         {showSidebar && (
           <div className="flex min-h-0 flex-shrink-0 bg-surface">
-            <div className="w-14 flex-shrink-0">
+            <div className="w-11 flex-shrink-0">
               <SilentBoundary>
                 <SourcesPanel
                   onAddSource={openAddSource}
@@ -1057,7 +1091,10 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           <div className="h-12 flex items-center px-4 justify-between bg-surface-container-low flex-shrink-0">
             <h2 className="font-headline font-semibold">Settings</h2>
             <button
-              onClick={closeSettings}
+              onClick={() => {
+                closeServerSettings();
+                closeSettings();
+              }}
               className="text-sm text-on-surface-variant hover:text-on-surface transition-colors font-label"
             >
               Back
@@ -1141,16 +1178,39 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             </div>
             {/* User banner — click to open stats popup */}
             {userId && (
-              <button
-                onClick={() => setStatsTarget({ type: "user" })}
-                className="flex items-center gap-1.5 ml-1 pl-2 border-l border-outline-variant/20 hover:bg-surface-container-high rounded-lg px-2 py-1 transition-colors"
-                title="Your stats"
+              <div
+                ref={desktopAccountRef}
+                className="relative ml-1 pl-2 border-l border-outline-variant/20"
               >
-                <Avatar userId={userId} size="sm" showPresence />
-                <span className="text-xs text-on-surface-variant truncate max-w-[80px]">
-                  {userId.split(":")[0].replace("@", "")}
-                </span>
-              </button>
+                <button
+                  onClick={() => setDesktopAccountPopoverOpen((open) => !open)}
+                  className="flex items-center gap-1.5 hover:bg-surface-container-high rounded-lg px-2 py-1 transition-colors"
+                  title="Account"
+                >
+                  <Avatar userId={userId} size="sm" showPresence />
+                  <span className="text-xs text-on-surface-variant truncate max-w-[80px]">
+                    {userId.split(":")[0].replace("@", "")}
+                  </span>
+                  <span className="material-symbols-outlined text-sm text-on-surface-variant/70">
+                    expand_more
+                  </span>
+                </button>
+                {desktopAccountPopoverOpen && (
+                  <UserStatsPopover
+                    accessToken={accessToken}
+                    userId={userId}
+                    onClose={() => setDesktopAccountPopoverOpen(false)}
+                    onOpenSettings={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      openSettings("profile");
+                    }}
+                    onOpenStats={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      setStatsTarget({ type: "user" });
+                    }}
+                  />
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -1808,6 +1868,130 @@ function SourceServerBrowser({
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function formatVoiceSummary(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return `${hours}h ${minutes}m`;
+}
+
+function UserStatsPopover({
+  accessToken,
+  userId,
+  onClose,
+  onOpenSettings,
+  onOpenStats,
+}: {
+  accessToken: string | null;
+  userId: string;
+  onClose: () => void;
+  onOpenSettings: () => void;
+  onOpenStats: () => void;
+}) {
+  const [stats, setStats] = useState<UserStats | null>(null);
+  const [loading, setLoading] = useState(() => Boolean(accessToken));
+
+  useEffect(() => {
+    if (!accessToken) return;
+    let cancelled = false;
+    setLoading(true);
+    getMyStats(accessToken, 14)
+      .then((result) => {
+        if (!cancelled) setStats(result);
+      })
+      .catch(() => {
+        if (!cancelled) setStats(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken]);
+
+  const username = userId.split(":")[0].replace("@", "");
+  const activeSinceLabel = stats?.active_since
+    ? new Date(stats.active_since).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "No activity yet";
+
+  return (
+    <div className="absolute right-0 top-full mt-2 z-40 w-72 glass-panel rounded-2xl border border-outline-variant/20 p-4 shadow-2xl">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-label uppercase tracking-widest text-on-surface-variant/70">
+            Account
+          </p>
+          <p className="mt-1 text-sm font-headline font-semibold text-on-surface truncate">
+            {username}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="btn-press w-8 h-8 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
+          aria-label="Close account panel"
+        >
+          <span className="material-symbols-outlined text-base">close</span>
+        </button>
+      </div>
+
+      <div className="mt-4 rounded-xl bg-surface-container-high/60 border border-outline-variant/10 p-3">
+        {loading ? (
+          <p className="text-xs text-on-surface-variant">Loading your stats…</p>
+        ) : (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-lg bg-surface-container px-3 py-2">
+                <p className="text-[10px] uppercase tracking-wide text-on-surface-variant/70">
+                  Messages
+                </p>
+                <p className="mt-1 text-lg font-semibold text-on-surface">
+                  {stats?.total_messages ?? 0}
+                </p>
+              </div>
+              <div className="rounded-lg bg-surface-container px-3 py-2">
+                <p className="text-[10px] uppercase tracking-wide text-on-surface-variant/70">
+                  Voice
+                </p>
+                <p className="mt-1 text-lg font-semibold text-on-surface">
+                  {formatVoiceSummary(stats?.total_voice_seconds ?? 0)}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-3 text-xs">
+              <span className="text-on-surface-variant">Active since</span>
+              <span className="text-on-surface">{activeSinceLabel}</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="flex-1 px-3 py-2 rounded-xl bg-primary text-on-primary text-sm font-medium hover:bg-primary/90 transition-colors"
+        >
+          Open settings
+        </button>
+        <button
+          type="button"
+          onClick={onOpenStats}
+          className="px-3 py-2 rounded-xl bg-surface-container-high text-on-surface text-sm font-medium hover:bg-surface-container-highest transition-colors"
+        >
+          Full stats
+        </button>
       </div>
     </div>
   );

@@ -25,6 +25,9 @@ import { useUnreadCounts } from "../../hooks/useUnreadCounts";
 import { useVoiceParticipants } from "../../hooks/useVoiceParticipants";
 import { usePlatform } from "../../hooks/usePlatform";
 import { InviteModal } from "../server/InviteModal";
+import {
+  splitDiscordVoiceBridgeParticipants,
+} from "../voice/discordVoiceBridge";
 
 interface ChannelSidebarProps {
   mobile?: boolean;
@@ -33,6 +36,35 @@ interface ChannelSidebarProps {
 }
 
 const CHANNEL_ADMIN_TOGGLE_ICON = "edit";
+
+function DiscordVoiceBridgeIndicator({
+  connected,
+  compact = false,
+}: {
+  connected: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center justify-center rounded-full border ${
+        connected
+          ? "border-emerald-400/40 bg-emerald-500/12 text-emerald-300"
+          : "border-outline-variant/30 bg-surface-container-high text-on-surface-variant/70"
+      } ${compact ? "w-5 h-5" : "px-2 py-0.5 gap-1"}`}
+      title={connected ? "Discord voice bridge connected" : "Discord voice bridge idle"}
+      aria-label={connected ? "Discord voice bridge connected" : "Discord voice bridge idle"}
+    >
+      <span className="material-symbols-outlined" style={{ fontSize: compact ? "12px" : "14px" }}>
+        link
+      </span>
+      {!compact && (
+        <span className="text-[10px] font-label uppercase tracking-wider">
+          Bridge
+        </span>
+      )}
+    </span>
+  );
+}
 
 export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, onChannelSelect, onServerTitleClick }: ChannelSidebarProps) {
   const servers = useServerStore((s) => s.servers);
@@ -214,13 +246,19 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
     const isActive = activeChannelId === ch.matrix_room_id;
     const notifLevel = channelNotifications[ch.matrix_room_id];
     const isRenaming = renamingChannelId === ch.id;
+    const roomParticipants = isVoice
+      ? voiceParticipants.get(ch.matrix_room_id) ?? []
+      : [];
+    const { bridgeConnected, visibleParticipants } = splitDiscordVoiceBridgeParticipants(
+      roomParticipants,
+    );
     // Voice channels signal "something is happening in here" via
     // participant count, not Matrix unread count. Any participant
     // (including the current user) counts — leaving the channel and
     // seeing the dot reminds you that you're still connected in the
     // other room. For text channels, activity is just unread > 0.
     const voiceParticipantCount = isVoice
-      ? voiceParticipants.get(ch.matrix_room_id)?.length ?? 0
+      ? visibleParticipants.length
       : 0;
     const hasActivity = unread > 0 || voiceParticipantCount > 0;
     return (
@@ -249,6 +287,11 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
         isTV={isTV}
         isDiscordBridged={discordRoomIds.has(ch.matrix_room_id)}
       >
+        {isVoice && server.bridgeType === "discord" && (
+          <div className="px-3 pb-1.5">
+            <DiscordVoiceBridgeIndicator connected={bridgeConnected} />
+          </div>
+        )}
         {extras}
       </SortableChannelRow>
     );
@@ -392,18 +435,19 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
                 strategy={verticalListSortingStrategy}
               >
                 {voiceChannels.map((ch) =>
-                  renderChannelItem(
-                    ch,
-                    true,
-                    voiceParticipants.get(ch.matrix_room_id)?.map((p) => (
+                  renderChannelItem(ch, true, (() => {
+                    const { visibleParticipants } = splitDiscordVoiceBridgeParticipants(
+                      voiceParticipants.get(ch.matrix_room_id) ?? [],
+                    );
+                    return visibleParticipants.map((p) => (
                       <div key={p.identity} className="flex items-center gap-1.5 pl-8 py-0.5">
                         <Avatar userId={p.identity} size="sm" />
                         <span className="text-xs text-on-surface-variant truncate font-body">
                           {p.name || p.identity.split(":")[0].replace("@", "")}
                         </span>
                       </div>
-                    )),
-                  ),
+                    ));
+                  })())
                 )}
               </SortableContext>
             </DndContext>

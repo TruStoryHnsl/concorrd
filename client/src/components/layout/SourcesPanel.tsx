@@ -82,7 +82,7 @@ function sourceTile(source: ConcordSource): {
       return {
         brand,
         bg: "bg-[#5865F2]",
-        icon: <SourceBrandIcon brand={brand} size={20} />,
+        icon: <SourceBrandIcon brand={brand} size={16} />,
         label:
           source.platform === "discord-account"
             ? `Discord Account — ${label}`
@@ -92,21 +92,21 @@ function sourceTile(source: ConcordSource): {
       return {
         brand,
         bg: "bg-[#111318]",
-        icon: <SourceBrandIcon brand={brand} size={18} />,
+        icon: <SourceBrandIcon brand={brand} size={14} />,
         label: `Mozilla — ${label}`,
       };
     case "matrix":
       return {
         brand,
         bg: "bg-[#111318]",
-        icon: <SourceBrandIcon brand={brand} size={18} />,
+        icon: <SourceBrandIcon brand={brand} size={14} />,
         label: `Matrix — ${label}`,
       };
     default:
       return {
         brand,
         bg: "bg-primary/12 ring-1 ring-primary/25",
-        icon: <SourceBrandIcon brand={brand} size={20} />,
+        icon: <SourceBrandIcon brand={brand} size={16} />,
         label,
       };
   }
@@ -124,12 +124,13 @@ function SortableSourceTile({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: source.id });
   const { bg, icon, label } = sourceTile(source);
+  const constrainedTransform = transform ? { ...transform, x: 0 } : null;
 
   return (
     <div
       ref={setNodeRef}
       style={{
-        transform: CSS.Transform.toString(transform),
+        transform: CSS.Transform.toString(constrainedTransform),
         transition,
         opacity: isDragging ? 0.7 : 1,
       }}
@@ -145,10 +146,10 @@ function SortableSourceTile({
           onSourceOpen?.(source.id);
         }}
         title={label}
-        className={`group w-11 h-11 flex items-center justify-center transition-all duration-150 ${bg} ${
+        className={`group w-8 h-8 flex items-center justify-center transition-all duration-150 ${bg} ${
           source.enabled
-            ? "rounded-2xl shadow-lg scale-100 text-on-surface"
-            : "rounded-xl hover:rounded-2xl scale-95 hover:scale-100 opacity-45 hover:opacity-80 grayscale"
+            ? "rounded-xl shadow-lg scale-100 text-on-surface"
+            : "rounded-lg hover:rounded-xl scale-95 hover:scale-100 opacity-45 hover:opacity-80 grayscale"
         }`}
       >
         {icon}
@@ -254,14 +255,14 @@ export function SourcesPanel({
 
   return (
     <div className="h-full w-full bg-surface flex flex-col items-center py-3 gap-0">
-      <div className="flex-shrink-0 flex flex-col items-center gap-2 pb-2 pt-1">
+      <div className="flex-shrink-0 flex flex-col items-center gap-1.5 pb-2 pt-1">
         {onExplore && (
           <button
             onClick={onExplore}
             title="Explore"
-            className="w-11 h-11 rounded-2xl hover:rounded-xl bg-surface-container-high hover:bg-surface-container-highest flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-all duration-150"
+            className="w-8 h-8 rounded-xl hover:rounded-lg bg-surface-container-high hover:bg-surface-container-highest flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-all duration-150"
           >
-            <span className="material-symbols-outlined text-xl">explore</span>
+            <span className="material-symbols-outlined text-lg">explore</span>
           </button>
         )}
       </div>
@@ -281,11 +282,11 @@ export function SourcesPanel({
           strategy={verticalListSortingStrategy}
         >
           <div className="flex-1 min-h-0 w-full flex flex-col items-center py-1">
-            <div className="w-full flex flex-col items-center gap-2">
+            <div className="w-full flex flex-col items-center gap-1.5">
               {topRailIds.map(renderRailTile)}
             </div>
             <div className="flex-1 min-h-4" aria-hidden="true" />
-            <div className="w-full flex flex-col items-center gap-2">
+            <div className="w-full flex flex-col items-center gap-1.5 pb-1">
               {bottomRailIds.map(renderRailTile)}
             </div>
           </div>
@@ -302,11 +303,12 @@ function SortableAddSourceTile({
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: ADD_SOURCE_TILE_ID });
+  const constrainedTransform = transform ? { ...transform, x: 0 } : null;
   return (
     <div
       ref={setNodeRef}
       style={{
-        transform: CSS.Transform.toString(transform),
+        transform: CSS.Transform.toString(constrainedTransform),
         transition,
         opacity: isDragging ? 0.7 : 1,
       }}
@@ -317,9 +319,9 @@ function SortableAddSourceTile({
         {...listeners}
         onClick={onAddSource}
         title="Add Source"
-        className="w-11 h-11 rounded-2xl hover:rounded-xl bg-surface-container-high hover:bg-surface-container-highest flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-all duration-150"
+        className="w-8 h-8 rounded-xl hover:rounded-lg bg-surface-container-high hover:bg-surface-container-highest flex items-center justify-center text-on-surface-variant hover:text-on-surface transition-all duration-150"
       >
-        <span className="material-symbols-outlined text-xl">add</span>
+        <span className="material-symbols-outlined text-lg">add</span>
       </button>
     </div>
   );

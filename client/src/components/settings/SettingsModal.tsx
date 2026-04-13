@@ -124,15 +124,27 @@ export function SettingsPanel() {
     return () => window.removeEventListener("keydown", handler);
   }, [close]);
 
+  const adminTab: TabDef | null = useMemo(
+    () =>
+      isAdmin
+        ? { key: "admin", label: "Admin", icon: "shield_person", group: "user" }
+        : null,
+    [isAdmin],
+  );
+  const userTabKeys = useMemo(
+    () => new Set<string>([
+      ...userTabs.map((tab) => tab.key),
+      ...(adminTab ? [adminTab.key] : []),
+    ]),
+    [adminTab, userTabs],
+  );
+
   useEffect(() => {
     if (!serverSettingsId || serverTabs.length === 0) return;
     if (serverTabs.some((tab) => tab.key === activeTab)) return;
+    if (userTabKeys.has(activeTab)) return;
     setTab(serverTabs[0].key as typeof activeTab);
-  }, [activeTab, serverSettingsId, serverTabs, setTab]);
-
-  const adminTab: TabDef | null = isAdmin
-    ? { key: "admin", label: "Admin", icon: "shield_person", group: "user" }
-    : null;
+  }, [activeTab, serverSettingsId, serverTabs, setTab, userTabKeys]);
 
   // Determine if the current tab is a server tab
   const isServerTab = activeTab.startsWith("server-");
