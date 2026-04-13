@@ -1,29 +1,27 @@
-# Tuwunel runtime configuration — federation settings
-#
-# This file is the single source of truth for federation allowlist settings.
-# It is managed by the Concord admin UI at runtime and by install.sh on first
-# deployment. Hand-editing is supported but any values under [global] will be
-# overwritten when the Admin panel applies federation changes.
-#
-# After any change to this file, the conduwuit container must be restarted
-# to pick up new values. The Concord admin UI does this automatically via
-# the docker-socket-proxy sidecar.
-#
-# Other Tuwunel configuration (server name, database path, ports, etc.)
-# continues to be supplied via environment variables in docker-compose.yml.
+]10;#cdd6f4\]11;#1e1e2e\]12;#cdd6f4\]4;0;#45475a\]4;8;#585b70\]4;1;#f38ba8\]4;9;#f38ba8\]4;2;#a6e3a1\]4;10;#a6e3a1\]4;3;#f9e2af\]4;11;#f9e2af\]4;4;#89b4fa\]4;12;#89b4fa\]4;5;#cba6f7\]4;13;#cba6f7\]4;6;#94e2d5\]4;14;#94e2d5\]4;7;#bac2de\]4;15;#a6adc8\# Tuwunel runtime configuration — Concord-managed.
+# Federation keys are owned by server/services/tuwunel_config.py.
+# Appservice tables are owned by server/services/bridge_config.py.
+# Hand edits to managed keys will be overwritten on the next update.
 
 [global]
-# Master federation toggle. When false, this instance will neither send
-# nor accept any federated traffic regardless of the allow/forbid lists.
 allow_federation = true
-
-# Regex patterns for server names that should NEVER federate with us.
-# The default of [".*"] denies all remote servers by default — allowed
-# servers are then re-admitted via allowed_remote_server_names below.
 forbidden_remote_server_names = [".*"]
-
-# Regex patterns for server names that ARE allowed to federate with us.
-# Each pattern is matched against the full remote server name.
-# Patterns are generated from plain server names by the Concord admin UI
-# (fully anchored: ^escaped-name$).
 allowed_remote_server_names = []
+
+[global.appservice.concord_discord_2]
+as_token = "as_mVSxf0urwntCOlAzLgYBJqu-CZfLtCRr1--GJNbE6Sk"
+hs_token = "hs_xL0TeDfD4_TG5RYZNtQyblRHLDIcCOX7nM5EGSxge8o"
+id = "concord_discord_2"
+protocols = ["discord"]
+rate_limited = false
+sender_localpart = "discordbot"
+url = "http://concord-discord-bridge:29334"
+
+[[global.appservice.concord_discord_2.users]]
+exclusive = true
+regex = "@(discordbot|_discord_[^:]*):concorrd\\.com"
+
+[[global.appservice.concord_discord_2.aliases]]
+exclusive = true
+regex = "#_discord_.*"
+]10;#cdd6f4\]11;#1e1e2e\]12;#cdd6f4\]4;0;#45475a\]4;8;#585b70\]4;1;#f38ba8\]4;9;#f38ba8\]4;2;#a6e3a1\]4;10;#a6e3a1\]4;3;#f9e2af\]4;11;#f9e2af\]4;4;#89b4fa\]4;12;#89b4fa\]4;5;#cba6f7\]4;13;#cba6f7\]4;6;#94e2d5\]4;14;#94e2d5\]4;7;#bac2de\]4;15;#a6adc8\
