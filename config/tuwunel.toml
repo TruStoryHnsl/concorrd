@@ -5,7 +5,7 @@
 
 [global]
 allow_federation = true
-forbidden_remote_server_names = [".*"]
+forbidden_remote_server_names = []
 allowed_remote_server_names = ["^matrix\\.org$", "^mozilla\\.org$", "^concorrd\\.com$"]
 
 [global.appservice.concord_discord_2]
