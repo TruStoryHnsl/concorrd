@@ -11,4 +11,4 @@ if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "$TARGET_HOST" true 2>/dev/null; t
     exit 2
 fi
 
-ssh "$TARGET_HOST" "cd '$REMOTE_DIR' && python3 scripts/turn_relay_smoke.py --env-file .env"
+ssh "$TARGET_HOST" "cd '$REMOTE_DIR' && python3 scripts/turn_relay_smoke.py --env-file .env --timeout 10"

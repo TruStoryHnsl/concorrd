@@ -278,7 +278,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-file", type=Path, default=Path(".env"), help="Path to deploy .env file")
     parser.add_argument("--turn-host", default="", help="Override TURN_HOST")
     parser.add_argument("--public-tls-port", type=int, default=0, help="Override TURN_PUBLIC_TLS_PORT")
-    parser.add_argument("--timeout", type=float, default=5.0, help="Socket timeout in seconds")
+    parser.add_argument("--timeout", type=float, default=10.0, help="Socket timeout in seconds")
     parser.add_argument("--ttl-seconds", type=int, default=900, help="Credential TTL for the smoke username")
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of human-readable text")
     return parser.parse_args()
