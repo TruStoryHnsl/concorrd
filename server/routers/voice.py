@@ -84,6 +84,16 @@ def _turn_port() -> int:
         return 3478
 
 
+def _turn_public_port() -> int:
+    raw = os.getenv("TURN_PUBLIC_PORT", "").strip()
+    if not raw:
+        return _turn_port()
+    try:
+        return int(raw)
+    except ValueError:
+        return _turn_port()
+
+
 def _turn_tls_port() -> int:
     raw = os.getenv("TURN_TLS_PORT", "5349").strip()
     try:
@@ -92,22 +102,50 @@ def _turn_tls_port() -> int:
         return 5349
 
 
+def _turn_public_tls_port() -> int:
+    raw = os.getenv("TURN_PUBLIC_TLS_PORT", "").strip()
+    if not raw:
+        return _turn_tls_port()
+    try:
+        return int(raw)
+    except ValueError:
+        return _turn_tls_port()
+
+
 def _turn_tls_enabled() -> bool:
     return _env_flag("TURN_TLS_ENABLED", default=False)
+
+
+def _turn_tls_only() -> bool:
+    return _env_flag("TURN_TLS_ONLY", default=False)
 
 
 def _turn_external_ip() -> str:
     return os.getenv("TURN_EXTERNAL_IP", "").strip()
 
 
+def _turn_bind_ip() -> str:
+    listen_ip = os.getenv("TURN_LISTEN_IP", "").strip()
+    if listen_ip:
+        return listen_ip
+    external_ip = _turn_external_ip()
+    if "/" in external_ip:
+        private_ip = external_ip.split("/", 1)[1].strip()
+        if private_ip:
+            return private_ip
+    return "127.0.0.1"
+
+
 def _build_turn_ice_servers(turn_host: str, username: str, credential: str) -> list[IceServer]:
-    port = _turn_port()
-    urls = [
-        f"turn:{turn_host}:{port}?transport=udp",
-        f"turn:{turn_host}:{port}?transport=tcp",
-    ]
+    urls: list[str] = []
     if _turn_tls_enabled():
-        urls.insert(0, f"turns:{turn_host}:{_turn_tls_port()}?transport=tcp")
+        urls.append(f"turns:{turn_host}:{_turn_public_tls_port()}?transport=tcp")
+    if not (_turn_tls_enabled() and _turn_tls_only()):
+        port = _turn_public_port()
+        urls.extend([
+            f"turn:{turn_host}:{port}?transport=udp",
+            f"turn:{turn_host}:{port}?transport=tcp",
+        ])
 
     return [
         IceServer(
@@ -263,9 +301,11 @@ async def check_turn_health(
     network scanning primitive.
     """
     turn_host = _turn_host()
-    turn_port = _turn_port()
+    turn_port = _turn_public_port()
     tls_enabled = _turn_tls_enabled()
+    tls_only = _turn_tls_only()
     tls_port = _turn_tls_port()
+    public_tls_port = _turn_public_tls_port()
     turn_external_ip = _turn_external_ip()
     has_secret = bool(_turn_secret())
 
@@ -276,14 +316,16 @@ async def check_turn_health(
                         "Voice will only work on direct connections (no NAT traversal).",
         )
 
-    turn_ports = [
-        f"turn:{turn_host}:{turn_port}/udp",
-        f"turn:{turn_host}:{turn_port}/tcp",
-    ]
+    turn_ports: list[str] = []
+    if not (tls_enabled and tls_only):
+        turn_ports.extend([
+            f"turn:{turn_host}:{turn_port}/udp",
+            f"turn:{turn_host}:{turn_port}/tcp",
+        ])
     if tls_enabled:
-        turn_ports.insert(0, f"turns:{turn_host}:{tls_port}/tcp")
+        turn_ports.insert(0, f"turns:{turn_host}:{public_tls_port}/tcp")
 
-    # Attempt a lightweight STUN binding check to the TURN host
+    # Attempt a lightweight STUN binding check when plain TURN is advertised.
     import socket
     import struct
     import time as _time
@@ -292,42 +334,60 @@ async def check_turn_health(
     latency_ms: float | None = None
     diag_parts: list[str] = []
 
-    try:
-        # STUN Binding Request: RFC 5389 minimal header (20 bytes)
-        # Type=0x0001 (Binding Request), Length=0, Magic=0x2112A442, TxID=12 random bytes
-        import secrets
-        tx_id = secrets.token_bytes(12)
-        stun_header = struct.pack("!HHI", 0x0001, 0, 0x2112A442) + tx_id
-
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(3.0)
-        start = _time.monotonic()
-        sock.sendto(stun_header, (turn_host, turn_port))
+    if not (tls_enabled and tls_only):
         try:
-            data, _ = sock.recvfrom(1024)
-            elapsed = _time.monotonic() - start
-            latency_ms = round(elapsed * 1000, 1)
-            # Validate it's a STUN response (type 0x0101 = Binding Success)
-            if len(data) >= 20:
-                resp_type = struct.unpack("!H", data[:2])[0]
-                if resp_type == 0x0101:
-                    turn_reachable = True
-                    diag_parts.append(f"STUN binding succeeded in {latency_ms}ms")
+            # STUN Binding Request: RFC 5389 minimal header (20 bytes)
+            # Type=0x0001 (Binding Request), Length=0, Magic=0x2112A442, TxID=12 random bytes
+            import secrets
+            tx_id = secrets.token_bytes(12)
+            stun_header = struct.pack("!HHI", 0x0001, 0, 0x2112A442) + tx_id
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(3.0)
+            start = _time.monotonic()
+            sock.sendto(stun_header, (turn_host, turn_port))
+            try:
+                data, _ = sock.recvfrom(1024)
+                elapsed = _time.monotonic() - start
+                latency_ms = round(elapsed * 1000, 1)
+                # Validate it's a STUN response (type 0x0101 = Binding Success)
+                if len(data) >= 20:
+                    resp_type = struct.unpack("!H", data[:2])[0]
+                    if resp_type == 0x0101:
+                        turn_reachable = True
+                        diag_parts.append(f"STUN binding succeeded in {latency_ms}ms")
+                    else:
+                        diag_parts.append(f"Got STUN response type 0x{resp_type:04x} (expected 0x0101)")
                 else:
-                    diag_parts.append(f"Got STUN response type 0x{resp_type:04x} (expected 0x0101)")
-            else:
-                diag_parts.append(f"Got {len(data)} bytes (too short for STUN)")
-        except socket.timeout:
-            diag_parts.append(f"STUN binding to {turn_host}:{turn_port}/udp timed out (3s)")
-        finally:
-            sock.close()
-    except Exception as e:
-        diag_parts.append(f"STUN check failed: {e}")
+                    diag_parts.append(f"Got {len(data)} bytes (too short for STUN)")
+            except socket.timeout:
+                diag_parts.append(f"STUN binding to {turn_host}:{turn_port}/udp timed out (3s)")
+            finally:
+                sock.close()
+        except Exception as e:
+            diag_parts.append(f"STUN check failed: {e}")
+    else:
+        diag_parts.append("Plain TURN disabled; skipping UDP STUN probe")
 
     if not turn_external_ip:
         diag_parts.append("TURN_EXTERNAL_IP not set; relay allocations may advertise a private host address")
     if tls_enabled:
-        diag_parts.append(f"TLS TURN advertised on {turn_host}:{tls_port}/tcp")
+        bind_ip = _turn_bind_ip()
+        try:
+            start = _time.monotonic()
+            with socket.create_connection((bind_ip, tls_port), timeout=3.0):
+                elapsed = _time.monotonic() - start
+            if latency_ms is None:
+                latency_ms = round(elapsed * 1000, 1)
+            turn_reachable = True
+            diag_parts.append(
+                f"TLS TURN advertised on {turn_host}:{public_tls_port}/tcp via {bind_ip}:{tls_port}"
+            )
+        except Exception as exc:
+            diag_parts.append(
+                f"TLS TURN advertised on {turn_host}:{public_tls_port}/tcp but internal listener "
+                f"{bind_ip}:{tls_port} is unreachable: {exc}"
+            )
     else:
         diag_parts.append("TLS TURN disabled; relay uses 3478 udp/tcp only")
 

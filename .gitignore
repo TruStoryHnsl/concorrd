@@ -13,6 +13,7 @@
 # "Rotate" admin action.
 config/discord-bridge.env
 config/discord-voice-bridge/rooms.json
+config/turn-certs/
 config/mautrix-discord/registration.yaml
 config/mautrix-discord/config-runtime.yaml
 config/mautrix-discord/bot-token

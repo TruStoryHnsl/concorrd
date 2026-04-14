@@ -130,7 +130,7 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
       } else if (msg.includes("WebSocket") || msg.includes("signaling")) {
         diag = "WebSocket signaling failed. This may be a firewall or proxy issue blocking wss:// connections.";
       } else if (msg.includes("ICE") || msg.includes("TURN") || msg.includes("STUN")) {
-        diag = "NAT traversal failed. The TURN relay may be unreachable — UDP ports 3478 and 49152-49252 must be open.";
+        diag = "NAT traversal failed. The TURN relay may be unreachable — this deployment expects the configured TURN edge and relay ports to be reachable.";
       }
 
       setError(msg);

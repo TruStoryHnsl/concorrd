@@ -40,7 +40,11 @@ Concord reads configuration from environment variables, not an `ini` file. Put t
 | `GITHUB_BUG_REPORT_REPO` | optional | `TruStoryHnsl/concord` | Repo target for the mirror. Defaults to `TruStoryHnsl/concord`. |
 | `TURN_HOST` | optional | `turn.concorrd.com` | Hostname clients should use for TURN/STUN. Point this at a direct DNS record, not a CDN-proxied hostname. |
 | `TURN_EXTERNAL_IP` | optional | `162.195.121.21/192.168.1.145` | coturn NAT mapping. Required when the host is behind NAT so relay candidates advertise a routable public address instead of a LAN IP. |
-| `TURN_TLS_ENABLED` / `TURN_TLS_PORT` | optional | `false` / `5349` | Optional TLS TURN listener. Only enable when you also mount a certificate/key for coturn. |
+| `TURN_PUBLIC_PORT` | optional | `3478` | Public plain TURN/STUN port advertised to clients. Leave at `3478` unless an upstream proxy remaps it. |
+| `TURN_TLS_ENABLED` / `TURN_TLS_PORT` | optional | `false` / `5349` | Optional internal coturn TLS listener. On orrgate this stays on `5349` behind `sslh`. |
+| `TURN_PUBLIC_TLS_PORT` | optional | `443` | Public TLS TURN port advertised to clients. Use `443` when `sslh` or another edge proxy forwards `turn.<domain>:443` to coturn's internal TLS listener. |
+| `TURN_TLS_ONLY` | optional | `false` | When `true`, only advertise `turns:` URLs to clients. Use this when plain `3478` is not forwarded publicly. |
+| `TURN_TLS_CERT_DIR` / `TURN_TLS_CERT_FILE` / `TURN_TLS_KEY_FILE` | optional | `/docker/stacks/turn/certs` / `/certs/fullchain1.pem` / `/certs/privkey1.pem` | Host cert directory mounted into coturn, plus the in-container certificate and key paths. Required when `TURN_TLS_ENABLED=true`. |
 | `SMTP_*` | optional | — | Email invites. Unset if you don't want to mail invites. |
 
 Put them in `.env`:
@@ -56,6 +60,14 @@ LIVEKIT_API_SECRET=<from livekit-cli>
 LIVEKIT_URL=ws://livekit:7880
 TURN_HOST=turn.concorrd.com
 TURN_EXTERNAL_IP=162.195.121.21/192.168.1.145
+TURN_PUBLIC_PORT=3478
+TURN_TLS_ENABLED=true
+TURN_TLS_PORT=5349
+TURN_PUBLIC_TLS_PORT=443
+TURN_TLS_ONLY=true
+TURN_TLS_CERT_DIR=/docker/stacks/turn/certs
+TURN_TLS_CERT_FILE=/certs/fullchain1.pem
+TURN_TLS_KEY_FILE=/certs/privkey1.pem
 ```
 
 `chmod 600 .env` — this file contains the registration token and LiveKit signing secret. Don't let it be world-readable.

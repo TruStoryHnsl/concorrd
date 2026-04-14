@@ -60,20 +60,38 @@ def test_generate_turn_credentials_defaults_to_3478_udp_and_tcp(monkeypatch) -> 
     assert servers[0].credential
 
 
-def test_generate_turn_credentials_can_advertise_explicit_tls_port(monkeypatch) -> None:
+def test_generate_turn_credentials_can_advertise_separate_public_tls_port(monkeypatch) -> None:
     from routers import voice as voice_router
 
     monkeypatch.setenv("TURN_SECRET", "secret")
     monkeypatch.setenv("TURN_HOST", "turn.example.com")
     monkeypatch.setenv("TURN_TLS_ENABLED", "true")
     monkeypatch.setenv("TURN_TLS_PORT", "5349")
+    monkeypatch.setenv("TURN_PUBLIC_TLS_PORT", "443")
 
     servers = voice_router._generate_turn_credentials("@alice:example.com")
 
     assert servers[0].urls == [
-        "turns:turn.example.com:5349?transport=tcp",
+        "turns:turn.example.com:443?transport=tcp",
         "turn:turn.example.com:3478?transport=udp",
         "turn:turn.example.com:3478?transport=tcp",
+    ]
+
+
+def test_generate_turn_credentials_can_advertise_tls_only(monkeypatch) -> None:
+    from routers import voice as voice_router
+
+    monkeypatch.setenv("TURN_SECRET", "secret")
+    monkeypatch.setenv("TURN_HOST", "turn.example.com")
+    monkeypatch.setenv("TURN_TLS_ENABLED", "true")
+    monkeypatch.setenv("TURN_TLS_PORT", "5349")
+    monkeypatch.setenv("TURN_PUBLIC_TLS_PORT", "443")
+    monkeypatch.setenv("TURN_TLS_ONLY", "true")
+
+    servers = voice_router._generate_turn_credentials("@alice:example.com")
+
+    assert servers[0].urls == [
+        "turns:turn.example.com:443?transport=tcp",
     ]
 
 
@@ -164,18 +182,25 @@ def test_turn_stack_architecture_is_env_driven() -> None:
     assert "TURN_EXTERNAL_IP" in compose
     assert "TURN_LISTEN_IP" in compose
     assert "TURN_RELAY_IP" in compose
+    assert "TURN_PUBLIC_PORT" in compose
     assert "TURN_TLS_ENABLED" in compose
     assert "TURN_TLS_PORT" in compose
+    assert "TURN_PUBLIC_TLS_PORT" in compose
+    assert "TURN_TLS_ONLY" in compose
+    assert "TURN_TLS_CERT_DIR" in compose
     assert "alt-listening-port=5349" not in turn_config
     assert "TURN_HEALTH_IP" in compose
     assert "$${TURN_LISTEN_IP:-}" in compose
     assert "$${TURN_EXTERNAL_IP#*/}" in compose
+    assert "/certs:ro" in compose
     assert "--external-ip=${TURN_EXTERNAL_IP}" in turn_entrypoint
     assert "--listening-ip=${TURN_LISTEN_IP_VALUE}" in turn_entrypoint
     assert "--relay-ip=${TURN_RELAY_IP_VALUE}" in turn_entrypoint
     assert "--tls-listening-port=${TURN_TLS_PORT:-5349}" in turn_entrypoint
     assert "--no-tls --no-dtls" in turn_entrypoint
     assert 'TURN_EXTERNAL_IP="${TURN_EXTERNAL_IP}"' in install_script
+    assert 'TURN_PUBLIC_TLS_PORT=443' in install_script
+    assert 'TURN_TLS_ONLY=false' in install_script
 
 
 def test_turn_entrypoint_derives_bind_ips_from_mapped_external_ip(tmp_path: Path) -> None:

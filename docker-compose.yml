@@ -371,16 +371,20 @@ services:
     volumes:
       - ./config/turnserver.conf:/etc/turnserver.conf:ro
       - ./config/coturn-entrypoint.sh:/etc/concord-turn/coturn-entrypoint.sh:ro
+      - ${TURN_TLS_CERT_DIR:-./config/turn-certs}:/certs:ro
     environment:
       TURN_SECRET: ${TURN_SECRET}
       TURN_DOMAIN: ${TURN_DOMAIN:-localhost}
       TURN_EXTERNAL_IP: ${TURN_EXTERNAL_IP:-}
       TURN_LISTEN_IP: ${TURN_LISTEN_IP:-}
       TURN_RELAY_IP: ${TURN_RELAY_IP:-}
+      TURN_PUBLIC_PORT: ${TURN_PUBLIC_PORT:-3478}
       TURN_TLS_ENABLED: ${TURN_TLS_ENABLED:-false}
       TURN_TLS_PORT: ${TURN_TLS_PORT:-5349}
-      TURN_TLS_CERT_FILE: ${TURN_TLS_CERT_FILE:-}
-      TURN_TLS_KEY_FILE: ${TURN_TLS_KEY_FILE:-}
+      TURN_PUBLIC_TLS_PORT: ${TURN_PUBLIC_TLS_PORT:-443}
+      TURN_TLS_ONLY: ${TURN_TLS_ONLY:-false}
+      TURN_TLS_CERT_FILE: ${TURN_TLS_CERT_FILE:-/certs/fullchain.pem}
+      TURN_TLS_KEY_FILE: ${TURN_TLS_KEY_FILE:-/certs/privkey.pem}
     healthcheck:
       # Probe the actual bound listener IP. When TURN_EXTERNAL_IP is a
       # public/private NAT mapping we clamp coturn to the private host-side
