@@ -464,6 +464,10 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const setActiveDM = useDMStore((s) => s.setActiveDM);
   const addToast = useToastStore((s) => s.addToast);
   const setDMActive = useDMStore((s) => s.setDMActive);
+  const hasDiscordBridgeServers = useMemo(
+    () => servers.some((server) => server.bridgeType === "discord"),
+    [servers],
+  );
 
   const loadCatalog = useExtensionStore((s) => s.loadCatalog);
 
@@ -517,7 +521,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   }, [accessToken, activeRoomId, messages.length, userId]);
 
   useEffect(() => {
-    if (!accessToken || !serversLoaded || !userId) return;
+    if (!accessToken || !serversLoaded || !userId || !hasDiscordBridgeServers) return;
     if (discordVoiceProjectionHandled.current === userId) return;
     discordVoiceProjectionHandled.current = userId;
 
@@ -577,15 +581,18 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             activate: false,
           });
         }
-      } catch {
-        discordVoiceProjectionHandled.current = null;
+      } catch (err) {
+        const message = err instanceof Error ? err.message.toLowerCase() : "";
+        if (!message.includes("forbidden") && !message.includes("403")) {
+          discordVoiceProjectionHandled.current = null;
+        }
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [accessToken, ensureDiscordGuild, serversLoaded, updateServer, userId]);
+  }, [accessToken, ensureDiscordGuild, hasDiscordBridgeServers, serversLoaded, updateServer, userId]);
 
   useEffect(() => {
     if (!serversLoaded || !userId) return;

@@ -33,6 +33,10 @@ export function createMatrixClient(
     deviceId,
     store,
   });
+  // Concord uses LiveKit for RTC. Disable matrix-js-sdk's built-in
+  // Matrix VoIP TURN polling so login/startup doesn't hammer the
+  // unsupported `/_matrix/client/v3/voip/turnServer` endpoint.
+  (client as sdk.MatrixClient & { supportsVoip?: () => boolean }).supportsVoip = () => false;
   return client;
 }
 
