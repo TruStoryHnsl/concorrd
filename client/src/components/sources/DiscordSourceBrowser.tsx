@@ -971,7 +971,12 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
             channel.guildId,
             discordGuilds.find((guild) => guild.id === channel.guildId)?.icon ?? null,
           ),
-          channel: { roomId: channel.roomId, name: channel.name },
+          channel: {
+            roomId: channel.roomId,
+            name: channel.name,
+            channelType: channel.kind === "voice" ? "voice" : "text",
+          },
+          preferBridgeServer: channel.kind === "voice",
         });
       } else {
         setActiveChannel(roomId);

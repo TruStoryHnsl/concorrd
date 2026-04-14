@@ -13,6 +13,11 @@ describe("DiscordSourceBrowser contracts", () => {
     expect(source).not.toContain("if (!mapping.enabled) continue;");
   });
 
+  it("opens bridged voice entries as voice channels on the Discord guild server", () => {
+    expect(source).toContain('channelType: channel.kind === "voice" ? "voice" : "text"');
+    expect(source).toContain('preferBridgeServer: channel.kind === "voice"');
+  });
+
   it("offers a direct bridge reload action from the discord source browser", () => {
     expect(source).toContain("discordVoiceBridgeHttpRestart");
     expect(source).toContain("Reload bridge");
