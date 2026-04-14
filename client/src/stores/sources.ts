@@ -147,6 +147,14 @@ function isPrimarySource(source: Pick<ConcordSource, "platform" | "inviteToken">
   return (source.platform ?? "concord") === "concord" && source.inviteToken.trim() === "";
 }
 
+function resolveOwnedSourceUserId(
+  source: Pick<ConcordSource, "ownerUserId" | "platform" | "inviteToken">,
+  boundUserId: string | null,
+): string | null | undefined {
+  if (isPrimarySource(source)) return null;
+  return source.ownerUserId ?? boundUserId ?? undefined;
+}
+
 export const useSourcesStore = create<SourcesState>()(
   persist(
     (set, get) => ({
@@ -280,8 +288,7 @@ export const useSourcesStore = create<SourcesState>()(
               continue;
             }
 
-            const ownerUserId =
-              source.ownerUserId ?? state.boundUserId ?? userId ?? null;
+            const ownerUserId = resolveOwnedSourceUserId(source, state.boundUserId);
             if (!userId || ownerUserId !== userId) {
               continue;
             }

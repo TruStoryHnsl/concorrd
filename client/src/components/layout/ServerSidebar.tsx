@@ -779,7 +779,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   // `flex-shrink: 1` causes tiles to squish before the scrollbar
   // ever appears.
   return (
-    <div className="w-12 bg-surface" style={{ height: "100%" }}>
+    <div className="w-[51px] pr-[3px] bg-surface" style={{ height: "100%" }}>
       <div className="h-full overflow-y-auto overflow-x-hidden py-3 flex flex-col items-center gap-2 [&>*]:shrink-0">
       {/* DM button */}
       <div className="relative group">

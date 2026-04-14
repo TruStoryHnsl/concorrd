@@ -77,6 +77,50 @@ describe("sources store", () => {
     ]);
   });
 
+  it("does not transfer legacy unowned sources to a newly bound user", () => {
+    useSourcesStore.setState((state) => ({
+      ...state,
+      boundUserId: null,
+      sources: [
+        ...state.sources,
+        {
+          id: "src_legacy",
+          host: "matrix.org",
+          instanceName: "Matrix",
+          inviteToken: "",
+          apiBase: "https://matrix.org",
+          homeserverUrl: "https://matrix.org",
+          status: "connected",
+          enabled: true,
+          addedAt: new Date().toISOString(),
+          platform: "matrix",
+        },
+      ],
+    }));
+
+    useSourcesStore.getState().bindToUser("@bo-peep:concorrd.com");
+
+    expect(useSourcesStore.getState().sources.map((source) => source.id)).toEqual([
+      "src_concord",
+    ]);
+  });
+
+  it("re-attributes legacy sources only when the same persisted user binds again", () => {
+    useSourcesStore.setState((state) => ({
+      ...state,
+      sources: state.sources.map((source) =>
+        source.id === "src_matrix"
+          ? { ...source, ownerUserId: undefined }
+          : source,
+      ),
+    }));
+
+    useSourcesStore.getState().bindToUser("@alice:concorrd.com");
+
+    const matrixSource = useSourcesStore.getState().sources.find((source) => source.id === "src_matrix");
+    expect(matrixSource?.ownerUserId).toBe("@alice:concorrd.com");
+  });
+
   it("preserves instance-global primary sources on logout", () => {
     useSourcesStore.getState().bindToUser(null);
     expect(useSourcesStore.getState().sources.map((source) => source.id)).toEqual([

@@ -10,26 +10,30 @@ Scope:
    subtle correctness property (the slot must be released) that is
    easy to break during a refactor and impossible to notice without
    a test.
+4. Default-lobby onboarding. Fresh users may auto-join the configured
+   lobby, but they must NOT silently inherit other public servers.
 
 Scope exclusions:
 - The "happy path" full registration is light-touch covered here via a
   monkeypatched `register_matrix_user`. A real end-to-end test needs
   conduwuit running and belongs in an integration-marked file.
-- Default-server auto-join is not covered — it depends on a JSON file
-  at INSTANCE_SETTINGS_FILE and multiple Matrix room joins. The value
-  of testing it in isolation is low compared to the setup cost.
 """
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
-from models import Server, InviteToken
+import config as config_module
+from models import Channel, Server, InviteToken, ServerMember
 import routers.registration as registration_module
+import routers.servers as servers_module
 from routers.registration import _check_registration_rate_limit, _reg_rate_limits
+from tests.conftest import login_as
 
 
 # ---------------------------------------------------------------------
@@ -274,6 +278,7 @@ async def test_register_happy_path_with_stubbed_matrix(client, db_session, monke
     async def fake_join_room(access_token, room_id):
         return None
 
+    monkeypatch.setenv("OPEN_REGISTRATION", "true")
     monkeypatch.setattr(registration_module, "register_matrix_user", fake_register)
     monkeypatch.setattr(registration_module, "join_room", fake_join_room)
 
@@ -292,6 +297,65 @@ async def test_register_happy_path_with_stubbed_matrix(client, db_session, monke
     assert body["device_id"] == "DEVICE_TEST"
     assert body["server_id"] is None
     assert body["server_name"] is None
+
+
+async def test_register_open_signup_only_auto_joins_default_lobby(
+    client, db_session, monkeypatch, tmp_path
+):
+    lobby = Server(
+        id="srv_lobby",
+        name="Concorrd Lobby",
+        owner_id="@owner:test.local",
+        visibility="public",
+    )
+    tc17 = Server(
+        id="srv_tc17",
+        name="TC#17",
+        owner_id="@owner:test.local",
+        visibility="public",
+    )
+    db_session.add_all([lobby, tc17])
+    db_session.add_all([
+        Channel(server_id=lobby.id, matrix_room_id="!lobby:test.local", name="welcome", position=0),
+        Channel(server_id=tc17.id, matrix_room_id="!tc17:test.local", name="general", position=0),
+    ])
+    await db_session.commit()
+
+    instance_file = tmp_path / "instance.json"
+    instance_file.write_text(json.dumps({"default_server_id": lobby.id}))
+    monkeypatch.setattr(config_module, "INSTANCE_SETTINGS_FILE", instance_file)
+    monkeypatch.setenv("OPEN_REGISTRATION", "true")
+
+    joined_rooms: list[str] = []
+
+    async def fake_register(username, password):
+        return {
+            "access_token": "fake_access_token_xyz",
+            "user_id": f"@{username}:test.local",
+            "device_id": "DEVICE_TEST",
+        }
+
+    async def fake_join_room(access_token, room_id):
+        joined_rooms.append(room_id)
+        return None
+
+    monkeypatch.setattr(registration_module, "register_matrix_user", fake_register)
+    monkeypatch.setattr(registration_module, "join_room", fake_join_room)
+
+    resp = await client.post(
+        "/api/register",
+        json={
+            "username": "bopeep",
+            "password": "hunter2hunter2",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    memberships = await db_session.execute(
+        select(ServerMember.server_id).where(ServerMember.user_id == "@bopeep:test.local")
+    )
+    assert memberships.scalars().all() == [lobby.id]
+    assert joined_rooms == ["!lobby:test.local"]
 
 
 async def test_register_with_invite_joins_server(client, db_session, monkeypatch):
@@ -342,6 +406,51 @@ async def test_register_with_invite_joins_server(client, db_session, monkeypatch
     # The invite use_count must have been incremented
     await db_session.refresh(invite)
     assert invite.use_count == 1
+
+
+async def test_list_servers_only_auto_joins_default_lobby(client, db_session, monkeypatch, tmp_path):
+    lobby = Server(
+        id="srv_lobby",
+        name="Concorrd Lobby",
+        owner_id="@owner:test.local",
+        visibility="public",
+    )
+    tc17 = Server(
+        id="srv_tc17",
+        name="TC#17",
+        owner_id="@owner:test.local",
+        visibility="public",
+    )
+    db_session.add_all([lobby, tc17])
+    db_session.add_all([
+        Channel(server_id=lobby.id, matrix_room_id="!lobby:test.local", name="welcome", position=0),
+        Channel(server_id=tc17.id, matrix_room_id="!tc17:test.local", name="general", position=0),
+    ])
+    await db_session.commit()
+
+    instance_file = tmp_path / "instance.json"
+    instance_file.write_text(json.dumps({"default_server_id": lobby.id}))
+    monkeypatch.setattr(config_module, "INSTANCE_SETTINGS_FILE", instance_file)
+
+    joined_rooms: list[str] = []
+
+    async def fake_join_room(access_token, room_id):
+        joined_rooms.append(room_id)
+        return None
+
+    monkeypatch.setattr(servers_module, "join_room", fake_join_room)
+    login_as("@bo-peep:test.local")
+
+    resp = await client.get("/api/servers")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [server["id"] for server in body] == [lobby.id]
+
+    memberships = await db_session.execute(
+        select(ServerMember.server_id).where(ServerMember.user_id == "@bo-peep:test.local")
+    )
+    assert memberships.scalars().all() == [lobby.id]
+    assert joined_rooms == ["!lobby:test.local"]
 
 
 async def test_register_matrix_failure_releases_reserved_invite_slot(

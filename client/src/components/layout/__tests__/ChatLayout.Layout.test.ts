@@ -34,4 +34,8 @@ describe("ChatLayout shell sizing contracts", () => {
       'className="md:hidden h-full w-full min-h-0 min-w-0" data-concord-layout="mobile"',
     );
   });
+
+  it("keeps the source rail offset from the server rail by the desktop gutter", () => {
+    expect(chatLayoutSource).toContain('className="w-[41px] mr-[2px] flex-shrink-0"');
+  });
 });

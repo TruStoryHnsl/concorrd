@@ -755,7 +755,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           <div className="flex h-full min-h-0 flex-shrink-0 bg-surface">
             <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-surface">
               <div className="flex min-h-0 flex-1">
-                <div className="w-9 flex-shrink-0">
+                <div className="w-[41px] mr-[2px] flex-shrink-0">
                   <SilentBoundary>
                     <SourcesPanel
                       onAddSource={openAddSource}

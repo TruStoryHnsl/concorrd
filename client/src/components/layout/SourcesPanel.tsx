@@ -260,7 +260,7 @@ export function SourcesPanel({
   };
 
   return (
-    <div className="h-full w-full bg-surface flex flex-col items-center py-3 gap-0">
+    <div className="h-full w-full bg-surface flex flex-col items-center py-3 pl-[3px] gap-0">
       <div className="flex-shrink-0 flex flex-col items-center gap-1.5 pb-2 pt-1">
         {onExplore && (
           <button

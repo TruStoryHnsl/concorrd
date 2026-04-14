@@ -43,4 +43,10 @@ describe("rail layout contracts", () => {
     expect(sourcesPanelSource).toContain("className=\"w-8 h-8 rounded-xl");
     expect(sourcesPanelSource).toContain("size={28}");
   });
+
+  it("keeps the rails separated with explicit source/server edge spacing", () => {
+    expect(sourcesPanelSource).toContain("pl-[3px]");
+    expect(serverSidebarSource).toContain("w-[51px] pr-[3px] bg-surface");
+    expect(serverSidebarSource).toContain("gap-2");
+  });
 });
