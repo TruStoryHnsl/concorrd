@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -160,10 +162,53 @@ def test_turn_stack_architecture_is_env_driven() -> None:
 
     assert "coturn-entrypoint.sh" in compose
     assert "TURN_EXTERNAL_IP" in compose
+    assert "TURN_LISTEN_IP" in compose
+    assert "TURN_RELAY_IP" in compose
     assert "TURN_TLS_ENABLED" in compose
     assert "TURN_TLS_PORT" in compose
     assert "alt-listening-port=5349" not in turn_config
     assert "--external-ip=${TURN_EXTERNAL_IP}" in turn_entrypoint
+    assert "--listening-ip=${TURN_LISTEN_IP_VALUE}" in turn_entrypoint
+    assert "--relay-ip=${TURN_RELAY_IP_VALUE}" in turn_entrypoint
     assert "--tls-listening-port=${TURN_TLS_PORT:-5349}" in turn_entrypoint
     assert "--no-tls --no-dtls" in turn_entrypoint
     assert 'TURN_EXTERNAL_IP="${TURN_EXTERNAL_IP}"' in install_script
+
+
+def test_turn_entrypoint_derives_bind_ips_from_mapped_external_ip(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    entrypoint = repo_root / "config/coturn-entrypoint.sh"
+    args_file = tmp_path / "turnserver.args"
+    fake_turnserver = tmp_path / "turnserver"
+    fake_turnserver.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\n' \"$@\" > \"$ARGS_FILE\"\n",
+        encoding="utf-8",
+    )
+    fake_turnserver.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update({
+        "PATH": f"{tmp_path}:{env.get('PATH', '')}",
+        "ARGS_FILE": str(args_file),
+        "TURN_SECRET": "secret",
+        "TURN_DOMAIN": "concorrd.com",
+        "TURN_EXTERNAL_IP": "162.195.121.21/192.168.1.145",
+        "TURN_TLS_ENABLED": "false",
+    })
+
+    subprocess.run(
+        ["sh", str(entrypoint)],
+        check=True,
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert "--external-ip=162.195.121.21/192.168.1.145" in args
+    assert "--listening-ip=192.168.1.145" in args
+    assert "--relay-ip=192.168.1.145" in args
+    assert "--no-tls" in args
+    assert "--no-dtls" in args
