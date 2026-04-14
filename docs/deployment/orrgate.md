@@ -189,6 +189,7 @@ Before walking away from the deployment, confirm all of the following:
 - [ ] `docker compose ps` shows every expected service as `running` or `healthy`.
 - [ ] All four well-known / key curls from section 4 return 200.
 - [ ] The federation tester reports `FederationOK: true`.
+- [ ] `python3 scripts/turn_relay_smoke.py --env-file .env` passes on the host. This proves `turns:turn.concorrd.com:443` can complete a real TURN allocation, not just a TLS handshake.
 - [ ] You can log in to the web client at `https://<server_name>/` and see the Admin tab.
 - [ ] You created at least one real server and one real invite token.
 - [ ] The `.env` file has been backed up to your password manager — losing it means losing the registration token and rebuilding the homeserver.
