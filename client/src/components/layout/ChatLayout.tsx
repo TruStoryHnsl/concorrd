@@ -36,7 +36,7 @@ import ExtensionEmbed from "../extension/ExtensionEmbed";
 import ExtensionMenu from "../extension/ExtensionMenu";
 import { ServerSidebar } from "./ServerSidebar";
 import { Avatar } from "../ui/Avatar";
-import { ChannelSidebar } from "./ChannelSidebar";
+import { ChannelSidebar, UserBar } from "./ChannelSidebar";
 import { DMSidebar } from "../dm/DMSidebar";
 import { ExploreModal } from "../server/ExploreModal";
 import { DiscordSourceBrowser } from "../sources/DiscordSourceBrowser";
@@ -110,11 +110,13 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const client = useAuthStore((s) => s.client);
   const userId = useAuthStore((s) => s.userId);
   const accessToken = useAuthStore((s) => s.accessToken);
+  const logout = useAuthStore((s) => s.logout);
   const loadServers = useServerStore((s) => s.loadServers);
   const activeChannelId = useServerStore((s) => s.activeChannelId);
   const servers = useServerStore((s) => s.servers);
   const activeServerId = useServerStore((s) => s.activeServerId);
   const ensureDiscordGuild = useServerStore((s) => s.ensureDiscordGuild);
+  const updateServer = useServerStore((s) => s.updateServer);
 
   // DM state
   const dmActive = useDMStore((s) => s.dmActive);
@@ -529,6 +531,21 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         if (cancelled) return;
 
         const latestServers = useServerStore.getState().servers;
+        for (const guild of guilds) {
+          const iconUrl = guild.icon
+            ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png?size=128`
+            : null;
+          const server = latestServers.find(
+            (entry) => entry.bridgeType === "discord" && entry.discordGuildId === guild.id,
+          );
+          if (!server) continue;
+          if (iconUrl && server.icon_url !== iconUrl) {
+            updateServer(server.id, { icon_url: iconUrl });
+          }
+          if (server.name.startsWith("Guild ") && guild.name) {
+            updateServer(server.id, { name: guild.name });
+          }
+        }
         for (const room of rooms) {
           if (!room.enabled) continue;
           const localChannel = latestServers
@@ -544,6 +561,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             guildName:
               guilds.find((guild) => guild.id === room.discord_guild_id)?.name ??
               `Guild ${room.discord_guild_id}`,
+            iconUrl: (() => {
+              const guild = guilds.find((entry) => entry.id === room.discord_guild_id);
+              return guild?.icon
+                ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png?size=128`
+                : null;
+            })(),
             channel: {
               id: localChannel.id,
               roomId: room.matrix_room_id,
@@ -562,7 +585,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, ensureDiscordGuild, serversLoaded, userId]);
+  }, [accessToken, ensureDiscordGuild, serversLoaded, updateServer, userId]);
 
   useEffect(() => {
     if (!serversLoaded || !userId) return;
@@ -730,27 +753,37 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         {/* LEFT STACK — sidebar columns. Collapses to zero width when hidden. */}
         {showSidebar && (
           <div className="flex min-h-0 flex-shrink-0 bg-surface">
-            <div className="w-11 flex-shrink-0">
-              <SilentBoundary>
-                <SourcesPanel
-                  onAddSource={openAddSource}
-                  onSourceOpen={openSourceBrowser}
-                  onExplore={openExplore}
-                />
-              </SilentBoundary>
-            </div>
+            <div className="flex min-h-0 flex-col bg-surface">
+              <div className="flex min-h-0">
+                <div className="w-11 flex-shrink-0">
+                  <SilentBoundary>
+                    <SourcesPanel
+                      onAddSource={openAddSource}
+                      onSourceOpen={openSourceBrowser}
+                      onExplore={openExplore}
+                    />
+                  </SilentBoundary>
+                </div>
 
-            <SilentBoundary>
-              <ServerSidebar />
-            </SilentBoundary>
+                <SilentBoundary>
+                  <ServerSidebar />
+                </SilentBoundary>
 
-            {/* Channel / DM sidebar */}
-            <div className="flex min-h-0" style={{ width: sidebarWidth, minWidth: SIDEBAR_MIN, maxWidth: SIDEBAR_MAX }}>
-              <SilentBoundary>
-                {dmActive ? <DMSidebar /> : <ChannelSidebar onServerTitleClick={() => {
-                  if (activeServerId) setStatsTarget({ type: "server", serverId: activeServerId });
-                }} />}
-              </SilentBoundary>
+                {/* Channel / DM sidebar */}
+                <div className="flex min-h-0" style={{ width: sidebarWidth, minWidth: SIDEBAR_MIN, maxWidth: SIDEBAR_MAX }}>
+                  <SilentBoundary>
+                    {dmActive ? <DMSidebar /> : <ChannelSidebar onServerTitleClick={() => {
+                      if (activeServerId) setStatsTarget({ type: "server", serverId: activeServerId });
+                    }} />}
+                  </SilentBoundary>
+                </div>
+              </div>
+
+              {userId && (
+                <SilentBoundary>
+                  <UserBar userId={userId} logout={logout} />
+                </SilentBoundary>
+              )}
             </div>
 
             {/* Resize handle */}
@@ -1085,6 +1118,8 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   // Shared main content renderer (desktop)
   const renderMainContent = () => {
+    const showInlineAccountBanner = Boolean(userId && sidebarCollapsed);
+
     if (settingsOpen) {
       return (
         <>
@@ -1114,6 +1149,24 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               <div className="flex items-center gap-3 min-w-0">
                 <span className="material-symbols-outlined text-on-surface-variant text-base">chat_bubble</span>
                 <DMHeaderName userId={dmConversation.other_user_id} />
+                {showInlineAccountBanner && (
+                  <DesktopAccountButton
+                    desktopAccountRef={desktopAccountRef}
+                    open={desktopAccountPopoverOpen}
+                    userId={userId}
+                    accessToken={accessToken}
+                    onToggle={() => setDesktopAccountPopoverOpen((open) => !open)}
+                    onClose={() => setDesktopAccountPopoverOpen(false)}
+                    onOpenSettings={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      openSettings("profile");
+                    }}
+                    onOpenStats={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      setStatsTarget({ type: "user" });
+                    }}
+                  />
+                )}
               </div>
             ) : activeChannel ? (
               <div className="flex items-center gap-3 min-w-0">
@@ -1130,6 +1183,24 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                     {memberCount} {memberCount === 1 ? "member" : "members"}
                   </span>
                 )}
+                {showInlineAccountBanner && (
+                  <DesktopAccountButton
+                    desktopAccountRef={desktopAccountRef}
+                    open={desktopAccountPopoverOpen}
+                    userId={userId}
+                    accessToken={accessToken}
+                    onToggle={() => setDesktopAccountPopoverOpen((open) => !open)}
+                    onClose={() => setDesktopAccountPopoverOpen(false)}
+                    onOpenSettings={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      openSettings("profile");
+                    }}
+                    onOpenStats={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      setStatsTarget({ type: "user" });
+                    }}
+                  />
+                )}
               </div>
             ) : activeChannelId ? (
               <div className="flex items-center gap-3 min-w-0">
@@ -1137,6 +1208,24 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                 <h2 className="font-headline font-semibold truncate">
                   {client?.getRoom(activeChannelId)?.name ?? activeChannelId}
                 </h2>
+                {showInlineAccountBanner && (
+                  <DesktopAccountButton
+                    desktopAccountRef={desktopAccountRef}
+                    open={desktopAccountPopoverOpen}
+                    userId={userId}
+                    accessToken={accessToken}
+                    onToggle={() => setDesktopAccountPopoverOpen((open) => !open)}
+                    onClose={() => setDesktopAccountPopoverOpen(false)}
+                    onOpenSettings={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      openSettings("profile");
+                    }}
+                    onOpenStats={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      setStatsTarget({ type: "user" });
+                    }}
+                  />
+                )}
               </div>
             ) : (
               <span className="text-on-surface-variant font-body">
@@ -1151,6 +1240,24 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                   "Select a channel"
                 )}
               </span>
+            )}
+            {!dmActive && !activeChannelId && showInlineAccountBanner && (
+              <DesktopAccountButton
+                desktopAccountRef={desktopAccountRef}
+                open={desktopAccountPopoverOpen}
+                userId={userId}
+                accessToken={accessToken}
+                onToggle={() => setDesktopAccountPopoverOpen((open) => !open)}
+                onClose={() => setDesktopAccountPopoverOpen(false)}
+                onOpenSettings={() => {
+                  setDesktopAccountPopoverOpen(false);
+                  openSettings("profile");
+                }}
+                onOpenStats={() => {
+                  setDesktopAccountPopoverOpen(false);
+                  setStatsTarget({ type: "user" });
+                }}
+              />
             )}
           </div>
           {/* INS-011: Top-bar utility icons (desktop). Mirrors the mobile
@@ -1176,42 +1283,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                 onClick={() => setSidebarCollapsed((c) => !c)}
               />
             </div>
-            {/* User banner — click to open stats popup */}
-            {userId && (
-              <div
-                ref={desktopAccountRef}
-                className="relative ml-1 pl-2 border-l border-outline-variant/20"
-              >
-                <button
-                  onClick={() => setDesktopAccountPopoverOpen((open) => !open)}
-                  className="flex items-center gap-1.5 hover:bg-surface-container-high rounded-lg px-2 py-1 transition-colors"
-                  title="Account"
-                >
-                  <Avatar userId={userId} size="sm" showPresence />
-                  <span className="text-xs text-on-surface-variant truncate max-w-[80px]">
-                    {userId.split(":")[0].replace("@", "")}
-                  </span>
-                  <span className="material-symbols-outlined text-sm text-on-surface-variant/70">
-                    expand_more
-                  </span>
-                </button>
-                {desktopAccountPopoverOpen && (
-                  <UserStatsPopover
-                    accessToken={accessToken}
-                    userId={userId}
-                    onClose={() => setDesktopAccountPopoverOpen(false)}
-                    onOpenSettings={() => {
-                      setDesktopAccountPopoverOpen(false);
-                      openSettings("profile");
-                    }}
-                    onOpenStats={() => {
-                      setDesktopAccountPopoverOpen(false);
-                      setStatsTarget({ type: "user" });
-                    }}
-                  />
-                )}
-              </div>
-            )}
           </div>
         </div>
 
@@ -1535,6 +1606,7 @@ function SourceServerBrowser({
   const setDMActive = useDMStore((s) => s.setDMActive);
   const client = useAuthStore((s) => s.client);
   const accessToken = useAuthStore((s) => s.accessToken);
+  const userId = useAuthStore((s) => s.userId);
   const addToast = useToastStore((s) => s.addToast);
   const updateSource = useSourcesStore((s) => s.updateSource);
   const label = source?.instanceName ?? source?.host ?? "Source";
@@ -1596,10 +1668,17 @@ function SourceServerBrowser({
               deviceId: source.deviceId,
             })
           : sdk.createClient({ baseUrl: source.homeserverUrl });
-      const response = await browseClient.publicRooms({
-        server: source.serverName ?? source.host,
-        limit: 50,
-      });
+      const localDomain = userId?.split(":")[1]?.toLowerCase() ?? null;
+      const useLocalDirectory =
+        localDomain != null && sourceMatchesMatrixDomain(source, localDomain);
+      const response = await browseClient.publicRooms(
+        useLocalDirectory
+          ? { limit: 50 }
+          : {
+              server: source.serverName ?? source.host,
+              limit: 50,
+            },
+      );
       setPublicRooms(
         [...(response.chunk ?? [])].sort((a, b) =>
           (b.num_joined_members ?? 0) - (a.num_joined_members ?? 0),
@@ -1621,7 +1700,7 @@ function SourceServerBrowser({
     } finally {
       setPublicRoomsLoading(false);
     }
-  }, [source, updateSource]);
+  }, [source, updateSource, userId]);
 
   useEffect(() => {
     if (source?.platform !== "matrix") return;
@@ -1684,7 +1763,12 @@ function SourceServerBrowser({
         source.host;
       setJoiningRoomId(room.room_id);
       try {
-        await client.joinRoom(target, { viaServers: [viaServer] });
+        const localDomain = userId?.split(":")[1]?.toLowerCase() ?? null;
+        const joinOptions =
+          localDomain && viaServer.toLowerCase() === localDomain
+            ? {}
+            : { viaServers: [viaServer] };
+        await client.joinRoom(target, joinOptions);
         if (accessToken) await loadServers(accessToken);
         addToast(`Connected ${room.name ?? target}`, "success");
         onClose();
@@ -1694,15 +1778,25 @@ function SourceServerBrowser({
         setJoiningRoomId(null);
       }
     },
-    [accessToken, addToast, client, loadServers, onClose, source],
+    [accessToken, addToast, client, loadServers, onClose, source, userId],
   );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="w-full max-w-md mx-4 bg-surface-container rounded-2xl border border-outline-variant/20 shadow-2xl p-6 max-h-[85vh] flex flex-col">
         <div className="flex items-center gap-3 mb-6">
-          <div className="w-9 h-9 rounded-xl bg-surface-container-high flex items-center justify-center flex-shrink-0">
-            <SourceBrandIcon brand={sourceBrand} size={18} />
+          <div className="w-9 h-9 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+            <SourceBrandIcon
+              brand={sourceBrand}
+              size={20}
+              className={
+                sourceBrand === "discord"
+                  ? "text-[#5865F2]"
+                  : sourceBrand === "matrix"
+                    ? "text-on-surface"
+                    : undefined
+              }
+            />
           </div>
           <h2 className="flex-1 text-lg font-headline font-semibold text-on-surface">{label}</h2>
           <button
@@ -1993,6 +2087,54 @@ function UserStatsPopover({
           Full stats
         </button>
       </div>
+    </div>
+  );
+}
+
+function DesktopAccountButton({
+  desktopAccountRef,
+  open,
+  userId,
+  accessToken,
+  onToggle,
+  onClose,
+  onOpenSettings,
+  onOpenStats,
+}: {
+  desktopAccountRef: { current: HTMLDivElement | null };
+  open: boolean;
+  userId: string | null;
+  accessToken: string | null;
+  onToggle: () => void;
+  onClose: () => void;
+  onOpenSettings: () => void;
+  onOpenStats: () => void;
+}) {
+  if (!userId) return null;
+  return (
+    <div ref={desktopAccountRef} className="relative ml-2 flex-shrink-0">
+      <button
+        onClick={onToggle}
+        className="flex items-center gap-1.5 hover:bg-surface-container-high rounded-lg px-2 py-1 transition-colors"
+        title="Account"
+      >
+        <Avatar userId={userId} size="sm" showPresence />
+        <span className="text-xs text-on-surface-variant truncate max-w-[80px]">
+          {userId.split(":")[0].replace("@", "")}
+        </span>
+        <span className="material-symbols-outlined text-sm text-on-surface-variant/70">
+          expand_more
+        </span>
+      </button>
+      {open && (
+        <UserStatsPopover
+          accessToken={accessToken}
+          userId={userId}
+          onClose={onClose}
+          onOpenSettings={onOpenSettings}
+          onOpenStats={onOpenStats}
+        />
+      )}
     </div>
   );
 }
@@ -2497,8 +2639,8 @@ function AddSourceModal({
                 onClick={() => setScreen("concord")}
                 className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/20 hover:border-primary/40 hover:bg-surface-container-high transition-all text-left group"
               >
-                <div className="w-10 h-10 rounded-xl bg-primary/12 ring-1 ring-primary/25 flex items-center justify-center flex-shrink-0">
-                  <SourceBrandIcon brand="concord" size={20} />
+                <div className="w-10 h-10 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                  <SourceBrandIcon brand="concord" size={24} />
                 </div>
                 <div>
                   <p className="text-sm font-medium text-on-surface">Concord Instance</p>
@@ -2512,8 +2654,8 @@ function AddSourceModal({
                 onClick={() => setScreen("matrix")}
                 className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/20 hover:border-teal-500/40 hover:bg-surface-container-high transition-all text-left group"
               >
-                <div className="w-10 h-10 rounded-xl bg-[#111318] ring-1 ring-white/10 flex items-center justify-center flex-shrink-0">
-                  <SourceBrandIcon brand="matrix" size={18} />
+                <div className="w-10 h-10 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                  <SourceBrandIcon brand="matrix" size={24} className="text-on-surface" />
                 </div>
                 <div>
                   <p className="text-sm font-medium text-on-surface">Matrix Network</p>
@@ -2527,8 +2669,8 @@ function AddSourceModal({
                 onClick={() => setScreen("discord")}
                 className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/20 hover:border-[#5865F2]/40 hover:bg-surface-container-high transition-all text-left group"
               >
-                <div className="w-10 h-10 rounded-xl bg-[#5865F2]/12 ring-1 ring-[#5865F2]/30 flex items-center justify-center flex-shrink-0">
-                  <SourceBrandIcon brand="discord" size={18} />
+                <div className="w-10 h-10 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                  <SourceBrandIcon brand="discord" size={24} className="text-[#5865F2]" />
                 </div>
                 <div>
                   <p className="text-sm font-medium text-on-surface">Discord</p>

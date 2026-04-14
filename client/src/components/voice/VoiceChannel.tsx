@@ -44,15 +44,17 @@ function DiscordVoiceBridgeStatusBadge({
 }) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs font-label ${
+      className={`inline-flex items-center justify-center rounded-full border ${
+        compact ? "h-6 w-6" : "h-7 w-7"
+      } ${
         connected
           ? "border-emerald-400/40 bg-emerald-500/12 text-emerald-300"
           : "border-outline-variant/25 bg-surface-container-high text-on-surface-variant"
       }`}
       title={connected ? "Discord voice bridge connected" : "Discord voice bridge idle"}
+      aria-label={connected ? "Discord voice bridge connected" : "Discord voice bridge idle"}
     >
       <span className="material-symbols-outlined text-sm">link</span>
-      {compact ? "Bridge" : "Discord bridge"}
     </span>
   );
 }

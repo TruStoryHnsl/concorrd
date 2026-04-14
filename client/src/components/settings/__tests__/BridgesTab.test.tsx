@@ -40,8 +40,16 @@ vi.mock("../../../api/bridges", async (importOriginal) => {
     discordBridgeHttpStatus: vi.fn(),
     discordBridgeHttpEnable: vi.fn(),
     discordBridgeHttpDisable: vi.fn(),
+    discordBridgeHttpGetBotProfile: vi.fn(),
+    discordBridgeHttpUpdateBotProfile: vi.fn(),
     discordBridgeHttpRotate: vi.fn(),
     discordBridgeHttpSaveBotToken: vi.fn(),
+    discordVoiceBridgeHttpListRooms: vi.fn(),
+    discordVoiceBridgeHttpRestart: vi.fn(),
+    discordVoiceBridgeHttpStop: vi.fn(),
+    discordVoiceBridgeHttpStart: vi.fn(),
+    discordVoiceBridgeHttpUpsertRoom: vi.fn(),
+    discordVoiceBridgeHttpDeleteRoom: vi.fn(),
   };
 });
 
@@ -52,6 +60,8 @@ const mockedEnableAndStart = vi.mocked(bridgesApi.discordBridgeEnableAndStart);
 const mockedDisable = vi.mocked(bridgesApi.discordBridgeDisable);
 const mockedStatus = vi.mocked(bridgesApi.discordBridgeStatus);
 const mockedHttpStatus = vi.mocked(bridgesApi.discordBridgeHttpStatus);
+const mockedBotProfile = vi.mocked(bridgesApi.discordBridgeHttpGetBotProfile);
+const mockedVoiceRooms = vi.mocked(bridgesApi.discordVoiceBridgeHttpListRooms);
 
 const defaultStatus: bridgesApi.BridgeStatus = {
   has_bot_token: false,
@@ -71,6 +81,8 @@ describe("<BridgesTab />", () => {
     mockedDisable.mockReset();
     mockedStatus.mockReset();
     mockedHttpStatus.mockReset();
+    mockedBotProfile.mockReset();
+    mockedVoiceRooms.mockReset();
     // Clear localStorage for ToS state before seeding auth.
     localStorage.clear();
     useAuthStore.setState({
@@ -95,11 +107,48 @@ describe("<BridgesTab />", () => {
       alias_namespace_regex: null,
       registration_file_path: null,
     });
+    mockedBotProfile.mockResolvedValue({
+      id: "bot-1",
+      username: "corr-bridge",
+      global_name: null,
+      avatar: null,
+    });
+    mockedVoiceRooms.mockResolvedValue([]);
 
     render(<BridgesTab />);
 
     await waitFor(() => {
       expect(screen.getByTestId("docker-bridge-section")).toBeInTheDocument();
+    });
+  });
+
+  it("renders the voice bridge section for the web bridge shell without crashing", async () => {
+    mockedIsTauri.mockReturnValue(false);
+    mockedStatus.mockResolvedValue(defaultStatus);
+    mockedHttpStatus.mockResolvedValue({
+      enabled: true,
+      bot_token_configured: true,
+      appservice_id: "concord_discord",
+      sender_mxid_localpart: "_discord_bot",
+      user_namespace_regex: "@_discord_.*",
+      alias_namespace_regex: "#_discord_.*",
+      registration_file_path: "/tmp/registration.yaml",
+    });
+    mockedBotProfile.mockResolvedValue({
+      id: "bot-1",
+      username: "corr-bridge",
+      global_name: null,
+      avatar: null,
+    });
+    mockedVoiceRooms.mockResolvedValue([]);
+
+    render(<BridgesTab />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Discord Voice Bridge")).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(mockedVoiceRooms).toHaveBeenCalledTimes(1);
     });
   });
 

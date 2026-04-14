@@ -119,6 +119,19 @@ async def _discord_api_get(path: str, token: str) -> Any:
     return resp.json()
 
 
+async def _discord_api_patch(path: str, token: str, payload: dict[str, Any]) -> Any:
+    headers = {
+        "Authorization": f"Bot {token}",
+        "User-Agent": _DISCORD_API_USER_AGENT,
+    }
+    async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
+        resp = await client.patch(f"{_DISCORD_API_URL}{path}", json=payload)
+    if resp.status_code == 403:
+        logger.warning("Discord API 403 on %s: %s", path, resp.text[:240])
+    resp.raise_for_status()
+    return resp.json()
+
+
 # ---------------------------------------------------------------------
 # Pydantic schemas
 # ---------------------------------------------------------------------
@@ -194,6 +207,18 @@ class DiscordChannelInfo(BaseModel):
     name: str
     type: int
     kind: Literal["text", "voice", "unsupported"]
+
+
+class DiscordBotProfileResponse(BaseModel):
+    id: str
+    username: str
+    global_name: str | None = None
+    avatar: str | None = None
+
+
+class DiscordBotProfileRequest(BaseModel):
+    username: str = Field(min_length=2, max_length=32)
+    model_config = {"extra": "forbid"}
 
 
 # ---------------------------------------------------------------------
@@ -597,6 +622,81 @@ async def discord_bridge_list_guilds(
     except Exception as exc:
         logger.error("Discord API error in guilds: %s", exc)
         return []
+
+
+@router.get("/bot-profile", response_model=DiscordBotProfileResponse)
+async def discord_bridge_get_bot_profile(
+    user_id: str = Depends(get_user_id),
+) -> DiscordBotProfileResponse:
+    require_admin(user_id)
+
+    token = read_discord_bot_token()
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="No bot token configured. Save a token via POST /bot-token first.",
+        )
+
+    try:
+        profile = await _discord_api_get("/users/@me", token)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Discord API returned HTTP {exc.response.status_code} while reading the bot profile.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Discord API error while reading the bot profile: {exc}",
+        ) from exc
+
+    return DiscordBotProfileResponse(
+        id=str(profile["id"]),
+        username=str(profile["username"]),
+        global_name=profile.get("global_name"),
+        avatar=profile.get("avatar"),
+    )
+
+
+@router.post("/bot-profile", response_model=DiscordBotProfileResponse)
+async def discord_bridge_update_bot_profile(
+    body: DiscordBotProfileRequest,
+    user_id: str = Depends(get_user_id),
+) -> DiscordBotProfileResponse:
+    require_admin(user_id)
+
+    token = read_discord_bot_token()
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="No bot token configured. Save a token via POST /bot-token first.",
+        )
+
+    try:
+        profile = await _discord_api_patch(
+            "/users/@me",
+            token,
+            {"username": body.username.strip()},
+        )
+    except httpx.HTTPStatusError as exc:
+        detail = (
+            f"Discord API returned HTTP {exc.response.status_code} while updating the bot profile."
+        )
+        if exc.response.status_code == 429:
+            detail = "Discord rate-limited the bot rename. Wait and retry."
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Discord API error while updating the bot profile: {exc}",
+        ) from exc
+
+    return DiscordBotProfileResponse(
+        id=str(profile["id"]),
+        username=str(profile["username"]),
+        global_name=profile.get("global_name"),
+        avatar=profile.get("avatar"),
+    )
 
 
 @router.get("/channels/{channel_id}", response_model=DiscordChannelInfo)

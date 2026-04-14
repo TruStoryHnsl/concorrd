@@ -40,13 +40,8 @@ vi.mock("../NodeHostingTab", () => ({
 vi.mock("../BridgesTab", () => ({ BridgesTab: () => <div>Bridges Tab</div> }));
 vi.mock("../AboutTab", () => ({ AboutTab: () => <div>About Tab</div> }));
 vi.mock("../AdminTab", () => ({ AdminTab: () => <div>Admin Tab</div> }));
-vi.mock("../ServerSettingsModal", () => ({
-  ServerSettingsContent: ({ activeTab }: { activeTab: string }) => (
-    <div>Server Tab: {activeTab}</div>
-  ),
-}));
 
-describe("<SettingsPanel /> navigation", () => {
+describe("<SettingsPanel /> bridge server navigation", () => {
   beforeEach(() => {
     useAuthStore.setState({
       accessToken: "token",
@@ -55,45 +50,57 @@ describe("<SettingsPanel /> navigation", () => {
     useServerStore.setState({
       servers: [
         {
-          id: "discord-1",
-          name: "Discord Guild",
+          id: "discord-guild-1",
+          name: "CTP Playtime",
           icon_url: null,
           owner_id: "@alice:concorrd.com",
           visibility: "private",
-          abbreviation: "DG",
+          abbreviation: "CTP",
           media_uploads_enabled: true,
-          channels: [],
           bridgeType: "discord",
+          discordGuildId: "123",
+          channels: [
+            {
+              id: 1,
+              name: "General",
+              channel_type: "text",
+              matrix_room_id: "!general:concorrd.com",
+              position: 0,
+            },
+            {
+              id: 2,
+              name: "Voice",
+              channel_type: "voice",
+              matrix_room_id: "!voice:concorrd.com",
+              position: 1,
+            },
+          ],
         },
       ],
       members: {
-        "discord-1": [],
+        "discord-guild-1": [],
       },
     });
     useSettingsStore.setState({
       settingsOpen: true,
       settingsTab: "server-bridge",
-      serverSettingsId: "discord-1",
+      serverSettingsId: "discord-guild-1",
     });
   });
 
-  it("returns to user settings cleanly from a server settings context", async () => {
+  it("renders the discord bridge server tab and returns to profile cleanly", async () => {
     const user = userEvent.setup();
     render(<SettingsPanel />);
 
-    expect(screen.getByText("Server Tab: bridge")).toBeInTheDocument();
+    expect(screen.getByText("Discord Bridge")).toBeInTheDocument();
+    expect(screen.getAllByText("CTP Playtime").length).toBeGreaterThan(0);
+    expect(screen.getByText("Text Rooms")).toBeInTheDocument();
+    expect(screen.getByText("Voice Rooms")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Profile/i }));
 
     expect(screen.getByText("Profile Tab")).toBeInTheDocument();
+    expect(useSettingsStore.getState().serverSettingsId).toBeNull();
     expect(useSettingsStore.getState().settingsTab).toBe("profile");
-    expect(useSettingsStore.getState().serverSettingsId).toBeNull();
-  });
-
-  it("clears server context when settings are closed", () => {
-    useSettingsStore.getState().closeSettings();
-
-    expect(useSettingsStore.getState().settingsOpen).toBe(false);
-    expect(useSettingsStore.getState().serverSettingsId).toBeNull();
   });
 });

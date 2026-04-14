@@ -8,10 +8,19 @@ interface Props {
   otherUserId: string;
   matrixRoomId: string;
   isActive: boolean;
+  pinned?: boolean;
+  onTogglePin?: () => void;
   onClick: () => void;
 }
 
-export function DMListItem({ otherUserId, matrixRoomId, isActive, onClick }: Props) {
+export function DMListItem({
+  otherUserId,
+  matrixRoomId,
+  isActive,
+  pinned = false,
+  onTogglePin,
+  onClick,
+}: Props) {
   const displayName = useDisplayName(otherUserId);
   const localServer = useLocalServerName();
   const unreadCounts = useUnreadCounts();
@@ -33,6 +42,29 @@ export function DMListItem({ otherUserId, matrixRoomId, isActive, onClick }: Pro
         </span>
         <FederationBadge userId={otherUserId} localServer={localServer} compact />
       </div>
+      {onTogglePin && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onTogglePin();
+          }}
+          className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
+            pinned
+              ? "text-rose-400 hover:bg-rose-500/15"
+              : "text-on-surface-variant/60 hover:text-rose-400 hover:bg-surface-container-high"
+          }`}
+          title={pinned ? "Unpin conversation" : "Pin conversation"}
+          aria-label={pinned ? "Unpin conversation" : "Pin conversation"}
+        >
+          <span
+            className="material-symbols-outlined text-base"
+            style={pinned ? { fontVariationSettings: '"FILL" 1, "wght" 500, "GRAD" 0, "opsz" 24' } : undefined}
+          >
+            keep
+          </span>
+        </button>
+      )}
       {unread > 0 && !isActive && (
         <span className="min-w-5 h-5 px-1.5 rounded-full bg-primary text-on-primary text-xs font-bold flex items-center justify-center node-pulse">
           {unread > 99 ? "99+" : unread}

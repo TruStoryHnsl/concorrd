@@ -38,6 +38,8 @@ const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || "";
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || "";
 const HEALTH_PORT = Number(process.env.DISCORD_VOICE_HEALTH_PORT || "3098");
 const POLL_MS = Number(process.env.DISCORD_VOICE_CONFIG_POLL_MS || "5000");
+const DISCORD_VOICE_IDLE_MS = Number(process.env.DISCORD_VOICE_IDLE_MS || "15000");
+const DISCORD_VOICE_IDENTITY_PREFIX = "discord-voice:";
 
 const SAMPLE_RATE = 48000;
 const CHANNELS = 2;
@@ -150,7 +152,7 @@ function captureDiscordMixToLiveKit(mixer, source) {
 }
 
 async function startBridge(client, roomConfig) {
-  const identity = `discord-voice:${roomConfig.discord_guild_id}:${roomConfig.discord_channel_id}`;
+  const identity = `${DISCORD_VOICE_IDENTITY_PREFIX}${roomConfig.discord_guild_id}:${roomConfig.discord_channel_id}`;
   const bridgeId = roomKey(roomConfig);
   log("starting voice bridge", bridgeId, roomConfig.matrix_room_id, roomConfig.discord_channel_id);
 
@@ -159,81 +161,43 @@ async function startBridge(client, roomConfig) {
     throw new Error(`Discord channel ${roomConfig.discord_channel_id} is not a voice channel`);
   }
 
-  const discordConnection = joinVoiceChannel({
-    channelId: roomConfig.discord_channel_id,
-    guildId: roomConfig.discord_guild_id,
-    adapterCreator: channel.guild.voiceAdapterCreator,
-    selfDeaf: false,
-    selfMute: false,
-  });
-  discordConnection.on("error", (error) => log("discord voice error", bridgeId, error));
-  await entersState(discordConnection, VoiceConnectionStatus.Ready, 30_000);
-
   const lkRoom = new Room();
   const token = await liveKitToken(roomConfig.matrix_room_id, identity);
   await lkRoom.connect(LIVEKIT_URL, token, { autoSubscribe: true });
-
-  const discordToLiveKitMixer = new AudioMixer(SAMPLE_RATE, CHANNELS, {
-    blocksize: SAMPLES_PER_CHANNEL,
-    streamTimeoutMs: 100,
-  });
-  const liveKitToDiscordMixer = new AudioMixer(SAMPLE_RATE, CHANNELS, {
-    blocksize: SAMPLES_PER_CHANNEL,
-    streamTimeoutMs: 100,
-  });
-
-  const source = new AudioSource(SAMPLE_RATE, CHANNELS);
-  const track = LocalAudioTrack.createAudioTrack("discord-voice", source);
-  const options = new TrackPublishOptions();
-  options.source = TrackSource.SOURCE_MICROPHONE;
-  await lkRoom.localParticipant.publishTrack(track, options);
-
-  const discordAudioOut = new PassThrough({ highWaterMark: PCM_BYTES_PER_FRAME * 10 });
-  const discordPlayer = createAudioPlayer();
-  const resource = createAudioResource(discordAudioOut, { inputType: StreamType.Raw });
-  discordPlayer.on("error", (error) => log("discord audio player error", bridgeId, error));
-  discordPlayer.on(AudioPlayerStatus.Idle, () => {
-    if (!shuttingDown) log("discord audio player idle", bridgeId);
-  });
-  discordConnection.subscribe(discordPlayer);
-  discordPlayer.play(resource);
-
+  let discordConnection = null;
+  let discordPlayer = null;
+  let discordAudioOut = null;
+  let discordToLiveKitMixer = null;
+  let liveKitToDiscordMixer = null;
+  let source = null;
+  let track = null;
+  let tasks = [];
+  let idleTimer = null;
+  let onDiscordSpeaking = null;
   const discordStreams = new Map();
   const liveKitStreams = new Map();
-  const tasks = [
-    captureDiscordMixToLiveKit(discordToLiveKitMixer, source),
-    writeLiveKitMixToDiscord(liveKitToDiscordMixer, discordAudioOut),
-  ];
+  const subscribedLiveKitTracks = new Map();
 
-  const onDiscordSpeaking = (userId) => {
-    if (userId === client.user?.id || discordStreams.has(userId)) return;
-    const opus = discordConnection.receiver.subscribe(userId, {
-      end: { behavior: EndBehaviorType.AfterSilence, duration: 1000 },
-    });
-    const decoder = new prism.opus.Decoder({
-      rate: SAMPLE_RATE,
-      channels: CHANNELS,
-      frameSize: SAMPLES_PER_CHANNEL,
-    });
-    const pcm = opus.pipe(decoder);
-    const stream = pcmFrames(pcm);
-    discordStreams.set(userId, stream);
-    discordToLiveKitMixer.addStream(stream);
-    pcm.once("close", () => {
-      discordStreams.delete(userId);
-      discordToLiveKitMixer.removeStream(stream);
-    });
-    pcm.once("error", (error) => {
-      log("discord receive decode error", bridgeId, userId, error);
-      discordStreams.delete(userId);
-      discordToLiveKitMixer.removeStream(stream);
-    });
+  const clearIdleTimer = () => {
+    if (!idleTimer) return;
+    clearTimeout(idleTimer);
+    idleTimer = null;
   };
 
-  const onTrackSubscribed = (remoteTrack, _publication, participant) => {
-    if (participant.identity === identity) return;
-    if (!(remoteTrack instanceof RemoteAudioTrack)) return;
-    const key = `${participant.identity}:${remoteTrack.sid ?? remoteTrack.name ?? Date.now()}`;
+  const nonBridgeParticipantCount = () =>
+    [...lkRoom.remoteParticipants.values()].filter(
+      (participant) => !participant.identity.startsWith(DISCORD_VOICE_IDENTITY_PREFIX),
+    ).length;
+
+  const removeLiveKitStream = (key) => {
+    const stream = liveKitStreams.get(key);
+    if (!stream || !liveKitToDiscordMixer) return;
+    liveKitStreams.delete(key);
+    liveKitToDiscordMixer.removeStream(stream);
+  };
+
+  const addLiveKitTrackToMixer = (key, remoteTrack) => {
+    if (!liveKitToDiscordMixer || liveKitStreams.has(key)) return;
     const stream = new AudioStream(remoteTrack, {
       sampleRate: SAMPLE_RATE,
       numChannels: CHANNELS,
@@ -243,68 +207,256 @@ async function startBridge(client, roomConfig) {
     liveKitToDiscordMixer.addStream(stream);
   };
 
-  const onTrackUnsubscribed = (remoteTrack, _publication, participant) => {
-    const prefix = `${participant.identity}:`;
-    for (const [key, stream] of liveKitStreams.entries()) {
-      if (!key.startsWith(prefix)) continue;
-      if (remoteTrack.sid && !key.includes(remoteTrack.sid)) continue;
-      liveKitStreams.delete(key);
-      liveKitToDiscordMixer.removeStream(stream);
+  const disconnectDiscord = async (reason = "idle") => {
+    clearIdleTimer();
+    if (
+      !discordConnection &&
+      !discordPlayer &&
+      !discordAudioOut &&
+      !discordToLiveKitMixer &&
+      !liveKitToDiscordMixer &&
+      !source &&
+      !track
+    ) {
+      return;
+    }
+    log("disconnecting discord voice", bridgeId, reason);
+    if (discordConnection && onDiscordSpeaking) {
+      discordConnection.receiver.speaking.off("start", onDiscordSpeaking);
+    }
+    for (const stream of discordStreams.values()) {
+      discordToLiveKitMixer?.removeStream(stream);
+    }
+    discordStreams.clear();
+    for (const key of liveKitStreams.keys()) {
+      removeLiveKitStream(key);
+    }
+    discordToLiveKitMixer?.endInput();
+    liveKitToDiscordMixer?.endInput();
+    if (discordAudioOut && !discordAudioOut.writableEnded) {
+      discordAudioOut.end();
+    }
+    try {
+      discordPlayer?.stop(true);
+    } catch (error) {
+      log("discord player stop failed", bridgeId, error);
+    }
+    try {
+      if (discordConnection?.state?.status !== VoiceConnectionStatus.Destroyed) {
+        discordConnection?.destroy();
+      }
+    } catch (error) {
+      log("discord connection destroy failed", bridgeId, error);
+    }
+    try {
+      if (track) {
+        await Promise.resolve(lkRoom.localParticipant.unpublishTrack(track));
+      }
+    } catch (error) {
+      log("livekit track unpublish failed", bridgeId, error);
+    }
+    try {
+      await source?.close?.();
+    } catch (error) {
+      log("livekit source close failed", bridgeId, error);
+    }
+    try {
+      await track?.close?.();
+    } catch (error) {
+      log("livekit track close failed", bridgeId, error);
+    }
+    await Promise.allSettled(tasks);
+    tasks = [];
+    await discordToLiveKitMixer?.aclose?.();
+    await liveKitToDiscordMixer?.aclose?.();
+    discordConnection = null;
+    discordPlayer = null;
+    discordAudioOut = null;
+    discordToLiveKitMixer = null;
+    liveKitToDiscordMixer = null;
+    source = null;
+    track = null;
+    onDiscordSpeaking = null;
+  };
+
+  const ensureDiscordConnected = async () => {
+    clearIdleTimer();
+    if (discordConnection || shuttingDown) return;
+    log("connecting discord voice", bridgeId);
+    discordConnection = joinVoiceChannel({
+      channelId: roomConfig.discord_channel_id,
+      guildId: roomConfig.discord_guild_id,
+      adapterCreator: channel.guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: false,
+    });
+    discordConnection.on("error", (error) => log("discord voice error", bridgeId, error));
+    await entersState(discordConnection, VoiceConnectionStatus.Ready, 30_000);
+
+    discordToLiveKitMixer = new AudioMixer(SAMPLE_RATE, CHANNELS, {
+      blocksize: SAMPLES_PER_CHANNEL,
+      streamTimeoutMs: 100,
+    });
+    liveKitToDiscordMixer = new AudioMixer(SAMPLE_RATE, CHANNELS, {
+      blocksize: SAMPLES_PER_CHANNEL,
+      streamTimeoutMs: 100,
+    });
+
+    source = new AudioSource(SAMPLE_RATE, CHANNELS);
+    track = LocalAudioTrack.createAudioTrack("discord-voice", source);
+    const options = new TrackPublishOptions();
+    options.source = TrackSource.SOURCE_MICROPHONE;
+    await lkRoom.localParticipant.publishTrack(track, options);
+
+    discordAudioOut = new PassThrough({ highWaterMark: PCM_BYTES_PER_FRAME * 10 });
+    discordPlayer = createAudioPlayer();
+    const resource = createAudioResource(discordAudioOut, { inputType: StreamType.Raw });
+    discordPlayer.on("error", (error) => log("discord audio player error", bridgeId, error));
+    discordPlayer.on(AudioPlayerStatus.Idle, () => {
+      if (!shuttingDown) log("discord audio player idle", bridgeId);
+    });
+    discordConnection.subscribe(discordPlayer);
+    discordPlayer.play(resource);
+
+    tasks = [
+      captureDiscordMixToLiveKit(discordToLiveKitMixer, source),
+      writeLiveKitMixToDiscord(liveKitToDiscordMixer, discordAudioOut),
+    ];
+
+    onDiscordSpeaking = (userId) => {
+      if (userId === client.user?.id || discordStreams.has(userId) || !discordConnection) return;
+      const opus = discordConnection.receiver.subscribe(userId, {
+        end: { behavior: EndBehaviorType.AfterSilence, duration: 1000 },
+      });
+      const decoder = new prism.opus.Decoder({
+        rate: SAMPLE_RATE,
+        channels: CHANNELS,
+        frameSize: SAMPLES_PER_CHANNEL,
+      });
+      const pcm = opus.pipe(decoder);
+      const stream = pcmFrames(pcm);
+      discordStreams.set(userId, stream);
+      discordToLiveKitMixer.addStream(stream);
+      pcm.once("close", () => {
+        discordStreams.delete(userId);
+        discordToLiveKitMixer?.removeStream(stream);
+      });
+      pcm.once("error", (error) => {
+        log("discord receive decode error", bridgeId, userId, error);
+        discordStreams.delete(userId);
+        discordToLiveKitMixer?.removeStream(stream);
+      });
+    };
+
+    discordConnection.receiver.speaking.on("start", onDiscordSpeaking);
+    for (const [key, remoteTrack] of subscribedLiveKitTracks.entries()) {
+      addLiveKitTrackToMixer(key, remoteTrack);
     }
   };
 
-  discordConnection.receiver.speaking.on("start", onDiscordSpeaking);
+  const scheduleIdleDisconnect = () => {
+    clearIdleTimer();
+    if (!discordConnection) return;
+    idleTimer = setTimeout(() => {
+      disconnectDiscord("no-local-participants").catch((error) =>
+        log("idle disconnect failed", bridgeId, error),
+      );
+    }, DISCORD_VOICE_IDLE_MS);
+  };
+
+  const onTrackSubscribed = (remoteTrack, _publication, participant) => {
+    if (participant.identity === identity) return;
+    if (!(remoteTrack instanceof RemoteAudioTrack)) return;
+    const key = `${participant.identity}:${remoteTrack.sid ?? remoteTrack.name ?? Date.now()}`;
+    subscribedLiveKitTracks.set(key, remoteTrack);
+    if (!participant.identity.startsWith(DISCORD_VOICE_IDENTITY_PREFIX)) {
+      clearIdleTimer();
+      ensureDiscordConnected().catch((error) =>
+        log("discord connect failed", bridgeId, error),
+      );
+    }
+    addLiveKitTrackToMixer(key, remoteTrack);
+  };
+
+  const onTrackUnsubscribed = (remoteTrack, _publication, participant) => {
+    const prefix = `${participant.identity}:`;
+    for (const key of [...subscribedLiveKitTracks.keys()]) {
+      if (!key.startsWith(prefix)) continue;
+      if (remoteTrack.sid && !key.includes(remoteTrack.sid)) continue;
+      subscribedLiveKitTracks.delete(key);
+      removeLiveKitStream(key);
+    }
+    if (nonBridgeParticipantCount() === 0) {
+      scheduleIdleDisconnect();
+    }
+  };
+
+  const onParticipantConnected = (participant) => {
+    if (participant.identity.startsWith(DISCORD_VOICE_IDENTITY_PREFIX)) return;
+    clearIdleTimer();
+    ensureDiscordConnected().catch((error) =>
+      log("discord connect failed", bridgeId, error),
+    );
+  };
+
+  const onParticipantDisconnected = (participant) => {
+    if (participant.identity.startsWith(DISCORD_VOICE_IDENTITY_PREFIX)) return;
+    if (nonBridgeParticipantCount() === 0) {
+      scheduleIdleDisconnect();
+    }
+  };
+
   lkRoom
     .on(RoomEvent.TrackSubscribed, onTrackSubscribed)
     .on(RoomEvent.TrackUnsubscribed, onTrackUnsubscribed)
+    .on(RoomEvent.ParticipantConnected, onParticipantConnected)
+    .on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected)
     .on(RoomEvent.Disconnected, () => log("livekit room disconnected", bridgeId));
+
+  if (nonBridgeParticipantCount() > 0) {
+    await ensureDiscordConnected();
+  }
 
   let stopped = false;
   const stop = async () => {
     if (stopped) return;
     stopped = true;
     log("stopping voice bridge", bridgeId);
-    discordConnection.receiver.speaking.off("start", onDiscordSpeaking);
     lkRoom.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
     lkRoom.off(RoomEvent.TrackUnsubscribed, onTrackUnsubscribed);
-    for (const stream of discordStreams.values()) discordToLiveKitMixer.removeStream(stream);
-    for (const stream of liveKitStreams.values()) liveKitToDiscordMixer.removeStream(stream);
-    discordToLiveKitMixer.endInput();
-    liveKitToDiscordMixer.endInput();
-    discordAudioOut.end();
-    try {
-      discordPlayer.stop(true);
-    } catch (error) {
-      log("discord player stop failed", bridgeId, error);
-    }
-    try {
-      if (discordConnection.state.status !== VoiceConnectionStatus.Destroyed) {
-        discordConnection.destroy();
-      }
-    } catch (error) {
-      log("discord connection destroy failed", bridgeId, error);
-    }
+    lkRoom.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+    lkRoom.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+    await disconnectDiscord("shutdown");
     try {
       await lkRoom.disconnect();
     } catch (error) {
       log("livekit disconnect failed", bridgeId, error);
     }
-    try {
-      await source.close();
-    } catch (error) {
-      log("livekit source close failed", bridgeId, error);
-    }
-    try {
-      await track.close();
-    } catch (error) {
-      log("livekit track close failed", bridgeId, error);
-    }
-    await Promise.allSettled(tasks);
-    await discordToLiveKitMixer.aclose();
-    await liveKitToDiscordMixer.aclose();
   };
 
-  return { stop, roomConfig };
+  return {
+    stop,
+    roomConfig,
+    getStatus: async () => {
+      const liveChannel = client.channels.cache.get(roomConfig.discord_channel_id) ?? channel;
+      const discordMembers = liveChannel?.isVoiceBased?.()
+        ? [...liveChannel.members.values()]
+            .filter((member) => !member.user?.bot)
+            .map((member) => ({
+              id: member.user.id,
+              name: member.displayName ?? member.user.globalName ?? member.user.username,
+            }))
+        : [];
+      return {
+        id: bridgeId,
+        matrix_room_id: roomConfig.matrix_room_id,
+        discord_guild_id: roomConfig.discord_guild_id,
+        discord_channel_id: roomConfig.discord_channel_id,
+        connected: Boolean(discordConnection),
+        discord_members: discordMembers,
+      };
+    },
+  };
 }
 
 async function reconcile(client) {
@@ -334,9 +486,18 @@ async function reconcile(client) {
 }
 
 function startHealthServer() {
-  const server = http.createServer((_req, res) => {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, active_bridges: active.size }));
+  const server = http.createServer(async (_req, res) => {
+    try {
+      const rooms = await Promise.all(
+        [...active.values()].map((bridge) => bridge.getStatus()),
+      );
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, active_bridges: active.size, rooms }));
+    } catch (error) {
+      log("health status failed", error);
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, active_bridges: active.size, rooms: [] }));
+    }
   });
   server.listen(HEALTH_PORT, "0.0.0.0", () => {
     log(`health server listening on ${HEALTH_PORT}`);

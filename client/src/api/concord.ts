@@ -302,6 +302,8 @@ export async function registerUser(
 export interface VoiceRoomParticipant {
   identity: string;
   name: string;
+  source?: "matrix" | "discord";
+  bot?: boolean;
 }
 
 export async function getVoiceParticipants(

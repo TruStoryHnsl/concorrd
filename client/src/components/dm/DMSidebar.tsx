@@ -14,6 +14,8 @@ export const DMSidebar = memo(function DMSidebar({ mobile, onDMSelect }: DMSideb
   const activeDMRoomId = useDMStore((s) => s.activeDMRoomId);
   const setActiveDM = useDMStore((s) => s.setActiveDM);
   const loadConversations = useDMStore((s) => s.loadConversations);
+  const pinnedRoomIds = useDMStore((s) => s.pinnedRoomIds);
+  const togglePinnedRoom = useDMStore((s) => s.togglePinnedRoom);
   const accessToken = useAuthStore((s) => s.accessToken);
 
   const [showNewDM, setShowNewDM] = useState(false);
@@ -70,6 +72,8 @@ export const DMSidebar = memo(function DMSidebar({ mobile, onDMSelect }: DMSideb
                 otherUserId={dm.other_user_id}
                 matrixRoomId={dm.matrix_room_id}
                 isActive={activeDMRoomId === dm.matrix_room_id}
+                pinned={pinnedRoomIds.includes(dm.matrix_room_id)}
+                onTogglePin={() => togglePinnedRoom(dm.matrix_room_id)}
                 onClick={() => handleSelect(dm.matrix_room_id)}
               />
             ))}

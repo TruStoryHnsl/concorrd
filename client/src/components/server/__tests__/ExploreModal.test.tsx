@@ -254,6 +254,44 @@ describe("<ExploreModal /> rooms drill-down", () => {
     });
   });
 
+  it("uses the local room directory path for the current homeserver", async () => {
+    mockedListExploreServers.mockResolvedValueOnce([
+      {
+        domain: "concorrd.com",
+        name: "Concorrd",
+        description: null,
+      },
+    ]);
+    const publicRooms = vi.fn().mockResolvedValue({
+      chunk: [
+        {
+          room_id: "!general:concorrd.com",
+          name: "General",
+          canonical_alias: "#general:concorrd.com",
+          num_joined_members: 12,
+          world_readable: true,
+          guest_can_join: false,
+        },
+      ],
+    });
+    seedAuth(makeFakeMatrixClient({ publicRooms }));
+    useAuthStore.setState({ userId: "@tester:concorrd.com" });
+
+    render(<ExploreModal isOpen={true} onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Concorrd")).toBeInTheDocument();
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /browse public rooms/i }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("General")).toBeInTheDocument();
+    });
+    expect(publicRooms).toHaveBeenCalledWith({ limit: 50 });
+  });
+
   it("joins a public room and closes the modal on success", async () => {
     const publicRooms = vi.fn().mockResolvedValue({
       chunk: [
@@ -293,6 +331,48 @@ describe("<ExploreModal /> rooms drill-down", () => {
 
     const toasts = useToastStore.getState().toasts;
     expect(toasts.some((t) => t.type === "success")).toBe(true);
+  });
+
+  it("joins local public rooms without federation viaServers hints", async () => {
+    mockedListExploreServers.mockResolvedValueOnce([
+      {
+        domain: "concorrd.com",
+        name: "Concorrd",
+        description: null,
+      },
+    ]);
+    const publicRooms = vi.fn().mockResolvedValue({
+      chunk: [
+        {
+          room_id: "!general:concorrd.com",
+          name: "General",
+          canonical_alias: "#general:concorrd.com",
+          num_joined_members: 12,
+          world_readable: true,
+          guest_can_join: false,
+        },
+      ],
+    });
+    const joinRoom = vi.fn().mockResolvedValue({});
+    seedAuth(makeFakeMatrixClient({ publicRooms, joinRoom }));
+    useAuthStore.setState({ userId: "@tester:concorrd.com" });
+
+    render(<ExploreModal isOpen={true} onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Concorrd")).toBeInTheDocument();
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /browse public rooms/i }),
+    );
+    await waitFor(() => {
+      expect(screen.getByText("General")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^join$/i }));
+
+    await waitFor(() => {
+      expect(joinRoom).toHaveBeenCalledWith("#general:concorrd.com", {});
+    });
   });
 
   it("surfaces an error + retry button when public rooms fetch fails", async () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "../../api/servitude";
 import { useAuthStore } from "../../stores/auth";
 import {
@@ -12,6 +12,8 @@ import {
   discordBridgeHttpStatus,
   discordBridgeHttpEnable,
   discordBridgeHttpDisable,
+  discordBridgeHttpGetBotProfile,
+  discordBridgeHttpUpdateBotProfile,
   discordBridgeHttpRotate,
   discordBridgeHttpSaveBotToken,
   discordVoiceBridgeHttpDeleteRoom,
@@ -22,6 +24,7 @@ import {
   discordVoiceBridgeHttpUpsertRoom,
   type BridgeStatus,
   type DiscordVoiceBridgeRoom,
+  type DiscordBotProfile,
   type DiscordGuild,
   type HttpBridgeStatus,
   type HttpBridgeMutationResponse,
@@ -45,6 +48,7 @@ import { DiscordTosModal } from "./DiscordTosModal";
  */
 
 const POLL_INTERVAL_MS = 5000;
+const EMPTY_VOICE_CHANNELS: { id: number; name: string }[] = [];
 
 type SetupStep = 1 | 2 | 3 | 4 | 5;
 
@@ -723,10 +727,13 @@ function UserModeSection({ onShowTos }: { onShowTos: () => void }) {
 function DockerBridgeSection({ accessToken }: { accessToken: string }) {
   const [status, setStatus] = useState<HttpBridgeStatus | null>(null);
   const [lastResult, setLastResult] = useState<HttpBridgeMutationResponse | null>(null);
+  const [botProfile, setBotProfile] = useState<DiscordBotProfile | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
   const [botTokenInput, setBotTokenInput] = useState("");
+  const [botNameInput, setBotNameInput] = useState("corr-bridge");
+  const [savingBotName, setSavingBotName] = useState(false);
   const [savingToken, setSavingToken] = useState(false);
   const mountedRef = useRef(true);
 
@@ -748,6 +755,28 @@ function DockerBridgeSection({ accessToken }: { accessToken: string }) {
     refresh();
     return () => { mountedRef.current = false; };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!status?.bot_token_configured) {
+      setBotProfile(null);
+      setBotNameInput("corr-bridge");
+      return;
+    }
+    let cancelled = false;
+    discordBridgeHttpGetBotProfile(accessToken)
+      .then((profile) => {
+        if (cancelled) return;
+        setBotProfile(profile);
+        setBotNameInput(profile.username || "corr-bridge");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setBotProfile(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, status?.bot_token_configured]);
 
   const handleSaveToken = useCallback(async () => {
     if (!botTokenInput.trim()) return;
@@ -816,6 +845,22 @@ function DockerBridgeSection({ accessToken }: { accessToken: string }) {
     }
   }, [accessToken, refresh]);
 
+  const handleSaveBotName = useCallback(async () => {
+    const username = botNameInput.trim();
+    if (!username) return;
+    setSavingBotName(true);
+    setError(null);
+    try {
+      const profile = await discordBridgeHttpUpdateBotProfile(accessToken, { username });
+      setBotProfile(profile);
+      setBotNameInput(profile.username);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingBotName(false);
+    }
+  }, [accessToken, botNameInput]);
+
   const tokenConfigured = status?.bot_token_configured ?? false;
 
   return (
@@ -877,9 +922,52 @@ function DockerBridgeSection({ accessToken }: { accessToken: string }) {
               </>
             )}
           </div>
-        </div>
+      </div>
 
-        {/* Setup walkthrough — shown when disabled */}
+      {tokenConfigured && (
+        <div className="border border-outline-variant/20 rounded-lg overflow-hidden">
+          <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-low/60">
+            <span className="material-symbols-outlined text-xl text-on-surface-variant">badge</span>
+            <div className="flex-1 min-w-0">
+              <h4 className="text-sm font-medium text-on-surface">Bridge Display Name</h4>
+              <p className="text-xs text-on-surface-variant">
+                Shown in Discord when the bridge joins voice. Default recommendation: <code className="text-on-surface">corr-bridge</code>
+              </p>
+            </div>
+          </div>
+          <div className="p-4 border-t border-outline-variant/10 space-y-3">
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+              <input
+                value={botNameInput}
+                onChange={(event) => setBotNameInput(event.target.value)}
+                placeholder="corr-bridge"
+                className="px-3 py-2 bg-surface-container-highest rounded-md text-sm text-on-surface placeholder:text-on-surface-variant/50 border border-outline-variant/20 focus:border-primary/50 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => setBotNameInput("corr-bridge")}
+                disabled={savingBotName}
+                className="px-3 py-2 bg-surface-container-high hover:bg-surface-container-highest text-on-surface-variant text-xs rounded-md transition-colors disabled:opacity-40"
+              >
+                Reset
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveBotName}
+                disabled={savingBotName || !botNameInput.trim()}
+                className="px-3 py-2 bg-primary/10 hover:bg-primary/15 text-primary text-xs rounded-md transition-colors disabled:opacity-40"
+              >
+                {savingBotName ? "Saving..." : "Save name"}
+              </button>
+            </div>
+            <p className="text-[11px] text-on-surface-variant/70">
+              Current Discord username: <span className="text-on-surface">{botProfile?.username ?? "Unknown"}</span>
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Setup walkthrough — shown when disabled */}
         {status !== null && !status.enabled && (
           <div className="p-4 border-t border-outline-variant/10 space-y-3">
             <StepBlock number={1} title="Create a Discord Application" active={step === 1} done={step > 1}>
@@ -1084,15 +1172,18 @@ function DockerBridgeSection({ accessToken }: { accessToken: string }) {
 }
 
 function DiscordVoiceBridgeSection({ accessToken }: { accessToken: string }) {
-  const voiceChannels = useServerStore((s) =>
-    s.servers.flatMap((server) =>
-      server.channels
-        .filter((channel) => channel.channel_type === "voice")
-        .map((channel) => ({
-          id: channel.id,
-          name: `${server.name} / ${channel.name}`,
-        })),
-    ),
+  const servers = useServerStore((s) => s.servers);
+  const voiceChannels = useMemo(
+    () =>
+      servers.flatMap((server) =>
+        server.channels
+          .filter((channel) => channel.channel_type === "voice")
+          .map((channel) => ({
+            id: channel.id,
+            name: `${server.name} / ${channel.name}`,
+          })),
+      ),
+    [servers],
   );
   const [rooms, setRooms] = useState<DiscordVoiceBridgeRoom[]>([]);
   const [channelId, setChannelId] = useState("");
@@ -1186,7 +1277,7 @@ function DiscordVoiceBridgeSection({ accessToken }: { accessToken: string }) {
   return (
     <div className="border border-outline-variant/20 rounded-lg overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-low/60">
-        <span className="text-xl">voice</span>
+        <span className="material-symbols-outlined text-xl text-on-surface-variant">headset_mic</span>
         <div className="flex-1 min-w-0">
           <h4 className="text-sm font-medium text-on-surface">Discord Voice Bridge</h4>
           <p className="text-xs text-on-surface-variant">
@@ -1221,7 +1312,7 @@ function DiscordVoiceBridgeSection({ accessToken }: { accessToken: string }) {
             className="px-3 py-2 bg-surface-container-highest rounded-md text-sm text-on-surface border border-outline-variant/20 focus:border-primary/50 focus:outline-none"
           >
             <option value="">Concord voice channel</option>
-            {voiceChannels.map((channel) => (
+            {(voiceChannels.length > 0 ? voiceChannels : EMPTY_VOICE_CHANNELS).map((channel) => (
               <option key={channel.id} value={channel.id}>{channel.name}</option>
             ))}
           </select>

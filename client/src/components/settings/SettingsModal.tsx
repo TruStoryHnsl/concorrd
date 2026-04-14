@@ -22,6 +22,8 @@ type TabDef = {
   group: "user" | "server";
 };
 
+const EMPTY_SERVER_MEMBERS: never[] = [];
+
 /**
  * INS-012: Unified settings panel — a single navigable interface
  * that contains both User Settings and Server Settings as sibling
@@ -35,6 +37,7 @@ export function SettingsPanel() {
   const activeTab = useSettingsStore((s) => s.settingsTab);
   const setTab = useSettingsStore((s) => s.setSettingsTab);
   const close = useSettingsStore((s) => s.closeSettings);
+  const closeServerSettings = useSettingsStore((s) => s.closeServerSettings);
   const serverSettingsId = useSettingsStore((s) => s.serverSettingsId);
   const accessToken = useAuthStore((s) => s.accessToken);
   const userId = useAuthStore((s) => s.userId);
@@ -54,10 +57,11 @@ export function SettingsPanel() {
 
   // Server context for server settings group
   const servers = useServerStore((s) => s.servers);
+  const membersByServer = useServerStore((s) => s.members);
   const activeServer = servers.find((s) => s.id === serverSettingsId);
-  const members = useServerStore((s) =>
-    serverSettingsId ? s.members[serverSettingsId] ?? [] : [],
-  );
+  const members = serverSettingsId
+    ? membersByServer[serverSettingsId] ?? EMPTY_SERVER_MEMBERS
+    : EMPTY_SERVER_MEMBERS;
   const myMember = members.find((m) => m.user_id === userId);
   const isOwner = activeServer?.owner_id === userId;
   const isServerAdmin = isOwner || myMember?.role === "admin";
@@ -151,6 +155,13 @@ export function SettingsPanel() {
   // Extract the server sub-tab (e.g., "server-general" -> "general")
   const serverSubTab = isServerTab ? activeTab.replace("server-", "") : null;
 
+  const handleSelectTab = (tab: typeof activeTab) => {
+    if (!tab.startsWith("server-")) {
+      closeServerSettings();
+    }
+    setTab(tab);
+  };
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Tab bar with grouped sections */}
@@ -165,7 +176,7 @@ export function SettingsPanel() {
           {userTabs.map((tab) => (
             <button
               key={tab.key}
-              onClick={() => setTab(tab.key as typeof activeTab)}
+              onClick={() => handleSelectTab(tab.key as typeof activeTab)}
               {...tvFocusProps}
               className={`btn-press flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm whitespace-nowrap transition-all font-label ${
                 activeTab === tab.key
@@ -184,7 +195,7 @@ export function SettingsPanel() {
           ))}
           {adminTab && (
             <button
-              onClick={() => setTab("admin")}
+              onClick={() => handleSelectTab("admin")}
               {...tvFocusProps}
               className={`btn-press flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm whitespace-nowrap transition-all font-label ${
                 activeTab === "admin"
@@ -219,7 +230,7 @@ export function SettingsPanel() {
               {serverTabs.map((tab) => (
                 <button
                   key={tab.key}
-                  onClick={() => setTab(tab.key as typeof activeTab)}
+                  onClick={() => handleSelectTab(tab.key as typeof activeTab)}
                   {...tvFocusProps}
                   className={`btn-press flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm whitespace-nowrap transition-all font-label ${
                     activeTab === tab.key
@@ -242,7 +253,7 @@ export function SettingsPanel() {
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-y-auto min-h-0 p-6 max-w-2xl">
+      <div key={`${serverSettingsId ?? "user"}:${activeTab}`} className="flex-1 overflow-y-auto min-h-0 p-6 max-w-2xl">
         {/* User settings tabs */}
         {activeTab === "audio" && <AudioTab />}
         {activeTab === "voice" && <VoiceTab />}

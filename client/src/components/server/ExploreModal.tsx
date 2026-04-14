@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { IPublicRoomsChunkRoom } from "matrix-js-sdk";
 import { useAuthStore } from "../../stores/auth";
 import { useToastStore } from "../../stores/toast";
-import { useSourcesStore, type ConcordSource } from "../../stores/sources";
+import {
+  sourceMatchesMatrixDomain,
+  useSourcesStore,
+  type ConcordSource,
+} from "../../stores/sources";
 import { listExploreServers } from "../../api/concord";
 import type { ExploreServerEntry } from "../../api/concord";
 
@@ -155,6 +159,7 @@ function buildDiagnostic({
 export function ExploreModal({ isOpen, onClose }: Props) {
   const client = useAuthStore((s) => s.client);
   const accessToken = useAuthStore((s) => s.accessToken);
+  const userId = useAuthStore((s) => s.userId);
   const addToast = useToastStore((s) => s.addToast);
   const sources = useSourcesStore((s) => s.sources);
   const [serversState, setServersState] = useState<ServersLoadState>({
@@ -205,11 +210,25 @@ export function ExploreModal({ isOpen, onClose }: Props) {
       setRoomsState({ status: "loading" });
       setDiagnostic(null);
       try {
-        const res = await client.publicRooms({ server: server.domain, limit: 50 });
+        const localDomain = userId?.split(":")[1]?.toLowerCase() ?? null;
+        const source = sources.find((entry) =>
+          sourceMatchesMatrixDomain(entry, server.domain),
+        );
+        const useLocalDirectory = localDomain === server.domain.toLowerCase();
+        const res = await client.publicRooms(
+          useLocalDirectory
+            ? { limit: 50 }
+            : {
+                server: source?.serverName ?? server.domain,
+                limit: 50,
+              },
+        );
         setRoomsState({ status: "success", rooms: res.chunk });
       } catch (err) {
         const normalized = normalizeMatrixError(err);
-        const source = sources.find((entry) => entry.host.toLowerCase() === server.domain.toLowerCase());
+        const source = sources.find((entry) =>
+          sourceMatchesMatrixDomain(entry, server.domain),
+        );
         const message = normalized.message || "Failed to load public rooms";
         setRoomsState({ status: "error", message });
         setDiagnostic(
@@ -223,7 +242,7 @@ export function ExploreModal({ isOpen, onClose }: Props) {
         addToast(message, "error");
       }
     },
-    [client, addToast, sources],
+    [client, addToast, sources, userId],
   );
 
   // Fetch exactly once per open-cycle. This avoids a class of bugs where
@@ -267,12 +286,17 @@ export function ExploreModal({ isOpen, onClose }: Props) {
       setJoiningRoomId(room.room_id);
       setDiagnostic(null);
       try {
-        await client.joinRoom(target, { viaServers: [server] });
+        const localDomain = userId?.split(":")[1]?.toLowerCase() ?? null;
+        const viaServers =
+          localDomain === server.toLowerCase() ? undefined : [server];
+        await client.joinRoom(target, viaServers ? { viaServers } : {});
         addToast(`Joined ${room.name ?? target}`, "success");
         onClose();
       } catch (err) {
         const normalized = normalizeMatrixError(err);
-        const source = sources.find((entry) => entry.host.toLowerCase() === server.toLowerCase());
+        const source = sources.find((entry) =>
+          sourceMatchesMatrixDomain(entry, server),
+        );
         const message = normalized.message || "Failed to join room";
         setDiagnostic(
           buildDiagnostic({
@@ -291,7 +315,7 @@ export function ExploreModal({ isOpen, onClose }: Props) {
         setJoiningRoomId(null);
       }
     },
-    [client, addToast, onClose, sources],
+    [client, addToast, onClose, sources, userId],
   );
 
   if (!isOpen) return null;

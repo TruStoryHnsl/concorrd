@@ -8,6 +8,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type Modifier,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -27,6 +28,10 @@ import {
 
 const SOURCE_RAIL_STORAGE_KEY_PREFIX = "concord_source_rail_order";
 const ADD_SOURCE_TILE_ID = "__add_source_tile__";
+const restrictToVerticalAxis: Modifier = ({ transform }) => ({
+  ...transform,
+  x: 0,
+});
 
 function readStoredRailOrder(userId: string | null): string[] | null {
   if (typeof window === "undefined") return null;
@@ -77,12 +82,13 @@ function sourceTile(source: ConcordSource): {
 } {
   const label = source.instanceName ?? source.host;
   const brand = inferSourceBrand(source);
+  const bg = "bg-surface-container-high ring-1 ring-outline-variant/15";
   switch (brand) {
     case "discord":
       return {
         brand,
-        bg: "bg-[#5865F2]",
-        icon: <SourceBrandIcon brand={brand} size={16} />,
+        bg,
+        icon: <SourceBrandIcon brand={brand} size={28} className="text-[#5865F2]" />,
         label:
           source.platform === "discord-account"
             ? `Discord Account — ${label}`
@@ -91,22 +97,22 @@ function sourceTile(source: ConcordSource): {
     case "mozilla":
       return {
         brand,
-        bg: "bg-[#111318]",
-        icon: <SourceBrandIcon brand={brand} size={14} />,
+        bg,
+        icon: <SourceBrandIcon brand={brand} size={28} />,
         label: `Mozilla — ${label}`,
       };
     case "matrix":
       return {
         brand,
-        bg: "bg-[#111318]",
-        icon: <SourceBrandIcon brand={brand} size={14} />,
+        bg,
+        icon: <SourceBrandIcon brand={brand} size={28} className="text-on-surface" />,
         label: `Matrix — ${label}`,
       };
     default:
       return {
         brand,
-        bg: "bg-primary/12 ring-1 ring-primary/25",
-        icon: <SourceBrandIcon brand={brand} size={16} />,
+        bg,
+        icon: <SourceBrandIcon brand={brand} size={28} />,
         label,
       };
   }
@@ -275,6 +281,7 @@ export function SourcesPanel({
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
+        modifiers={[restrictToVerticalAxis]}
         onDragEnd={handleDragEnd}
       >
         <SortableContext

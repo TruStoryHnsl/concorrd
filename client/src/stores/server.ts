@@ -169,6 +169,7 @@ interface ServerState {
   ensureDiscordGuild: (guild: {
     guildId: string;
     guildName: string;
+    iconUrl?: string | null;
     channel: { roomId: string; name: string; channelType?: string; id?: number };
     preferBridgeServer?: boolean;
     activate?: boolean;
@@ -192,6 +193,17 @@ export const useServerStore = create<ServerState>((set, get) => ({
     const concordServers = servers.filter(
       (s) => !s.id.startsWith(FEDERATED_SERVER_ID_PREFIX),
     );
+    const existingDiscordGuilds = new Map<
+      string,
+      { name: string; iconUrl: string | null }
+    >();
+    for (const server of servers) {
+      if (!server.discordGuildId) continue;
+      existingDiscordGuilds.set(server.discordGuildId, {
+        name: server.name,
+        iconUrl: server.icon_url,
+      });
+    }
 
     // Build the set of matrix_room_ids already owned by a Concord server
     // so we don't double-render them as loose rooms.
@@ -498,8 +510,12 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
       synthetic.push({
         id: `${FEDERATED_SERVER_ID_PREFIX}${parentId}`,
-        name,
-        icon_url: null,
+        name: discordGuildId
+          ? existingDiscordGuilds.get(discordGuildId)?.name ?? name
+          : name,
+        icon_url: discordGuildId
+          ? existingDiscordGuilds.get(discordGuildId)?.iconUrl ?? null
+          : null,
         owner_id: userId,
         visibility: "public",
         abbreviation: isLocalSpace ? "D" : name.charAt(0).toUpperCase() || "#",
@@ -558,8 +574,8 @@ export const useServerStore = create<ServerState>((set, get) => ({
       if (!target) {
         target = {
           id: `${FEDERATED_SERVER_ID_PREFIX}discord_${overlay.guildId}`,
-          name: `Guild ${overlay.guildId}`,
-          icon_url: null,
+          name: existingDiscordGuilds.get(overlay.guildId)?.name ?? `Guild ${overlay.guildId}`,
+          icon_url: existingDiscordGuilds.get(overlay.guildId)?.iconUrl ?? null,
           owner_id: userId,
           visibility: "public",
           abbreviation: "D",
@@ -875,7 +891,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
     set({ activeChannelId: matrixRoomId });
   },
 
-  ensureDiscordGuild: ({ guildId, guildName, channel, preferBridgeServer, activate = true }) => {
+  ensureDiscordGuild: ({ guildId, guildName, iconUrl, channel, preferBridgeServer, activate = true }) => {
     const { servers } = get();
     const channelType = channel.channelType ?? "text";
     const channelId = channel.id ?? 0;
@@ -897,10 +913,17 @@ export const useServerStore = create<ServerState>((set, get) => ({
         guildName &&
         !guildName.startsWith("Guild ") &&
         hostServer.name.startsWith("Guild ");
-      if (betterName) {
+      const betterIcon = iconUrl && hostServer.icon_url !== iconUrl;
+      if (betterName || betterIcon) {
         set({
           servers: servers.map((s) =>
-            s.id === hostServer.id ? { ...s, name: guildName } : s,
+            s.id === hostServer.id
+              ? {
+                  ...s,
+                  ...(betterName ? { name: guildName } : {}),
+                  ...(betterIcon ? { icon_url: iconUrl } : {}),
+                }
+              : s,
           ),
         });
       }
@@ -923,13 +946,15 @@ export const useServerStore = create<ServerState>((set, get) => ({
         guildName &&
         !guildName.startsWith("Guild ") &&
         existing.name.startsWith("Guild ");
-      if (!hasChannel || betterName) {
+      const betterIcon = iconUrl && existing.icon_url !== iconUrl;
+      if (!hasChannel || betterName || betterIcon) {
         set({
           servers: servers.map((s) =>
             s.id === existing.id
               ? {
                   ...s,
                   ...(betterName ? { name: guildName } : {}),
+                  ...(betterIcon ? { icon_url: iconUrl } : {}),
                   discordGuildId: guildId,
                   channels: hasChannel
                     ? s.channels
@@ -958,7 +983,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
           {
             id: serverId,
             name: guildName,
-            icon_url: null,
+            icon_url: iconUrl ?? null,
             owner_id: userId,
             visibility: "public",
             abbreviation: null,

@@ -23,6 +23,10 @@ router = APIRouter(prefix="/api/voice", tags=["voice"])
 
 METERED_APP_NAME = os.getenv("METERED_APP_NAME", "")
 METERED_API_KEY = os.getenv("METERED_API_KEY", "")
+DISCORD_VOICE_STATUS_URL = os.getenv(
+    "DISCORD_VOICE_STATUS_URL",
+    "http://concord-discord-voice-bridge:3098",
+)
 
 
 class VoiceTokenRequest(BaseModel):
@@ -289,6 +293,50 @@ class VoiceParticipant(BaseModel):
     name: str
 
 
+async def _fetch_discord_voice_participants() -> dict[str, list[dict[str, str]]]:
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(DISCORD_VOICE_STATUS_URL)
+            resp.raise_for_status()
+            payload = resp.json()
+    except Exception as exc:
+        logger.debug("discord voice sidecar status unavailable: %s", exc)
+        return {}
+
+    rooms = payload.get("rooms")
+    if not isinstance(rooms, list):
+        return {}
+
+    result: dict[str, list[dict[str, str]]] = {}
+    for room in rooms:
+        if not isinstance(room, dict):
+            continue
+        room_id = room.get("matrix_room_id")
+        if not isinstance(room_id, str) or not room_id:
+            continue
+        members = room.get("discord_members")
+        if not isinstance(members, list) or not members:
+            continue
+        room_participants: list[dict[str, str]] = []
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            member_id = str(member.get("id") or "").strip()
+            member_name = str(member.get("name") or "").strip()
+            if not member_id or not member_name:
+                continue
+            room_participants.append(
+                {
+                    "identity": f"discord-member:{room_id}:{member_id}",
+                    "name": member_name,
+                    "source": "discord",
+                }
+            )
+        if room_participants:
+            result[room_id] = room_participants
+    return result
+
+
 @router.get("/participants")
 async def get_voice_participants(
     rooms: str = Query(
@@ -335,18 +383,25 @@ async def get_voice_participants(
     lk_client = livekit_api.LiveKitAPI(lk_url, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
 
     result: dict[str, list[dict]] = {}
+    discord_participants = await _fetch_discord_voice_participants()
     try:
         for room_id in room_ids:
             try:
                 resp = await lk_client.room.list_participants(
                     livekit_api.ListParticipantsRequest(room=room_id)
                 )
-                result[room_id] = [
+                participants = [
                     {"identity": p.identity, "name": p.name}
                     for p in resp.participants
                 ]
+                seen = {participant["identity"] for participant in participants}
+                for participant in discord_participants.get(room_id, []):
+                    if participant["identity"] in seen:
+                        continue
+                    participants.append(participant)
+                result[room_id] = participants
             except Exception:
-                result[room_id] = []
+                result[room_id] = list(discord_participants.get(room_id, []))
     finally:
         await lk_client.aclose()
 

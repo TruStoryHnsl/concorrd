@@ -18,6 +18,7 @@
  */
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { ClientEvent } from "matrix-js-sdk";
 import { useAuthStore } from "../../stores/auth";
 import { useServerStore } from "../../stores/server";
 import { useDMStore } from "../../stores/dm";
@@ -121,6 +122,14 @@ interface GuildGroup {
   channels: BridgedChannel[];
 }
 
+interface CachedDiscordTextChannel {
+  roomId: string;
+  name: string;
+  guildId: string;
+  guildName: string;
+  channelId: string;
+}
+
 interface LinkStep {
   key: string;
   label: string;
@@ -140,8 +149,17 @@ type Screen =
   | "login-account"
   | "bridge-guild";
 
+function discordGuildIconUrl(guildId: string, iconHash: string | null | undefined): string | null {
+  if (!iconHash) return null;
+  return `https://cdn.discordapp.com/icons/${guildId}/${iconHash}.png?size=128`;
+}
+
 function voiceMappingsStorageKey(userId: string | null): string {
   return userId ? `concord_discord_voice_mappings:${userId}` : "concord_discord_voice_mappings";
+}
+
+function textChannelsStorageKey(userId: string | null): string {
+  return userId ? `concord_discord_text_channels:${userId}` : "concord_discord_text_channels";
 }
 
 function readCachedVoiceMappings(userId: string | null): DiscordVoiceBridgeRoom[] {
@@ -176,6 +194,81 @@ function writeCachedVoiceMappings(
   );
 }
 
+function readCachedTextChannels(userId: string | null): CachedDiscordTextChannel[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(textChannelsStorageKey(userId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is CachedDiscordTextChannel =>
+        item &&
+        typeof item === "object" &&
+        typeof item.roomId === "string" &&
+        typeof item.name === "string" &&
+        typeof item.guildId === "string" &&
+        typeof item.guildName === "string" &&
+        typeof item.channelId === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedTextChannels(
+  userId: string | null,
+  channels: CachedDiscordTextChannel[],
+): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(
+    textChannelsStorageKey(userId),
+    JSON.stringify(channels),
+  );
+}
+
+async function waitForGuildPortals(
+  client: ReturnType<typeof useAuthStore.getState>["client"],
+  guildId: string,
+  timeoutMs = 20_000,
+): Promise<CachedDiscordTextChannel[]> {
+  if (!client) return [];
+  const matcher = new RegExp(`^#_discord_${guildId}_(\\d+):`);
+  const deadline = Date.now() + timeoutMs;
+  let stableTicks = 0;
+  let lastSnapshot: CachedDiscordTextChannel[] = [];
+  while (Date.now() < deadline) {
+    const next = client
+      .getRooms()
+      .filter((room) => room.getMyMembership() === "join")
+      .map((room) => {
+        const alias = room.getCanonicalAlias() ?? "";
+        const match = alias.match(matcher);
+        if (!match) return null;
+        return {
+          roomId: room.roomId,
+          name: room.name ?? `#${match[1]}`,
+          guildId,
+          guildName: detectDiscordBridge(room)?.networkName ?? `Guild ${guildId}`,
+          channelId: match[1],
+        };
+      })
+      .filter((room): room is CachedDiscordTextChannel => room !== null)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const nextSig = next.map((room) => `${room.roomId}:${room.channelId}`).join(",");
+    const previousSig = lastSnapshot.map((room) => `${room.roomId}:${room.channelId}`).join(",");
+    if (nextSig.length > 0 && nextSig === previousSig) {
+      stableTicks += 1;
+      if (stableTicks >= 2) return next;
+    } else {
+      stableTicks = 0;
+      lastSnapshot = next;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  return lastSnapshot;
+}
+
 // ── Header ───────────────────────────────────────────────────────────────────
 
 function Header({
@@ -197,8 +290,8 @@ function Header({
           <span className="material-symbols-outlined text-lg">arrow_back</span>
         </button>
       )}
-      <div className="w-9 h-9 rounded-xl bg-[#5865F2]/12 ring-1 ring-[#5865F2]/30 flex items-center justify-center flex-shrink-0">
-        <SourceBrandIcon brand="discord" size={18} />
+      <div className="w-9 h-9 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+        <SourceBrandIcon brand="discord" size={18} className="text-[#5865F2]" />
       </div>
       <h2 className="flex-1 text-lg font-headline font-semibold text-on-surface">
         {title}
@@ -209,6 +302,43 @@ function Header({
       >
         <span className="material-symbols-outlined text-lg">close</span>
       </button>
+    </div>
+  );
+}
+
+function GuildAvatar({
+  guildId,
+  guildName,
+  discordGuilds,
+  size = "sm",
+}: {
+  guildId: string;
+  guildName: string;
+  discordGuilds: { id: string; name: string; icon: string | null }[];
+  size?: "sm" | "lg";
+}) {
+  const iconUrl = discordGuildIconUrl(
+    guildId,
+    discordGuilds.find((guild) => guild.id === guildId)?.icon ?? null,
+  );
+  const classes =
+    size === "lg"
+      ? "w-9 h-9 rounded-lg"
+      : "w-6 h-6 rounded-md";
+  if (iconUrl) {
+    return (
+      <img
+        src={iconUrl}
+        alt=""
+        className={`${classes} object-cover flex-shrink-0`}
+        loading="lazy"
+        draggable={false}
+      />
+    );
+  }
+  return (
+    <div className={`${classes} bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center text-[#5865F2] text-xs font-bold flex-shrink-0`}>
+      {guildName.charAt(0).toUpperCase()}
     </div>
   );
 }
@@ -263,6 +393,8 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
   const activeChannelId = useServerStore((s) => s.activeChannelId);
   const setActiveChannel = useServerStore((s) => s.setActiveChannel);
   const ensureDiscordGuild = useServerStore((s) => s.ensureDiscordGuild);
+  const updateServer = useServerStore((s) => s.updateServer);
+  const loadServers = useServerStore((s) => s.loadServers);
   const setDMActive = useDMStore((s) => s.setDMActive);
 
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -288,6 +420,25 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
   const [voiceMappings, setVoiceMappings] = useState<DiscordVoiceBridgeRoom[]>(
     () => readCachedVoiceMappings(userId),
   );
+  const [cachedTextChannels, setCachedTextChannels] = useState<CachedDiscordTextChannel[]>(
+    () => readCachedTextChannels(userId),
+  );
+  const [roomsRevision, setRoomsRevision] = useState(0);
+
+  useEffect(() => {
+    setCachedTextChannels(readCachedTextChannels(userId));
+  }, [userId]);
+
+  useEffect(() => {
+    if (!client) return;
+    const bump = () => setRoomsRevision((current) => current + 1);
+    client.on(ClientEvent.Sync, bump);
+    client.on(ClientEvent.Room, bump);
+    return () => {
+      client.removeListener(ClientEvent.Sync, bump);
+      client.removeListener(ClientEvent.Room, bump);
+    };
+  }, [client]);
 
   const openInviteScreen = useCallback(async () => {
     setScreen("invite-bot");
@@ -376,7 +527,7 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
     return Array.from(guildMap.values()).sort((a, b) =>
       a.guildName.localeCompare(b.guildName),
     );
-  }, [client]);
+  }, [client, roomsRevision]);
 
   // Eagerly resolve any guild still showing "Guild <id>" fallback names.
   useEffect(() => {
@@ -410,6 +561,29 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
     [guildGroups, resolvedGuildNames],
   );
 
+  useEffect(() => {
+    if (resolvedGroups.length === 0) return;
+    setCachedTextChannels((previous) => {
+      const merged = new Map(previous.map((channel) => [channel.roomId, channel] as const));
+      for (const group of resolvedGroups) {
+        for (const channel of group.channels) {
+          merged.set(channel.roomId, {
+            roomId: channel.roomId,
+            name: channel.name,
+            guildId: group.guildId,
+            guildName: group.guildName,
+            channelId: channel.channelId,
+          });
+        }
+      }
+      const next = [...merged.values()].sort((a, b) =>
+        `${a.guildName}:${a.name}`.localeCompare(`${b.guildName}:${b.name}`),
+      );
+      writeCachedTextChannels(userId, next);
+      return next;
+    });
+  }, [resolvedGroups, userId]);
+
   const browseGroups = useMemo(() => {
     const groups = new Map<string, GuildGroup>();
     for (const group of resolvedGroups) {
@@ -421,6 +595,32 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
           kind: channel.kind ?? "text",
         })),
       });
+    }
+
+    for (const channel of cachedTextChannels) {
+      if (!groups.has(channel.guildId)) {
+        groups.set(channel.guildId, {
+          guildId: channel.guildId,
+          guildName: channel.guildName,
+          channels: [],
+        });
+      }
+      const group = groups.get(channel.guildId)!;
+      if (
+        group.guildName.startsWith("Guild ") &&
+        !channel.guildName.startsWith("Guild ")
+      ) {
+        group.guildName = channel.guildName;
+      }
+      if (!group.channels.some((entry) => entry.roomId === channel.roomId)) {
+        group.channels.push({
+          roomId: channel.roomId,
+          name: channel.name,
+          guildId: channel.guildId,
+          channelId: channel.channelId,
+          kind: "text",
+        });
+      }
     }
 
     for (const mapping of voiceMappings) {
@@ -469,7 +669,69 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
     return Array.from(groups.values()).sort((a, b) =>
       a.guildName.localeCompare(b.guildName),
     );
-  }, [discordGuilds, resolvedGroups, resolvedGuildNames, servers, voiceMappings]);
+  }, [cachedTextChannels, discordGuilds, resolvedGroups, resolvedGuildNames, servers, voiceMappings]);
+
+  useEffect(() => {
+    if (cachedTextChannels.length === 0) return;
+
+    const guildsById = new Map(discordGuilds.map((guild) => [guild.id, guild] as const));
+    const channelsByGuild = new Map<string, CachedDiscordTextChannel[]>();
+    for (const channel of cachedTextChannels) {
+      const existing = channelsByGuild.get(channel.guildId) ?? [];
+      existing.push(channel);
+      channelsByGuild.set(channel.guildId, existing);
+    }
+
+    for (const [guildId, channels] of channelsByGuild) {
+      const guild = guildsById.get(guildId);
+      const guildName =
+        resolvedGuildNames.get(guildId) ??
+        guild?.name ??
+        channels[0]?.guildName ??
+        `Guild ${guildId}`;
+      const iconUrl = discordGuildIconUrl(guildId, guild?.icon ?? null);
+      const latestServers = useServerStore.getState().servers;
+      const existingServer = latestServers.find(
+        (entry) => entry.bridgeType === "discord" && entry.discordGuildId === guildId,
+      );
+
+      for (const channel of channels) {
+        if (
+          existingServer?.channels.some(
+            (entry) => entry.matrix_room_id === channel.roomId,
+          )
+        ) {
+          continue;
+        }
+        ensureDiscordGuild({
+          guildId,
+          guildName,
+          iconUrl,
+          channel: {
+            roomId: channel.roomId,
+            name: channel.name,
+          },
+          activate: false,
+        });
+      }
+    }
+  }, [cachedTextChannels, discordGuilds, ensureDiscordGuild, resolvedGuildNames]);
+
+  useEffect(() => {
+    for (const guild of discordGuilds) {
+      const iconUrl = discordGuildIconUrl(guild.id, guild.icon);
+      const server = servers.find(
+        (entry) => entry.bridgeType === "discord" && entry.discordGuildId === guild.id,
+      );
+      if (!server) continue;
+      if (iconUrl && server.icon_url !== iconUrl) {
+        updateServer(server.id, { icon_url: iconUrl });
+      }
+      if (server.name.startsWith("Guild ") && guild.name) {
+        updateServer(server.id, { name: guild.name });
+      }
+    }
+  }, [discordGuilds, servers, updateServer]);
 
   useEffect(() => {
     if (!accessToken || servers.length === 0) return;
@@ -513,6 +775,10 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
               resolvedGuildNames.get(room.discord_guild_id) ??
               guilds.find((guild) => guild.id === room.discord_guild_id)?.name ??
               `Guild ${room.discord_guild_id}`,
+            iconUrl: discordGuildIconUrl(
+              room.discord_guild_id,
+              guilds.find((guild) => guild.id === room.discord_guild_id)?.icon ?? null,
+            ),
             channel: {
               id: localChannel.id,
               roomId: room.matrix_room_id,
@@ -542,6 +808,20 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
         .flatMap((g) => g.channels.map((ch) => ({ ...ch, guildName: g.guildName })))
         .find((ch) => ch.roomId === roomId);
 
+      const currentRoom = client?.getRoom(roomId);
+      if (
+        client &&
+        (!currentRoom || currentRoom.getMyMembership() !== "join")
+      ) {
+        try {
+          await client.joinRoom(roomId);
+          if (accessToken) await loadServers(accessToken);
+        } catch {
+          // Keep remembered bridge entries visible even while the room is
+          // still resyncing back into this session.
+        }
+      }
+
       if (channel) {
         let guildName = channel.guildName;
 
@@ -557,6 +837,10 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
         ensureDiscordGuild({
           guildId: channel.guildId,
           guildName,
+          iconUrl: discordGuildIconUrl(
+            channel.guildId,
+            discordGuilds.find((guild) => guild.id === channel.guildId)?.icon ?? null,
+          ),
           channel: { roomId: channel.roomId, name: channel.name },
         });
       } else {
@@ -565,7 +849,7 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
 
       onClose();
     },
-    [setDMActive, setActiveChannel, ensureDiscordGuild, browseGroups, accessToken, onClose],
+    [accessToken, browseGroups, client, ensureDiscordGuild, loadServers, onClose, setActiveChannel, setDMActive],
   );
 
   // ── Link flow ─────────────────────────────────────────────────────────────
@@ -718,6 +1002,10 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
           ensureDiscordGuild({
             guildId: discordGuildId,
             guildName: guildName ?? `Guild ${discordGuildId}`,
+            iconUrl: discordGuildIconUrl(
+              discordGuildId,
+              discordGuilds.find((guild) => guild.id === discordGuildId)?.icon ?? null,
+            ),
             channel: {
               id: voiceChannel.id,
               roomId: voiceChannel.matrix_room_id,
@@ -791,6 +1079,44 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
         return;
       }
       finishStep("wait-for-portal", "ok", `room=${portal.roomId}; name=${portal.name}`);
+
+      const joinedPortal = client.getRoom(portal.roomId);
+      const portalAlias = joinedPortal?.getCanonicalAlias() ?? "";
+      const parsedPortal = parseDiscordAlias(portalAlias);
+      const bridgeInfo = joinedPortal ? detectDiscordBridge(joinedPortal) : null;
+      const guildId = parsedPortal?.guildId ?? bridgeInfo?.guildId ?? null;
+      const bridgedChannelId =
+        parsedPortal?.channelId ?? bridgeInfo?.channelId ?? trimmedId;
+      if (guildId) {
+        let guildName =
+          bridgeInfo?.networkName ??
+          resolvedGuildNames.get(guildId) ??
+          discordGuilds.find((guild) => guild.id === guildId)?.name ??
+          `Guild ${guildId}`;
+        if (guildName.startsWith("Guild ") && accessToken) {
+          try {
+            const guilds = await discordBridgeHttpListGuilds(accessToken);
+            guildName = guilds.find((guild) => guild.id === guildId)?.name ?? guildName;
+          } catch {
+            // Keep the best-known fallback when Discord metadata is unavailable.
+          }
+        }
+        setCachedTextChannels((previous) => {
+          const merged = new Map(previous.map((channel) => [channel.roomId, channel] as const));
+          merged.set(portal.roomId, {
+            roomId: portal.roomId,
+            name: portal.name,
+            guildId,
+            guildName,
+            channelId: bridgedChannelId,
+          });
+          const next = [...merged.values()].sort((a, b) =>
+            `${a.guildName}:${a.name}`.localeCompare(`${b.guildName}:${b.name}`),
+          );
+          writeCachedTextChannels(userId, next);
+          return next;
+        });
+      }
 
       // Optionally send test message
       if (sendTestMsg && testMsg.trim()) {
@@ -883,9 +1209,16 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
                 <div className="space-y-4">
                   {browseGroups.map((guild) => (
                     <div key={guild.guildId}>
-                      <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1.5 px-1">
-                        {guild.guildName}
-                      </p>
+                      <div className="flex items-center gap-2 mb-1.5 px-1">
+                        <GuildAvatar
+                          guildId={guild.guildId}
+                          guildName={guild.guildName}
+                          discordGuilds={discordGuilds}
+                        />
+                        <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider truncate">
+                          {guild.guildName}
+                        </p>
+                      </div>
                       <div className="space-y-0.5">
                         {guild.channels.map((ch) => (
                           <button
@@ -1109,9 +1442,12 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
                         key={guild.id}
                         className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-[#5865F2]/10 transition-colors"
                       >
-                        <div className="w-9 h-9 rounded-lg bg-[#5865F2]/20 flex items-center justify-center text-[#5865F2] text-sm font-bold flex-shrink-0">
-                          {guild.name.charAt(0).toUpperCase()}
-                        </div>
+                        <GuildAvatar
+                          guildId={guild.id}
+                          guildName={guild.name}
+                          discordGuilds={discordGuilds}
+                          size="lg"
+                        />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm text-on-surface font-medium truncate">{guild.name}</p>
                           <p className="text-xs text-on-surface-variant">{guild.id}</p>
@@ -1122,9 +1458,15 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
                           <button
                             disabled={isBridging}
                             onClick={async () => {
-                              if (!client || !userId) return;
+                              if (!client || !userId || !accessToken) return;
                               setBridgingGuildId(guild.id);
                               try {
+                                try {
+                                  await discordBridgeHttpLoginRelay(accessToken);
+                                  await new Promise((r) => setTimeout(r, 4000));
+                                } catch {
+                                  // Whole-guild bridge must still work in bot-only mode.
+                                }
                                 // Find or create DM with discordbot for management commands
                                 const serverDomain = userId.split(":")[1] ?? "";
                                 const botUserId = `@discordbot:${serverDomain}`;
@@ -1150,9 +1492,25 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
                                 }
                                 // Send guilds bridge command
                                 await client.sendTextMessage(mgmtRoom, `guilds bridge ${guild.id}`);
-                                // Wait for rooms to appear
-                                await new Promise((r) => setTimeout(r, 5000));
-                                // Refresh guild groups by closing and reopening
+                                const discoveredRooms = await waitForGuildPortals(client, guild.id);
+                                if (discoveredRooms.length > 0) {
+                                  setCachedTextChannels((previous) => {
+                                    const merged = new Map(previous.map((channel) => [channel.roomId, channel] as const));
+                                    for (const room of discoveredRooms) {
+                                      merged.set(room.roomId, {
+                                        ...room,
+                                        guildName: guild.name,
+                                      });
+                                    }
+                                    const next = [...merged.values()].sort((a, b) =>
+                                      `${a.guildName}:${a.name}`.localeCompare(`${b.guildName}:${b.name}`),
+                                    );
+                                    writeCachedTextChannels(userId, next);
+                                    return next;
+                                  });
+                                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                                  useServerStore.getState().hydrateFederatedRooms(client as any);
+                                }
                                 setScreen("browse");
                               } catch (err) {
                                 setError(err instanceof Error ? err.message : "Failed to bridge guild");

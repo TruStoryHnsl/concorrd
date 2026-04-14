@@ -8,6 +8,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type Modifier,
 } from "@dnd-kit/core";
 import {
   arrayMove,
@@ -25,7 +26,10 @@ import {
   useUnreadCounts,
   useHighlightCounts,
 } from "../../hooks/useUnreadCounts";
+import { useVoiceParticipants } from "../../hooks/useVoiceParticipants";
 import { NewServerModal } from "../server/NewServerModal";
+import { splitDiscordVoiceBridgeParticipants } from "../voice/discordVoiceBridge";
+import { Avatar } from "../ui/Avatar";
 
 /**
  * INS-002B: Server-list drag reorder.
@@ -41,6 +45,10 @@ import { NewServerModal } from "../server/NewServerModal";
  */
 const SERVER_ORDER_STORAGE_KEY_PREFIX = "concord_server_order";
 const ADD_SERVER_TILE_ID = "__add_server_tile__";
+const restrictToVerticalAxis: Modifier = ({ transform }) => ({
+  ...transform,
+  x: 0,
+});
 
 function readStoredOrder(
   prefix: string,
@@ -263,6 +271,29 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
     for (const entry of federatedStack) byId.set(entry.server.id, entry.server);
     return [...byId.values()];
   }, [federatedStack, orderedServers, servers]);
+  const allVoiceRoomIds = useMemo(
+    () =>
+      visibleServers.flatMap((server) =>
+        server.channels
+          .filter((channel) => channel.channel_type === "voice")
+          .map((channel) => channel.matrix_room_id),
+      ),
+    [visibleServers],
+  );
+  const voiceParticipants = useVoiceParticipants(allVoiceRoomIds);
+  const voiceActiveByServer = useMemo(() => {
+    const map = new Map<string, boolean>();
+    for (const server of visibleServers) {
+      const active = server.channels
+        .filter((channel) => channel.channel_type === "voice")
+        .some((channel) => {
+          const participants = voiceParticipants.get(channel.matrix_room_id) ?? [];
+          return splitDiscordVoiceBridgeParticipants(participants).visibleParticipants.length > 0;
+        });
+      map.set(server.id, active);
+    }
+    return map;
+  }, [visibleServers, voiceParticipants]);
 
   const railOrder = useMemo(
     () =>
@@ -352,8 +383,21 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
 
   // DM state
   const dmActive = useDMStore((s) => s.dmActive);
+  const activeDMRoomId = useDMStore((s) => s.activeDMRoomId);
   const setDMActive = useDMStore((s) => s.setDMActive);
+  const setActiveDM = useDMStore((s) => s.setActiveDM);
   const dmConversations = useDMStore((s) => s.conversations);
+  const pinnedRoomIds = useDMStore((s) => s.pinnedRoomIds);
+
+  const pinnedDMs = useMemo(
+    () =>
+      pinnedRoomIds
+        .map((roomId) =>
+          dmConversations.find((conversation) => conversation.matrix_room_id === roomId),
+        )
+        .filter((conversation): conversation is (typeof dmConversations)[number] => Boolean(conversation)),
+    [dmConversations, pinnedRoomIds],
+  );
 
   // Check if any DM has unreads
   const hasDMUnreads = useMemo(
@@ -398,6 +442,13 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
     setDMActive(true);
   };
 
+  const handlePinnedDMClick = (roomId: string) => {
+    useServerStore.setState({ activeServerId: null, activeChannelId: null });
+    setActiveDM(roomId);
+    setDMActive(true);
+    onServerSelect?.();
+  };
+
   const renderMobileRailItem = (id: string) => {
     if (id === ADD_SERVER_TILE_ID) {
       return (
@@ -425,6 +476,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
     const isFromConcordFederation = concordFederatedIds.has(server.id);
     const isDiscordBridge = server.bridgeType === "discord";
     const isDisconnected = !syncing;
+    const voiceActive = voiceActiveByServer.get(server.id) ?? false;
     const statusDot = isDisconnected
       ? "red"
       : hasHighlight
@@ -459,21 +511,12 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
           }`}
         >
           <div className="relative flex-shrink-0">
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm font-headline font-bold ${
-              isActive
-                ? isDiscordBridge
-                  ? "bg-[#5865F2] text-white"
-                  : isFromConcordFederation
-                    ? "bg-secondary text-on-secondary"
-                    : "primary-glow text-on-primary"
-                : isDiscordBridge
-                  ? "bg-[#5865F2]/15 text-[#5865F2] ring-1 ring-[#5865F2]/40"
-                  : isFromConcordFederation
-                    ? "bg-secondary/15 text-secondary ring-1 ring-secondary/40"
-                    : "bg-surface-container-highest text-on-surface-variant"
-            }`}>
-              {server.abbreviation || server.name.charAt(0).toUpperCase()}
-            </div>
+            <ServerGlyph
+              server={server}
+              active={isActive}
+              fromConcordFederation={isFromConcordFederation}
+              size="mobile"
+            />
             {isDiscordBridge && (
               <div
                 className="absolute -top-1 -left-1 w-4 h-4 bg-[#5865F2] rounded-full border-2 border-surface-container-low flex items-center justify-center"
@@ -497,6 +540,16 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
                   style={{ fontSize: "8px", lineHeight: 1 }}
                 >
                   C
+                </span>
+              </div>
+            )}
+            {voiceActive && (
+              <div
+                className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-surface-container-low flex items-center justify-center"
+                aria-label="Users in voice"
+              >
+                <span className="material-symbols-outlined text-white" style={{ fontSize: "10px" }}>
+                  volume_up
                 </span>
               </div>
             )}
@@ -560,6 +613,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
     const isFromConcordFederation = concordFederatedIds.has(server.id);
     const isDiscordBridge = server.bridgeType === "discord";
     const isDisconnected = !syncing;
+    const voiceActive = voiceActiveByServer.get(server.id) ?? false;
     const statusDot = isDisconnected
       ? "red"
       : hasHighlight
@@ -595,11 +649,16 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
                 : isDiscordBridge
                   ? "bg-[#5865F2]/20 text-[#5865F2] rounded-2xl hover:rounded-xl hover:bg-[#5865F2]/35 ring-1 ring-[#5865F2]/40"
                   : isFromConcordFederation
-                    ? "bg-secondary/15 text-secondary rounded-2xl hover:rounded-xl hover:bg-secondary/25 ring-1 ring-secondary/40"
-                    : "bg-surface-container-high text-on-surface-variant rounded-2xl hover:rounded-xl hover:bg-surface-container-highest hover:text-on-surface"
+                  ? "bg-secondary/15 text-secondary rounded-2xl hover:rounded-xl hover:bg-secondary/25 ring-1 ring-secondary/40"
+                  : "bg-surface-container-high text-on-surface-variant rounded-2xl hover:rounded-xl hover:bg-surface-container-highest hover:text-on-surface"
             }`}
           >
-            {server.abbreviation || server.name.charAt(0).toUpperCase()}
+            <ServerGlyph
+              server={server}
+              active={isActive}
+              fromConcordFederation={isFromConcordFederation}
+              size="desktop"
+            />
           </button>
           {(isDiscordBridge || isFromConcordFederation) && (
             <div
@@ -633,6 +692,16 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
               aria-label="Unread messages"
             />
           )}
+          {voiceActive && (
+            <div
+              className="absolute -bottom-0.5 -right-0.5 w-4 h-4 bg-emerald-500 rounded-full border-2 border-surface flex items-center justify-center"
+              aria-label="Users in voice"
+            >
+              <span className="material-symbols-outlined text-white" style={{ fontSize: "10px" }}>
+                volume_up
+              </span>
+            </div>
+          )}
         </div>
       </SortableServerRow>
     );
@@ -648,9 +717,41 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         <h3 className="text-xs font-label font-medium text-on-surface-variant uppercase tracking-widest px-2 mb-3">
           Your Servers
         </h3>
+        {pinnedDMs.length > 0 && (
+          <div className="space-y-1.5 mb-3">
+            {pinnedDMs.map((conversation) => {
+              const unread = unreadCounts.get(conversation.matrix_room_id) ?? 0;
+              const isActivePinnedDm =
+                dmActive && activeDMRoomId === conversation.matrix_room_id;
+              const username = conversation.other_user_id.split(":")[0].replace("@", "");
+              return (
+                <button
+                  key={conversation.matrix_room_id}
+                  onClick={() => handlePinnedDMClick(conversation.matrix_room_id)}
+                  className={`btn-press w-full flex items-center gap-3 px-3 py-2 rounded-xl transition-all ${
+                    isActivePinnedDm
+                      ? "bg-rose-500 text-white"
+                      : "bg-rose-500/10 text-rose-200 hover:bg-rose-500/15"
+                  }`}
+                >
+                  <Avatar userId={conversation.other_user_id} size="md" showPresence />
+                  <span className="truncate font-body font-medium flex-1 min-w-0 text-left">
+                    {username}
+                  </span>
+                  {unread > 0 && !isActivePinnedDm && (
+                    <span className="min-w-5 h-5 px-1.5 rounded-full bg-rose-500 text-white text-xs font-bold flex items-center justify-center node-pulse">
+                      {unread > 99 ? "99+" : unread}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
+          modifiers={[restrictToVerticalAxis]}
           onDragEnd={handleDragEnd}
         >
           <SortableContext
@@ -702,6 +803,33 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         )}
       </div>
 
+      {pinnedDMs.map((conversation) => {
+        const unread = unreadCounts.get(conversation.matrix_room_id) ?? 0;
+        const isActivePinnedDm =
+          dmActive && activeDMRoomId === conversation.matrix_room_id;
+        const username = conversation.other_user_id.split(":")[0].replace("@", "");
+        return (
+          <div key={conversation.matrix_room_id} className="relative group">
+            <button
+              onClick={() => handlePinnedDMClick(conversation.matrix_room_id)}
+              title={`Pinned DM — ${username}`}
+              className={`btn-press w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${
+                isActivePinnedDm
+                  ? "bg-rose-500 text-white rounded-xl shadow-[0_0_12px_rgba(244,63,94,0.35)]"
+                  : "bg-rose-500/12 text-rose-300 ring-1 ring-rose-400/30 hover:bg-rose-500/20 hover:rounded-xl"
+              }`}
+            >
+              <Avatar userId={conversation.other_user_id} size="md" showPresence />
+            </button>
+            {unread > 0 && !isActivePinnedDm && (
+              <div className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold border-2 border-surface flex items-center justify-center node-pulse">
+                {unread > 99 ? "99+" : unread}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
       {/* Divider */}
       <div className="w-8 h-px bg-outline-variant/20 my-0.5" />
 
@@ -709,6 +837,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
+        modifiers={[restrictToVerticalAxis]}
         onDragEnd={handleDragEnd}
       >
         <SortableContext
@@ -785,6 +914,57 @@ function SortableServerRow({
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
       {children}
+    </div>
+  );
+}
+
+function ServerGlyph({
+  server,
+  active,
+  fromConcordFederation,
+  size,
+}: {
+  server: {
+    name: string;
+    abbreviation: string | null;
+    icon_url: string | null;
+    bridgeType?: "discord";
+  };
+  active: boolean;
+  fromConcordFederation: boolean;
+  size: "mobile" | "desktop";
+}) {
+  const isDiscordBridge = server.bridgeType === "discord";
+  const dimension = size === "mobile" ? "w-10 h-10" : "w-12 h-12";
+  const fallbackClass = active
+    ? isDiscordBridge
+      ? "bg-[#5865F2] text-white"
+      : fromConcordFederation
+        ? "bg-secondary text-on-secondary"
+        : "primary-glow text-on-primary"
+    : isDiscordBridge
+      ? "bg-[#5865F2]/12 text-[#5865F2] ring-1 ring-[#5865F2]/30"
+      : fromConcordFederation
+        ? "bg-secondary/15 text-secondary ring-1 ring-secondary/40"
+        : "bg-surface-container-highest text-on-surface-variant";
+
+  if (server.icon_url) {
+    return (
+      <div className={`${dimension} rounded-[inherit] overflow-hidden bg-surface-container-highest`}>
+        <img
+          src={server.icon_url}
+          alt=""
+          className="w-full h-full object-cover"
+          loading="lazy"
+          draggable={false}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className={`${dimension} rounded-[inherit] flex items-center justify-center text-sm font-headline font-bold ${fallbackClass}`}>
+      {server.abbreviation || server.name.charAt(0).toUpperCase()}
     </div>
   );
 }

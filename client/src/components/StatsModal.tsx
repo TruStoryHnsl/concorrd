@@ -3,6 +3,8 @@ import { useAuthStore } from "../stores/auth";
 import { useServerStore } from "../stores/server";
 import { getMyStats, type UserStats, type StatsDay } from "../api/concord";
 
+const EMPTY_SERVER_MEMBERS: { user_id: string; role: string; display_name?: string | null }[] = [];
+
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const h = Math.floor(seconds / 3600);
@@ -93,7 +95,8 @@ export function StatsModal({ onClose, serverId }: { onClose: () => void; serverI
   const server = useServerStore((s) =>
     serverId ? s.servers.find((entry) => entry.id === serverId) ?? null : null,
   );
-  const members = useServerStore((s) => (serverId ? s.members[serverId] ?? [] : []));
+  const membersByServer = useServerStore((s) => s.members);
+  const members = serverId ? membersByServer[serverId] ?? EMPTY_SERVER_MEMBERS : EMPTY_SERVER_MEMBERS;
   const [stats, setStats] = useState<UserStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("voice");

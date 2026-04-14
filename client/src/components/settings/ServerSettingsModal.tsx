@@ -34,6 +34,7 @@ import {
 import type { ServerMember, ServerBan, ServerWhitelistEntry, Webhook, UserSearchResult } from "../../api/concord";
 
 type Tab = "general" | "members" | "invite" | "bans" | "whitelist" | "webhooks" | "moderation";
+const EMPTY_SERVER_MEMBERS: ServerMember[] = [];
 
 interface Props {
   serverId: string;
@@ -50,7 +51,8 @@ export function ServerSettingsPanel({ serverId }: Props) {
   const server = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
   const accessToken = useAuthStore((s) => s.accessToken);
   const userId = useAuthStore((s) => s.userId);
-  const members = useServerStore((s) => s.members[serverId] ?? []);
+  const membersByServer = useServerStore((s) => s.members);
+  const members = membersByServer[serverId] ?? EMPTY_SERVER_MEMBERS;
 
   if (!server || !accessToken) return null;
 
@@ -245,7 +247,8 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
   const deleteServer = useServerStore((s) => s.deleteServer);
   const addToast = useToastStore((s) => s.addToast);
   const userId = useAuthStore((s) => s.userId);
-  const members = useServerStore((s) => s.members[serverId] ?? []);
+  const membersByServer = useServerStore((s) => s.members);
+  const members = membersByServer[serverId] ?? EMPTY_SERVER_MEMBERS;
   const closeSettings = useSettingsStore((s) => s.closeSettings);
   const closeServerSettings = useSettingsStore((s) => s.closeServerSettings);
 

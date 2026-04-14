@@ -66,6 +66,13 @@ export interface DiscordChannelInfo {
   kind: "text" | "voice" | "unsupported";
 }
 
+export interface DiscordBotProfile {
+  id: string;
+  username: string;
+  global_name: string | null;
+  avatar: string | null;
+}
+
 async function bridgeApiFetch<T>(
   path: string,
   accessToken: string,
@@ -179,6 +186,26 @@ export async function discordBridgeHttpGetInviteUrl(
   return bridgeApiFetch<{ app_id: string; invite_url: string }>(
     "/admin/bridges/discord/bot-invite-url",
     accessToken,
+  );
+}
+
+export async function discordBridgeHttpGetBotProfile(
+  accessToken: string,
+): Promise<DiscordBotProfile> {
+  return bridgeApiFetch<DiscordBotProfile>(
+    "/admin/bridges/discord/bot-profile",
+    accessToken,
+  );
+}
+
+export async function discordBridgeHttpUpdateBotProfile(
+  accessToken: string,
+  body: { username: string },
+): Promise<DiscordBotProfile> {
+  return bridgeApiFetch<DiscordBotProfile>(
+    "/admin/bridges/discord/bot-profile",
+    accessToken,
+    { method: "POST", body: JSON.stringify(body) },
   );
 }
 
