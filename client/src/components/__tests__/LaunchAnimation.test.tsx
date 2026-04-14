@@ -33,20 +33,17 @@ describe("<LaunchAnimation />", () => {
     expect(splash.getAttribute("data-phase")).toBe("showing");
     // Concord wordmark must be visible in the splash body.
     expect(screen.getAllByText(/^Concord$/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/^Waiting for /)).toBeInTheDocument();
   });
 
   it("hands off the hard-refresh boot splash after mount", () => {
     const bootSplash = document.createElement("div");
     bootSplash.id = "boot-splash";
+    bootSplash.setAttribute("data-state", "visible");
     document.body.appendChild(bootSplash);
 
     render(<LaunchAnimation isLoading={true} />);
-    expect(bootSplash.getAttribute("data-ready")).toBe("true");
-
-    act(() => {
-      vi.advanceTimersByTime(320);
-    });
-    expect(document.getElementById("boot-splash")).toBeNull();
+    expect(bootSplash.getAttribute("data-state")).toBe("handoff");
   });
 
   it("stays in 'showing' while isLoading is true, even after min duration", () => {

@@ -40,6 +40,7 @@
  * by this component + the `index.html` inline `<style>`.
  */
 import { useEffect, useRef, useState } from "react";
+import { getBootSplashWaitingLabel, handoffBootSplash } from "../bootSplash";
 import { ConcordLogo } from "./brand/ConcordLogo";
 
 export interface LaunchAnimationProps {
@@ -70,8 +71,6 @@ export interface LaunchAnimationProps {
 }
 
 type Phase = "showing" | "fading" | "done";
-
-const BOOT_SPLASH_HANDOFF_MS = 320;
 const FADE_DURATION_MS = 420;
 
 /**
@@ -88,13 +87,13 @@ export function LaunchAnimation({
 }: LaunchAnimationProps) {
   const [phase, setPhase] = useState<Phase>("showing");
   const [minElapsed, setMinElapsed] = useState(false);
+  const waitingLabel = getBootSplashWaitingLabel();
   // Timers are tracked via refs so effect cleanup on phase change
   // (showing -> fading) does NOT cancel the in-flight fade timer.
   // Putting them in useRef makes the timer lifetime span the whole
   // component mount; we clear them explicitly on unmount only.
   const fadeTimerRef = useRef<number | null>(null);
   const minTimerRef = useRef<number | null>(null);
-  const bootSplashTimerRef = useRef<number | null>(null);
 
   // One-shot cleanup on unmount for any still-pending timers.
   useEffect(() => {
@@ -107,22 +106,11 @@ export function LaunchAnimation({
         window.clearTimeout(fadeTimerRef.current);
         fadeTimerRef.current = null;
       }
-      if (bootSplashTimerRef.current !== null) {
-        window.clearTimeout(bootSplashTimerRef.current);
-        bootSplashTimerRef.current = null;
-      }
     };
   }, []);
 
   useEffect(() => {
-    if (typeof document === "undefined") return;
-    const bootSplash = document.getElementById("boot-splash");
-    if (!bootSplash) return;
-    bootSplash.setAttribute("data-ready", "true");
-    bootSplashTimerRef.current = window.setTimeout(() => {
-      bootSplash.remove();
-      bootSplashTimerRef.current = null;
-    }, BOOT_SPLASH_HANDOFF_MS);
+    handoffBootSplash();
   }, []);
 
   // Fire the minimum-time timer exactly once on mount.
@@ -260,7 +248,7 @@ export function LaunchAnimation({
           textTransform: "uppercase",
         }}
       >
-        {isLoading ? "Loading…" : "Ready"}
+        {isLoading ? waitingLabel : "Ready"}
       </div>
       {/* Inline keyframes so the splash animates even before
           `index.css` has finished loading. */}

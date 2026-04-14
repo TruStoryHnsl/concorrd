@@ -11,6 +11,7 @@ import { usePlatform } from "./hooks/usePlatform";
 import { computeInitialServerConnected } from "./serverPickerGate";
 import { redeemInvite } from "./api/concord";
 import { getVoiceToken } from "./api/livekit";
+import { showBootSplash } from "./bootSplash";
 import { LoginForm } from "./components/auth/LoginForm";
 import { ServerPickerScreen } from "./components/auth/ServerPickerScreen";
 import { SubmitPage } from "./components/public/SubmitPage";
@@ -218,8 +219,9 @@ export default function App() {
   // Warn user before closing/refreshing if voice is active
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
+      showBootSplash();
+      isUnloadingRef.current = true;
       if (useVoiceStore.getState().connected) {
-        isUnloadingRef.current = true;
         e.preventDefault();
       }
     };
