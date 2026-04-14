@@ -819,6 +819,14 @@ export function UserBar({
         >
           <span className="material-symbols-outlined text-lg">settings</span>
         </button>
+        <button
+          onClick={logout}
+          className="flex items-center gap-1 px-2 py-1 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
+          title="Logout"
+          aria-label="Logout"
+        >
+          <span className="material-symbols-outlined text-lg">logout</span>
+        </button>
         {isNative && (
           <button
             onClick={handleSwitchServer}
