@@ -1,27 +1,37 @@
 /**
- * Extension surface manager (INS-036 W1).
+ * Extension surface manager (INS-036 W1 + W2 + W3).
  *
  * Replaces the original single-pane ExtensionEmbed with a surface manager
  * that can mount 1..N extension surfaces per session, per the structured
  * session model defined in docs/extensions/session-model.md.
+ *
+ * W2 adds: InputRouter permission enforcement — postMessage actions from iframes
+ * are checked against the session mode + participant seat before being forwarded.
+ *
+ * W3 adds: "browser" surface type — sandboxed iframe with *.concord.app allowlist.
  *
  * Backward compatibility:
  *   - When no `surfaces` prop is provided (or it is empty), falls back to
  *     a single panel surface — visually identical to the original component.
  *   - The named re-export `ExtensionEmbed` keeps all existing import sites
  *     working without changes.
+ *   - `mode` and `participantSeat` props are optional, defaulting to "shared"
+ *     and "participant" for backward compat.
  *
- * Surface types implemented in W1:
- *   - `panel`    — persistent sidebar embed (original behavior)
- *   - `modal`    — floating overlay with a minimize/dismiss button
- *
- * Unimplemented types (`pip`, `fullscreen`, `background`) fall back to
- * panel rendering with a console warning.
+ * Surface types:
+ *   - `panel`      — persistent sidebar embed (original behavior)
+ *   - `modal`      — floating overlay with a minimize/dismiss button
+ *   - `browser`    — sandboxed web app (*.concord.app only, W3)
+ *   - `pip`, `fullscreen`, `background` — fall back to panel with console warning
  */
+
+import { useEffect } from "react";
+import BrowserSurface from "./BrowserSurface";
+import { check, type Mode, type Seat, type InputAction } from "./InputRouter";
 
 export interface SurfaceDescriptor {
   surface_id: string;
-  type: "panel" | "modal" | "pip" | "fullscreen" | "background";
+  type: "panel" | "modal" | "pip" | "fullscreen" | "background" | "browser";
   anchor: "left_sidebar" | "right_sidebar" | "bottom_bar" | "center" | "none";
   min_width_px?: number;
   min_height_px?: number;
@@ -38,6 +48,16 @@ interface ExtensionSurfaceManagerProps {
   /** Optional array of surface descriptors from the session model.
    *  When absent or empty, a single panel surface is rendered. */
   surfaces?: SurfaceDescriptor[];
+  /**
+   * Session interaction mode from the extension session model §2.2.
+   * Defaults to "shared" for backward compat.
+   */
+  mode?: Mode;
+  /**
+   * Current participant's seat role from the session model §2.4.
+   * Defaults to "participant" for backward compat.
+   */
+  participantSeat?: Seat;
 }
 
 /** Shortens a Matrix user ID to just the localpart (e.g. "@corr:server" → "corr"). */
@@ -182,7 +202,47 @@ export default function ExtensionSurfaceManager({
   isHost,
   onStop,
   surfaces,
+  mode = "shared",
+  participantSeat = "participant",
 }: ExtensionSurfaceManagerProps) {
+  // W2: InputRouter — intercept postMessage actions from extension iframes and
+  // enforce session mode + seat permissions before forwarding.
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      // Only handle structured extension action messages.
+      if (
+        !event.data ||
+        typeof event.data !== "object" ||
+        event.data.type !== "extension_action"
+      ) {
+        return;
+      }
+      const action = event.data.action as InputAction;
+      const allowed = check(mode, participantSeat, action, event.data.permissions ?? undefined);
+      if (!allowed) {
+        console.warn(
+          "[InputRouter] blocked action",
+          action,
+          "for seat",
+          participantSeat,
+          "in mode",
+          mode,
+        );
+        return;
+      }
+      // Reflect allowed action back to the originating frame so the extension
+      // knows its action was accepted by the host.
+      if (event.source && "postMessage" in event.source) {
+        (event.source as Window).postMessage(
+          { type: "extension_action_ack", action, allowed: true },
+          "*",
+        );
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [mode, participantSeat]);
+
   // Normalize: empty/absent → single default panel surface.
   const activeSurfaces =
     surfaces && surfaces.length > 0 ? surfaces : [DEFAULT_SURFACE];
@@ -208,9 +268,12 @@ export default function ExtensionSurfaceManager({
         />
       );
     }
+    if (s.type === "browser") {
+      return <BrowserSurface surface={s} src={url} title={extensionName} />;
+    }
     if (s.type !== "panel") {
       console.warn(
-        `[ExtensionSurfaceManager] surface type "${s.type}" not fully implemented in W1; rendering as panel`,
+        `[ExtensionSurfaceManager] surface type "${s.type}" not fully implemented; rendering as panel`,
       );
     }
     return (
@@ -247,9 +310,25 @@ export default function ExtensionSurfaceManager({
           );
         }
 
+        if (s.type === "browser") {
+          return (
+            <div
+              key={s.surface_id}
+              className="flex flex-col min-h-0"
+              style={{
+                zIndex: s.z_index,
+                minWidth: s.min_width_px,
+                minHeight: s.min_height_px,
+              }}
+            >
+              <BrowserSurface surface={s} src={url} title={extensionName} />
+            </div>
+          );
+        }
+
         if (s.type !== "panel") {
           console.warn(
-            `[ExtensionSurfaceManager] surface type "${s.type}" not fully implemented in W1; rendering as panel`,
+            `[ExtensionSurfaceManager] surface type "${s.type}" not fully implemented; rendering as panel`,
           );
         }
 
