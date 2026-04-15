@@ -360,3 +360,117 @@ export default function ExtensionSurfaceManager({
 
 // Named re-export for backward compat — existing import sites use `ExtensionEmbed`.
 export { ExtensionSurfaceManager as ExtensionEmbed };
+
+// =============================================================================
+// Migration helper (INS-036 W5 — §5 migration path)
+// =============================================================================
+
+/** A legacy com.concord.extension Matrix room state event. */
+export interface LegacyExtensionEvent {
+  type: "com.concord.extension";
+  /** state_key is the extension_id in the legacy format */
+  state_key: string;
+  /** Matrix user ID of the event sender */
+  sender: string;
+  /** Opaque blob — may contain a "src" field used as the iframe URL */
+  content: Record<string, unknown>;
+}
+
+/** A structured com.concord.extension.session Matrix room state event. */
+export interface SessionEvent {
+  type: "com.concord.extension.session";
+  /** state_key is the session_id */
+  state_key: string;
+  content: {
+    session_id: string;
+    extension_id: string;
+    mode: "shared";
+    version: string;
+    created_at: number;
+    created_by: string;
+    surfaces: SurfaceDescriptor[];
+    participants: Array<{
+      user_id: string;
+      seat: "host";
+      joined_at: number;
+      surface_id: null;
+    }>;
+    launch_descriptor: {
+      loader: "iframe";
+      src: string;
+      integrity: string;
+      csp_overrides: never[];
+      initial_state_event_type: string;
+      capabilities_required: never[];
+      capabilities_optional: never[];
+    };
+    input_permissions: Record<string, string[]>;
+    metadata: Record<string, unknown>;
+  };
+}
+
+/**
+ * Migrate a legacy `com.concord.extension` event to the structured session model
+ * (INS-036 §5 migration path, session-model.md §5).
+ *
+ * Produces a `com.concord.extension.session` event with:
+ * - mode: "shared" (legacy sessions had no mode concept)
+ * - created_by: legacy.sender
+ * - A single default panel surface (right_sidebar)
+ * - The legacy sender promoted to host seat
+ * - src extracted from legacy.content.src if present, otherwise ""
+ * - metadata = legacy.content minus the "src" field
+ */
+export function migrateToSessionModel(legacy: LegacyExtensionEvent): SessionEvent {
+  const sessionId = crypto.randomUUID();
+  const now = Date.now();
+
+  const { src, ...restContent } = legacy.content;
+  const srcStr = typeof src === "string" ? src : "";
+
+  const defaultSurface: SurfaceDescriptor = {
+    surface_id: crypto.randomUUID(),
+    type: "panel",
+    anchor: "right_sidebar",
+    z_index: 50,
+  };
+
+  return {
+    type: "com.concord.extension.session",
+    state_key: sessionId,
+    content: {
+      session_id: sessionId,
+      extension_id: legacy.state_key,
+      mode: "shared",
+      version: "0.0.0",
+      created_at: now,
+      created_by: legacy.sender,
+      surfaces: [defaultSurface],
+      participants: [
+        {
+          user_id: legacy.sender,
+          seat: "host",
+          joined_at: now,
+          surface_id: null,
+        },
+      ],
+      launch_descriptor: {
+        loader: "iframe",
+        src: srcStr,
+        integrity: "",
+        csp_overrides: [] as never[],
+        initial_state_event_type: `com.concord.${legacy.state_key}.state`,
+        capabilities_required: [] as never[],
+        capabilities_optional: [] as never[],
+      },
+      input_permissions: {
+        send_state_events: ["host", "participant"],
+        send_to_device: ["host", "participant"],
+        react: ["host", "participant", "observer"],
+        pointer_events: ["host", "participant"],
+        admin_commands: ["host"],
+      },
+      metadata: restContent,
+    },
+  };
+}
