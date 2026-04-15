@@ -1,0 +1,24 @@
+# Podman compatibility overlay for local dev on orrion (rootless Podman).
+# /var/run/docker.sock doesn't exist in rootless Podman — redirect the bind
+# mount to a dummy socket so the container create step succeeds.
+# The docker-socket-proxy runs as a no-op (alpine tail) and concord-api's
+# DOCKER_PROXY_URL is cleared so the federation restart feature is disabled.
+# That's fine for local dev.
+#
+# Prerequisite: /tmp/dummy.sock must exist (created once by setup or CI):
+#   python3 -c "import socket; s=socket.socket(socket.AF_UNIX); s.bind('/tmp/dummy.sock'); s.close()"
+#
+# Use: docker compose -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.dev.yml ...
+services:
+  docker-socket-proxy:
+    image: alpine:latest
+    entrypoint: ["tail", "-f", "/dev/null"]
+    volumes:
+      - /tmp/dummy.sock:/var/run/docker.sock:ro
+    environment: {}
+    healthcheck:
+      disable: true
+
+  concord-api:
+    environment:
+      DOCKER_PROXY_URL: ""
