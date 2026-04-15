@@ -520,8 +520,8 @@ Concord's main build must function as a swiss-army-knife self-hosted communicati
 No Reticulum in this build yet — Reticulum lives in the beta track (INS-031/INS-034).
 
 - [x] **INS-032 Audit current multi-source UX** — *(2026-04-14: the reintegration branch now has a `SourcesPanel.tsx` with thin icon column, `DiscordSourceBrowser.tsx`, and a 3-way source-type picker. Federation rooms appear in the Explore modal. All three source types are user-discoverable. Prior state (buried admin configs) has been superseded.)*
-- [ ] **INS-032 Concord-to-Concord peering UX** — make peer Concord instances explicitly visible in the Explore menu (INS-025) and in the Sources model (INS-033). Peering with another Concord instance should feel equivalent to joining a Matrix room — same flow, same UI affordances.
-- [ ] **INS-032 Source model unification** — ensure Matrix, Discord (INS-033), and Concord-to-Concord peering are all driven by the same source/bridge abstraction. No bespoke UI paths per protocol type.
+- [x] **INS-032 Concord-to-Concord peering UX** — *(2026-04-14: `ExploreModal.tsx` now cross-references the Sources store — entries whose domain matches a source with `platform="concord"` receive a primary-tinted "Concord" badge chip and display the discovered `instanceName`. Add-source flow in `ChatLayout.tsx` already calls `discoverHomeserver()` and stores `platform: "concord"` — peering UX is equivalent to Matrix join flow.)*
+- [x] **INS-032 Source model unification** — *(2026-04-14: `sources.ts` Zustand store uses a uniform `ConcordSource` type with a `platform` discriminant (`"concord" | "matrix" | "discord-bot" | "discord-account"`). `SourcesPanel.tsx` routes all three to the same tile + browser architecture — no bespoke UI paths per protocol. `SourceServerBrowser` handles Concord and Matrix; `DiscordSourceBrowser` handles Discord bot/account. No separate protocol-specific components exist at the shell level.)*
 
 ---
 
