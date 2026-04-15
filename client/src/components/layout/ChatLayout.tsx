@@ -1304,6 +1304,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                 hostUserId={activeExtension.hostUserId}
                 isHost={isExtensionHost}
                 onStop={stopExtension}
+                surfaces={activeExtension.surfaces}
               />
             </div>
             {/* Horizontal resize handle (drag up/down) */}

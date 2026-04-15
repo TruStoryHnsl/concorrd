@@ -18,6 +18,12 @@ export interface ActiveExtension {
   extensionName: string;
   hostUserId: string;
   startedAt: number;
+  /**
+   * Optional surface descriptors from the INS-036 session model.
+   * When absent or empty, a single default panel surface is rendered
+   * (backward compat with legacy `com.concord.extension` events).
+   */
+  surfaces?: import("../components/extension/ExtensionEmbed").SurfaceDescriptor[];
 }
 
 interface ExtensionState {

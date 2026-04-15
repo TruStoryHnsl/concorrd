@@ -205,6 +205,35 @@ services:
     networks:
       - concord
 
+  # ── Reticulum Transport feature flag (INS-037) ──────────────────────────────
+  #
+  # The Concord Tauri/desktop binary supports an optional `reticulum` Cargo
+  # feature flag that compiles in the ReticulumTransport variant. This flag is
+  # OFF by default; standard builds and this docker-compose stack are unaffected.
+  #
+  # To build with Reticulum transport enabled:
+  #   cargo build --features reticulum
+  #
+  # What it adds: ReticulumTransport struct + TransportRuntime::Reticulum variant
+  # that spawns `rnsd` (the Reticulum Network Stack daemon) as a child process
+  # and manages its lifecycle (start / health-check / graceful stop).
+  #
+  # Runtime dependency: `rnsd` must be installed (pip install rns) or bundled.
+  # The feature flag does NOT automatically bundle rnsd.
+  #
+  # Docker note: if you run a Reticulum-enabled build inside this stack, add the
+  # following to the concord-api service below to allow rnsd TUN/TAP access:
+  #
+  #   cap_add:
+  #     - NET_ADMIN
+  #   # For serial/USB radio interfaces, also add a devices: section:
+  #   # devices:
+  #   #   - /dev/ttyUSB0:/dev/ttyUSB0
+  #
+  # See docs/deployment/README.md § "Reticulum Transport (experimental)" for the
+  # full setup guide and wave-sequencing notes.
+  # ─────────────────────────────────────────────────────────────────────────────
+
   concord-api:
     build: ./server
     restart: unless-stopped
