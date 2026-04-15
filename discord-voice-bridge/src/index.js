@@ -42,8 +42,16 @@ const DISCORD_VOICE_IDLE_MS = Number(process.env.DISCORD_VOICE_IDLE_MS || "15000
 
 // Identity prefix for the main bridge participant (inbound relay: LK→Discord).
 const DISCORD_VOICE_IDENTITY_PREFIX = "discord-voice:";
-// Identity prefix for per-user synthetic participants (outbound: Discord→LK).
+// Identity prefix for per-user synthetic audio participants (outbound: Discord→LK).
 const DISCORD_USER_IDENTITY_PREFIX = "discord-user:";
+// Identity prefix for per-user synthetic video participants (outbound: Discord→LK).
+// Separate from audio so camera/screen-share appear as distinct LiveKit participants.
+const DISCORD_VIDEO_IDENTITY_PREFIX = "discord-video:";
+
+// @discordjs/voice 0.19.x does not yet expose video track subscription (Discord DAVE
+// protocol video is not part of the public JS API). Set this flag to true when the
+// library gains that capability and wire up the video path below.
+const VIDEO_INGEST_AVAILABLE = false;
 
 const SAMPLE_RATE = 48000;
 const CHANNELS = 2;
@@ -163,6 +171,32 @@ async function streamPcmToSource(frameGen, source, bridgeId, userId) {
  * @param {string} bridgeId
  * @param {string} userId
  */
+async function cleanupUserVideoRoom(entry, bridgeId, userId) {
+  try {
+    if (entry.track) {
+      await Promise.resolve(entry.room.localParticipant?.unpublishTrack(entry.track)).catch(() => {});
+    }
+  } catch (error) {
+    log("per-user video track unpublish failed", bridgeId, userId, error);
+  }
+  try {
+    await entry.track?.close?.();
+  } catch (error) {
+    log("per-user video track close failed", bridgeId, userId, error);
+  }
+  try {
+    await entry.room.disconnect();
+  } catch (error) {
+    log("per-user video room disconnect failed", bridgeId, userId, error);
+  }
+}
+
+/**
+ * Disconnect and clean up a single per-user LiveKit room entry.
+ * @param {object} entry  { room, source, track, task }
+ * @param {string} bridgeId
+ * @param {string} userId
+ */
 async function cleanupUserRoom(entry, bridgeId, userId) {
   try {
     if (entry.track) {
@@ -210,6 +244,21 @@ async function startBridge(client, roomConfig) {
   // Value: { room, source, track, task }
   const discordUserRooms = new Map();
 
+  // Per-Discord-user LK room connections for outbound video (Discord→LK).
+  // Key: Discord userId
+  // Value: { room, track }
+  // Populated only when roomConfig.video_enabled is true AND VIDEO_INGEST_AVAILABLE is true.
+  const discordVideoRooms = new Map();
+
+  // Warn once if video is requested but the Discord JS library doesn't support it yet.
+  if (roomConfig.video_enabled && !VIDEO_INGEST_AVAILABLE) {
+    log(
+      "video_enabled=true but VIDEO_INGEST_AVAILABLE=false for bridge", bridgeId,
+      "— @discordjs/voice does not yet expose DAVE video track subscription.",
+      "Set VIDEO_INGEST_AVAILABLE=true when the library gains that capability.",
+    );
+  }
+
   let discordConnection = null;
   let discordPlayer = null;
   let discordAudioOut = null;
@@ -229,7 +278,8 @@ async function startBridge(client, roomConfig) {
   const nonBridgeParticipantCount = () =>
     [...lkRoom.remoteParticipants.values()].filter(
       (participant) => !participant.identity.startsWith(DISCORD_VOICE_IDENTITY_PREFIX) &&
-                       !participant.identity.startsWith(DISCORD_USER_IDENTITY_PREFIX),
+                       !participant.identity.startsWith(DISCORD_USER_IDENTITY_PREFIX) &&
+                       !participant.identity.startsWith(DISCORD_VIDEO_IDENTITY_PREFIX),
     ).length;
 
   const removeLiveKitStream = (key) => {
@@ -269,6 +319,14 @@ async function startBridge(client, roomConfig) {
       );
     }
     discordUserRooms.clear();
+
+    // Disconnect per-user video rooms.
+    for (const [userId, entry] of discordVideoRooms.entries()) {
+      await cleanupUserVideoRoom(entry, bridgeId, userId).catch((error) =>
+        log("per-user video cleanup failed", bridgeId, userId, error),
+      );
+    }
+    discordVideoRooms.clear();
 
     if (discordConnection && onDiscordSpeaking) {
       discordConnection.receiver.speaking.off("start", onDiscordSpeaking);
@@ -371,6 +429,19 @@ async function startBridge(client, roomConfig) {
 
           log("per-user LK track published", bridgeId, userIdentity);
 
+          // W2: Video ingest — publish a video track alongside the audio track.
+          // Gated on roomConfig.video_enabled AND VIDEO_INGEST_AVAILABLE.
+          // When @discordjs/voice gains DAVE video support, implement here:
+          //   1. Subscribe to the Discord video track for userId
+          //   2. Open a per-user video LK room with identity discord-video:<guild>:<userId>
+          //   3. Publish LocalVideoTrack with TrackSource.SOURCE_CAMERA or SOURCE_SCREEN_SHARE
+          //      depending on whether it's a camera or screen-share stream
+          //   4. Track in discordVideoRooms, clean up in finally block
+          if (roomConfig.video_enabled === true && VIDEO_INGEST_AVAILABLE) {
+            // Future implementation point — DAVE video subscription goes here.
+            log("video ingest: DAVE video path not yet wired", bridgeId, userIdentity);
+          }
+
           // Stream PCM until the discord opus stream ends.
           await streamPcmToSource(frameGen, userSource, bridgeId, userId);
         } catch (error) {
@@ -415,8 +486,9 @@ async function startBridge(client, roomConfig) {
   const onTrackSubscribed = (remoteTrack, _publication, participant) => {
     if (participant.identity === mainIdentity) return;
     if (!(remoteTrack instanceof RemoteAudioTrack)) return;
-    // Don't loop back per-user synthetic tracks into Discord.
+    // Don't loop back per-user synthetic audio or video tracks into Discord.
     if (participant.identity.startsWith(DISCORD_USER_IDENTITY_PREFIX)) return;
+    if (participant.identity.startsWith(DISCORD_VIDEO_IDENTITY_PREFIX)) return;
     const key = `${participant.identity}:${remoteTrack.sid ?? remoteTrack.name ?? Date.now()}`;
     subscribedLiveKitTracks.set(key, remoteTrack);
     if (!participant.identity.startsWith(DISCORD_VOICE_IDENTITY_PREFIX)) {
@@ -507,6 +579,9 @@ async function startBridge(client, roomConfig) {
         connected: Boolean(discordConnection),
         // W1: each active Discord speaker is a separate LK participant.
         active_user_participants: discordUserRooms.size,
+        // W2: each active Discord video stream is a separate LK participant.
+        active_video_participants: discordVideoRooms.size,
+        video_enabled: Boolean(roomConfig.video_enabled),
         discord_members: discordMembers,
       };
     },
