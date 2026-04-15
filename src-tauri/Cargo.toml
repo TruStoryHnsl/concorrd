@@ -106,5 +106,12 @@ nix = { version = "0.29", features = ["signal", "process"] }
 #   objc2-multipeer-connectivity = "0.2"
 # keeping them commented out here until a concrete caller exists.
 
+[features]
+# Reticulum overlay transport (INS-037). OFF by default.
+# When enabled, adds ReticulumTransport to TransportRuntime and exposes
+# TransportVariant::Reticulum in the config. Requires `rnsd` binary at
+# runtime (bundled or on PATH). Has no effect on other transports or tests.
+reticulum = []
+
 [dev-dependencies]
 # Servitude tests use only std + serde + toml; no extra deps required.
