@@ -53,6 +53,8 @@ async def _lightweight_migrations():
     migrations = [
         # INS-028: GitHub issue number on bug reports (introduced 2026-04-09).
         ("bug_reports", "github_issue_number", "INTEGER"),
+        # Server rules text field (introduced 2026-04-15).
+        ("servers", "rules_text", "TEXT"),
     ]
     async with engine.begin() as conn:
         for table, column, sql_type in migrations:

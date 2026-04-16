@@ -28,6 +28,9 @@ class Server(Base):
         String, ForeignKey("servers.id"), nullable=True
     )
     bans_disposables: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Server rules/regulations text shown to new members before they can post.
+    # NULL means no rules configured. Empty string is normalized to NULL.
+    rules_text: Mapped[str | None] = mapped_column(String(2000), nullable=True, default=None)
     # Rolling auth code secret — used to generate the deterministic
     # 6-char alphabetic code that rotates every 10 minutes. All server
     # members see the same code; joining requires both an invite token

@@ -90,6 +90,7 @@ class ServerOut(BaseModel):
     visibility: str
     abbreviation: str | None
     media_uploads_enabled: bool = True
+    rules_text: str | None = None
     channels: list[ChannelOut]
 
     model_config = {"from_attributes": True}
@@ -104,6 +105,7 @@ class ServerSettingsUpdate(BaseModel):
         pattern=r"^[A-Za-z0-9]*$",
     )
     media_uploads_enabled: bool | None = None
+    rules_text: str | None = Field(default=None, max_length=2000)
 
 
 class MemberOut(BaseModel):
@@ -864,6 +866,7 @@ async def get_server_settings(
         "icon_url": server.icon_url,
         "owner_id": server.owner_id,
         "media_uploads_enabled": server.media_uploads_enabled,
+        "rules_text": server.rules_text,
     }
 
 
@@ -890,6 +893,9 @@ async def update_server_settings(
         server.abbreviation = body.abbreviation if body.abbreviation else None
     if body.media_uploads_enabled is not None:
         server.media_uploads_enabled = body.media_uploads_enabled
+    if body.rules_text is not None:
+        # Empty string clears the rules.
+        server.rules_text = body.rules_text if body.rules_text.strip() else None
 
     await db.commit()
     return {
@@ -898,7 +904,22 @@ async def update_server_settings(
         "visibility": server.visibility,
         "abbreviation": server.abbreviation,
         "media_uploads_enabled": server.media_uploads_enabled,
+        "rules_text": server.rules_text,
     }
+
+
+@router.get("/{server_id}/rules")
+async def get_server_rules(
+    server_id: str,
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the server's rules text. Accessible by any authenticated member."""
+    await require_server_member(server_id, user_id, db)
+    server = await db.get(Server, server_id)
+    if not server:
+        raise HTTPException(404, "Server not found")
+    return {"rules_text": server.rules_text}
 
 
 # --- Members ---
