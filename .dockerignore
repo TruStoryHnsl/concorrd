@@ -3,7 +3,7 @@
 **/*.sync-conflict-*
 
 # Node modules and build output — Docker installs/builds its own
-client/node_modules/
+**/node_modules/
 client/dist/
 
 # Python virtualenv
@@ -11,6 +11,12 @@ server/.venv/
 
 # Rust build cache (anywhere in tree)
 **/target/
+
+# Tauri-generated Xcode/Android project files
+src-tauri/gen/
+
+# Tauri bundled native binaries (not needed for web/server Docker images)
+src-tauri/resources/
 
 # Build cache
 .build-cache/
