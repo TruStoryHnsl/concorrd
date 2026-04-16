@@ -18,6 +18,7 @@ export interface Server {
   visibility: string;
   abbreviation: string | null;
   media_uploads_enabled: boolean;
+  rules_text?: string | null;
   channels: Channel[];
   /**
    * Client-only marker: true when this server is a synthetic wrapper
@@ -482,14 +483,21 @@ export async function getServerSettings(
 
 export async function updateServerSettings(
   serverId: string,
-  settings: { name?: string; visibility?: string; abbreviation?: string | null; media_uploads_enabled?: boolean },
+  settings: { name?: string; visibility?: string; abbreviation?: string | null; media_uploads_enabled?: boolean; rules_text?: string | null },
   accessToken: string,
-): Promise<{ id: string; name: string; visibility: string; abbreviation: string | null; media_uploads_enabled: boolean }> {
+): Promise<{ id: string; name: string; visibility: string; abbreviation: string | null; media_uploads_enabled: boolean; rules_text: string | null }> {
   return apiFetch(
     `/servers/${serverId}/settings`,
     { method: "PATCH", body: JSON.stringify(settings) },
     accessToken,
   );
+}
+
+export async function getServerRules(
+  serverId: string,
+  accessToken: string,
+): Promise<{ rules_text: string | null }> {
+  return apiFetch(`/servers/${serverId}/rules`, {}, accessToken);
 }
 
 // --- Members ---

@@ -258,6 +258,7 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
   const [abbreviation, setAbbreviation] = useState(server?.abbreviation ?? "");
   const [visibility, setVisibility] = useState(server?.visibility ?? "private");
   const [mediaUploads, setMediaUploads] = useState(server?.media_uploads_enabled ?? true);
+  const [rulesText, setRulesText] = useState(server?.rules_text ?? "");
   const [saving, setSaving] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -276,6 +277,7 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
           visibility,
           abbreviation: abbreviation || null,
           media_uploads_enabled: mediaUploads,
+          rules_text: rulesText || null,
         },
         accessToken,
       );
@@ -284,6 +286,7 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
         visibility: result.visibility,
         abbreviation: result.abbreviation,
         media_uploads_enabled: result.media_uploads_enabled,
+        rules_text: result.rules_text,
       });
       addToast("Settings saved", "success");
     } catch (err) {
@@ -400,6 +403,26 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
           {mediaUploads
             ? "Members can upload images and videos in text channels"
             : "Image and video uploads are disabled in this server"}
+        </p>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-on-surface mb-1">
+          Server Rules
+        </label>
+        <p className="text-xs text-on-surface-variant mb-2">
+          New members see this text before they can post. Leave blank to disable the rules gate.
+        </p>
+        <textarea
+          value={rulesText}
+          onChange={(e) => setRulesText(e.target.value)}
+          maxLength={2000}
+          rows={5}
+          placeholder="Be respectful. No spam. Follow the community guidelines..."
+          className="w-full px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30 resize-y"
+        />
+        <p className="text-xs text-on-surface-variant mt-1 text-right">
+          {rulesText.length}/2000
         </p>
       </div>
 

@@ -56,6 +56,7 @@ import {
 import {
   getMyStats,
   getRoomDiagnostics,
+  getServerRules,
   type RoomDiagnostics,
   type UserStats,
 } from "../../api/concord";
@@ -69,6 +70,37 @@ import {
   writePendingSourceSso,
   type MatrixSourceDraft,
 } from "../sources/matrixSourceAuth";
+
+/** RulesGate — full-panel screen shown to members who haven't accepted the server rules yet. */
+function RulesGate({ rulesText, onAccept }: { rulesText: string; onAccept: () => void }) {
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center p-8 gap-6 min-h-0 overflow-y-auto">
+      <div className="max-w-lg w-full space-y-4">
+        <div className="flex items-center gap-3">
+          <span className="material-symbols-outlined text-primary text-2xl">gavel</span>
+          <h2 className="text-xl font-headline font-semibold text-on-surface">Server Rules</h2>
+        </div>
+        <p className="text-xs text-on-surface-variant">
+          Please read and accept the rules before participating in this server.
+        </p>
+        <div className="px-4 py-4 bg-surface-container border border-outline-variant/20 rounded-lg text-sm text-on-surface whitespace-pre-wrap leading-relaxed max-h-80 overflow-y-auto">
+          {rulesText}
+        </div>
+        <button
+          onClick={onAccept}
+          className="w-full py-2.5 primary-glow hover:brightness-110 text-on-surface font-medium text-sm rounded-lg transition-colors"
+        >
+          I accept the rules
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** localStorage key for tracking rules acceptance per server per user. */
+function rulesAcceptedKey(userId: string, serverId: string) {
+  return `concord_rules_accepted:${userId}:${serverId}`;
+}
 
 /** Lightweight error boundary that silently recovers instead of hiding content. */
 class SilentBoundary extends Component<{ children: ReactNode; fallback?: ReactNode }, { ok: boolean }> {
@@ -275,6 +307,40 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   );
   const isVoiceChannel = activeChannel?.channel_type === "voice";
   const isOwner = activeServer?.owner_id === userId;
+
+  // Rules gate state — tracks rules_text for the active server and whether
+  // the current user has accepted it. Acceptance is persisted in localStorage
+  // keyed by (userId, serverId) so it survives page reloads.
+  const [activeServerRulesText, setActiveServerRulesText] = useState<string | null>(null);
+  const [rulesAccepted, setRulesAccepted] = useState<boolean>(true);
+
+  useEffect(() => {
+    if (!activeServerId || !userId || !accessToken || dmActive) {
+      setActiveServerRulesText(null);
+      setRulesAccepted(true);
+      return;
+    }
+    // Use rules_text already in the store if present; otherwise fetch.
+    const storedRules = activeServer?.rules_text ?? undefined;
+    const resolve = (rulesText: string | null | undefined) => {
+      if (!rulesText) {
+        setActiveServerRulesText(null);
+        setRulesAccepted(true);
+        return;
+      }
+      setActiveServerRulesText(rulesText);
+      const accepted = localStorage.getItem(rulesAcceptedKey(userId, activeServerId)) === "1";
+      setRulesAccepted(accepted);
+    };
+    if (storedRules !== undefined) {
+      resolve(storedRules);
+    } else {
+      getServerRules(activeServerId, accessToken)
+        .then((data) => resolve(data.rules_text))
+        .catch(() => resolve(null));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeServerId, userId, accessToken, dmActive]);
   const emptyState = useMemo(() => {
     if (!activeRoomId) return undefined;
     if (roomDiagnosticsLoading) {
@@ -1407,6 +1473,22 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
     // Server channel chat
     if (activeChannelId && activeChannel) {
+      // Rules gate — shown to members who haven't accepted the server rules.
+      // Only blocks text channels; voice channels are never gated.
+      if (!isVoiceChannel && activeServerRulesText && !rulesAccepted) {
+        return (
+          <RulesGate
+            rulesText={activeServerRulesText}
+            onAccept={() => {
+              if (userId && activeServerId) {
+                localStorage.setItem(rulesAcceptedKey(userId, activeServerId), "1");
+              }
+              setRulesAccepted(true);
+            }}
+          />
+        );
+      }
+
       if (isVoiceChannel) {
         return (
           <VoiceChannel
