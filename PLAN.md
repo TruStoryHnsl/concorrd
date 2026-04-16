@@ -298,7 +298,7 @@ No direct anonymous mode. Instead: **private browsing via disposable user node**
 - [x] Resource contribution controls (CPU, bandwidth, storage — per-node, dynamic) — *(2026-04-15: shipped with admin UI above — CPU% range slider (1–max), bandwidth Mbps number input, storage GB number input, all server-enforced with limits returned from API so client doesn't hardcode maxima)*
 - [ ] Speculative data verification pipeline (service node as verification workhorse)
 - [ ] Tunnel anchor role (persistent mesh point for user tunnels)
-- [ ] First deployment: orrgate
+- [x] First deployment: orrgate *(stable Matrix build running on orrgate — docker-compose.yml shipped, verify_deployed_bundle.sh in scripts/)*
 - [ ] Support mode (user node as temporary infra for a connection — separate from headless service node)
 
 ### Game Center (from feedback — planned, refined 2026-04-12 as standalone sub-apps)
@@ -565,10 +565,10 @@ The current `concord-discord-voice-bridge` is an **audio-only** relay and mixer.
 The current extension system is a **room-global single shared iframe** with one static catalog URL, one host user, and one top-pane render target. That is insufficient for the planned living-room / party-game UX and for companion web-app integrations. Treat this as a platform upgrade, not a Roll20-specific feature.
 
 **Required UX modes (user directive, 2026-04-13)**:
-- [ ] Every extension can run in **shared display** mode where all participants see the same surface.
-- [ ] Every extension can optionally gate input as **read-only for everyone** or **host/admin-only input** while keeping the shared display visible to all.
-- [ ] Every extension can run in **per-user** mode where each participant gets a separate display surface and separate input path.
-- [ ] Every extension can run in **hybrid** mode where a shared "TV" surface coexists with private participant controller surfaces.
+- [x] Every extension can run in **shared display** mode where all participants see the same surface. *(INS-036 W1-W2: InputRouter.ts + ExtensionEmbed.tsx — `shared` mode implemented)*
+- [x] Every extension can optionally gate input as **read-only for everyone** or **host/admin-only input** while keeping the shared display visible to all. *(INS-036 W2: `shared_readonly` + `shared_admin_input` modes in InputRouter.ts)*
+- [x] Every extension can run in **per-user** mode where each participant gets a separate display surface and separate input path. *(INS-036 W2: `per_user` mode — per-participant surface binding)*
+- [x] Every extension can run in **hybrid** mode where a shared "TV" surface coexists with private participant controller surfaces. *(INS-036 W2: `hybrid` mode)*
 
 **Relationship to Game Center / Roll20 / native clients**: INS-036 is the generic substrate for the deferred Roll20 companion idea and for upcoming living-room party games. Do not solve those with bespoke extension logic. The web client should support the shared/private session model, and the native-client track should be able to swap iframe-backed surfaces for persisted webviews where needed.
 
