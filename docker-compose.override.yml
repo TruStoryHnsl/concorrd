@@ -3,3 +3,10 @@ services:
   web:
     ports:
       - "${BIND_HOST:-0.0.0.0}:8443:8443"
+
+  # Override socket path for Podman: /var/run/docker.sock symlinks to
+  # /run/podman/podman.sock (root-owned dir, not mountable). Use the
+  # user-level socket instead.
+  docker-socket-proxy:
+    volumes:
+      - /run/user/${UID:-3000}/podman/podman.sock:/var/run/docker.sock:ro
