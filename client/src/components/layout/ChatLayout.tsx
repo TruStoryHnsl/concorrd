@@ -374,8 +374,9 @@ export function ChatLayout() {
   // min(viewport*0.4, 8*22px) and switches to internal scroll above that.
   const renderMobileLayout = () => (
     <div className="h-full flex flex-col overflow-hidden bg-surface text-on-surface min-h-0">
-      {/* Top bar */}
-      <div className="h-12 flex items-center px-3 bg-surface-container-low safe-top flex-shrink-0 gap-2">
+      {/* Top bar — outer wrapper carries safe-area inset, inner bar has fixed h-12 */}
+      <div className="bg-surface-container-low safe-top flex-shrink-0">
+      <div className="h-12 flex items-center px-3 gap-2">
         <div className="flex-1 min-w-0 flex items-center">
         {mobileView === "chat" && dmActive && dmConversation ? (
           <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -467,6 +468,7 @@ export function ChatLayout() {
         >
           <span className="material-symbols-outlined text-xl">account_circle</span>
         </button>
+      </div>
       </div>
 
       {/* Main content area */}

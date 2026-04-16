@@ -4,6 +4,7 @@ import {
   closestCenter,
   KeyboardSensor,
   PointerSensor,
+  TouchSensor,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -242,11 +243,17 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
     return all.slice().reverse();
   }, [filteredLive, filteredPlaceholders]);
 
-  // dnd-kit sensors. PointerSensor activates after 5px of movement so
+  // dnd-kit sensors. On touch devices, use TouchSensor with a 1000ms
+  // press delay so taps still navigate (short press = select, long press = drag).
+  // On pointer devices, PointerSensor activates after 5px of movement so
   // regular clicks on the server tile still fire (for server select). The
   // KeyboardSensor enables arrow-key reorder for keyboard users.
+  const isTouchDevice =
+    typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    isTouchDevice
+      ? useSensor(TouchSensor, { activationConstraint: { delay: 1000, tolerance: 5 } })
+      : useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     }),
@@ -411,7 +418,9 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   // direct child than marking each row individually.
   if (mobile) {
     return (
-      <div className="h-full bg-surface-container-low overflow-y-auto p-3 flex flex-col [&>*]:shrink-0">
+      <div className="h-full bg-surface-container-low p-3 flex flex-col">
+        {/* Top scroll region: local servers */}
+        <div className="flex-1 overflow-y-auto [&>*]:shrink-0">
         <h3 className="text-xs font-label font-medium text-on-surface-variant uppercase tracking-widest px-2 mb-3">
           Your Servers
         </h3>
@@ -503,12 +512,12 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
           <span className="font-body font-medium">Add Server</span>
         </button>
 
-        {/* Flex spacer — pushes the federated search, federated
-            stack, and Explore button to the bottom of the mobile
-            column, mirroring the desktop sidebar's "explore at
-            bottom" layout. Collapses to zero when content overflows
-            so scrolling still behaves naturally. */}
-        <div className="flex-grow min-h-0" aria-hidden="true" />
+        </div>{/* end top scroll region */}
+
+        {/* Bottom scroll region: federated servers + Explore pinned to bottom.
+            h-[40%] gives it a guaranteed viewport slice; overflow-y-auto lets
+            it scroll when many federated servers are joined. */}
+        <div className="h-[40%] overflow-y-auto [&>*]:shrink-0">
 
         {/* Federated search input: inline text field that filters
             both live and placeholder federated tiles by name or
@@ -627,6 +636,8 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
           <span className="font-body font-medium">Explore</span>
         </button>
 
+        </div>{/* end bottom scroll region */}
+
         {showNewServer && <NewServerModal onClose={() => setShowNewServer(false)} />}
         <ExploreModal isOpen={exploreOpen} onClose={() => setExploreOpen(false)} />
       </div>
@@ -641,7 +652,9 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   // `flex-shrink: 1` causes tiles to squish before the scrollbar
   // ever appears.
   return (
-    <div className="w-16 bg-surface flex flex-col items-center py-3 gap-2 overflow-y-auto min-h-0 [&>*]:shrink-0">
+    <div className="w-16 bg-surface flex flex-col min-h-0">
+      {/* Top scroll region: DM button, divider, local servers, Add */}
+      <div className="flex-1 overflow-y-auto flex flex-col items-center py-3 gap-2 [&>*]:shrink-0">
       {/* DM button */}
       <div className="relative group">
         <div className={`absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-r-full bg-primary transition-all ${
@@ -755,17 +768,12 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         <span className="material-symbols-outlined text-xl">add</span>
       </button>
 
-      {/* Flex spacer — pushes the federated stack + Explore button to
-          the bottom of the column. This restores the original
-          "explore-at-bottom" layout from commit 9180ecc which had
-          regressed at some point: without the spacer, the federated
-          and Explore rows bunch up directly under the `+` icon on
-          accounts with few Concord servers, instead of sitting at the
-          natural bottom of the sidebar. `min-h-0` lets the spacer
-          collapse to zero when the content overflows so scrolling
-          behaves naturally — `flex-grow` only activates when there's
-          slack space to push into. */}
-      <div className="flex-grow min-h-0" aria-hidden="true" />
+      </div>{/* end top scroll region */}
+
+      {/* Bottom scroll region: federated servers + Explore pinned to bottom.
+          h-[40%] reserves a stable slice of the sidebar height; overflow-y-auto
+          lets it scroll when many federated servers are joined. */}
+      <div className="h-[40%] overflow-y-auto flex flex-col items-center gap-2 py-2 [&>*]:shrink-0">
 
       {/* Federated (non-local) servers, stacked upward from Explore.
           Rendered in reverse order so the OLDEST federated join sits
@@ -892,6 +900,8 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
       >
         <span className="material-symbols-outlined text-xl">public</span>
       </button>
+
+      </div>{/* end bottom scroll region */}
 
       {showNewServer && <NewServerModal onClose={() => setShowNewServer(false)} />}
       <ExploreModal isOpen={exploreOpen} onClose={() => setExploreOpen(false)} />
