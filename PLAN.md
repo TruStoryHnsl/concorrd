@@ -284,7 +284,7 @@ No direct anonymous mode. Instead: **private browsing via disposable user node**
 - [ ] Encrypted vs unencrypted ownership
 - [x] Communal governance protocol (VoteProposal, tally_votes(), can_perform(), eligibility checks — 14 tests)
 - [x] Anti-stalking tools — block list (blocked_peers table, block/unblock/is_blocked CRUD, Tauri commands)
-- [ ] Default rules/regulations landing screen
+- [x] Default rules/regulations landing screen
 
 ### Service Node Mode (formerly "Server Mode" — renamed 2026-04-12, architecture revised 2026-04-08)
 
