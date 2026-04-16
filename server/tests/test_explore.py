@@ -72,20 +72,24 @@ async def test_list_servers_returns_decoded_allowlist(client, tmp_path, monkeypa
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert isinstance(body, list), f"expected list, got {type(body).__name__}"
-        assert len(body) == 2, f"expected 2 entries, got {len(body)}: {body}"
+        # 3 entries: local instance (test.local) + 2 allowlisted peers.
+        # The local instance is prepended by the endpoint as "This instance".
+        assert len(body) == 3, f"expected 3 entries, got {len(body)}: {body}"
 
         # Each entry must have the exact shape the frontend renders.
         for entry in body:
             assert set(entry.keys()) == {"domain", "name", "description"}, (
                 f"unexpected keys: {entry.keys()}"
             )
-            # description is None for now — the allowlist TOML has no
-            # metadata slot for human descriptions yet.
-            assert entry["description"] is None
             # domain and name are the same value (see router docstring).
             assert entry["domain"] == entry["name"]
 
-        domains = sorted(e["domain"] for e in body)
+        # First entry is always the local instance.
+        assert body[0]["domain"] == "test.local"
+        assert body[0]["description"] == "This instance"
+
+        # Remaining entries are the allowlisted peers (order preserved from TOML).
+        domains = sorted(e["domain"] for e in body[1:])
         assert domains == ["friend.example.com", "matrix.org"]
     finally:
         logout()

@@ -18,7 +18,7 @@ logging.basicConfig(
 
 from database import async_session, init_db
 from errors import ConcordError, ErrorResponse
-from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_bridges, admin_discord_voice, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms
+from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_bridges, admin_discord_voice, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms, service_node
 from services.discord_voice_config import write_voice_bridge_rooms
 
 
@@ -667,6 +667,7 @@ app.include_router(explore.router)
 app.include_router(wellknown.router)
 app.include_router(extensions.router)
 app.include_router(rooms.router)
+app.include_router(service_node.router)
 
 
 @app.get("/api/health")

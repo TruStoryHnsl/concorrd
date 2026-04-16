@@ -97,6 +97,23 @@ class ConcordClientWellKnown(BaseModel):
             "server picker screen."
         ),
     )
+    node_role: str | None = Field(
+        None,
+        description=(
+            "Structural role this node plays in the mesh. One of "
+            "'frontend-only', 'hybrid', or 'anchor'. Null when the "
+            "service-node config has not been written yet (defaults to "
+            "'hybrid' in that case)."
+        ),
+    )
+    tunnel_anchor: bool = Field(
+        False,
+        description=(
+            "True when this node advertises itself as a tunnel anchor "
+            "(i.e. accepts inbound WireGuard sessions from other nodes). "
+            "Defaults to False when the service-node config is absent."
+        ),
+    )
 
 
 def _resolve_api_base() -> str:
@@ -218,4 +235,6 @@ async def concord_client_wellknown() -> ConcordClientWellKnown:
         instance_name=_resolve_instance_name(),
         features=_advertised_features(),
         turn_servers=_resolve_turn_servers(),
+        node_role=node_view.node_role,
+        tunnel_anchor=node_view.tunnel_anchor_enabled,
     )

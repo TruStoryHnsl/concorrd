@@ -177,16 +177,26 @@ async def test_get_channel_classifies_voice_channel(
 ) -> None:
     from routers import admin_bridges as ab_mod
 
-    def fake_urlopen(_req: object, timeout: int = 10) -> _FakeDiscordResponse:
-        assert timeout == 10
-        return _FakeDiscordResponse({
-            "id": "234567890123456789",
-            "guild_id": "123456789012345678",
-            "name": "General Voice",
-            "type": 2,
-        })
+    import httpx
 
-    monkeypatch.setattr(ab_mod.urllib.request, "urlopen", fake_urlopen)
+    channel_data = {
+        "id": "234567890123456789",
+        "guild_id": "123456789012345678",
+        "name": "General Voice",
+        "type": 2,
+    }
+
+    class _FakeHttpxResponse:
+        status_code = 200
+        def raise_for_status(self) -> None: pass
+        def json(self) -> dict: return channel_data
+
+    class _FakeHttpxClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        async def get(self, _url: str) -> _FakeHttpxResponse: return _FakeHttpxResponse()
+
+    monkeypatch.setattr(ab_mod.httpx, "AsyncClient", lambda **_kw: _FakeHttpxClient())
 
     login_as("@test_admin:test.local")
     resp = await client.get("/api/admin/bridges/discord/channels/234567890123456789")

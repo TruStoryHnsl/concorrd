@@ -302,16 +302,21 @@ def test_public_view_falls_back_on_corrupt_file(fresh_data_dir, caplog):
 # ---------------------------------------------------------------------------
 
 async def test_admin_get_requires_auth(client, monkeypatch, tmp_path):
+    from tests.conftest import login_as, logout
     monkeypatch.setenv("CONCORD_DATA_DIR", str(tmp_path))
+    # Non-admin user should get 403.  A missing Authorization header gives
+    # 422 (FastAPI header validation) rather than 401 — test with a real
+    # non-admin identity so the router's require_admin check fires.
+    login_as("@not_admin:test.local")
     resp = await client.get("/api/admin/service-node")
-    # No login override installed → the route should reject.
-    assert resp.status_code in (401, 403)
+    assert resp.status_code == 403
+    logout()
 
 
 async def test_admin_get_returns_defaults_on_fresh_deploy(
     client, monkeypatch, tmp_path
 ):
-    from conftest import login_as  # type: ignore[import-not-found]
+    from tests.conftest import login_as, logout
     monkeypatch.setenv("CONCORD_DATA_DIR", str(tmp_path))
     login_as("@test_admin:test.local")
 
@@ -334,7 +339,7 @@ async def test_admin_get_returns_defaults_on_fresh_deploy(
 async def test_admin_get_rejects_non_admin(
     client, monkeypatch, tmp_path
 ):
-    from conftest import login_as  # type: ignore[import-not-found]
+    from tests.conftest import login_as, logout
     monkeypatch.setenv("CONCORD_DATA_DIR", str(tmp_path))
     login_as("@not_admin:test.local")
 
@@ -345,7 +350,7 @@ async def test_admin_get_rejects_non_admin(
 async def test_admin_put_persists_new_config(
     client, monkeypatch, tmp_path
 ):
-    from conftest import login_as  # type: ignore[import-not-found]
+    from tests.conftest import login_as, logout
     monkeypatch.setenv("CONCORD_DATA_DIR", str(tmp_path))
     login_as("@test_admin:test.local")
 
@@ -372,7 +377,7 @@ async def test_admin_put_persists_new_config(
 async def test_admin_put_rejects_cpu_over_max(
     client, monkeypatch, tmp_path
 ):
-    from conftest import login_as  # type: ignore[import-not-found]
+    from tests.conftest import login_as, logout
     monkeypatch.setenv("CONCORD_DATA_DIR", str(tmp_path))
     login_as("@test_admin:test.local")
 
@@ -392,7 +397,7 @@ async def test_admin_put_rejects_cpu_over_max(
 async def test_admin_put_rejects_unknown_role(
     client, monkeypatch, tmp_path
 ):
-    from conftest import login_as  # type: ignore[import-not-found]
+    from tests.conftest import login_as, logout
     monkeypatch.setenv("CONCORD_DATA_DIR", str(tmp_path))
     login_as("@test_admin:test.local")
 

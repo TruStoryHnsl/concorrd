@@ -119,6 +119,10 @@ async def test_upsert_room_writes_sidecar_rooms_file(
                 "discord_guild_id": "123456789012345678",
                 "discord_channel_id": "234567890123456789",
                 "enabled": True,
+                "video_enabled": False,
+                "projection_policy": "screen_share_first",
+                "quality_cap": "auto",
+                "audio_only_fallback": True,
             }
         ]
     }
@@ -211,6 +215,10 @@ async def test_list_rooms_repairs_stale_bridge_row_to_the_only_voice_channel(
             "discord_guild_id": "123456789012345678",
             "discord_channel_id": "234567890123456789",
             "enabled": True,
+            "video_enabled": False,
+            "projection_policy": "screen_share_first",
+            "quality_cap": "auto",
+            "audio_only_fallback": True,
         }
     ]
 
