@@ -39,6 +39,15 @@ export type ServitudeState =
   | "stopping";
 
 /**
+ * Full status response from `servitude_status`. Includes the lifecycle state
+ * plus any transports that have entered a degraded (non-critical failure) state.
+ */
+export interface ServitudeStatusResponse {
+  state: ServitudeState;
+  degraded_transports: Record<string, string>;
+}
+
+/**
  * Type guard for the four known lifecycle states. Anything else coming off
  * the wire is treated as an unknown/invalid state at the call site.
  */
@@ -48,6 +57,16 @@ export function isServitudeState(value: unknown): value is ServitudeState {
     value === "starting" ||
     value === "running" ||
     value === "stopping"
+  );
+}
+
+function isServitudeStatusResponse(value: unknown): value is ServitudeStatusResponse {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    isServitudeState(v.state) &&
+    typeof v.degraded_transports === "object" &&
+    v.degraded_transports !== null
   );
 }
 
@@ -80,26 +99,34 @@ export async function servitudeStop(): Promise<void> {
 }
 
 /**
- * Poll the current lifecycle state. Returns `"stopped"` in the browser
+ * Poll the current lifecycle state and degraded transports.
+ *
+ * Returns `{ state: "stopped", degraded_transports: {} }` in the browser
  * build — the "no Tauri runtime" case is indistinguishable from the
- * "handle not yet constructed" case on the Rust side, which also reports
- * stopped, so the UI can render a single Stopped view regardless.
+ * "handle not yet constructed" case on the Rust side.
+ *
+ * The Rust command may return either a plain lifecycle string (legacy, pre-Wave-3)
+ * or the full `{ state, degraded_transports }` object (Wave-3+). Both are handled.
  */
-export async function servitudeStatus(): Promise<ServitudeState> {
+export async function servitudeStatus(): Promise<ServitudeStatusResponse> {
   if (!isTauri()) {
-    return "stopped";
+    return { state: "stopped", degraded_transports: {} };
   }
   const { invoke } = await import("@tauri-apps/api/core");
   const raw = await invoke<string>("servitude_status");
-  // The Rust side returns a JSON-serialized string, e.g. `"running"`.
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
     throw new Error(`servitude_status returned non-JSON payload: ${raw}`);
   }
-  if (!isServitudeState(parsed)) {
-    throw new Error(`servitude_status returned unknown state: ${raw}`);
+  // Wave-3+ response: full object with state + degraded_transports.
+  if (isServitudeStatusResponse(parsed)) {
+    return parsed;
   }
-  return parsed;
+  // Legacy response: plain lifecycle string.
+  if (isServitudeState(parsed)) {
+    return { state: parsed, degraded_transports: {} };
+  }
+  throw new Error(`servitude_status returned unknown payload: ${raw}`);
 }

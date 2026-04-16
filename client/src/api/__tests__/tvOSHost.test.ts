@@ -136,7 +136,7 @@ describe("bridge present (tvOS)", () => {
     expect(result).toEqual(expectedConfig);
     // Callback should be cleaned up
     expect(
-      (window as Record<string, unknown>).__concordGetServerConfigCallback,
+      (window as unknown as Record<string, unknown>).__concordGetServerConfigCallback,
     ).toBeUndefined();
   });
 
@@ -145,7 +145,7 @@ describe("bridge present (tvOS)", () => {
 
     handlers.concordGetServerConfig.postMessage.mockImplementation(
       (body: { callbackName: string }) => {
-        const cb = (window as Record<string, (c: null) => void>)[body.callbackName];
+        const cb = (window as unknown as Record<string, (c: null) => void>)[body.callbackName];
         cb(null);
       },
     );
