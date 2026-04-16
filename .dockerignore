@@ -2,8 +2,26 @@
 *.sync-conflict-*
 **/*.sync-conflict-*
 
-# Node modules — Docker installs its own
+# Node modules and build output — Docker installs/builds its own
 client/node_modules/
-
-# Test artifacts
 client/dist/
+
+# Python virtualenv
+server/.venv/
+
+# Rust build cache
+target/
+
+# Git worktrees created by Claude Code (can be gigabytes)
+.claude/
+
+# Git history — not needed in image
+.git/
+
+# Codex backups
+.codex-backups/
+
+# Local dev / IDE
+.env
+.env.*
+*.local
