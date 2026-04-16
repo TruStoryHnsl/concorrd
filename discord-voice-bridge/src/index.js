@@ -39,6 +39,9 @@ const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || "";
 const HEALTH_PORT = Number(process.env.DISCORD_VOICE_HEALTH_PORT || "3098");
 const POLL_MS = Number(process.env.DISCORD_VOICE_CONFIG_POLL_MS || "5000");
 const DISCORD_VOICE_IDLE_MS = Number(process.env.DISCORD_VOICE_IDLE_MS || "15000");
+const DISCORD_VOICE_MAX_ROOMS = Number(process.env.DISCORD_VOICE_MAX_ROOMS || "10");
+
+const PROCESS_START_MS = Date.now();
 
 // Identity prefix for the main bridge participant (inbound relay: LK→Discord).
 const DISCORD_VOICE_IDENTITY_PREFIX = "discord-voice:";
@@ -63,9 +66,38 @@ const active = new Map();
 let lastConfigHash = "";
 let shuttingDown = false;
 
-function log(...args) {
-  console.log(new Date().toISOString(), ...args);
+/**
+ * Structured JSON logger. Every line is a valid JSON object with:
+ *   ts       — ISO-8601 timestamp
+ *   level    — "info" | "warn" | "error"
+ *   msg      — human-readable message (first string arg)
+ *   ...rest  — additional context fields serialised as {extra: [...]}
+ *
+ * Sensitive values (tokens, secrets) must NOT be passed as args.
+ */
+function _emit(level, args) {
+  const [first, ...rest] = args;
+  const entry = {
+    ts: new Date().toISOString(),
+    level,
+    msg: String(first ?? ""),
+  };
+  if (rest.length > 0) {
+    // Collapse extra args into an array; serialise Error objects specially.
+    entry.extra = rest.map((v) =>
+      v instanceof Error
+        ? { error: v.message, stack: v.stack }
+        : typeof v === "object" && v !== null
+          ? v
+          : v,
+    );
+  }
+  (level === "error" ? console.error : console.log)(JSON.stringify(entry));
 }
+
+function log(...args) { _emit("info", args); }
+function logWarn(...args) { _emit("warn", args); }
+function logError(...args) { _emit("error", args); }
 
 async function requiredEnv() {
   if (!discordToken && DISCORD_TOKEN_FILE) {
@@ -606,30 +638,52 @@ async function reconcile(client) {
 
   for (const [key, room] of desired.entries()) {
     if (active.has(key)) continue;
+    if (active.size >= DISCORD_VOICE_MAX_ROOMS) {
+      logWarn("room budget exceeded — skipping bridge start", {
+        key,
+        activeRooms: active.size,
+        maxRooms: DISCORD_VOICE_MAX_ROOMS,
+      });
+      continue;
+    }
     try {
       active.set(key, await startBridge(client, room));
     } catch (error) {
-      log("failed to start voice bridge", key, error);
+      logError("failed to start voice bridge", key, error);
     }
   }
 }
 
 function startHealthServer() {
-  const server = http.createServer(async (_req, res) => {
+  const server = http.createServer(async (req, res) => {
+    // Only serve /healthz and / (legacy compat).
+    if (req.url !== "/healthz" && req.url !== "/") {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "not found" }));
+      return;
+    }
     try {
       const rooms = await Promise.all(
         [...active.values()].map((bridge) => bridge.getStatus()),
       );
+      const uptimeMs = Date.now() - PROCESS_START_MS;
+      const body = {
+        status: "ok",
+        activeRooms: active.size,
+        maxRooms: DISCORD_VOICE_MAX_ROOMS,
+        uptimeMs,
+        rooms,
+      };
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, active_bridges: active.size, rooms }));
+      res.end(JSON.stringify(body));
     } catch (error) {
-      log("health status failed", error);
+      logError("health status failed", error);
       res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: false, active_bridges: active.size, rooms: [] }));
+      res.end(JSON.stringify({ status: "error", activeRooms: active.size, rooms: [] }));
     }
   });
   server.listen(HEALTH_PORT, "0.0.0.0", () => {
-    log(`health server listening on ${HEALTH_PORT}`);
+    log("health server listening", { port: HEALTH_PORT });
   });
   return server;
 }
@@ -668,6 +722,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error);
+  logError("fatal startup error", error);
   process.exit(1);
 });
