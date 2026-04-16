@@ -1,0 +1,15 @@
+{
+  "name": "concord-ext-worldview",
+  "version": "0.1.0",
+  "description": "Worldview extension for Concord — reference implementation of the INS-036 session model",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npx esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --target=es2020",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  }
+}

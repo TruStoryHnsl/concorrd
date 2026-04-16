@@ -48,8 +48,12 @@ server/.venv/
 .vite/
 .build-cache/
 
-# Extensions (nested repos, managed separately)
-ext/
+# Extensions (nested repos, managed separately — worldview scaffold is tracked)
+# Note: git gitignore does not allow re-including files under an ignored directory
+# using !ext/worldview/ unless the parent is first un-ignored. We use git add -f
+# for the initial scaffold commit; subsequent edits to ext/worldview are tracked normally.
+ext/*
+!ext/worldview
 
 # OS
 .DS_Store
@@ -90,4 +94,3 @@ PROVENANCE_REPORT.md
 mempalace.yaml
 .mempalace-aliases
 entities.json
-ext/worldview/
