@@ -1,5 +1,5 @@
 /**
- * Extension surface manager (INS-036 W1 + W2 + W3).
+ * Extension surface manager (INS-036 W1 + W2 + W3 + W4).
  *
  * Replaces the original single-pane ExtensionEmbed with a surface manager
  * that can mount 1..N extension surfaces per session, per the structured
@@ -9,6 +9,12 @@
  * are checked against the session mode + participant seat before being forwarded.
  *
  * W3 adds: "browser" surface type — sandboxed iframe with *.concord.app allowlist.
+ *
+ * W4 adds: Shell → extension SDK (outbound postMessage protocol).
+ *   - concord:init      sent to each iframe on mount with session context
+ *   - concord:surface_resize  sent via ResizeObserver when container dimensions change
+ *   Participant join/leave and host_transfer messages are emitted by the caller
+ *   via the useExtensionSession() hook (see docs/extensions/shell-api.md).
  *
  * Backward compatibility:
  *   - When no `surfaces` prop is provided (or it is empty), falls back to
@@ -25,9 +31,15 @@
  *   - `pip`, `fullscreen`, `background` — fall back to panel with console warning
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import BrowserSurface from "./BrowserSurface";
 import { check, type Mode, type Seat, type InputAction } from "./InputRouter";
+import {
+  postToFrame,
+  buildInitMessage,
+  buildSurfaceResizeMessage,
+  type ConcordInitPayload,
+} from "../../extensions/sdk";
 
 export interface SurfaceDescriptor {
   surface_id: string;
@@ -58,6 +70,14 @@ interface ExtensionSurfaceManagerProps {
    * Defaults to "participant" for backward compat.
    */
   participantSeat?: Seat;
+  /**
+   * W4: SDK init context. When provided, a concord:init message is posted to
+   * each mounted iframe so extensions can read identity/session/seat without
+   * any direct access to Concord internals.
+   *
+   * If absent, iframes are mounted without an init message (legacy behavior).
+   */
+  sdkInit?: Omit<ConcordInitPayload, "surfaces">;
 }
 
 /** Shortens a Matrix user ID to just the localpart (e.g. "@corr:server" → "corr"). */
@@ -204,7 +224,57 @@ export default function ExtensionSurfaceManager({
   surfaces,
   mode = "shared",
   participantSeat = "participant",
+  sdkInit,
 }: ExtensionSurfaceManagerProps) {
+  // W4: Container ref for SDK message targeting and ResizeObserver.
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // W4: Send concord:init to all iframes in the container on mount.
+  // Deferred 100 ms so the iframes have time to load their srcdoc/src before
+  // they can receive postMessage events.
+  useEffect(() => {
+    if (!sdkInit) return;
+    const activeSurfs = surfaces && surfaces.length > 0 ? surfaces : [DEFAULT_SURFACE];
+    const payload: ConcordInitPayload = { ...sdkInit, surfaces: activeSurfs };
+    const msg = buildInitMessage(payload);
+    const timer = setTimeout(() => {
+      const container = containerRef.current;
+      if (!container) return;
+      const frames = container.querySelectorAll<HTMLIFrameElement>("iframe");
+      frames.forEach((frame) => postToFrame(frame, msg));
+    }, 100);
+    return () => clearTimeout(timer);
+  // Re-send on session/identity changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sdkInit?.sessionId, sdkInit?.participantId, sdkInit?.seat, mode]);
+
+  // W4: ResizeObserver — send concord:surface_resize when the container size changes.
+  useEffect(() => {
+    if (!sdkInit) return;
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        // Use the first matching surface_id or the default.
+        const activeSurfs = surfaces && surfaces.length > 0 ? surfaces : [DEFAULT_SURFACE];
+        activeSurfs.forEach((s) => {
+          const msg = buildSurfaceResizeMessage({
+            surfaceId: s.surface_id,
+            widthPx: Math.round(width),
+            heightPx: Math.round(height),
+          });
+          const frames = container.querySelectorAll<HTMLIFrameElement>("iframe");
+          frames.forEach((frame) => postToFrame(frame, msg));
+        });
+      }
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sdkInit?.sessionId]);
+
   // W2: InputRouter — intercept postMessage actions from extension iframes and
   // enforce session mode + seat permissions before forwarding.
   useEffect(() => {
@@ -253,23 +323,30 @@ export default function ExtensionSurfaceManager({
   );
 
   // Single-surface fast path — zero visual regression.
+  // W4: All paths are wrapped in containerRef for SDK message targeting.
   if (sorted.length === 1) {
     const s = sorted[0];
     if (s.type === "modal") {
       return (
-        <ModalSurface
-          surface={s}
-          url={url}
-          extensionName={extensionName}
-          hostUserId={hostUserId}
-          isHost={isHost}
-          onStop={onStop}
-          isPrimary={true}
-        />
+        <div ref={containerRef} className="contents">
+          <ModalSurface
+            surface={s}
+            url={url}
+            extensionName={extensionName}
+            hostUserId={hostUserId}
+            isHost={isHost}
+            onStop={onStop}
+            isPrimary={true}
+          />
+        </div>
       );
     }
     if (s.type === "browser") {
-      return <BrowserSurface surface={s} src={url} title={extensionName} />;
+      return (
+        <div ref={containerRef} className="contents">
+          <BrowserSurface surface={s} src={url} title={extensionName} />
+        </div>
+      );
     }
     if (s.type !== "panel") {
       console.warn(
@@ -277,21 +354,23 @@ export default function ExtensionSurfaceManager({
       );
     }
     return (
-      <SurfacePane
-        surface={s}
-        url={url}
-        extensionName={extensionName}
-        hostUserId={hostUserId}
-        isHost={isHost}
-        onStop={onStop}
-        showHeader={true}
-      />
+      <div ref={containerRef} className="flex flex-col h-full min-h-0">
+        <SurfacePane
+          surface={s}
+          url={url}
+          extensionName={extensionName}
+          hostUserId={hostUserId}
+          isHost={isHost}
+          onStop={onStop}
+          showHeader={true}
+        />
+      </div>
     );
   }
 
   // Multi-surface path.
   return (
-    <>
+    <div ref={containerRef} className="contents">
       {sorted.map((s, idx) => {
         const isPrimary = idx === 0;
 
@@ -354,7 +433,7 @@ export default function ExtensionSurfaceManager({
           </div>
         );
       })}
-    </>
+    </div>
   );
 }
 
