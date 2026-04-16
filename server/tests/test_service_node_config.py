@@ -302,15 +302,9 @@ def test_public_view_falls_back_on_corrupt_file(fresh_data_dir, caplog):
 # ---------------------------------------------------------------------------
 
 async def test_admin_get_requires_auth(client, monkeypatch, tmp_path):
-    from tests.conftest import login_as, logout
     monkeypatch.setenv("CONCORD_DATA_DIR", str(tmp_path))
-    # Non-admin user should get 403.  A missing Authorization header gives
-    # 422 (FastAPI header validation) rather than 401 — test with a real
-    # non-admin identity so the router's require_admin check fires.
-    login_as("@not_admin:test.local")
     resp = await client.get("/api/admin/service-node")
-    assert resp.status_code == 403
-    logout()
+    assert resp.status_code == 401
 
 
 async def test_admin_get_returns_defaults_on_fresh_deploy(

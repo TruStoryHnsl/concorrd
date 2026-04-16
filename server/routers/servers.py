@@ -2,7 +2,7 @@ import asyncio
 import logging
 import shutil
 import time
-from typing import Literal
+from typing import Literal, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -151,13 +151,15 @@ class ServerDiscoverOut(BaseModel):
     member_count: int
 
 
-async def get_user_id(authorization: str = Header(...)) -> str:
+async def get_user_id(authorization: Optional[str] = Header(None)) -> str:
     """Validate the Bearer token against the Matrix homeserver and return the user ID.
 
     The client sends: Authorization: Bearer <matrix_access_token>
     We call /_matrix/client/v3/account/whoami to verify ownership.
     Results are cached for 5 minutes to reduce per-request overhead.
     """
+    if authorization is None:
+        raise HTTPException(401, "Authorization header required")
     if not authorization.startswith("Bearer "):
         raise HTTPException(401, "Authorization header must use Bearer scheme")
 
