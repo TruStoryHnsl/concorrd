@@ -56,21 +56,35 @@ function writeStoredRailOrder(userId: string | null, order: string[]): void {
 }
 
 function normalizeRailOrder(sourceIds: string[], stored: string[] | null): string[] {
+  // Replay stored order. When the + tile is encountered, inject any NEW
+  // sources (not previously in stored) immediately BEFORE it so that
+  // freshly-added Concord/Matrix/Discord sources always default to being
+  // above the + tile rather than below it.
   const next: string[] = [];
   const seen = new Set<string>();
+
   for (const id of stored ?? []) {
-    if (id !== ADD_SOURCE_TILE_ID && !sourceIds.includes(id)) continue;
-    if (seen.has(id)) continue;
+    if (id === ADD_SOURCE_TILE_ID) {
+      // Insert new sources that haven't been placed yet, then the + tile.
+      for (const sid of sourceIds) {
+        if (!seen.has(sid)) { next.push(sid); seen.add(sid); }
+      }
+      next.push(ADD_SOURCE_TILE_ID);
+      seen.add(ADD_SOURCE_TILE_ID);
+      continue;
+    }
+    if (!sourceIds.includes(id) || seen.has(id)) continue; // stale / dupe
     next.push(id);
     seen.add(id);
   }
+
+  // Append any sources not yet placed (+ tile was absent from stored).
   for (const id of sourceIds) {
-    if (!seen.has(id)) {
-      next.push(id);
-      seen.add(id);
-    }
+    if (!seen.has(id)) { next.push(id); seen.add(id); }
   }
+  // Guarantee + tile exists.
   if (!seen.has(ADD_SOURCE_TILE_ID)) next.push(ADD_SOURCE_TILE_ID);
+
   return next;
 }
 

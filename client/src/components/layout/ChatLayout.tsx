@@ -2551,16 +2551,20 @@ function AddSourceModal({
   const handleConnectConcord = async () => {
     const trimmed = host.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
     if (!trimmed) { setError("Enter a hostname"); setScreen("error"); return; }
-    if (!token.trim()) { setError("Enter an invite token"); setScreen("error"); return; }
     setScreen("validating");
     try {
       const { discoverHomeserver } = await import("../../api/wellKnown");
       const config = await discoverHomeserver(trimmed);
-      const validateUrl = `${config.api_base}/invites/validate/${encodeURIComponent(token.trim())}`;
-      const validateRes = await fetch(validateUrl, { credentials: "omit" });
-      if (!validateRes.ok) throw new Error("Token validation failed");
-      const validation = await validateRes.json();
-      if (!validation.valid) throw new Error("Invalid or expired invite token");
+      // Validate invite token only when one was provided. Instances with
+      // open registration (or that the user will log into separately) can
+      // be added with domain-only discovery.
+      if (token.trim()) {
+        const validateUrl = `${config.api_base}/invites/validate/${encodeURIComponent(token.trim())}`;
+        const validateRes = await fetch(validateUrl, { credentials: "omit" });
+        if (!validateRes.ok) throw new Error("Token validation failed");
+        const validation = await validateRes.json();
+        if (!validation.valid) throw new Error("Invalid or expired invite token");
+      }
       addSource({
         host: trimmed,
         instanceName: config.instance_name,
@@ -2865,18 +2869,18 @@ function AddSourceModal({
                 />
               </div>
               <div>
-                <label className="text-xs font-label text-on-surface-variant mb-1.5 block">Invite Token</label>
+                <label className="text-xs font-label text-on-surface-variant mb-1.5 block">Invite Token <span className="opacity-50">(optional)</span></label>
                 <input
                   type="text"
                   value={token}
                   onChange={(e) => setToken(e.target.value)}
-                  placeholder="inv_..."
+                  placeholder="inv_... — leave blank for open instances"
                   className="w-full px-3 py-2 bg-surface-container-highest rounded-lg text-sm text-on-surface border border-outline-variant/20 focus:border-primary/50 focus:outline-none"
                 />
               </div>
               <button
                 onClick={handleConnectConcord}
-                disabled={!host.trim() || !token.trim()}
+                disabled={!host.trim()}
                 className="w-full py-2.5 bg-primary text-on-primary rounded-lg text-sm font-medium disabled:opacity-40 hover:bg-primary/90 transition-colors"
               >
                 Connect

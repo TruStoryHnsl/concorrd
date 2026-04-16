@@ -6,7 +6,7 @@
 [global]
 allow_federation = true
 forbidden_remote_server_names = []
-allowed_remote_server_names = ["^matrix\\.org$", "^mozilla\\.org$", "^concorrd\\.com$"]
+allowed_remote_server_names = ["^matrix\\.org$", "^mozilla\\.org$"]
 
 [global.appservice.concord_discord_2]
 as_token = "as_mVSxf0urwntCOlAzLgYBJqu-CZfLtCRr1--GJNbE6Sk"
@@ -19,7 +19,7 @@ url = "http://concord-discord-bridge:29334"
 
 [[global.appservice.concord_discord_2.users]]
 exclusive = true
-regex = "@(discordbot|_discord_[^:]*):concorrd\\.com"
+regex = "@(discordbot|_discord_[^:]*):192\\.168\\.1\\.152"
 
 [[global.appservice.concord_discord_2.aliases]]
 exclusive = true

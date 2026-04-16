@@ -87,11 +87,24 @@ using the as_token to look up the appservice record. The ``_discord_``
 prefix is reserved for virtual users (puppets); the bridge bot itself
 uses the plain ``discordbot`` name."""
 
-DISCORD_BRIDGE_USER_NAMESPACE_REGEX = r"@(discordbot|_discord_[^:]*):concorrd\.com"
+def _discord_user_namespace_regex() -> str:
+    """Build the appservice user regex anchored to the current server name.
+
+    Reads ``CONDUWUIT_SERVER_NAME`` at call-time so the regex is always
+    correct for any deployment — no personal-instance domain ever appears
+    in source code. Falls back to ``localhost`` to keep tests runnable
+    without an env file.
+    """
+    server_name = os.environ.get("CONDUWUIT_SERVER_NAME", "localhost").strip()
+    escaped = re.escape(server_name)
+    return rf"@(discordbot|_discord_[^:]*):{escaped}"
+
+
+DISCORD_BRIDGE_USER_NAMESPACE_REGEX = _discord_user_namespace_regex()
 """Exclusive namespace for bridged virtual users. Anchored to the server
-name so the regex does not match users on federated homeservers. The
-leading underscore is mautrix-bridges convention for puppet users;
-``discordbot`` is the bridge's own sender bot."""
+name (from ``CONDUWUIT_SERVER_NAME`` env) so the regex does not match
+users on federated homeservers. The leading underscore is mautrix-bridges
+convention for puppet users; ``discordbot`` is the bridge's own sender bot."""
 
 DISCORD_BRIDGE_ALIAS_NAMESPACE_REGEX = r"#_discord_.*"
 """Exclusive namespace for bridged room aliases (DM rooms, guild

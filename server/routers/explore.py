@@ -24,6 +24,7 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import os
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -74,7 +75,15 @@ async def list_federated_servers(
     loop = asyncio.get_event_loop()
     settings = await loop.run_in_executor(None, read_federation)
     hostnames = decode_server_name_patterns(settings.allowed_remote_server_names)
-    return [
-        ExploreServerEntry(domain=host, name=host, description=None)
-        for host in hostnames
-    ]
+
+    # Always show the local instance first. Derived from the required
+    # CONDUWUIT_SERVER_NAME env var — never hardcoded to any domain.
+    local = os.environ.get("CONDUWUIT_SERVER_NAME", "").strip()
+    entries: list[ExploreServerEntry] = []
+    if local:
+        entries.append(ExploreServerEntry(domain=local, name=local, description="This instance"))
+    for host in hostnames:
+        # Skip if the allowlist somehow contains the local domain (avoid dupe)
+        if host and host != local:
+            entries.append(ExploreServerEntry(domain=host, name=host, description=None))
+    return entries

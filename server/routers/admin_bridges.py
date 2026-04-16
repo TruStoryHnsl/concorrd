@@ -103,7 +103,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/bridges/discord", tags=["admin", "bridges"])
 
 _DISCORD_API_URL = "https://discord.com/api/v10"
-_DISCORD_API_USER_AGENT = "Concord Discord Bridge (https://concorrd.com, 0.1)"
+_DISCORD_API_USER_AGENT = "Concord Discord Bridge (https://github.com/TruStoryHnsl/concord, 0.1)"
 
 
 async def _discord_api_get(path: str, token: str) -> Any:
