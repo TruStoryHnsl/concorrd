@@ -993,6 +993,10 @@ export async function updateMemberPermissions(
 export interface InstanceInfo {
   name: string;
   require_totp: boolean;
+  /** True when OPEN_REGISTRATION env var is enabled on the server. */
+  open_registration: boolean;
+  /** True on first boot before the admin account has been created. */
+  first_boot: boolean;
 }
 
 export async function getInstanceInfo(): Promise<InstanceInfo> {

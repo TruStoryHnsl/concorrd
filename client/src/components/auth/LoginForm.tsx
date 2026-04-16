@@ -17,6 +17,15 @@ export function LoginForm() {
   const [validatingInvite, setValidatingInvite] = useState(false);
   const [instanceName, setInstanceName] = useState("Concord");
   const [showDownloads, setShowDownloads] = useState(false);
+  const [openRegistration, setOpenRegistration] = useState(false);
+  const [firstBoot, setFirstBoot] = useState(false);
+  /**
+   * Set to true when the admin account was just created in this page session
+   * (first_boot was true before registration, false after).
+   * Triggers the post-setup OPEN_REGISTRATION banner.
+   */
+  const [firstBootJustCompleted, setFirstBootJustCompleted] = useState(false);
+  const [showRegBanner, setShowRegBanner] = useState(false);
 
   // TOTP verification state
   const [pendingLogin, setPendingLogin] = useState<{
@@ -33,6 +42,11 @@ export function LoginForm() {
         if (info.name) {
           setInstanceName(info.name);
           document.title = info.name;
+        }
+        setOpenRegistration(info.open_registration ?? false);
+        if (info.first_boot) {
+          setFirstBoot(true);
+          setMode("register");
         }
       })
       .catch(() => {});
@@ -91,12 +105,18 @@ export function LoginForm() {
         }
         login(result.accessToken, result.userId, result.deviceId);
       } else {
-        if (!inviteToken.trim()) {
+        if (!firstBoot && !openRegistration && !inviteToken.trim()) {
           setError("A valid registration token is required to create an account.");
           setLoading(false);
           return;
         }
+        const wasFirstBoot = firstBoot;
         const result = await registerUser(username, password, inviteToken || undefined);
+        if (wasFirstBoot && openRegistration) {
+          // Admin account just created; registration is still open — warn the admin.
+          setFirstBootJustCompleted(true);
+          setShowRegBanner(true);
+        }
         login(result.access_token, result.user_id, result.device_id);
         sessionStorage.removeItem(INVITE_STORAGE_KEY);
         window.history.replaceState({}, "", window.location.pathname);
@@ -167,6 +187,78 @@ export function LoginForm() {
           {instanceName}
         </h1>
 
+        {/* ── OPEN_REGISTRATION warning banner (post first-boot) ── */}
+        {showRegBanner && firstBootJustCompleted && openRegistration && (
+          <div
+            className="mb-4 px-4 py-3 bg-tertiary/15 border border-tertiary/40 rounded-xl text-sm font-body"
+            data-testid="open-registration-banner"
+          >
+            <div className="flex items-start gap-2">
+              <span className="material-symbols-outlined text-base text-tertiary mt-0.5 flex-shrink-0">
+                warning
+              </span>
+              <div className="min-w-0">
+                <p className="text-on-surface font-medium mb-1">Registration is open</p>
+                <p className="text-on-surface-variant text-xs leading-relaxed">
+                  Anyone can create an account on this instance. When setup is
+                  complete, set{" "}
+                  <code className="font-mono bg-surface-container px-1 rounded text-xs">
+                    OPEN_REGISTRATION=false
+                  </code>{" "}
+                  in your <code className="font-mono bg-surface-container px-1 rounded text-xs">.env</code>{" "}
+                  and restart the server.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRegBanner(false)}
+                className="text-on-surface-variant hover:text-on-surface flex-shrink-0 transition-colors"
+                aria-label="Dismiss"
+              >
+                <span className="material-symbols-outlined text-base">close</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── First-boot: create admin account ── */}
+        {firstBoot ? (
+          <>
+            <p className="text-center text-on-surface-variant text-sm mt-2 mb-6 font-body">
+              Welcome! Create your admin account to get started.
+            </p>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <input
+                type="text"
+                placeholder="Username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full px-4 py-3 bg-surface-container rounded-xl text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30 focus:bg-surface-container-high transition-all font-body"
+                required
+                autoFocus
+              />
+              <input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 bg-surface-container rounded-xl text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30 focus:bg-surface-container-high transition-all font-body"
+                required
+              />
+              {error && <p className="text-error text-sm font-body">{error}</p>}
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3 primary-glow text-on-primary font-headline font-semibold rounded-xl transition-all hover:brightness-110 disabled:opacity-40 shadow-lg shadow-primary/20"
+              >
+                {loading ? "Creating account..." : "Create Admin Account"}
+              </button>
+            </form>
+          </>
+        ) : (
+          /* ── Normal login / register ── */
+          <>
+
         {validatingInvite && (
           <p className="text-center text-on-surface-variant text-sm mb-6 mt-6 font-body">
             Validating invite...
@@ -196,19 +288,19 @@ export function LoginForm() {
             className="w-full px-4 py-3 bg-surface-container rounded-xl text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30 focus:bg-surface-container-high transition-all font-body"
             required
           />
-          {/* Invite token — only visible in register mode. Required by
-              default when the server has OPEN_REGISTRATION disabled. */}
+          {/* Invite token — only visible in register mode. Not required
+              when the server has OPEN_REGISTRATION enabled. */}
           {mode === "register" && (
             <input
               type="text"
-              placeholder="Invite token"
+              placeholder={openRegistration ? "Invite token (optional)" : "Invite token"}
               value={inviteToken}
               onChange={(e) => setInviteToken(e.target.value)}
               className="w-full px-4 py-3 bg-surface-container rounded-xl text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30 focus:bg-surface-container-high transition-all font-body font-mono tracking-wider"
               autoComplete="off"
               autoCapitalize="off"
               spellCheck={false}
-              required
+              required={!openRegistration}
             />
           )}
           {error && <p className="text-error text-sm font-body">{error}</p>}
@@ -232,7 +324,7 @@ export function LoginForm() {
               onClick={mode !== "register" ? () => setMode("register") : undefined}
               disabled={
                 mode === "register" &&
-                (loading || validatingInvite || !inviteToken.trim())
+                (loading || validatingInvite || (!openRegistration && !inviteToken.trim()))
               }
               className={`flex-1 py-3 font-headline font-semibold rounded-xl transition-all ${
                 mode === "register"
@@ -277,6 +369,9 @@ export function LoginForm() {
             </div>
           )}
         </div>
+        )}
+          </>
+          /* end normal login/register */
         )}
         </>
         )}
