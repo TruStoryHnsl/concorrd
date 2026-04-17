@@ -115,7 +115,7 @@ class SilentBoundary extends Component<{ children: ReactNode; fallback?: ReactNo
   }
 }
 
-type MobileView = "sources" | "servers" | "channels" | "chat" | "actions" | "dms" | "settings";
+type MobileView = "sources" | "servers" | "channels" | "chat" | "dms" | "settings";
 
 /** True when running inside a Tauri native shell (iOS, Android, desktop).
  *  `__TAURI_INTERNALS__` is the canonical Tauri v2 global — see the
@@ -429,8 +429,8 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const handleTvBack = useCallback(() => {
     if (mobileView === "chat") setMobileView("channels");
     else if (mobileView === "channels") setMobileView("servers");
-    else if (mobileView === "settings") { closeSettings(); closeServerSettings(); setMobileView("chat"); }
-    else if (mobileView === "dms") setMobileView("chat");
+    else if (mobileView === "settings") { closeSettings(); closeServerSettings(); setMobileView(prevPageDepthRef.current); }
+    else if (mobileView === "dms") setMobileView(prevPageDepthRef.current);
   }, [mobileView, closeSettings, closeServerSettings]);
 
   useDpadNav({
@@ -771,7 +771,11 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // the store but leave mobileView on "channels", so nothing visible would
   // happen and server owners on mobile had no path to manage their server.
   useEffect(() => {
-    if (settingsOpen || serverSettingsId) setMobileView("settings");
+    if (settingsOpen || serverSettingsId) {
+      if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
+      setMobileView("settings");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsOpen, serverSettingsId]);
 
   useEffect(() => {
@@ -902,6 +906,11 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // scroll position so the top bar and pills reflect the visible panel.
   const scrollStripRef = useRef<HTMLDivElement>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // INS-047: restore the page-depth view when closing settings/DMs
+  const prevPageDepthRef = useRef<MobileView>("chat");
+  // INS-042: pill hide/show on chat scroll
+  const [pillHidden, setPillHidden] = useState(false);
+  const pillLastScrollY = useRef(0);
 
   const scrollToPanel = useCallback((panelIndex: number) => {
     const strip = scrollStripRef.current;
@@ -935,6 +944,29 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     const depthIdx = PAGE_DEPTH.indexOf(mobileView);
     if (depthIdx >= 0) scrollToPanel(depthIdx);
   }, [mobileView, scrollToPanel]);
+
+  // INS-042: hide pill row when scrolling down in chat, show on scroll up / near top.
+  useEffect(() => {
+    if (mobileView !== "chat") {
+      setPillHidden(false);
+      pillLastScrollY.current = 0;
+      return;
+    }
+    const handleScroll = (e: Event) => {
+      const target = e.target as Element;
+      if (!target || !("scrollTop" in target)) return;
+      const scrollTop = (target as Element).scrollTop;
+      if (scrollTop - pillLastScrollY.current > 50) {
+        setPillHidden(true);
+        pillLastScrollY.current = scrollTop;
+      } else if (pillLastScrollY.current - scrollTop > 10 || scrollTop < 100) {
+        setPillHidden(false);
+        pillLastScrollY.current = scrollTop;
+      }
+    };
+    document.addEventListener("scroll", handleScroll, { capture: true });
+    return () => document.removeEventListener("scroll", handleScroll, { capture: true });
+  }, [mobileView]);
 
   // The chain MUST NOT be broken by any new ancestor introducing overflow:
   // visible or removing min-h-0 — that would let MessageInput's auto-grow
@@ -1000,7 +1032,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         ) : mobileView === "settings" ? (
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <button
-              onClick={() => { closeSettings(); closeServerSettings(); setMobileView("chat"); }}
+              onClick={() => { closeSettings(); closeServerSettings(); setMobileView(prevPageDepthRef.current); }}
               className="text-on-surface-variant hover:text-on-surface transition-colors"
             >
               <span className="material-symbols-outlined text-xl">arrow_back</span>
@@ -1023,12 +1055,38 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           <TopBarIconButton icon="help" label="Help" onClick={() => setShowHelp(true)} />
           <TopBarIconButton icon="bar_chart" label="Your stats" onClick={() => setStatsTarget({ type: "user" })} />
           <TopBarIconButton icon="bug_report" label="Report a bug" onClick={() => setShowBugReport(true)} />
+          <TopBarIconButton
+            icon="settings"
+            label="Settings"
+            onClick={() => {
+              if (mobileView === "settings" || settingsOpen || serverSettingsId) {
+                closeServerSettings();
+                closeSettings();
+                setMobileView(prevPageDepthRef.current);
+                return;
+              }
+              if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
+              openSettings();
+              setMobileView("settings");
+            }}
+          />
         </div>
         <div className="flex min-[361px]:hidden flex-shrink-0">
           <TopBarOverflowMenu
             onHelp={() => setShowHelp(true)}
             onStats={() => setStatsTarget({ type: "user" })}
             onBug={() => setShowBugReport(true)}
+            onSettings={() => {
+              if (mobileView === "settings" || settingsOpen || serverSettingsId) {
+                closeServerSettings();
+                closeSettings();
+                setMobileView(prevPageDepthRef.current);
+                return;
+              }
+              if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
+              openSettings();
+              setMobileView("settings");
+            }}
           />
         </div>
         {/* T003: Account button — visible on every mobile view */}
@@ -1049,19 +1107,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             All three panels are always mounted (servers, channels, chat).
             CSS scroll-snap handles the swipe physics + snap-to-nearest.
             DMs and Settings are full-screen overlays ABOVE the strip. */}
-        {(mobileView === "dms" || mobileView === "settings" || mobileView === "actions") ? (
+        {(mobileView === "dms" || mobileView === "settings") ? (
           // Non-page views: full-screen, no scroll strip
           mobileView === "dms" ? (
             <SilentBoundary>
               <DMSidebar mobile onDMSelect={handleMobileDMSelect} />
             </SilentBoundary>
-          ) : mobileView === "actions" ? (
-            <ActionsPanel
-              onReconnectLast={handleReconnectLastChannel}
-              onHostExchange={handleHostExchange}
-              onOpenProfile={handleOpenProfile}
-              onOpenNodeSettings={handleOpenNodeSettings}
-            />
           ) : (
             <div className="h-full flex flex-col min-h-0">
               <SettingsPanel />
@@ -1080,7 +1131,11 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             }}
             onScroll={handleScrollSnap}
           >
-            {/* Panel: Sources (native only) */}
+            {/* Panel ordering contract (INS-038):
+                Native: [sources(0), servers(1), channels(2), chat(3)] — matches PAGE_DEPTH.
+                Web:    [servers(0), channels(1), chat(2)] — no sources panel.
+                scrollToPanel(n) uses PAGE_DEPTH indices which must match child order here. */}
+            {/* Panel: Sources (native only, index 0) */}
             {isNativeApp && (
               <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
                 <SourcesPanel
@@ -1121,27 +1176,21 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         )}
       </div>
 
-      {/* INS-020: New 4-pill bottom bar with direct navigation. */}
+      {/* INS-020: New 4-pill bottom bar with direct navigation.
+          INS-042: slides out on chat scroll down, slides in on scroll up. */}
       <MobilePillRow
         active={mobileView}
         pageDepth={PAGE_DEPTH.includes(mobileView) ? mobileView : "servers"}
         voiceActive={voiceConnected}
         voiceChannelName={useVoiceStore.getState().channelName ?? undefined}
         onVoiceReturn={() => setMobileView("chat")}
+        hidden={pillHidden}
         onNavigate={(view) => {
           if (view === "dms") {
+            if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
             useDMStore.getState().setDMActive(true);
           } else if (view === "servers" || view === "channels" || view === "chat") {
             useDMStore.getState().setDMActive(false);
-          }
-          if (view === "settings") {
-            if (mobileView === "settings" || settingsOpen || serverSettingsId) {
-              closeServerSettings();
-              closeSettings();
-              setMobileView("chat");
-              return;
-            }
-            openSettings();
           }
           setMobileView(view);
         }}
@@ -2304,6 +2353,7 @@ function MobilePillRow({
   voiceActive,
   voiceChannelName,
   onVoiceReturn,
+  hidden,
 }: {
   active: MobileView;
   onNavigate: (view: MobileView) => void;
@@ -2311,6 +2361,7 @@ function MobilePillRow({
   voiceActive?: boolean;
   voiceChannelName?: string;
   onVoiceReturn?: () => void;
+  hidden?: boolean;
 }) {
   const pageMeta = PAGE_PILL_META[pageDepth] ?? PAGE_PILL_META.servers;
   const isOnPage = PAGE_DEPTH.includes(active);
@@ -2334,30 +2385,16 @@ function MobilePillRow({
         }]
       : []),
     {
-      key: "actions",
-      icon: "bolt",
-      label: "Actions",
-      isActive: active === "actions",
-      onClick: () => onNavigate("actions"),
-    },
-    {
       key: "dms",
       icon: "chat_bubble",
       label: "DMs",
       isActive: active === "dms",
       onClick: () => onNavigate("dms"),
     },
-    {
-      key: "settings",
-      icon: "settings",
-      label: "Settings",
-      isActive: active === "settings",
-      onClick: () => onNavigate("settings"),
-    },
   ];
 
   return (
-    <div className="concord-mobile-nav-wrap safe-bottom flex-shrink-0">
+    <div className={`concord-mobile-nav-wrap safe-bottom flex-shrink-0 transition-transform duration-300 ${hidden ? "translate-y-full opacity-0 pointer-events-none" : ""}`}>
       <nav
         className="concord-mobile-pill-row mx-3 mb-2 rounded-full relative flex items-center justify-between gap-1 px-2 py-1.5"
         aria-label="Mobile navigation"
@@ -2389,86 +2426,6 @@ function MobilePillRow({
         ))}
       </nav>
     </div>
-  );
-}
-
-/* ── Quick Actions Sheet (INS-020 redesign) ──
-   Slide-up sheet with a search/command bar at the top and a grid of
-   quick actions below. Opened by tapping the ⚡ Actions pill. The nav
-   grid is gone — Page/DMs/Settings are handled directly by the pill
-   row taps; depth navigation is via swipe or back arrows. */
-/* ── Actions Panel (INS-020) ──
-   Full-screen panel for quick actions. Replaces the old slide-up sheet.
-   Renders as a standard mobile view, same as DMs or Settings. */
-function ActionsPanel({
-  onReconnectLast,
-  onHostExchange,
-  onOpenProfile,
-  onOpenNodeSettings,
-}: {
-  onReconnectLast: () => void;
-  onHostExchange: () => void;
-  onOpenProfile: () => void;
-  onOpenNodeSettings: () => void;
-}) {
-  const [searchQuery, setSearchQuery] = useState("");
-
-  return (
-    <div className="h-full bg-surface-container-low overflow-y-auto overflow-x-hidden overscroll-y-auto p-4 flex flex-col">
-      <h3 className="text-xs font-label font-medium text-on-surface-variant uppercase tracking-widest px-1 mb-4">
-        Quick Actions
-      </h3>
-
-      {/* Search / command bar */}
-      <div className="relative mb-4">
-        <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-lg">
-          search
-        </span>
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search servers, channels, users..."
-          className="w-full h-11 pl-10 pr-4 rounded-xl bg-surface-container-high border border-outline-variant/20 text-on-surface text-sm font-body placeholder:text-on-surface-variant/60 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
-        />
-      </div>
-
-      {/* Action grid — Host exchange hidden on iOS (can't host) */}
-      <div className="grid grid-cols-2 gap-3">
-        <QuickActionButton icon="replay" label="Reconnect last" onClick={onReconnectLast} />
-        {!isNativeApp && (
-          <QuickActionButton icon="add_call" label="Host exchange" onClick={onHostExchange} />
-        )}
-        <QuickActionButton icon="person" label="Profile" onClick={onOpenProfile} />
-        <QuickActionButton icon="tune" label="Node settings" onClick={onOpenNodeSettings} />
-      </div>
-    </div>
-  );
-}
-
-// QuickActionsSheet removed — replaced by ActionsPanel (full-screen view).
-
-/* ── Quick Action Button (TASK 26) ── */
-function QuickActionButton({
-  icon,
-  label,
-  onClick,
-}: {
-  icon: string;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="btn-press flex items-center gap-3 min-h-[56px] px-4 py-3 rounded-xl bg-surface-container-high/60 hover:bg-surface-container-high text-on-surface transition-colors text-left"
-    >
-      <span className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-        <span className="material-symbols-outlined text-primary text-lg">{icon}</span>
-      </span>
-      <span className="text-sm font-label font-medium min-w-0 truncate">{label}</span>
-    </button>
   );
 }
 
@@ -3149,10 +3106,12 @@ function TopBarOverflowMenu({
   onHelp,
   onStats,
   onBug,
+  onSettings,
 }: {
   onHelp: () => void;
   onStats: () => void;
   onBug: () => void;
+  onSettings: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -3193,6 +3152,7 @@ function TopBarOverflowMenu({
           <OverflowMenuItem icon="help" label="Help" onClick={handle(onHelp)} />
           <OverflowMenuItem icon="bar_chart" label="Your stats" onClick={handle(onStats)} />
           <OverflowMenuItem icon="bug_report" label="Report a bug" onClick={handle(onBug)} />
+          <OverflowMenuItem icon="settings" label="Settings" onClick={handle(onSettings)} />
         </div>
       )}
     </div>
