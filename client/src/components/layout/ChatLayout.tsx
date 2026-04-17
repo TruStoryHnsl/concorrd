@@ -115,7 +115,7 @@ class SilentBoundary extends Component<{ children: ReactNode; fallback?: ReactNo
   }
 }
 
-type MobileView = "sources" | "servers" | "channels" | "chat" | "actions" | "dms" | "settings";
+type MobileView = "sources" | "servers" | "channels" | "chat" | "dms" | "settings";
 
 /** A parallel browse tab — each tab has its own independent page-depth position. */
 interface BrowseTab {
@@ -153,6 +153,7 @@ function lastChannelStorageKey(userId: string | null): string {
 export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const syncing = useMatrixSync();
   const voiceConnected = useVoiceStore((s) => s.connected);
+  const voiceMicGranted = useVoiceStore((s) => s.micGranted);
   const client = useAuthStore((s) => s.client);
   const userId = useAuthStore((s) => s.userId);
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -218,10 +219,10 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   });
 
   // Shared overlay state — not per-tab.
-  // Overlay views (dms, settings, actions) cover the whole screen on top of
+  // Overlay views (dms, settings) cover the whole screen on top of
   // whichever browse tab is active. Switching to a page-depth view clears
   // the overlay, restoring the active tab's content.
-  const [overlayView, setOverlayView] = useState<"dms" | "settings" | "actions" | null>(null);
+  const [overlayView, setOverlayView] = useState<"dms" | "settings" | null>(null);
 
   // Convenience accessors
   const tabs = tabState.tabs;
@@ -237,7 +238,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // Page-depth views update the active tab's position; overlay views update
   // the shared overlay. Switching to a page-depth view clears any overlay.
   const setMobileView = useCallback((view: MobileView) => {
-    if (view === "dms" || view === "settings" || view === "actions") {
+    if (view === "dms" || view === "settings") {
       setOverlayView(view);
     } else {
       setOverlayView(null);
@@ -503,8 +504,8 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const handleTvBack = useCallback(() => {
     if (mobileView === "chat") setMobileView("channels");
     else if (mobileView === "channels") setMobileView("servers");
-    else if (mobileView === "settings") { closeSettings(); closeServerSettings(); setMobileView("chat"); }
-    else if (mobileView === "dms") setMobileView("chat");
+    else if (mobileView === "settings") { closeSettings(); closeServerSettings(); setMobileView(prevPageDepthRef.current); }
+    else if (mobileView === "dms") setMobileView(prevPageDepthRef.current);
   }, [mobileView, closeSettings, closeServerSettings]);
 
   useDpadNav({
@@ -845,7 +846,11 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // the store but leave mobileView on "channels", so nothing visible would
   // happen and server owners on mobile had no path to manage their server.
   useEffect(() => {
-    if (settingsOpen || serverSettingsId) setMobileView("settings");
+    if (settingsOpen || serverSettingsId) {
+      if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
+      setMobileView("settings");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsOpen, serverSettingsId]);
 
   useEffect(() => {
@@ -976,6 +981,15 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // scroll position so the top bar and pills reflect the visible panel.
   const scrollStripRef = useRef<HTMLDivElement>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevPageDepthRef = useRef<MobileView>("chat");
+  const [pillHidden, setPillHidden] = useState(false);
+  const pillLastScrollY = useRef(0);
+  // INS-045: left-edge tap zone overlay
+  const [leftEdgeOverlay, setLeftEdgeOverlay] = useState<"servers" | "sources" | null>(null);
+  // INS-046: right-edge tap zone overlay
+  const [rightEdgeOverlay, setRightEdgeOverlay] = useState(false);
+
+  const skipNextScrollSyncRef = useRef(false);
 
   const scrollToPanel = useCallback((panelIndex: number) => {
     const strip = scrollStripRef.current;
@@ -990,6 +1004,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const handleScrollSnap = useCallback(() => {
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
     scrollTimerRef.current = setTimeout(() => {
+      if (skipNextScrollSyncRef.current) { skipNextScrollSyncRef.current = false; return; }
       const strip = scrollStripRef.current;
       if (!strip) return;
       const panelWidth = strip.clientWidth;
@@ -1009,6 +1024,29 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     const depthIdx = PAGE_DEPTH.indexOf(mobileView);
     if (depthIdx >= 0) scrollToPanel(depthIdx);
   }, [mobileView, scrollToPanel]);
+
+  // INS-042: hide pill row on chat scroll-down, show on scroll-up
+  useEffect(() => {
+    if (mobileView !== "chat") {
+      setPillHidden(false);
+      pillLastScrollY.current = 0;
+      return;
+    }
+    const handleScroll = (e: Event) => {
+      const target = e.target as Element;
+      if (!target || !("scrollTop" in target)) return;
+      const scrollTop = (target as Element).scrollTop;
+      if (scrollTop - pillLastScrollY.current > 50) {
+        setPillHidden(true);
+        pillLastScrollY.current = scrollTop;
+      } else if (pillLastScrollY.current - scrollTop > 10 || scrollTop < 100) {
+        setPillHidden(false);
+        pillLastScrollY.current = scrollTop;
+      }
+    };
+    document.addEventListener("scroll", handleScroll, { capture: true });
+    return () => document.removeEventListener("scroll", handleScroll, { capture: true });
+  }, [mobileView]);
 
   // The chain MUST NOT be broken by any new ancestor introducing overflow:
   // visible or removing min-h-0 — that would let MessageInput's auto-grow
@@ -1074,7 +1112,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         ) : mobileView === "settings" ? (
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <button
-              onClick={() => { closeSettings(); closeServerSettings(); setMobileView("chat"); }}
+              onClick={() => { closeSettings(); closeServerSettings(); setMobileView(prevPageDepthRef.current); }}
               className="text-on-surface-variant hover:text-on-surface transition-colors"
             >
               <span className="material-symbols-outlined text-xl">arrow_back</span>
@@ -1093,16 +1131,45 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             (640px) because mobile real estate is precious — it lives in the
             account sheet on very small screens instead. */}
         <div className="hidden min-[361px]:flex items-center gap-1 flex-shrink-0">
+          {voiceConnected && voiceMicGranted && (
+            <div className="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Microphone active" />
+          )}
           <ConnectedHostLabel compact />
           <TopBarIconButton icon="help" label="Help" onClick={() => setShowHelp(true)} />
           <TopBarIconButton icon="bar_chart" label="Your stats" onClick={() => setStatsTarget({ type: "user" })} />
           <TopBarIconButton icon="bug_report" label="Report a bug" onClick={() => setShowBugReport(true)} />
+          <TopBarIconButton
+            icon="settings"
+            label="Settings"
+            onClick={() => {
+              if (mobileView === "settings" || settingsOpen || serverSettingsId) {
+                closeServerSettings();
+                closeSettings();
+                setMobileView(prevPageDepthRef.current);
+                return;
+              }
+              if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
+              openSettings();
+              setMobileView("settings");
+            }}
+          />
         </div>
         <div className="flex min-[361px]:hidden flex-shrink-0">
           <TopBarOverflowMenu
             onHelp={() => setShowHelp(true)}
             onStats={() => setStatsTarget({ type: "user" })}
             onBug={() => setShowBugReport(true)}
+            onSettings={() => {
+              if (mobileView === "settings" || settingsOpen || serverSettingsId) {
+                closeServerSettings();
+                closeSettings();
+                setMobileView(prevPageDepthRef.current);
+                return;
+              }
+              if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
+              openSettings();
+              setMobileView("settings");
+            }}
           />
         </div>
         {/* T003: Account button — visible on every mobile view */}
@@ -1118,24 +1185,17 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       </div>
 
       {/* Main content area */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden relative">
         {/* Page-depth views: horizontal scroll-snap strip.
             All three panels are always mounted (servers, channels, chat).
             CSS scroll-snap handles the swipe physics + snap-to-nearest.
             DMs and Settings are full-screen overlays ABOVE the strip. */}
-        {(mobileView === "dms" || mobileView === "settings" || mobileView === "actions") ? (
+        {(mobileView === "dms" || mobileView === "settings") ? (
           // Non-page views: full-screen, no scroll strip
           mobileView === "dms" ? (
             <SilentBoundary>
               <DMSidebar mobile onDMSelect={handleMobileDMSelect} />
             </SilentBoundary>
-          ) : mobileView === "actions" ? (
-            <ActionsPanel
-              onReconnectLast={handleReconnectLastChannel}
-              onHostExchange={handleHostExchange}
-              onOpenProfile={handleOpenProfile}
-              onOpenNodeSettings={handleOpenNodeSettings}
-            />
           ) : (
             <div className="h-full flex flex-col min-h-0">
               <SettingsPanel />
@@ -1193,10 +1253,76 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             )}
           </div>
         )}
+
+        {/* INS-045: Left-edge tap zone — shows previous panel as tile overlay */}
+        {!(mobileView === "dms" || mobileView === "settings") && mobileView !== "sources" && mobileView !== "servers" && (
+          <div
+            className="absolute left-0 top-0 w-6 h-full z-10"
+            onPointerDown={() => {
+              const prevIdx = PAGE_DEPTH.indexOf(mobileView) - 1;
+              if (prevIdx >= 0) {
+                const prev = PAGE_DEPTH[prevIdx];
+                setLeftEdgeOverlay(prev === "sources" ? "sources" : "servers");
+              }
+            }}
+          />
+        )}
+        {leftEdgeOverlay && (
+          <div
+            className="absolute inset-0 z-20 flex items-center"
+            onPointerDown={() => setLeftEdgeOverlay(null)}
+          >
+            <div className="ml-2 rounded-2xl bg-surface-container shadow-xl border border-outline-variant/20 p-4 animate-[fadeSlideUp_0.15s_ease-out]">
+              <button
+                className="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-surface-container-high transition-colors text-sm text-on-surface"
+                onPointerDown={(e) => { e.stopPropagation(); setLeftEdgeOverlay(null); setMobileView(leftEdgeOverlay); }}
+              >
+                <span className="material-symbols-outlined text-lg">{leftEdgeOverlay === "sources" ? "hub" : "dns"}</span>
+                {leftEdgeOverlay === "sources" ? "Sources" : "Servers"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* INS-046: Right-edge tap zone — contextual shortcut tiles */}
+        {!(mobileView === "dms" || mobileView === "settings") && mobileView !== "chat" && (
+          <div
+            className="absolute right-0 top-0 w-6 h-full z-10"
+            onPointerDown={() => setRightEdgeOverlay(true)}
+          />
+        )}
+        {rightEdgeOverlay && (
+          <div
+            className="absolute inset-0 z-20 flex items-center justify-end"
+            onPointerDown={() => setRightEdgeOverlay(false)}
+          >
+            <div className="mr-2 rounded-2xl bg-surface-container shadow-xl border border-outline-variant/20 p-4 animate-[fadeSlideUp_0.15s_ease-out] flex flex-col gap-2">
+              {mobileView === "servers" && (
+                <button
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-surface-container-high transition-colors text-sm text-on-surface"
+                  onPointerDown={(e) => { e.stopPropagation(); setRightEdgeOverlay(false); setMobileView("channels"); }}
+                >
+                  <span className="material-symbols-outlined text-lg">tag</span>
+                  Channels
+                </button>
+              )}
+              {mobileView === "channels" && (
+                <button
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-surface-container-high transition-colors text-sm text-on-surface"
+                  onPointerDown={(e) => { e.stopPropagation(); setRightEdgeOverlay(false); setMobileView("chat"); }}
+                >
+                  <span className="material-symbols-outlined text-lg">forum</span>
+                  Chat
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* INS-044: Bottom pill row with multi-tab browse support. */}
       <MobilePillRow
+        hidden={pillHidden}
         active={mobileView}
         pageDepth={PAGE_DEPTH.includes(mobileView) ? mobileView : "servers"}
         voiceActive={voiceConnected}
@@ -1208,6 +1334,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         onSwitchTab={switchToTab}
         onNavigate={(view) => {
           if (view === "dms") {
+            if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
             useDMStore.getState().setDMActive(true);
           } else if (view === "servers" || view === "channels" || view === "chat") {
             useDMStore.getState().setDMActive(false);
@@ -1216,10 +1343,14 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             if (mobileView === "settings" || settingsOpen || serverSettingsId) {
               closeServerSettings();
               closeSettings();
-              setMobileView("chat");
+              setMobileView(prevPageDepthRef.current);
               return;
             }
+            if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
             openSettings();
+          }
+          if (view === "servers" || view === "channels" || view === "chat" || view === "sources") {
+            skipNextScrollSyncRef.current = true;
           }
           setMobileView(view);
         }}
@@ -2386,6 +2517,7 @@ function MobilePillRow({
   activeTabId,
   onAddTab,
   onSwitchTab,
+  hidden,
 }: {
   active: MobileView;
   onNavigate: (view: MobileView) => void;
@@ -2401,12 +2533,14 @@ function MobilePillRow({
   onAddTab?: () => void;
   /** INS-044: callback to switch to an existing tab. */
   onSwitchTab?: (id: string) => void;
+  /** INS-042: hide the pill row (e.g. when scrolling down in chat). */
+  hidden?: boolean;
 }) {
   const isOnPage = PAGE_DEPTH.includes(active);
   const tabs = browseTabs ?? [];
 
-  // Fixed right-hand pills: [⚡ Actions] [💬 DMs] [⚙️ Settings]
-  // Voice persistence pill inserts before them when active.
+  // Fixed right-hand pills: [💬 DMs] (+ optional Voice)
+  // Settings moved to top bar (INS-040). Actions removed (INS-041).
   const rightPills: { key: string; icon: string; label: string; isActive: boolean; onClick: () => void }[] = [
     ...(voiceActive
       ? [{
@@ -2418,30 +2552,16 @@ function MobilePillRow({
         }]
       : []),
     {
-      key: "actions",
-      icon: "bolt",
-      label: "Actions",
-      isActive: active === "actions",
-      onClick: () => onNavigate("actions"),
-    },
-    {
       key: "dms",
       icon: "chat_bubble",
       label: "DMs",
       isActive: active === "dms",
       onClick: () => onNavigate("dms"),
     },
-    {
-      key: "settings",
-      icon: "settings",
-      label: "Settings",
-      isActive: active === "settings",
-      onClick: () => onNavigate("settings"),
-    },
   ];
 
   return (
-    <div className="concord-mobile-nav-wrap safe-bottom flex-shrink-0">
+    <div className={`concord-mobile-nav-wrap safe-bottom flex-shrink-0 transition-transform duration-300 ${hidden ? "translate-y-full opacity-0 pointer-events-none" : ""}`}>
       <nav
         className="concord-mobile-pill-row mx-3 mb-2 rounded-full relative flex items-center gap-1 px-2 py-1.5"
         aria-label="Mobile navigation"
@@ -2520,85 +2640,7 @@ function MobilePillRow({
   );
 }
 
-/* ── Quick Actions Sheet (INS-020 redesign) ──
-   Slide-up sheet with a search/command bar at the top and a grid of
-   quick actions below. Opened by tapping the ⚡ Actions pill. The nav
-   grid is gone — Page/DMs/Settings are handled directly by the pill
-   row taps; depth navigation is via swipe or back arrows. */
-/* ── Actions Panel (INS-020) ──
-   Full-screen panel for quick actions. Replaces the old slide-up sheet.
-   Renders as a standard mobile view, same as DMs or Settings. */
-function ActionsPanel({
-  onReconnectLast,
-  onHostExchange,
-  onOpenProfile,
-  onOpenNodeSettings,
-}: {
-  onReconnectLast: () => void;
-  onHostExchange: () => void;
-  onOpenProfile: () => void;
-  onOpenNodeSettings: () => void;
-}) {
-  const [searchQuery, setSearchQuery] = useState("");
-
-  return (
-    <div className="h-full bg-surface-container-low overflow-y-auto overflow-x-hidden overscroll-y-auto p-4 flex flex-col">
-      <h3 className="text-xs font-label font-medium text-on-surface-variant uppercase tracking-widest px-1 mb-4">
-        Quick Actions
-      </h3>
-
-      {/* Search / command bar */}
-      <div className="relative mb-4">
-        <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-lg">
-          search
-        </span>
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search servers, channels, users..."
-          className="w-full h-11 pl-10 pr-4 rounded-xl bg-surface-container-high border border-outline-variant/20 text-on-surface text-sm font-body placeholder:text-on-surface-variant/60 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
-        />
-      </div>
-
-      {/* Action grid — Host exchange hidden on iOS (can't host) */}
-      <div className="grid grid-cols-2 gap-3">
-        <QuickActionButton icon="replay" label="Reconnect last" onClick={onReconnectLast} />
-        {!isNativeApp && (
-          <QuickActionButton icon="add_call" label="Host exchange" onClick={onHostExchange} />
-        )}
-        <QuickActionButton icon="person" label="Profile" onClick={onOpenProfile} />
-        <QuickActionButton icon="tune" label="Node settings" onClick={onOpenNodeSettings} />
-      </div>
-    </div>
-  );
-}
-
-// QuickActionsSheet removed — replaced by ActionsPanel (full-screen view).
-
-/* ── Quick Action Button (TASK 26) ── */
-function QuickActionButton({
-  icon,
-  label,
-  onClick,
-}: {
-  icon: string;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="btn-press flex items-center gap-3 min-h-[56px] px-4 py-3 rounded-xl bg-surface-container-high/60 hover:bg-surface-container-high text-on-surface transition-colors text-left"
-    >
-      <span className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-        <span className="material-symbols-outlined text-primary text-lg">{icon}</span>
-      </span>
-      <span className="text-sm font-label font-medium min-w-0 truncate">{label}</span>
-    </button>
-  );
-}
+// ActionsPanel and QuickActionButton removed (INS-041).
 
 /* ── Add Source Modal (INS-020) ──
    Full-screen modal for connecting to a new Concord instance.
@@ -3277,10 +3319,12 @@ function TopBarOverflowMenu({
   onHelp,
   onStats,
   onBug,
+  onSettings,
 }: {
   onHelp: () => void;
   onStats: () => void;
   onBug: () => void;
+  onSettings: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -3321,6 +3365,7 @@ function TopBarOverflowMenu({
           <OverflowMenuItem icon="help" label="Help" onClick={handle(onHelp)} />
           <OverflowMenuItem icon="bar_chart" label="Your stats" onClick={handle(onStats)} />
           <OverflowMenuItem icon="bug_report" label="Report a bug" onClick={handle(onBug)} />
+          <OverflowMenuItem icon="settings" label="Settings" onClick={handle(onSettings)} />
         </div>
       )}
     </div>
