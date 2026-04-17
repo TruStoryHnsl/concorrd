@@ -117,6 +117,20 @@ class SilentBoundary extends Component<{ children: ReactNode; fallback?: ReactNo
 
 type MobileView = "sources" | "servers" | "channels" | "chat" | "actions" | "dms" | "settings";
 
+/** A parallel browse tab — each tab has its own independent page-depth position. */
+interface BrowseTab {
+  /** Unique identifier for this tab. */
+  id: string;
+  /** Current page-depth view for this tab. Only page-depth views are stored here;
+   *  overlay views (dms, settings, actions) are shared and live outside the tab. */
+  pageView: "sources" | "servers" | "channels" | "chat";
+}
+
+/** Generate a short unique tab ID. */
+function newTabId(): string {
+  return Math.random().toString(36).slice(2, 8);
+}
+
 /** True when running inside a Tauri native shell (iOS, Android, desktop).
  *  `__TAURI_INTERNALS__` is the canonical Tauri v2 global — see the
  *  comment in `client/src/api/serverUrl.ts` for the full history. */
@@ -191,10 +205,70 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const [statsTarget, setStatsTarget] = useState<{ type: "user" } | { type: "server"; serverId: string } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
 
-  // Mobile view state — replaces the old drawer system
-  const [mobileView, setMobileView] = useState<MobileView>(
-    isNativeApp ? "sources" : "chat",
-  );
+  // INS-044: Multi-tab browse. Each BrowseTab has its own page-depth
+  // position (sources → servers → channels → chat). Overlay views
+  // (dms, settings, actions) are NOT per-tab — they are shared overlays
+  // that render on top of the active tab.
+  const [tabState, setTabState] = useState<{ tabs: BrowseTab[]; activeId: string }>(() => {
+    const firstId = newTabId();
+    return {
+      tabs: [{ id: firstId, pageView: isNativeApp ? "sources" : "servers" }],
+      activeId: firstId,
+    };
+  });
+
+  // Shared overlay state — not per-tab.
+  // Overlay views (dms, settings, actions) cover the whole screen on top of
+  // whichever browse tab is active. Switching to a page-depth view clears
+  // the overlay, restoring the active tab's content.
+  const [overlayView, setOverlayView] = useState<"dms" | "settings" | "actions" | null>(null);
+
+  // Convenience accessors
+  const tabs = tabState.tabs;
+  const activeTabIdVal = tabState.activeId;
+  const activeTab = tabs.find((t) => t.id === activeTabIdVal) ?? tabs[0];
+
+  // The "mobileView" seen by the rest of ChatLayout:
+  //   - If an overlay is active, that overlay is the view.
+  //   - Otherwise, the active tab's pageView is the view.
+  const mobileView: MobileView = overlayView ?? activeTab.pageView;
+
+  // setMobileView — compatibility shim so all the existing code keeps working.
+  // Page-depth views update the active tab's position; overlay views update
+  // the shared overlay. Switching to a page-depth view clears any overlay.
+  const setMobileView = useCallback((view: MobileView) => {
+    if (view === "dms" || view === "settings" || view === "actions") {
+      setOverlayView(view);
+    } else {
+      setOverlayView(null);
+      setTabState((prev) => ({
+        ...prev,
+        tabs: prev.tabs.map((t) =>
+          t.id === prev.activeId
+            ? { ...t, pageView: view as BrowseTab["pageView"] }
+            : t,
+        ),
+      }));
+    }
+  }, []);
+
+  // Add a new browse tab, starting at welcome page (servers for web, sources for native).
+  const addBrowseTab = useCallback(() => {
+    const id = newTabId();
+    setTabState((prev) => ({
+      tabs: [...prev.tabs, { id, pageView: isNativeApp ? "sources" : "servers" }],
+      activeId: id,
+    }));
+    setOverlayView(null);
+  }, []);
+
+  // Switch to an existing browse tab, clearing any overlay.
+  const switchToTab = useCallback((id: string) => {
+    setTabState((prev) =>
+      prev.tabs.find((t) => t.id === id) ? { ...prev, activeId: id } : prev,
+    );
+    setOverlayView(null);
+  }, []);
   // Mobile account sheet (T003)
   const [accountSheetOpen, setAccountSheetOpen] = useState(false);
   const [desktopAccountPopoverOpen, setDesktopAccountPopoverOpen] = useState(false);
@@ -1121,13 +1195,17 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         )}
       </div>
 
-      {/* INS-020: New 4-pill bottom bar with direct navigation. */}
+      {/* INS-044: Bottom pill row with multi-tab browse support. */}
       <MobilePillRow
         active={mobileView}
         pageDepth={PAGE_DEPTH.includes(mobileView) ? mobileView : "servers"}
         voiceActive={voiceConnected}
         voiceChannelName={useVoiceStore.getState().channelName ?? undefined}
         onVoiceReturn={() => setMobileView("chat")}
+        browseTabs={tabs}
+        activeTabId={activeTabIdVal}
+        onAddTab={addBrowseTab}
+        onSwitchTab={switchToTab}
         onNavigate={(view) => {
           if (view === "dms") {
             useDMStore.getState().setDMActive(true);
@@ -2291,12 +2369,12 @@ const PAGE_PILL_META: Record<string, { icon: string; label: string }> = {
   chat: { icon: "forum", label: "Chat" },
 };
 
-/* ── Mobile Pill Row (INS-016 → INS-020 redesign) ──
-   Four pills: [📍 Page] [⚡ Actions] [💬 DMs] [⚙️ Settings].
-   The Page pill icon changes based on current depth (servers/channels/chat).
-   Tapping Page when on DMs/Settings returns to the last page depth.
-   Tapping Actions opens the quick-actions sheet. DMs and Settings navigate
-   directly. Voice persistence pills are inserted dynamically. */
+/* ── Mobile Pill Row (INS-016 → INS-020 → INS-044 redesign) ──
+   Layout: [+] [browse-tab-1] [browse-tab-2...] [⚡ Actions] [💬 DMs] [⚙️ Settings]
+   The + button creates a new independent browse tab starting at the welcome page.
+   Each browse tab shows the page-depth icon for that tab's current position.
+   Tapping a tab switches to it (clearing any overlay). Voice pill inserts
+   dynamically when in a voice call. */
 function MobilePillRow({
   active,
   onNavigate,
@@ -2304,6 +2382,10 @@ function MobilePillRow({
   voiceActive,
   voiceChannelName,
   onVoiceReturn,
+  browseTabs,
+  activeTabId,
+  onAddTab,
+  onSwitchTab,
 }: {
   active: MobileView;
   onNavigate: (view: MobileView) => void;
@@ -2311,19 +2393,21 @@ function MobilePillRow({
   voiceActive?: boolean;
   voiceChannelName?: string;
   onVoiceReturn?: () => void;
+  /** INS-044: the full list of open browse tabs. */
+  browseTabs?: BrowseTab[];
+  /** INS-044: the ID of the currently-active tab. */
+  activeTabId?: string;
+  /** INS-044: callback to open a new browse tab. */
+  onAddTab?: () => void;
+  /** INS-044: callback to switch to an existing tab. */
+  onSwitchTab?: (id: string) => void;
 }) {
-  const pageMeta = PAGE_PILL_META[pageDepth] ?? PAGE_PILL_META.servers;
   const isOnPage = PAGE_DEPTH.includes(active);
+  const tabs = browseTabs ?? [];
 
-  const pills: { key: string; icon: string; label: string; isActive: boolean; onClick: () => void }[] = [
-    {
-      key: "page",
-      icon: pageMeta.icon,
-      label: pageMeta.label,
-      isActive: isOnPage,
-      onClick: () => onNavigate(isOnPage ? "servers" : pageDepth),
-    },
-    // Voice persistence pill — only visible when in a voice call
+  // Fixed right-hand pills: [⚡ Actions] [💬 DMs] [⚙️ Settings]
+  // Voice persistence pill inserts before them when active.
+  const rightPills: { key: string; icon: string; label: string; isActive: boolean; onClick: () => void }[] = [
     ...(voiceActive
       ? [{
           key: "voice",
@@ -2359,24 +2443,68 @@ function MobilePillRow({
   return (
     <div className="concord-mobile-nav-wrap safe-bottom flex-shrink-0">
       <nav
-        className="concord-mobile-pill-row mx-3 mb-2 rounded-full relative flex items-center justify-between gap-1 px-2 py-1.5"
+        className="concord-mobile-pill-row mx-3 mb-2 rounded-full relative flex items-center gap-1 px-2 py-1.5"
         aria-label="Mobile navigation"
       >
-        {pills.map(({ key, icon, label, isActive, onClick }) => (
+        {/* + button — opens a new browse tab */}
+        <button
+          type="button"
+          onClick={onAddTab}
+          aria-label="New tab"
+          className="concord-mobile-pill flex items-center justify-center min-h-[44px] min-w-[36px] h-9 w-9 flex-shrink-0 rounded-full active:scale-95 transition-all duration-150 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/40"
+        >
+          <span className="material-symbols-outlined text-lg">add</span>
+        </button>
+
+        {/* Browse tabs — flex-1 so they share available space equally */}
+        <div className="flex flex-1 min-w-0 gap-1">
+          {tabs.map((tab) => {
+            const isActiveTab = tab.id === activeTabId && isOnPage;
+            const tabMeta = PAGE_PILL_META[tab.pageView] ?? PAGE_PILL_META.servers;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => onSwitchTab?.(tab.id)}
+                aria-label={`Browse tab: ${tabMeta.label}`}
+                aria-current={isActiveTab ? "page" : undefined}
+                className={`concord-mobile-pill relative flex items-center justify-center min-h-[44px] min-w-[36px] h-9 flex-1 rounded-full active:scale-95 transition-all duration-150 ${
+                  isActiveTab
+                    ? "concord-mobile-pill-active text-on-surface"
+                    : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/40"
+                }`}
+              >
+                <span
+                  className="material-symbols-outlined text-lg transition-all duration-200"
+                  style={
+                    isActiveTab
+                      ? { fontVariationSettings: '"FILL" 1, "wght" 600, "GRAD" 0, "opsz" 24' }
+                      : undefined
+                  }
+                >
+                  {tabMeta.icon}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Right-hand fixed pills: Actions, DMs, Settings (+ optional Voice) */}
+        {rightPills.map(({ key, icon, label, isActive, onClick }) => (
           <button
             key={key}
             type="button"
             onClick={onClick}
             aria-label={label}
             aria-current={isActive ? "page" : undefined}
-            className={`concord-mobile-pill relative flex items-center justify-center min-h-[44px] min-w-[44px] h-9 flex-1 rounded-full active:scale-95 transition-all duration-150 ${
+            className={`concord-mobile-pill relative flex items-center justify-center min-h-[44px] min-w-[44px] h-9 w-11 flex-shrink-0 rounded-full active:scale-95 transition-all duration-150 ${
               isActive
                 ? "concord-mobile-pill-active text-on-surface"
                 : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/40"
             }`}
           >
             <span
-              className={`material-symbols-outlined text-lg transition-all duration-200`}
+              className="material-symbols-outlined text-lg transition-all duration-200"
               style={
                 isActive
                   ? { fontVariationSettings: '"FILL" 1, "wght" 600, "GRAD" 0, "opsz" 24' }
