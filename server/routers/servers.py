@@ -91,6 +91,7 @@ class ServerOut(BaseModel):
     abbreviation: str | None
     media_uploads_enabled: bool = True
     rules_text: str | None = None
+    allow_user_channel_creation: bool = False
     channels: list[ChannelOut]
 
     model_config = {"from_attributes": True}
@@ -467,12 +468,19 @@ async def create_channel(
 
     All existing server members are invited to the new Matrix room so the
     channel is immediately visible to everyone — not just the creator.
+
+    INS-053: Requires admin/owner OR the server's allow_user_channel_creation
+    flag to be True.
     """
-    await require_server_owner(server_id, user_id, db)
+    member = await require_server_member(server_id, user_id, db)
 
     server = await db.get(Server, server_id)
     if not server:
         raise HTTPException(404, "Server not found")
+
+    is_admin = member.role in ("owner", "admin")
+    if not is_admin and not server.allow_user_channel_creation:
+        raise HTTPException(403, "Channel creation requires admin role or server permission")
 
     # Get the next position
     result = await db.execute(
@@ -523,6 +531,32 @@ async def create_channel(
         logger.info("create_channel: %d/%d invites succeeded", ok, len(member_ids))
 
     return channel
+
+
+class ServerChannelCreationUpdate(BaseModel):
+    """INS-053: Toggle per-server user channel creation permission."""
+    allow_user_channel_creation: bool
+
+
+@router.patch("/{server_id}/settings/channel-creation")
+async def update_channel_creation_setting(
+    server_id: str,
+    body: ServerChannelCreationUpdate,
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle allow_user_channel_creation for a server. Admin-only.
+
+    INS-053: When True, any server member can create channels. When False
+    (the default), only admins and the owner can.
+    """
+    await require_server_admin(server_id, user_id, db)
+    server = await db.get(Server, server_id)
+    if not server:
+        raise HTTPException(404, "Server not found")
+    server.allow_user_channel_creation = body.allow_user_channel_creation
+    await db.commit()
+    return {"allow_user_channel_creation": server.allow_user_channel_creation}
 
 
 @router.patch("/{server_id}/channels/reorder", response_model=list[ChannelOut])

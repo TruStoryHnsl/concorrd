@@ -55,6 +55,8 @@ async def _lightweight_migrations():
         ("bug_reports", "github_issue_number", "INTEGER"),
         # Server rules text field (introduced 2026-04-15).
         ("servers", "rules_text", "TEXT"),
+        # INS-053: Per-server user channel creation flag (introduced 2026-04-17).
+        ("servers", "allow_user_channel_creation", "BOOLEAN DEFAULT FALSE"),
     ]
     async with engine.begin() as conn:
         for table, column, sql_type in migrations:

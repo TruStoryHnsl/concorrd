@@ -38,6 +38,9 @@ class Server(Base):
     auth_code_secret: Mapped[str | None] = mapped_column(
         String, nullable=True, default=lambda: secrets.token_hex(32)
     )
+    # INS-053: When True, non-admin members can create channels in this server.
+    # Default False — only admins/owners can create channels.
+    allow_user_channel_creation: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     channels: Mapped[list["Channel"]] = relationship(back_populates="server", cascade="all, delete-orphan")

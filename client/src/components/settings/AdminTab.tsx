@@ -889,6 +889,9 @@ function ServiceNodeSection({ token }: { token: string | null }) {
   const [storage, setStorage] = useState(0);
   const [anchor, setAnchor] = useState(false);
   const [role, setRole] = useState<ServiceNodeRole>("hybrid");
+  // INS-049: domain + transport state
+  const [customDomain, setCustomDomain] = useState("");
+  const [transports, setTransports] = useState({ federation: true, wireguard: false, turn: false });
 
   useEffect(() => {
     if (!token) return;
@@ -900,6 +903,8 @@ function ServiceNodeSection({ token }: { token: string | null }) {
         setStorage(data.max_storage_gb);
         setAnchor(data.tunnel_anchor_enabled);
         setRole(data.node_role);
+        setCustomDomain(data.custom_domain ?? "");
+        setTransports(data.transports ?? { federation: true, wireguard: false, turn: false });
       })
       .catch((e) => {
         setErr(e instanceof Error ? e.message : String(e));
@@ -917,6 +922,8 @@ function ServiceNodeSection({ token }: { token: string | null }) {
           max_storage_gb: storage,
           tunnel_anchor_enabled: anchor,
           node_role: role,
+          custom_domain: customDomain || null,
+          transports,
         },
         token,
       );
@@ -939,6 +946,8 @@ function ServiceNodeSection({ token }: { token: string | null }) {
     setStorage(cfg.max_storage_gb);
     setAnchor(cfg.tunnel_anchor_enabled);
     setRole(cfg.node_role);
+    setCustomDomain(cfg.custom_domain ?? "");
+    setTransports(cfg.transports ?? { federation: true, wireguard: false, turn: false });
   };
 
   if (err) {
@@ -958,12 +967,17 @@ function ServiceNodeSection({ token }: { token: string | null }) {
     );
   }
 
+  const cfgTransports = cfg.transports ?? { federation: true, wireguard: false, turn: false };
   const hasChanges =
     cpu !== cfg.max_cpu_percent ||
     bandwidth !== cfg.max_bandwidth_mbps ||
     storage !== cfg.max_storage_gb ||
     anchor !== cfg.tunnel_anchor_enabled ||
-    role !== cfg.node_role;
+    role !== cfg.node_role ||
+    customDomain !== (cfg.custom_domain ?? "") ||
+    transports.federation !== cfgTransports.federation ||
+    transports.wireguard !== cfgTransports.wireguard ||
+    transports.turn !== cfgTransports.turn;
 
   return (
     <div className="space-y-6" data-testid="service-node-section">
@@ -1084,6 +1098,77 @@ function ServiceNodeSection({ token }: { token: string | null }) {
             }`}
           />
         </button>
+      </div>
+
+      {/* INS-049: Domain config */}
+      <div className="space-y-1 border-t border-outline-variant/15 pt-4">
+        <h4 className="text-sm font-medium text-on-surface mb-1">Domain</h4>
+        <label className="text-sm text-on-surface block">Custom domain</label>
+        <input
+          type="text"
+          value={customDomain}
+          onChange={(e) => setCustomDomain(e.target.value)}
+          placeholder="e.g. concord.example.com"
+          className="w-full px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary/30"
+          data-testid="service-node-domain-input"
+        />
+        <p className="text-xs text-on-surface-variant">
+          Effective domain:{" "}
+          <code className="font-mono">{customDomain || "<slug>.concordchat.net"}</code>
+        </p>
+      </div>
+
+      {/* INS-049: Transport toggles */}
+      <div className="space-y-2 border-t border-outline-variant/15 pt-4">
+        <h4 className="text-sm font-medium text-on-surface">Transports</h4>
+        {(["federation", "wireguard", "turn"] as const).map((t) => (
+          <div key={t} className="flex items-center justify-between">
+            <label className="text-sm text-on-surface">
+              {t === "turn" ? "TURN relay" : t === "wireguard" ? "WireGuard" : "Matrix federation"}
+            </label>
+            <button
+              type="button"
+              onClick={() => setTransports((prev) => ({ ...prev, [t]: !prev[t] }))}
+              data-testid={`service-node-transport-${t}`}
+              className={`relative w-11 h-6 rounded-full transition-colors ${
+                transports[t] ? "bg-primary" : "bg-surface-container-highest"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                  transports[t] ? "translate-x-5" : ""
+                }`}
+              />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* INS-049: Status dashboard */}
+      <div className="space-y-2 border-t border-outline-variant/15 pt-4">
+        <h4 className="text-sm font-medium text-on-surface">Status</h4>
+        <div className="rounded-lg bg-surface-container px-4 py-3 space-y-1 text-xs font-mono text-on-surface-variant">
+          <div>role: <span className="text-on-surface">{cfg.node_role}</span></div>
+          <div>
+            tunnel_anchor:{" "}
+            <span className="text-on-surface">
+              {cfg.tunnel_anchor_enabled ? "enabled" : "disabled"}
+            </span>
+          </div>
+          <div>cpu_ceil: <span className="text-on-surface">{cfg.max_cpu_percent}%</span></div>
+          <div>
+            bandwidth_cap:{" "}
+            <span className="text-on-surface">
+              {cfg.max_bandwidth_mbps === 0 ? "unlimited" : `${cfg.max_bandwidth_mbps} Mbps`}
+            </span>
+          </div>
+          <div>
+            domain:{" "}
+            <span className="text-on-surface">
+              {customDomain || "<slug>.concordchat.net"}
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Action row */}

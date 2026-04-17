@@ -19,6 +19,8 @@ export interface Server {
   abbreviation: string | null;
   media_uploads_enabled: boolean;
   rules_text?: string | null;
+  /** INS-053: When true, any server member can create channels. */
+  allow_user_channel_creation?: boolean;
   channels: Channel[];
   /**
    * Client-only marker: true when this server is a synthetic wrapper
@@ -498,6 +500,19 @@ export async function getServerRules(
   accessToken: string,
 ): Promise<{ rules_text: string | null }> {
   return apiFetch(`/servers/${serverId}/rules`, {}, accessToken);
+}
+
+/** INS-053: Toggle per-server user channel creation. Admin-only. */
+export async function updateChannelCreationSetting(
+  serverId: string,
+  allowUserChannelCreation: boolean,
+  accessToken: string,
+): Promise<{ allow_user_channel_creation: boolean }> {
+  return apiFetch(
+    `/servers/${serverId}/settings/channel-creation`,
+    { method: "PATCH", body: JSON.stringify({ allow_user_channel_creation: allowUserChannelCreation }) },
+    accessToken,
+  );
 }
 
 // --- Members ---
@@ -1272,6 +1287,10 @@ export interface ServiceNodeConfig {
     max_storage_gb: number;
     allowed_roles: ServiceNodeRole[];
   };
+  /** INS-049: Optional custom domain override. Defaults to <slug>.concordchat.net. */
+  custom_domain?: string | null;
+  /** INS-049: Active transport toggles. */
+  transports?: { federation: boolean; wireguard: boolean; turn: boolean };
 }
 
 /**
@@ -1286,6 +1305,10 @@ export interface ServiceNodeConfigUpdate {
   max_storage_gb: number;
   tunnel_anchor_enabled: boolean;
   node_role: ServiceNodeRole;
+  /** INS-049: Optional custom domain override. */
+  custom_domain?: string | null;
+  /** INS-049: Active transport toggles. */
+  transports?: { federation: boolean; wireguard: boolean; turn: boolean };
 }
 
 /** GET /api/admin/service-node — admin only. */

@@ -157,6 +157,8 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
   }
 
   const isOwner = server.owner_id === userId;
+  // INS-053: non-admins can create channels when this flag is on
+  const allowUserChannelCreation = server.allow_user_channel_creation ?? false;
   const canOpenSettings = true;
   const textChannels = server.channels.filter((c) => c.channel_type === "text");
   const voiceChannels = server.channels.filter((c) => c.channel_type === "voice");
@@ -380,7 +382,7 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
               <h3 className="text-[10px] font-label font-medium text-on-surface-variant uppercase tracking-widest">
                 Text Channels
               </h3>
-              {isOwner && (
+              {(isOwner || allowUserChannelCreation) && (
                 <button
                   onClick={() => setShowAdminControls((v) => !v)}
                   className={`text-on-surface-variant hover:text-on-surface transition-colors ${
@@ -413,7 +415,7 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
               <h3 className="text-[10px] font-label font-medium text-on-surface-variant uppercase tracking-widest">
                 Voice Channels
               </h3>
-              {isOwner && textChannels.length === 0 && (
+              {(isOwner || allowUserChannelCreation) && textChannels.length === 0 && (
                 <button
                   onClick={() => setShowAdminControls((v) => !v)}
                   className={`text-on-surface-variant hover:text-on-surface transition-colors ${
@@ -454,8 +456,8 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
           </div>
         )}
 
-        {/* New channel (owner only, behind admin toggle) */}
-        {isOwner && showAdminControls && (
+        {/* New channel (owner/admin, or any member if flag is on) behind admin toggle */}
+        {(isOwner || allowUserChannelCreation) && showAdminControls && (
           showNewChannel ? (
             <form onSubmit={handleCreateChannel} className="px-1 space-y-1.5">
               <div className="flex gap-1">

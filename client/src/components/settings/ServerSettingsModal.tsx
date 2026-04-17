@@ -30,6 +30,7 @@ import {
   updateBanSettings,
   updateMemberPermissions,
   updateInvite,
+  updateChannelCreationSetting,
   type BanSettings,
   type Invite,
 } from "../../api/concord";
@@ -259,6 +260,11 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
   const [visibility, setVisibility] = useState(server?.visibility ?? "private");
   const [mediaUploads, setMediaUploads] = useState(server?.media_uploads_enabled ?? true);
   const [rulesText, setRulesText] = useState(server?.rules_text ?? "");
+  // INS-053: per-server user channel creation toggle
+  const [allowUserChannelCreation, setAllowUserChannelCreation] = useState(
+    server?.allow_user_channel_creation ?? false
+  );
+  const [savingChannelCreation, setSavingChannelCreation] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -293,6 +299,20 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
       addToast(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleToggleChannelCreation = async (newValue: boolean) => {
+    setAllowUserChannelCreation(newValue);
+    setSavingChannelCreation(true);
+    try {
+      const result = await updateChannelCreationSetting(serverId, newValue, accessToken);
+      updateServer(serverId, { allow_user_channel_creation: result.allow_user_channel_creation });
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to update channel creation setting");
+      setAllowUserChannelCreation(!newValue); // revert
+    } finally {
+      setSavingChannelCreation(false);
     }
   };
 
@@ -425,6 +445,35 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
           {rulesText.length}/2000
         </p>
       </div>
+
+      {/* INS-053: User channel creation toggle — only shown to admins */}
+      {isAdmin && (
+        <div className="flex items-center justify-between py-1">
+          <div>
+            <label className="block text-sm font-medium text-on-surface">
+              Allow user channel creation
+            </label>
+            <p className="text-xs text-on-surface-variant mt-0.5">
+              When enabled, any server member can create new channels.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={savingChannelCreation}
+            onClick={() => handleToggleChannelCreation(!allowUserChannelCreation)}
+            data-testid="allow-user-channel-creation-toggle"
+            className={`relative w-11 h-6 rounded-full transition-colors disabled:opacity-60 ${
+              allowUserChannelCreation ? "bg-primary" : "bg-surface-container-highest"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                allowUserChannelCreation ? "translate-x-5" : ""
+              }`}
+            />
+          </button>
+        </div>
+      )}
 
       <button
         onClick={handleSave}
