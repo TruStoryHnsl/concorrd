@@ -87,23 +87,41 @@ const readStoredServerOrder = (userId: string | null) =>
 const writeStoredServerOrder = (userId: string | null, order: string[]) =>
   writeStoredOrder(SERVER_ORDER_STORAGE_KEY_PREFIX, userId, order);
 
-function normalizeServerOrder(serverIds: string[], stored: string[] | null): string[] {
-  const next: string[] = [];
-  const seen = new Set<string>();
+function normalizeServerOrder(
+  nativeIds: string[],
+  bridgedIds: string[],
+  stored: string[] | null,
+): string[] {
+  const nativeSet = new Set(nativeIds);
+  const bridgedSet = new Set(bridgedIds);
+  const nativeSeen = new Set<string>();
+  const bridgedSeen = new Set<string>();
+  const nativePart: string[] = [];
+  const bridgedPart: string[] = [];
+
   for (const id of stored ?? []) {
-    if (id !== ADD_SERVER_TILE_ID && !serverIds.includes(id)) continue;
-    if (seen.has(id)) continue;
-    next.push(id);
-    seen.add(id);
-  }
-  for (const id of serverIds) {
-    if (!seen.has(id)) {
-      next.push(id);
-      seen.add(id);
+    if (nativeSet.has(id) && !nativeSeen.has(id)) {
+      nativePart.push(id);
+      nativeSeen.add(id);
+    } else if (bridgedSet.has(id) && !bridgedSeen.has(id)) {
+      bridgedPart.push(id);
+      bridgedSeen.add(id);
     }
   }
-  if (!seen.has(ADD_SERVER_TILE_ID)) next.push(ADD_SERVER_TILE_ID);
-  return next;
+  for (const id of nativeIds) {
+    if (!nativeSeen.has(id)) {
+      nativePart.push(id);
+      nativeSeen.add(id);
+    }
+  }
+  for (const id of bridgedIds) {
+    if (!bridgedSeen.has(id)) {
+      bridgedPart.push(id);
+      bridgedSeen.add(id);
+    }
+  }
+
+  return [...nativePart, ADD_SERVER_TILE_ID, ...bridgedPart];
 }
 
 interface ServerSidebarProps {
@@ -128,16 +146,11 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   // INS-002B: user-preferred order, loaded from localStorage keyed on the
   // current user id. Held in state so drag operations can optimistically
   // update it without waiting for the next storage read.
-  const [preferredOrder, setPreferredOrder] = useState<string[]>(() =>
-    normalizeServerOrder([], readStoredServerOrder(currentUserId)),
+  const [preferredOrder, setPreferredOrder] = useState<string[]>(
+    () => readStoredServerOrder(currentUserId) ?? [],
   );
   useEffect(() => {
-    setPreferredOrder((current) =>
-      normalizeServerOrder(
-        current.filter((id) => id !== ADD_SERVER_TILE_ID),
-        readStoredServerOrder(currentUserId),
-      ),
-    );
+    setPreferredOrder(readStoredServerOrder(currentUserId) ?? []);
   }, [currentUserId]);
 
   // Parallel state for the vanilla Matrix federated stack (bottom
@@ -299,15 +312,17 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   const railOrder = useMemo(
     () =>
       normalizeServerOrder(
-        visibleServers.map((server) => server.id),
+        orderedServers.map((s) => s.id),
+        federatedStack.map((e) => e.server.id),
         preferredOrder,
       ),
-    [preferredOrder, visibleServers],
+    [preferredOrder, orderedServers, federatedStack],
   );
 
   useEffect(() => {
     const next = normalizeServerOrder(
-      visibleServers.map((server) => server.id),
+      orderedServers.map((s) => s.id),
+      federatedStack.map((e) => e.server.id),
       preferredOrder,
     );
     if (
@@ -317,7 +332,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
       setPreferredOrder(next);
     }
     writeStoredServerOrder(currentUserId, next);
-  }, [currentUserId, preferredOrder, visibleServers]);
+  }, [currentUserId, preferredOrder, orderedServers, federatedStack]);
 
   const topRailIds = useMemo(() => {
     const split = railOrder.indexOf(ADD_SERVER_TILE_ID);
