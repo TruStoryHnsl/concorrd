@@ -1005,6 +1005,8 @@ export interface InstanceInfo {
   open_registration: boolean;
   /** True on first boot before the admin account has been created. */
   first_boot: boolean;
+  /** Domain of this instance, from CONCORD_DOMAIN or CONDUWUIT_SERVER_NAME env. */
+  instance_domain?: string;
 }
 
 export async function getInstanceInfo(): Promise<InstanceInfo> {

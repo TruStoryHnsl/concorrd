@@ -9,11 +9,12 @@ import { useServerConfigStore } from "./stores/serverConfig";
 import { isDesktopMode, getHomeserverUrl } from "./api/serverUrl";
 import { usePlatform } from "./hooks/usePlatform";
 import { computeInitialServerConnected } from "./serverPickerGate";
-import { redeemInvite } from "./api/concord";
+import { redeemInvite, getInstanceInfo } from "./api/concord";
 import { getVoiceToken } from "./api/livekit";
 import { showBootSplash } from "./bootSplash";
 import { LoginForm } from "./components/auth/LoginForm";
 import { ServerPickerScreen } from "./components/auth/ServerPickerScreen";
+import { DockerFirstBootScreen } from "./components/auth/DockerFirstBootScreen";
 import { SubmitPage } from "./components/public/SubmitPage";
 import { ChatLayout } from "./components/layout/ChatLayout";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -72,6 +73,35 @@ export default function App() {
       hasNewConfig,
     }),
   );
+
+  // INS-050: Docker first-boot Host/Join picker state.
+  // "pending" = waiting to show picker; "join" = user chose join, show server picker;
+  // "done" = picker resolved (host path or join completed), proceed normally.
+  // Only triggers on web/Docker (non-native) builds where first_boot is true.
+  type DockerBootState = "checking" | "pending" | "join" | "done";
+  const [dockerBootState, setDockerBootState] = useState<DockerBootState>("checking");
+  const [instanceDomain, setInstanceDomain] = useState("");
+
+  useEffect(() => {
+    if (isTauri) {
+      // Native builds have their own server picker; skip Docker flow.
+      setDockerBootState("done");
+      return;
+    }
+    getInstanceInfo()
+      .then((info) => {
+        if (info.first_boot) {
+          setInstanceDomain(info.instance_domain ?? "");
+          setDockerBootState("pending");
+        } else {
+          setDockerBootState("done");
+        }
+      })
+      .catch(() => {
+        // If the instance info fetch fails, skip the picker.
+        setDockerBootState("done");
+      });
+  }, [isTauri]);
 
   // INS-023 launch animation: a cross-platform boot splash that
   // covers the first-paint gap and any subsequent isLoading window.
@@ -382,6 +412,44 @@ export default function App() {
     return (
       <>
         <SubmitPage webhookId={webhookId} />
+        {launchOverlay}
+      </>
+    );
+  }
+
+  // INS-050: Docker first-boot Host/Join picker.
+  // Show while we're still checking, or when the picker is actively displayed.
+  if (dockerBootState === "checking") {
+    return (
+      <>
+        <div className="h-full w-full bg-surface mesh-background" aria-hidden="true" />
+        {launchOverlay}
+      </>
+    );
+  }
+
+  if (dockerBootState === "pending") {
+    return (
+      <>
+        <DockerFirstBootScreen
+          instanceDomain={instanceDomain}
+          onHost={() => setDockerBootState("done")}
+          onJoin={() => setDockerBootState("join")}
+        />
+        {launchOverlay}
+      </>
+    );
+  }
+
+  if (dockerBootState === "join") {
+    return (
+      <>
+        <ServerPickerScreen
+          onConnected={() => {
+            setDockerBootState("done");
+            setServerConnected(true);
+          }}
+        />
         {launchOverlay}
       </>
     );

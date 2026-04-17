@@ -81,6 +81,7 @@ async def get_instance():
         "require_totp": settings.get("require_totp", False),
         "open_registration": open_reg,
         "first_boot": first_boot,
+        "instance_domain": os.getenv("CONCORD_DOMAIN", os.getenv("CONDUWUIT_SERVER_NAME", "")),
         "node_role": node_view.node_role,
         "tunnel_anchor_enabled": node_view.tunnel_anchor_enabled,
     }

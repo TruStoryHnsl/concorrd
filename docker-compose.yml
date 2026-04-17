@@ -269,6 +269,9 @@ services:
       ADMIN_USER_IDS: ${ADMIN_USER_IDS:-}
       FREESOUND_API_KEY: ${FREESOUND_API_KEY:-}
       INSTANCE_NAME: ${INSTANCE_NAME:-${CONDUWUIT_SERVER_NAME}}
+      # INS-050: Pre-populates the domain confirm field in the first-boot Host/Join picker.
+      # Defaults to CONDUWUIT_SERVER_NAME if not set explicitly.
+      CONCORD_DOMAIN: ${CONCORD_DOMAIN:-${CONDUWUIT_SERVER_NAME}}
       # Path where we read/write the Tuwunel federation config inside
       # this container. Matches the directory bind mount target above.
       TUWUNEL_CONFIG_PATH: /etc/concord-config/tuwunel.toml
