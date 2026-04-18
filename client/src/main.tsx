@@ -2,6 +2,14 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App";
+
+// Register service worker for PWA install support (enables "Add to Home Screen"
+// and standalone display mode which hides the browser URL bar).
+if ("serviceWorker" in navigator && !("__TAURI_INTERNALS__" in window)) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
 import { initServerUrl } from "./api/serverUrl";
 import { useSourcesStore } from "./stores/sources";
 

@@ -21,6 +21,7 @@ import { useSendReadReceipt } from "../../hooks/useUnreadCounts";
 import { useNotifications } from "../../hooks/useNotifications";
 import { useSettingsStore } from "../../stores/settings";
 import { useVoiceStore } from "../../stores/voice";
+import { useHostingStatus } from "../settings/HostingTab";
 import { SourcesPanel } from "./SourcesPanel";
 import {
   sourceMatchesMatrixDomain,
@@ -213,7 +214,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const [tabState, setTabState] = useState<{ tabs: BrowseTab[]; activeId: string }>(() => {
     const firstId = newTabId();
     return {
-      tabs: [{ id: firstId, pageView: isNativeApp ? "sources" : "servers" }],
+      tabs: [{ id: firstId, pageView: "sources" }],
       activeId: firstId,
     };
   });
@@ -257,7 +258,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const addBrowseTab = useCallback(() => {
     const id = newTabId();
     setTabState((prev) => ({
-      tabs: [...prev.tabs, { id, pageView: isNativeApp ? "sources" : "servers" }],
+      tabs: [...prev.tabs, { id, pageView: "sources" }],
       activeId: id,
     }));
     setOverlayView(null);
@@ -472,6 +473,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const serverSettingsId = useSettingsStore((s) => s.serverSettingsId);
   const closeServerSettings = useSettingsStore((s) => s.closeServerSettings);
   const openSettings = useSettingsStore((s) => s.openSettings);
+  const hostingStatus = useHostingStatus();
 
   useEffect(() => {
     if (!desktopAccountPopoverOpen) return;
@@ -984,6 +986,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const prevPageDepthRef = useRef<MobileView>("chat");
   const [pillHidden, setPillHidden] = useState(false);
   const pillLastScrollY = useRef(0);
+  const swipeTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   // INS-045: left-edge tap zone overlay
   const [leftEdgeOverlay, setLeftEdgeOverlay] = useState<"servers" | "sources" | null>(null);
   // INS-046: right-edge tap zone overlay
@@ -1025,6 +1028,22 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     if (depthIdx >= 0) scrollToPanel(depthIdx);
   }, [mobileView, scrollToPanel]);
 
+  const handleSwipeStart = useCallback((e: React.TouchEvent) => {
+    const t = e.touches[0];
+    swipeTouchStartRef.current = { x: t.clientX, y: t.clientY };
+  }, []);
+
+  const handleSwipeEnd = useCallback((e: React.TouchEvent) => {
+    if (!swipeTouchStartRef.current) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - swipeTouchStartRef.current.x;
+    const dy = t.clientY - swipeTouchStartRef.current.y;
+    swipeTouchStartRef.current = null;
+    if (Math.abs(dy) <= Math.abs(dx)) return; // horizontal gesture — ignore
+    if (dy > 60) setPillHidden(true);
+    else if (dy < -60) setPillHidden(false);
+  }, []);
+
   // INS-042: hide pill row on chat scroll-down, show on scroll-up
   useEffect(() => {
     if (mobileView !== "chat") {
@@ -1054,7 +1073,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // MessageInput's internal useLayoutEffect caps the textarea at
   // min(viewport*0.4, 8*22px) and switches to internal scroll above that.
   const renderMobileLayout = () => (
-    <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-hidden bg-surface text-on-surface">
+    <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-hidden bg-surface text-on-surface" onTouchStart={handleSwipeStart} onTouchEnd={handleSwipeEnd}>
       {/* Top bar — safe-top lives on the OUTER wrapper so the safe-area
           inset adds transparent padding ABOVE the 48px content bar instead
           of stealing from its interior (which was cutting off icons on
@@ -1138,6 +1157,14 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           <TopBarIconButton icon="help" label="Help" onClick={() => setShowHelp(true)} />
           <TopBarIconButton icon="bar_chart" label="Your stats" onClick={() => setStatsTarget({ type: "user" })} />
           <TopBarIconButton icon="bug_report" label="Report a bug" onClick={() => setShowBugReport(true)} />
+          <HostingStatusButton
+            status={hostingStatus}
+            onClick={() => {
+              if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
+              openSettings("hosting");
+              setMobileView("settings");
+            }}
+          />
           <TopBarIconButton
             icon="settings"
             label="Settings"
@@ -1214,20 +1241,18 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             }}
             onScroll={handleScrollSnap}
           >
-            {/* Panel: Sources (native only) */}
-            {isNativeApp && (
-              <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
-                <SourcesPanel
-                  onAddSource={openAddSource}
-                  onSourceSelect={() => scrollToPanel(1)}
-                  onExplore={openExplore}
-                  onSourceOpen={openSourceBrowser}
-                />
-              </div>
-            )}
-            {/* Panels below only render when sources exist (native) or always (web).
-                On native with no sources, only the Sources panel shows. */}
-            {(!isNativeApp || useSourcesStore.getState().sources.length > 0) && (
+            {/* Panel: Sources */}
+            <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
+              <SourcesPanel
+                mobile
+                onAddSource={openAddSource}
+                onSourceSelect={() => scrollToPanel(1)}
+                onExplore={openExplore}
+                onSourceOpen={openSourceBrowser}
+              />
+            </div>
+            {/* Panels: Servers, Channels, Chat */}
+            {(
               <>
                 {/* Panel: Servers */}
                 <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
@@ -1243,8 +1268,8 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                 </div>
               </>
             )}
-            {/* Panel: Chat — gated on sources same as servers/channels */}
-            {(!isNativeApp || useSourcesStore.getState().sources.length > 0) && (
+            {/* Panel: Chat */}
+            {(
               <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
                 <div className="h-full flex flex-col min-h-0">
                   {renderChatContent()}
@@ -1558,6 +1583,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               <TopBarIconButton icon="help" label="Help" onClick={() => setShowHelp(true)} />
                   <TopBarIconButton icon="bar_chart" label="Your stats" onClick={() => setStatsTarget({ type: "user" })} />
               <TopBarIconButton icon="bug_report" label="Report a bug" onClick={() => setShowBugReport(true)} />
+              <HostingStatusButton status={hostingStatus} onClick={() => openSettings("hosting")} />
               {/* Sidebar toggle */}
               <TopBarIconButton
                 icon={sidebarCollapsed ? "left_panel_open" : "left_panel_close"}
@@ -2488,9 +2514,7 @@ function AccountSheet({
 // Page-depth hierarchy for swipe navigation. Swiping left goes deeper,
 // swiping right goes back (matching iOS back-gesture convention).
 // Native apps have an extra "sources" panel at the shallowest depth.
-const PAGE_DEPTH: MobileView[] = isNativeApp
-  ? ["sources", "servers", "channels", "chat"]
-  : ["servers", "channels", "chat"];
+const PAGE_DEPTH: MobileView[] = ["sources", "servers", "channels", "chat"];
 
 // Icon + label for the "Page" pill, contextual to the current depth.
 const PAGE_PILL_META: Record<string, { icon: string; label: string }> = {
@@ -2561,7 +2585,7 @@ function MobilePillRow({
   ];
 
   return (
-    <div className={`concord-mobile-nav-wrap safe-bottom flex-shrink-0 transition-transform duration-300 ${hidden ? "translate-y-full opacity-0 pointer-events-none" : ""}`}>
+    <div className={`concord-mobile-nav-wrap safe-bottom flex-shrink-0 transition-all duration-300 overflow-hidden ${hidden ? "max-h-0 opacity-0 pointer-events-none" : "max-h-24"}`}>
       <nav
         className="concord-mobile-pill-row mx-3 mb-2 rounded-full relative flex items-center gap-1 px-2 py-1.5"
         aria-label="Mobile navigation"
@@ -3307,6 +3331,37 @@ function TopBarIconButton({
       className="btn-press flex items-center justify-center w-11 h-11 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
     >
       <span className="material-symbols-outlined text-xl">{icon}</span>
+    </button>
+  );
+}
+
+/* ── Hosting Status Button ──
+   A colored dot button indicating the Servitude / hosting module state.
+   Green = running, Orange = stopped/not configured, Red = error. */
+function HostingStatusButton({
+  status,
+  onClick,
+}: {
+  status: import("../settings/HostingTab").HostingStatus;
+  onClick: () => void;
+}) {
+  const dotColor =
+    status === "running" ? "bg-green-500" :
+    status === "error" ? "bg-red-500" :
+    status === "loading" ? "bg-outline-variant/40 animate-pulse" :
+    "bg-orange-400";
+  const label =
+    status === "running" ? "Hosting active" :
+    status === "error" ? "Hosting error" :
+    "Hosting offline";
+  return (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="btn-press flex items-center justify-center w-11 h-11 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
+    >
+      <div className={`w-2.5 h-2.5 rounded-full ${dotColor}`} />
     </button>
   );
 }

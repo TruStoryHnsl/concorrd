@@ -12,6 +12,7 @@ import { AppearanceTab } from "./AppearanceTab";
 import { NodeHostingTab } from "./NodeHostingTab";
 import { BridgesTab } from "./BridgesTab";
 import { AboutTab } from "./AboutTab";
+import { HostingTab } from "./HostingTab";
 import { AdminTab } from "./AdminTab";
 import { ServerSettingsContent } from "./ServerSettingsModal";
 
@@ -84,6 +85,7 @@ export function SettingsPanel() {
     if (!isTauri && isAdmin) {
       tabs.push({ key: "bridges", label: "Bridges", icon: "hub", group: "user" });
     }
+    tabs.push({ key: "hosting", label: "Hosting", icon: "dns", group: "user" });
     tabs.push({ key: "about", label: "About", icon: "info", group: "user" });
     return tabs;
   }, [isTauri, isMobile, isAdmin]);
@@ -262,6 +264,7 @@ export function SettingsPanel() {
         {activeTab === "appearance" && <AppearanceTab />}
         {activeTab === "node" && <NodeHostingTab />}
         {activeTab === "bridges" && <BridgesTab />}
+        {activeTab === "hosting" && <HostingTab />}
         {activeTab === "about" && <AboutTab />}
         {activeTab === "admin" && isAdmin && <AdminTab />}
 

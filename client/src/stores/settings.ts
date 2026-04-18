@@ -55,7 +55,7 @@ interface SettingsState {
 
   // UI (not persisted)
   settingsOpen: boolean;
-  settingsTab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation";
+  settingsTab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation";
   serverSettingsId: string | null;
 
   // Actions
@@ -95,9 +95,9 @@ interface SettingsState {
    */
   setChatFontSize: (px: number) => void;
   setThemePreset: (preset: ThemePreset) => void;
-  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
+  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
   closeSettings: () => void;
-  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
+  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
   openServerSettings: (serverId: string) => void;
   closeServerSettings: () => void;
   resetToDefaults: () => void;

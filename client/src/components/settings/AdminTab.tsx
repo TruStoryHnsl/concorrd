@@ -875,7 +875,7 @@ function ReportDetail({
 // The `limits` block comes from the server response so a future
 // maxima bump doesn't require a coordinated client release.
 
-function ServiceNodeSection({ token }: { token: string | null }) {
+export function ServiceNodeSection({ token }: { token: string | null }) {
   const addToast = useToastStore((s) => s.addToast);
   const [cfg, setCfg] = useState<ServiceNodeConfig | null>(null);
   const [err, setErr] = useState<string | null>(null);

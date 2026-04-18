@@ -178,17 +178,32 @@ function SortableSourceTile({
   );
 }
 
+function statusDot(source: ConcordSource) {
+  switch (source.status) {
+    case "connected":
+      return <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" />;
+    case "connecting":
+      return <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse flex-shrink-0" />;
+    case "error":
+      return <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" />;
+    default:
+      return <span className="w-2 h-2 rounded-full bg-outline-variant flex-shrink-0" />;
+  }
+}
+
 export function SourcesPanel({
   onAddSource,
   onSourceSelect,
   onSourceOpen,
   onExplore,
+  mobile = false,
 }: {
   onAddSource: () => void;
   onSourceSelect?: (sourceId: string) => void;
   /** Called when a tile is clicked — opens the source browser for that source. */
   onSourceOpen?: (sourceId: string) => void;
   onExplore?: () => void;
+  mobile?: boolean;
 }) {
   const currentUserId = useAuthStore((s) => s.userId);
   const sources = useSourcesStore((s) => s.sources);
@@ -272,6 +287,75 @@ export function SourcesPanel({
       />
     );
   };
+
+  if (mobile) {
+    return (
+      <div className="h-full w-full bg-surface flex flex-col">
+        {/* Header */}
+        <div className="flex-shrink-0 px-4 py-3 border-b border-outline-variant/20">
+          <span className="text-sm font-semibold text-on-surface-variant uppercase tracking-wide">Sources</span>
+        </div>
+
+        {/* Source list */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          {sources.map((source) => {
+            return (
+              <button
+                key={source.id}
+                onClick={() => {
+                  onSourceSelect?.(source.id);
+                  onSourceOpen?.(source.id);
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-container-high transition-colors ${
+                  source.enabled ? "opacity-100" : "opacity-40"
+                }`}
+              >
+                {statusDot(source)}
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-on-surface truncate">
+                    {source.instanceName || source.host}
+                  </div>
+                  <div className="text-xs text-on-surface-variant truncate">{source.host}</div>
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSourceOpen?.(source.id);
+                  }}
+                  className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-surface-container-highest text-on-surface-variant hover:text-on-surface transition-colors"
+                >
+                  <span className="material-symbols-outlined text-base">more_vert</span>
+                </button>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Divider */}
+        <div className="flex-shrink-0 h-px bg-outline-variant/20 mx-4" />
+
+        {/* Footer */}
+        <div className="flex-shrink-0 flex items-center gap-2 px-4 py-3">
+          {onExplore && (
+            <button
+              onClick={onExplore}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-sm text-on-surface-variant hover:text-on-surface transition-colors"
+            >
+              <span className="material-symbols-outlined text-base">explore</span>
+              Explore
+            </button>
+          )}
+          <button
+            onClick={onAddSource}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-sm text-on-surface-variant hover:text-on-surface transition-colors"
+          >
+            <span className="material-symbols-outlined text-base">add</span>
+            Add Source
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full w-full bg-surface flex flex-col items-center py-3 pl-[3px] gap-0">
