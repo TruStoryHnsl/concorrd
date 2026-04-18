@@ -107,11 +107,20 @@
     <!-- Tag <html> before first paint so CSS can branch on native vs. web.
          __TAURI__ is injected at document-start by withGlobalTauri. -->
     <script>if(window.__TAURI__)document.documentElement.classList.add('tauri')</script>
-    <!-- Block pinch-zoom-IN. iOS Safari ignores maximum-scale in the viewport
-         meta tag, so we intercept touchmove directly. Zoom-OUT (fingers moving
-         closer together) is intentionally allowed as a recovery gesture. -->
+    <!-- Block pinch-zoom-IN on WebKit/iOS/Orion.
+         viewport maximum-scale=1.0 is ignored by Safari/Orion, so two layers:
+         1. gesturechange (WebKit-specific): scale>1 = zoom-in, block it.
+            scale<1 = zoom-out, allow as recovery gesture.
+         2. touchmove fallback for non-WebKit (Chrome/Android). -->
     <script>
       (function(){
+        // Layer 1: WebKit gesture events (Safari, Orion, iOS Chrome)
+        document.addEventListener('gesturestart',function(e){e.preventDefault();},{passive:false});
+        document.addEventListener('gesturechange',function(e){
+          if(e.scale>1)e.preventDefault(); // zoom-in — block
+          // zoom-out (scale<1) — allowed
+        },{passive:false});
+        // Layer 2: touchmove fallback
         var startDist=0;
         function dist(a,b){return Math.hypot(b.clientX-a.clientX,b.clientY-a.clientY);}
         document.addEventListener('touchstart',function(e){
@@ -120,8 +129,7 @@
         document.addEventListener('touchmove',function(e){
           if(e.touches.length===2){
             var d=dist(e.touches[0],e.touches[1]);
-            if(d>startDist)e.preventDefault(); // zoom-in — block
-            // zoom-out (d<startDist) — allowed
+            if(d>startDist)e.preventDefault();
           }
         },{passive:false});
       })();

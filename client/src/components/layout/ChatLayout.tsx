@@ -1128,21 +1128,8 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           <h2 className="font-headline font-bold text-lg text-primary">Concord</h2>
         )}
         </div>
-        {/* INS-011: Top-bar utility icons (help / stats / bug report).
-            On ≥361px viewports we show all three inline plus the account icon.
-            On ≤360px we collapse the three into a kebab overflow popover so
-            the row never wraps and every action stays ≤2 taps.
-            The ConnectedHostLabel hides entirely below the `sm` breakpoint
-            (640px) because mobile real estate is precious — it lives in the
-            account sheet on very small screens instead. */}
-        <div className="hidden min-[361px]:flex items-center gap-1 flex-shrink-0">
-          {voiceConnected && voiceMicGranted && (
-            <div className="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Microphone active" />
-          )}
-          <ConnectedHostLabel compact />
-          <TopBarIconButton icon="help" label="Help" onClick={() => setShowHelp(true)} />
-          <TopBarIconButton icon="bar_chart" label="Your stats" onClick={() => setStatsTarget({ type: "user" })} />
-          <TopBarIconButton icon="bug_report" label="Report a bug" onClick={() => setShowBugReport(true)} />
+        {/* Top-bar right cluster: hosting status + wrench menu + account */}
+        <div className="flex items-center gap-0.5 flex-shrink-0">
           <HostingStatusButton
             status={hostingStatus}
             onClick={() => {
@@ -1151,24 +1138,8 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               setMobileView("settings");
             }}
           />
-          <TopBarIconButton
-            icon="settings"
-            label="Settings"
-            onClick={() => {
-              if (mobileView === "settings" || settingsOpen || serverSettingsId) {
-                closeServerSettings();
-                closeSettings();
-                setMobileView(prevPageDepthRef.current);
-                return;
-              }
-              if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
-              openSettings();
-              setMobileView("settings");
-            }}
-          />
-        </div>
-        <div className="flex min-[361px]:hidden flex-shrink-0">
-          <TopBarOverflowMenu
+          <TopBarMoreMenu
+            voiceMicActive={voiceConnected && voiceMicGranted}
             onHelp={() => setShowHelp(true)}
             onStats={() => setStatsTarget({ type: "user" })}
             onBug={() => setShowBugReport(true)}
@@ -1575,23 +1546,22 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               talking to — sourced from the INS-027 serverConfig store
               on native builds, falls back to window.location.hostname
               on the web. */}
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <ConnectedHostLabel />
-            <div className="flex items-center gap-0.5">
-              {activeChannel && !isVoiceChannel && (
-                <TopBarIconButton ref={extensionBtnRef} icon="extension" label="Extensions" onClick={() => setExtensionMenuOpen(!extensionMenuOpen)} />
-              )}
-              <TopBarIconButton icon="help" label="Help" onClick={() => setShowHelp(true)} />
-                  <TopBarIconButton icon="bar_chart" label="Your stats" onClick={() => setStatsTarget({ type: "user" })} />
-              <TopBarIconButton icon="bug_report" label="Report a bug" onClick={() => setShowBugReport(true)} />
-              <HostingStatusButton status={hostingStatus} onClick={() => openSettings("hosting")} />
-              {/* Sidebar toggle */}
-              <TopBarIconButton
-                icon={sidebarCollapsed ? "left_panel_open" : "left_panel_close"}
-                label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-                onClick={() => setSidebarCollapsed((c) => !c)}
-              />
-            </div>
+          <div className="flex items-center gap-0.5 flex-shrink-0">
+            <HostingStatusButton status={hostingStatus} onClick={() => openSettings("hosting")} />
+            <TopBarMoreMenu
+              voiceMicActive={voiceConnected && voiceMicGranted}
+              showExtension={!!(activeChannel && !isVoiceChannel)}
+              onExtension={() => setExtensionMenuOpen((v) => !v)}
+              onHelp={() => setShowHelp(true)}
+              onStats={() => setStatsTarget({ type: "user" })}
+              onBug={() => setShowBugReport(true)}
+              onSettings={() => openSettings()}
+            />
+            <TopBarIconButton
+              icon={sidebarCollapsed ? "left_panel_open" : "left_panel_close"}
+              label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+              onClick={() => setSidebarCollapsed((c) => !c)}
+            />
           </div>
         </div>
 
@@ -3367,16 +3337,22 @@ function HostingStatusButton({
   );
 }
 
-/* ── Top Bar Overflow Menu (INS-017) ──
-   Collapses bug/stats/help into a kebab popover on ≤360px viewports so the
-   top row doesn't wrap when the four icons (help/stats/bug/account) would
-   otherwise exceed available width. Each action stays ≤2 taps: kebab → item. */
-function TopBarOverflowMenu({
+/* ── Top Bar More Menu ──
+   Wrench button that opens a dropdown containing all secondary actions.
+   Replaces the old overflow menu and the individual help/stats/bug buttons.
+   Always rendered at every viewport size — no more breakpoint branching. */
+function TopBarMoreMenu({
+  voiceMicActive,
+  showExtension,
+  onExtension,
   onHelp,
   onStats,
   onBug,
   onSettings,
 }: {
+  voiceMicActive?: boolean;
+  showExtension?: boolean;
+  onExtension?: () => void;
   onHelp: () => void;
   onStats: () => void;
   onBug: () => void;
@@ -3405,23 +3381,34 @@ function TopBarOverflowMenu({
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((v) => !v)}
-        aria-label="More actions"
+        aria-label="Menu"
         aria-haspopup="menu"
         aria-expanded={open}
-        title="More"
+        title="Menu"
         className="btn-press flex items-center justify-center w-11 h-11 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
       >
-        <span className="material-symbols-outlined text-xl">more_vert</span>
+        <span className="material-symbols-outlined text-xl">handyman</span>
       </button>
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full mt-1 z-40 min-w-[180px] glass-panel rounded-xl py-1 animate-[fadeSlideUp_0.15s_ease-out] shadow-2xl"
+          className="absolute right-0 top-full mt-1 z-40 min-w-[200px] glass-panel rounded-xl py-1 animate-[fadeSlideUp_0.15s_ease-out] shadow-2xl"
         >
+          {/* Connected host info row */}
+          <div className="px-3 py-2 flex items-center gap-2 border-b border-outline-variant/10">
+            {voiceMicActive && (
+              <div className="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Microphone active" />
+            )}
+            <ConnectedHostLabel />
+          </div>
+          {showExtension && onExtension && (
+            <OverflowMenuItem icon="extension" label="Extensions" onClick={handle(onExtension)} />
+          )}
           <OverflowMenuItem icon="help" label="Help" onClick={handle(onHelp)} />
           <OverflowMenuItem icon="bar_chart" label="Your stats" onClick={handle(onStats)} />
           <OverflowMenuItem icon="bug_report" label="Report a bug" onClick={handle(onBug)} />
-          <OverflowMenuItem icon="settings" label="Settings" onClick={handle(onSettings)} />
+          <div className="mx-3 my-1 border-t border-outline-variant/15" />
+          <OverflowMenuItem icon="handyman" label="Settings" onClick={handle(onSettings)} />
         </div>
       )}
     </div>
