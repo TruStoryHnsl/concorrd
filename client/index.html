@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, minimum-scale=0.1" />
     <meta name="theme-color" content="#0c0e11" />
     <!-- Concord launch buffer (INS-023): paint the dark theme and a
          real splash immediately so hard refreshes show the branded
@@ -107,6 +107,25 @@
     <!-- Tag <html> before first paint so CSS can branch on native vs. web.
          __TAURI__ is injected at document-start by withGlobalTauri. -->
     <script>if(window.__TAURI__)document.documentElement.classList.add('tauri')</script>
+    <!-- Block pinch-zoom-IN. iOS Safari ignores maximum-scale in the viewport
+         meta tag, so we intercept touchmove directly. Zoom-OUT (fingers moving
+         closer together) is intentionally allowed as a recovery gesture. -->
+    <script>
+      (function(){
+        var startDist=0;
+        function dist(a,b){return Math.hypot(b.clientX-a.clientX,b.clientY-a.clientY);}
+        document.addEventListener('touchstart',function(e){
+          if(e.touches.length===2)startDist=dist(e.touches[0],e.touches[1]);
+        },{passive:true});
+        document.addEventListener('touchmove',function(e){
+          if(e.touches.length===2){
+            var d=dist(e.touches[0],e.touches[1]);
+            if(d>startDist)e.preventDefault(); // zoom-in — block
+            // zoom-out (d<startDist) — allowed
+          }
+        },{passive:false});
+      })();
+    </script>
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
