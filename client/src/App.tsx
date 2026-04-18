@@ -8,6 +8,7 @@ import { useSettingsStore } from "./stores/settings";
 import { useServerConfigStore } from "./stores/serverConfig";
 import { isDesktopMode, getHomeserverUrl } from "./api/serverUrl";
 import { usePlatform } from "./hooks/usePlatform";
+import { useServitudeLifecycle } from "./hooks/useServitudeLifecycle";
 import { computeInitialServerConnected } from "./serverPickerGate";
 import { redeemInvite, getInstanceInfo } from "./api/concord";
 import { getVoiceToken } from "./api/livekit";
@@ -67,6 +68,12 @@ function buildConcordFavicon(primary: string, secondary: string): string {
 export default function App() {
   const hasNewConfig = useServerConfigStore((s) => s.config !== null);
   const { isTauri, isTV } = usePlatform();
+
+  // INS-022: pause/resume the embedded servitude on Tauri window
+  // blur/focus so a backgrounded app doesn't advertise an unreachable
+  // relay. No-op outside Tauri. The hook attaches its own event
+  // listeners and tears them down on unmount.
+  useServitudeLifecycle();
   const [serverConnected, setServerConnected] = useState(() =>
     computeInitialServerConnected({
       isNative: isTauri,
