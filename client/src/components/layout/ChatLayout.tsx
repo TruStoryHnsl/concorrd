@@ -45,6 +45,7 @@ import { MessageList } from "../chat/MessageList";
 import { MessageInput } from "../chat/MessageInput";
 import { TypingIndicator } from "../chat/TypingIndicator";
 import { VoiceChannel } from "../voice/VoiceChannel";
+import { PlaceVoiceBanner } from "../voice/PlaceVoiceBanner";
 import { SettingsPanel } from "../settings/SettingsModal";
 // ServerSettingsPanel is now folded into the unified SettingsPanel (INS-012)
 import { BugReportModal } from "../BugReportModal";
@@ -159,6 +160,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const syncing = useMatrixSync();
   const voiceConnected = useVoiceStore((s) => s.connected);
   const voiceMicGranted = useVoiceStore((s) => s.micGranted);
+  const voiceChannelType = useVoiceStore((s) => s.channelType);
   const client = useAuthStore((s) => s.client);
   const userId = useAuthStore((s) => s.userId);
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -415,6 +417,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   );
   const isVoiceChannel = activeChannel?.channel_type === "voice";
   const isAppChannel = activeChannel?.channel_type === "app";
+  const showPlaceBanner = voiceConnected && voiceChannelType === "place" && !placeBannerDismissed;
   const isOwner = activeServer?.owner_id === userId;
   const showFormatButton =
     !dmActive &&
@@ -535,6 +538,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   // TV capability banner state — shown when a TV user selects a voice channel
   const [tvBannerDismissed, setTvBannerDismissed] = useState(false);
+  const [placeBannerDismissed, setPlaceBannerDismissed] = useState(false);
 
   // TASK T2: DPAD navigation for TV builds. When isTV is true, the hook
   // registers a keydown listener that takes over arrow keys for spatial
@@ -630,6 +634,11 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   useEffect(() => {
     try { localStorage.setItem("concord_extension_media_pct", String(extMediaPercent)); } catch {}
   }, [extMediaPercent]);
+
+  // Reset place banner dismiss state when voice disconnects
+  useEffect(() => {
+    if (!voiceConnected) setPlaceBannerDismissed(false);
+  }, [voiceConnected]);
 
   // Auto-collapse sidebar when extension becomes active, restore when it stops
   const extensionIsActive = !!activeExtension;
@@ -1163,6 +1172,17 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               )}
               {activeChannel.name}
             </h2>
+            {voiceConnected && voiceChannelType === "place" && placeBannerDismissed && (
+              <button
+                type="button"
+                onClick={() => setPlaceBannerDismissed(false)}
+                className="flex items-center gap-0.5 text-primary text-xs px-1.5 py-0.5 rounded-lg bg-primary/15 hover:bg-primary/25 transition-colors ml-1"
+                title="Restore voice banner"
+              >
+                <span>◈</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+              </button>
+            )}
             {memberCount > 0 && (
               <span className="text-xs text-on-surface-variant font-label">
                 {memberCount}
@@ -1325,6 +1345,16 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           {/* Panel: Chat */}
           <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
             <div className="h-full flex flex-col min-h-0">
+              {showPlaceBanner && (
+                <PlaceVoiceBanner
+                  participants={[]}
+                  onLeave={() => { useVoiceStore.getState().disconnect(); }}
+                  onMute={() => {}}
+                  onToggleCamera={() => {}}
+                  onVideoClick={() => {}}
+                  onDismiss={() => setPlaceBannerDismissed(true)}
+                />
+              )}
               {renderChatContent()}
             </div>
           </div>
@@ -1545,6 +1575,17 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                   )}
                   {activeChannel.name}
                 </h2>
+                {voiceConnected && voiceChannelType === "place" && placeBannerDismissed && (
+                  <button
+                    type="button"
+                    onClick={() => setPlaceBannerDismissed(false)}
+                    className="flex items-center gap-0.5 text-primary text-xs px-1.5 py-0.5 rounded-lg bg-primary/15 hover:bg-primary/25 transition-colors ml-1"
+                    title="Restore voice banner"
+                  >
+                    <span>◈</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                  </button>
+                )}
                 {memberCount > 0 && (
                   <span className="text-xs text-on-surface-variant font-label">
                     {memberCount} {memberCount === 1 ? "member" : "members"}
@@ -1671,6 +1712,17 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             />
           </div>
         </div>
+
+        {showPlaceBanner && (
+          <PlaceVoiceBanner
+            participants={[]}
+            onLeave={() => { useVoiceStore.getState().disconnect(); }}
+            onMute={() => {}}
+            onToggleCamera={() => {}}
+            onVideoClick={() => {}}
+            onDismiss={() => setPlaceBannerDismissed(true)}
+          />
+        )}
 
         {/* Extension vertical split (media top, chat bottom) or normal chat.
             App channels bypass this — they ARE the extension and render full-screen. */}
