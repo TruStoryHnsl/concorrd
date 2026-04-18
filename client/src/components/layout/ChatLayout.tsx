@@ -985,7 +985,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevPageDepthRef = useRef<MobileView>("chat");
   const [pillHidden, setPillHidden] = useState(false);
-  const pillLastScrollY = useRef(0);
   const swipeTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   // INS-045: left-edge tap zone overlay
   const [leftEdgeOverlay, setLeftEdgeOverlay] = useState<"servers" | "sources" | null>(null);
@@ -1028,6 +1027,9 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     if (depthIdx >= 0) scrollToPanel(depthIdx);
   }, [mobileView, scrollToPanel]);
 
+  // Swipe-from-bottom-edge to raise pill; swipe down anywhere to hide.
+  // Touch must START in the bottom 20% of the screen to raise the pill —
+  // this prevents chat scroll-up from accidentally triggering it.
   const handleSwipeStart = useCallback((e: React.TouchEvent) => {
     const t = e.touches[0];
     swipeTouchStartRef.current = { x: t.clientX, y: t.clientY };
@@ -1038,34 +1040,18 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     const t = e.changedTouches[0];
     const dx = t.clientX - swipeTouchStartRef.current.x;
     const dy = t.clientY - swipeTouchStartRef.current.y;
+    const startY = swipeTouchStartRef.current.y;
     swipeTouchStartRef.current = null;
-    if (Math.abs(dy) <= Math.abs(dx)) return; // horizontal gesture — ignore
-    if (dy > 60) setPillHidden(true);
-    else if (dy < -60) setPillHidden(false);
-  }, []);
-
-  // INS-042: hide pill row on chat scroll-down, show on scroll-up
-  useEffect(() => {
-    if (mobileView !== "chat") {
-      setPillHidden(false);
-      pillLastScrollY.current = 0;
-      return;
+    if (Math.abs(dy) <= Math.abs(dx)) return; // horizontal — ignore
+    if (dy > 60) {
+      // Swipe down → hide pill (works from anywhere)
+      setPillHidden(true);
+    } else if (dy < -60) {
+      // Swipe up → only raise pill if touch started in bottom 20% of screen
+      const screenH = window.innerHeight;
+      if (startY >= screenH * 0.8) setPillHidden(false);
     }
-    const handleScroll = (e: Event) => {
-      const target = e.target as Element;
-      if (!target || !("scrollTop" in target)) return;
-      const scrollTop = (target as Element).scrollTop;
-      if (scrollTop - pillLastScrollY.current > 50) {
-        setPillHidden(true);
-        pillLastScrollY.current = scrollTop;
-      } else if (pillLastScrollY.current - scrollTop > 10 || scrollTop < 100) {
-        setPillHidden(false);
-        pillLastScrollY.current = scrollTop;
-      }
-    };
-    document.addEventListener("scroll", handleScroll, { capture: true });
-    return () => document.removeEventListener("scroll", handleScroll, { capture: true });
-  }, [mobileView]);
+  }, []);
 
   // The chain MUST NOT be broken by any new ancestor introducing overflow:
   // visible or removing min-h-0 — that would let MessageInput's auto-grow
