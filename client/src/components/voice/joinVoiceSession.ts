@@ -13,6 +13,7 @@ interface JoinVoiceSessionParams {
   accessToken: string;
   activeServer?: Server;
   activeChannelId?: string | null;
+  channelType?: "place" | "voice";
 }
 
 export async function joinVoiceSession({
@@ -22,6 +23,7 @@ export async function joinVoiceSession({
   accessToken,
   activeServer,
   activeChannelId,
+  channelType,
 }: JoinVoiceSessionParams): Promise<void> {
   const {
     echoCancellation,
@@ -79,6 +81,7 @@ export async function joinVoiceSession({
     serverName: activeServer?.name ?? null,
     channelId: roomId,
     channelName,
+    channelType: channelType ?? "voice",
     roomName: roomId,
     returnChannelId:
       activeServer?.channels.find(

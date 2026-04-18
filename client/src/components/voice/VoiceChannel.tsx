@@ -117,6 +117,7 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
         accessToken,
         activeServer,
         activeChannelId,
+        channelType: activeChannel?.channel_type === "place" ? "place" : "voice",
       });
     } catch (err) {
       console.error("Failed to join voice:", err);

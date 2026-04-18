@@ -389,7 +389,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     try { localStorage.setItem("concord_sidebar_width", String(sidebarWidth)); } catch {}
   }, [sidebarWidth]);
 
-  useEffect(() => { setEditingMessage(null); }, [activeRoomId]);
+  useEffect(() => { setEditingMessage(null); setFormatPanelOpen(false); }, [activeRoomId, setFormatPanelOpen]);
 
   // TASK 26: Track the most recently-active channel so the "Reconnect to
   // last channel" quick action can restore it after the user has navigated
