@@ -993,8 +993,11 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const scrollStripRef = useRef<HTMLDivElement>(null);
   const tabIndicatorRef = useRef<HTMLDivElement>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // INS-047: restore the page-depth view when closing settings/DMs
   const prevPageDepthRef = useRef<MobileView>("chat");
+  // INS-042: pill hide/show on chat scroll
   const [pillHidden, setPillHidden] = useState(false);
+  const pillLastScrollY = useRef(0);
   const swipeTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   // INS-045: left-edge tap zone overlay
   const [leftEdgeOverlay, setLeftEdgeOverlay] = useState<"servers" | "sources" | null>(null);
@@ -1046,6 +1049,29 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     const depthIdx = PAGE_DEPTH.indexOf(mobileView);
     if (depthIdx >= 0) scrollToPanel(depthIdx);
   }, [mobileView, scrollToPanel]);
+
+  // INS-042: hide pill row when scrolling down in chat, show on scroll up / near top.
+  useEffect(() => {
+    if (mobileView !== "chat") {
+      setPillHidden(false);
+      pillLastScrollY.current = 0;
+      return;
+    }
+    const handleScroll = (e: Event) => {
+      const target = e.target as Element;
+      if (!target || !("scrollTop" in target)) return;
+      const scrollTop = (target as Element).scrollTop;
+      if (scrollTop - pillLastScrollY.current > 50) {
+        setPillHidden(true);
+        pillLastScrollY.current = scrollTop;
+      } else if (pillLastScrollY.current - scrollTop > 10 || scrollTop < 100) {
+        setPillHidden(false);
+        pillLastScrollY.current = scrollTop;
+      }
+    };
+    document.addEventListener("scroll", handleScroll, { capture: true });
+    return () => document.removeEventListener("scroll", handleScroll, { capture: true });
+  }, [mobileView]);
 
   // Swipe-from-bottom-edge to raise pill; swipe down anywhere to hide.
   // Touch must START in the bottom 20% of the screen to raise the pill —
