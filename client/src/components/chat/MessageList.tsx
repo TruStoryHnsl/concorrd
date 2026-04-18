@@ -7,6 +7,9 @@ import { ReactionPills, QuickReactBar } from "./ReactionBar";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { useLocalServerName } from "../../hooks/useFederation";
 import { ChatWidgetBanner } from "./ChatWidgetBanner";
+import { useFormatStore, type FormatOverride } from "../../stores/format";
+import { FormatPopover } from "./FormatPopover";
+import { useResolvedFormat } from "../../hooks/useResolvedFormat";
 
 interface MessageListProps {
   messages: ChatMessage[];
@@ -50,6 +53,67 @@ function SenderName({ userId }: { userId: string }) {
   return <>{name}</>;
 }
 
+function FormatMessageEntry({
+  msg,
+  scope,
+  onScopeChange,
+  onClose,
+  messageFormats,
+  senderFormats,
+  setMessageFormat,
+  setSenderFormat,
+  clearMessageFormat,
+  clearSenderFormat,
+}: {
+  msg: ChatMessage;
+  scope: "message" | "sender";
+  onScopeChange: (s: "message" | "sender") => void;
+  onClose: () => void;
+  messageFormats: Record<string, FormatOverride>;
+  senderFormats: Record<string, FormatOverride>;
+  setMessageFormat: (id: string, fmt: Partial<FormatOverride>) => void;
+  setSenderFormat: (userId: string, fmt: Partial<FormatOverride>) => void;
+  clearMessageFormat: (id: string) => void;
+  clearSenderFormat: (userId: string) => void;
+}) {
+  const resolved = useResolvedFormat(msg);
+  const senderName = useDisplayName(msg.sender);
+
+  const currentValue =
+    scope === "message"
+      ? (messageFormats[msg.id] ?? resolved)
+      : (senderFormats[msg.sender] ?? resolved);
+
+  const handleChange = (fmt: Partial<FormatOverride>) => {
+    if (scope === "message") {
+      setMessageFormat(msg.id, fmt);
+    } else {
+      setSenderFormat(msg.sender, fmt);
+    }
+  };
+
+  const handleReset = () => {
+    if (scope === "message") clearMessageFormat(msg.id);
+    else clearSenderFormat(msg.sender);
+  };
+
+  return (
+    <div className="absolute left-10 top-0 z-30">
+      <FormatPopover
+        value={currentValue}
+        onChange={handleChange}
+        onClose={onClose}
+        viewerMode={{
+          scope,
+          senderName,
+          onScopeChange,
+          onReset: handleReset,
+        }}
+      />
+    </div>
+  );
+}
+
 function isSameDay(ts1: number, ts2: number): boolean {
   const d1 = new Date(ts1);
   const d2 = new Date(ts2);
@@ -83,6 +147,14 @@ export const MessageList = memo(function MessageList({
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [reactingId, setReactingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [formatOpenId, setFormatOpenId] = useState<string | null>(null);
+  const [formatScope, setFormatScope] = useState<"message" | "sender">("message");
+  const setMessageFormat = useFormatStore((s) => s.setMessageFormat);
+  const setSenderFormat = useFormatStore((s) => s.setSenderFormat);
+  const clearMessageFormat = useFormatStore((s) => s.clearMessageFormat);
+  const clearSenderFormat = useFormatStore((s) => s.clearSenderFormat);
+  const messageFormats = useFormatStore((s) => s.messageFormats);
+  const senderFormats = useFormatStore((s) => s.senderFormats);
   const stickyWidgets = messages.filter((message) => message.widgetRaw && !message.redacted).slice(-3);
 
   // Track whether user is at/near bottom
@@ -189,17 +261,16 @@ export const MessageList = memo(function MessageList({
           !prevMsg ||
           prevMsg.sender !== msg.sender ||
           msg.timestamp - prevMsg.timestamp > 5 * 60 * 1000;
-
         const showDateSeparator =
           !prevMsg || !isSameDay(prevMsg.timestamp, msg.timestamp);
 
+        const isOwn = msg.sender === currentUserId;
         const isHovered = hoveredId === msg.id;
         const isReacting = reactingId === msg.id;
         const canEdit =
-          msg.sender === currentUserId && !msg.redacted && msg.msgtype === "m.text";
+          isOwn && !msg.redacted && msg.msgtype === "m.text";
         const canDelete =
-          !msg.redacted &&
-          (msg.sender === currentUserId || isServerOwner);
+          !msg.redacted && (isOwn || isServerOwner);
         const showActions = (isHovered || isReacting) && !msg.redacted;
 
         return (
@@ -232,7 +303,6 @@ export const MessageList = memo(function MessageList({
                 >
                   <span className="material-symbols-outlined text-base">add_reaction</span>
                 </button>
-
                 {canEdit && (
                   <button
                     onClick={() => onStartEdit(msg)}
@@ -242,7 +312,6 @@ export const MessageList = memo(function MessageList({
                     <span className="material-symbols-outlined text-base">edit</span>
                   </button>
                 )}
-
                 {canDelete && (
                   confirmDeleteId === msg.id ? (
                     <button
@@ -278,62 +347,80 @@ export const MessageList = memo(function MessageList({
               </div>
             )}
 
-            <div className={showHeader && !showDateSeparator ? "pt-3" : ""}>
-              {showHeader ? (
-                <div className="flex gap-2">
-                  <Avatar userId={msg.sender} size="md" />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
+            {/* Format popover */}
+            {formatOpenId === msg.id && (
+              <FormatMessageEntry
+                msg={msg}
+                scope={formatScope}
+                onScopeChange={setFormatScope}
+                onClose={() => setFormatOpenId(null)}
+                messageFormats={messageFormats}
+                senderFormats={senderFormats}
+                setMessageFormat={setMessageFormat}
+                setSenderFormat={setSenderFormat}
+                clearMessageFormat={clearMessageFormat}
+                clearSenderFormat={clearSenderFormat}
+              />
+            )}
+
+            <div className={showHeader && !showDateSeparator ? "pt-3" : "pt-0.5"}>
+              {/* Avatar + name row — sits above the message, no side indent */}
+              {showHeader && (
+                <div className={`flex items-center gap-1.5 mb-0.5 ${isOwn ? "flex-row-reverse" : ""}`}>
+                  <Avatar userId={msg.sender} size="sm" />
+                  {!isOwn && (
+                    <>
                       <span className="text-sm font-headline font-semibold text-primary">
                         <SenderName userId={msg.sender} />
                       </span>
                       <FederationBadge userId={msg.sender} localServer={localServer} />
-                      <span className="text-[10px] text-on-surface-variant font-label">
-                        {formatTime(msg.timestamp)}
-                      </span>
-                      {msg.edited && (
-                        <span className="text-[10px] text-on-surface-variant/50 font-label">(edited)</span>
-                      )}
-                    </div>
-                    {Boolean(msg.widgetRaw) && (
-                      <ChatWidgetBanner
-                        message={msg}
-                        currentUserId={currentUserId}
-                        onReact={onReact}
-                        onRemoveReaction={onRemoveReaction}
-                      />
-                    )}
-                    <MessageContent message={msg} />
-                    <ReactionPills
-                      reactions={msg.reactions}
-                      currentUserId={currentUserId}
-                      onReact={(emoji) => onReact(msg.id, emoji)}
-                      onRemoveReaction={onRemoveReaction}
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div className="pl-10">
-                  {Boolean(msg.widgetRaw) && (
-                    <ChatWidgetBanner
-                      message={msg}
-                      currentUserId={currentUserId}
-                      onReact={onReact}
-                      onRemoveReaction={onRemoveReaction}
-                    />
+                    </>
                   )}
-                  <MessageContent message={msg} />
-                  {msg.edited && (
-                    <span className="text-[10px] text-on-surface-variant/50 font-label ml-1">(edited)</span>
+                  <span className="text-[10px] text-on-surface-variant font-label">
+                    {formatTime(msg.timestamp)}
+                  </span>
+                  {msg.edited && showHeader && (
+                    <span className="text-[10px] text-on-surface-variant/50 font-label">(edited)</span>
                   )}
-                  <ReactionPills
-                    reactions={msg.reactions}
-                    currentUserId={currentUserId}
-                    onReact={(emoji) => onReact(msg.id, emoji)}
-                    onRemoveReaction={onRemoveReaction}
-                  />
+                  <button
+                    type="button"
+                    className={`ml-1 w-4 h-4 flex items-center justify-center rounded transition-opacity text-on-surface-variant hover:text-on-surface ${
+                      isHovered || formatOpenId === msg.id ? "opacity-100" : "opacity-0"
+                    }`}
+                    onClick={() => {
+                      setFormatOpenId(formatOpenId === msg.id ? null : msg.id);
+                      setFormatScope("message");
+                    }}
+                    title="Format this message"
+                  >
+                    🖌
+                  </button>
                 </div>
               )}
+
+              {/* Content — full width, no left/right margin */}
+              {Boolean(msg.widgetRaw) && (
+                <ChatWidgetBanner
+                  message={msg}
+                  currentUserId={currentUserId}
+                  onReact={onReact}
+                  onRemoveReaction={onRemoveReaction}
+                />
+              )}
+              {!msg.widgetRaw && (
+                <div className={isOwn ? "text-right" : ""}>
+                  <MessageContent message={msg} />
+                </div>
+              )}
+              {msg.edited && !showHeader && (
+                <span className="text-[10px] text-on-surface-variant/50 font-label">(edited)</span>
+              )}
+              <ReactionPills
+                reactions={msg.reactions}
+                currentUserId={currentUserId}
+                onReact={(emoji) => onReact(msg.id, emoji)}
+                onRemoveReaction={onRemoveReaction}
+              />
             </div>
           </div>
         );
