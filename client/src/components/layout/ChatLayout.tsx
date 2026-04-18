@@ -1345,6 +1345,21 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         )}
       </div>
 
+      {/* Pill collapse toggle — always visible so the pill can be raised/lowered
+          regardless of its current state. "v" collapses, "^" floats above
+          the content area and restores. */}
+      <div className="flex justify-end px-3 flex-shrink-0">
+        <button
+          onClick={() => setPillHidden((h) => !h)}
+          aria-label={pillHidden ? "Show navigation" : "Hide navigation"}
+          className="btn-press w-8 h-4 flex items-center justify-center rounded-t-lg bg-surface-container text-on-surface-variant hover:text-on-surface transition-colors"
+        >
+          <span className="material-symbols-outlined text-sm" style={{ fontSize: "14px" }}>
+            {pillHidden ? "expand_less" : "expand_more"}
+          </span>
+        </button>
+      </div>
+
       {/* INS-044: Bottom pill row with multi-tab browse support. */}
       <MobilePillRow
         hidden={pillHidden}
