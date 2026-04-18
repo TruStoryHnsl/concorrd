@@ -71,6 +71,8 @@ import {
   writePendingSourceSso,
   type MatrixSourceDraft,
 } from "../sources/matrixSourceAuth";
+import { useFormatStore } from "../../stores/format";
+import { FormatPopover } from "../chat/FormatPopover";
 
 /** RulesGate — full-panel screen shown to members who haven't accepted the server rules yet. */
 function RulesGate({ rulesText, onAccept }: { rulesText: string; onAccept: () => void }) {
@@ -412,7 +414,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     [activeServer, activeChannelId],
   );
   const isVoiceChannel = activeChannel?.channel_type === "voice";
+  const isAppChannel = activeChannel?.channel_type === "app";
   const isOwner = activeServer?.owner_id === userId;
+  const showFormatButton =
+    !dmActive &&
+    activeChannel !== null &&
+    (activeChannel?.channel_type === "text" || activeChannel?.channel_type === "place");
 
   // Rules gate state — tracks rules_text for the active server and whether
   // the current user has accepted it. Acceptance is persisted in localStorage
@@ -565,6 +572,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const { activeExtension, isHost: isExtensionHost, startExtension, stopExtension } = useExtension(activeRoomId);
   const extensionMenuOpen = useExtensionStore((s) => s.menuOpen);
   const setExtensionMenuOpen = useExtensionStore((s) => s.setMenuOpen);
+  const extensionCatalog = useExtensionStore((s) => s.catalog);
+
+  const draftFormat = useFormatStore((s) => s.draftFormat);
+  const formatPanelOpen = useFormatStore((s) => s.formatPanelOpen);
+  const setDraftFormat = useFormatStore((s) => s.setDraftFormat);
+  const setFormatPanelOpen = useFormatStore((s) => s.setFormatPanelOpen);
 
   // Extension / chat vertical split resize (desktop)
   // extMediaPercent = percentage of container height used by the extension (top pane)
@@ -1027,6 +1040,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // momentum, and snap-to-nearest. We sync `mobileView` state from the
   // scroll position so the top bar and pills reflect the visible panel.
   const scrollStripRef = useRef<HTMLDivElement>(null);
+  const tabIndicatorRef = useRef<HTMLDivElement>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevPageDepthRef = useRef<MobileView>("chat");
   const [pillHidden, setPillHidden] = useState(false);
@@ -1043,6 +1057,16 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     if (!strip) return;
     const panelWidth = strip.clientWidth;
     strip.scrollTo({ left: panelIndex * panelWidth, behavior: "smooth" });
+  }, []);
+
+  const handleScrollLive = useCallback(() => {
+    const strip = scrollStripRef.current;
+    const indicator = tabIndicatorRef.current;
+    if (!strip || !indicator) return;
+    const panelWidth = strip.clientWidth;
+    if (!panelWidth) return;
+    const pos = strip.scrollLeft / panelWidth;
+    indicator.style.transform = `translateX(${pos * 100}%)`;
   }, []);
 
   // Debounced scroll handler — updates mobileView when the user finishes
@@ -1175,6 +1199,25 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         </div>
         {/* Top-bar right cluster: hosting status + wrench menu + account */}
         <div className="flex items-center gap-0.5 flex-shrink-0">
+          {showFormatButton && (
+            <div className="relative">
+              <TopBarIconButton
+                icon="stylus_note"
+                label="Format message"
+                onClick={() => setFormatPanelOpen(!formatPanelOpen)}
+                className={formatPanelOpen ? "bg-primary/20 border border-primary/40" : ""}
+              />
+              {formatPanelOpen && (
+                <div className="absolute right-0 top-full mt-1 z-50">
+                  <FormatPopover
+                    value={draftFormat}
+                    onChange={setDraftFormat}
+                    onClose={() => setFormatPanelOpen(false)}
+                  />
+                </div>
+              )}
+            </div>
+          )}
           <HostingStatusButton
             status={hostingStatus}
             onClick={() => {
@@ -1215,7 +1258,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
       {/* Panel navigation tabs — mouse/keyboard nav between page-depth panels */}
       {PAGE_DEPTH.includes(mobileView as MobileView) && (
-        <div className="flex items-stretch bg-surface-container-low flex-shrink-0 px-1 border-b border-outline-variant/10">
+        <div className="relative flex items-stretch bg-surface-container-low flex-shrink-0 border-b border-outline-variant/10">
           {PAGE_DEPTH.map((view) => {
             const meta = PAGE_PILL_META[view];
             const isActive = mobileView === view;
@@ -1226,16 +1269,21 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                   skipNextScrollSyncRef.current = true;
                   setMobileView(view as MobileView);
                 }}
-                className={`flex-1 flex items-center justify-center gap-1 py-1 text-xs font-label transition-colors relative ${
+                className={`flex-1 flex items-center justify-center gap-1 py-1 text-xs font-label transition-colors ${
                   isActive ? "text-on-surface font-medium" : "text-on-surface-variant hover:text-on-surface"
                 }`}
               >
                 <span className="material-symbols-outlined" style={{ fontSize: "12px" }}>{meta.icon}</span>
                 {meta.label}
-                {isActive && <div className="absolute bottom-0 left-2 right-2 h-0.5 bg-primary rounded-t-full" />}
               </button>
             );
           })}
+          {/* Live sliding underline — moves continuously with scroll position */}
+          <div
+            ref={tabIndicatorRef}
+            className="absolute bottom-0 h-0.5 bg-primary rounded-t-full pointer-events-none"
+            style={{ width: `${100 / PAGE_DEPTH.length}%`, willChange: "transform", transform: `translateX(${PAGE_DEPTH.indexOf(mobileView) * 100}%)` }}
+          />
         </div>
       )}
 
@@ -1250,7 +1298,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             scrollBehavior: "smooth",
             WebkitOverflowScrolling: "touch",
           }}
-          onScroll={handleScrollSnap}
+          onScroll={() => { handleScrollLive(); handleScrollSnap(); }}
         >
           {/* Panel: Sources */}
           <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
@@ -1379,7 +1427,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
       {/* INS-044: Bottom pill row with multi-tab browse support. */}
       <MobilePillRow
-        hidden={pillHidden || mobileView === "settings" || mobileView === "dms"}
+        hidden={pillHidden || mobileView === "settings"}
         active={mobileView}
         pageDepth={PAGE_DEPTH.includes(mobileView) ? mobileView : "servers"}
         voiceActive={voiceConnected}
@@ -1587,10 +1635,29 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               on native builds, falls back to window.location.hostname
               on the web. */}
           <div className="flex items-center gap-0.5 flex-shrink-0">
+            {showFormatButton && (
+              <div className="relative">
+                <TopBarIconButton
+                  icon="stylus_note"
+                  label="Format message"
+                  onClick={() => setFormatPanelOpen(!formatPanelOpen)}
+                  className={formatPanelOpen ? "bg-primary/20 border border-primary/40" : ""}
+                />
+                {formatPanelOpen && (
+                  <div className="absolute right-0 top-full mt-1 z-50">
+                    <FormatPopover
+                      value={draftFormat}
+                      onChange={setDraftFormat}
+                      onClose={() => setFormatPanelOpen(false)}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
             <HostingStatusButton status={hostingStatus} onClick={() => openSettings("hosting")} />
             <TopBarMoreMenu
               voiceMicActive={voiceConnected && voiceMicGranted}
-              showExtension={!!(activeChannel && !isVoiceChannel)}
+              showExtension={!!(activeChannel && !isVoiceChannel && !isAppChannel)}
               onExtension={() => setExtensionMenuOpen((v) => !v)}
               onHelp={() => setShowHelp(true)}
               onStats={() => setStatsTarget({ type: "user" })}
@@ -1605,8 +1672,9 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           </div>
         </div>
 
-        {/* Extension vertical split (media top, chat bottom) or normal chat */}
-        {activeExtension && !dmActive ? (
+        {/* Extension vertical split (media top, chat bottom) or normal chat.
+            App channels bypass this — they ARE the extension and render full-screen. */}
+        {activeExtension && !dmActive && !isAppChannel ? (
           <div ref={extContainerRef} className="flex-1 flex flex-col min-h-0 min-w-0">
             {/* Extension / media pane (top) */}
             <div className="min-h-0 overflow-hidden" style={{ height: `${extMediaPercent}%` }}>
@@ -1713,6 +1781,37 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             onStopTyping={onStopTyping}
             roomName={roomName}
           />
+        </div>
+      );
+    }
+
+    // App channel — renders the linked extension full-screen, no chat UI
+    if (activeChannelId && activeChannel && isAppChannel) {
+      const appExt = activeChannel.extension_id
+        ? extensionCatalog.find((e) => e.id === activeChannel.extension_id)
+        : null;
+      if (appExt) {
+        return (
+          <div className="flex-1 flex flex-col min-h-0">
+            <ExtensionEmbed
+              url={appExt.url}
+              extensionName={appExt.name}
+              hostUserId={userId ?? ""}
+              isHost={false}
+              onStop={() => {}}
+            />
+          </div>
+        );
+      }
+      return (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="text-center space-y-2">
+            <span className="material-symbols-outlined text-3xl text-on-surface-variant">extension_off</span>
+            <p className="text-on-surface-variant text-sm font-body">Extension not found in catalog</p>
+            <p className="text-on-surface-variant/50 text-xs font-label">
+              The extension installed for this channel is unavailable.
+            </p>
+          </div>
         </div>
       );
     }
@@ -3327,11 +3426,13 @@ function TopBarIconButton({
   label,
   onClick,
   ref,
+  className = "",
 }: {
   icon: string;
   label: string;
   onClick: () => void;
   ref?: React.Ref<HTMLButtonElement>;
+  className?: string;
 }) {
   return (
     <button
@@ -3339,7 +3440,7 @@ function TopBarIconButton({
       onClick={onClick}
       aria-label={label}
       title={label}
-      className="btn-press flex items-center justify-center w-11 h-11 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
+      className={`btn-press flex items-center justify-center w-11 h-11 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0 ${className}`}
     >
       <span className="material-symbols-outlined text-xl">{icon}</span>
     </button>
