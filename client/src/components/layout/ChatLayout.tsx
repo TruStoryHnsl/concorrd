@@ -1440,7 +1440,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               )}
             </div>
           </div>
-          </div>
         )}
       </div>
 
