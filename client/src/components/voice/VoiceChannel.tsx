@@ -449,6 +449,7 @@ function VoiceRoomUI({
   ]);
 
   const [cameraLoading, setCameraLoading] = useState(false);
+  const [quickSettingsOpen, setQuickSettingsOpen] = useState(false);
 
   const toggleCamera = useCallback(async () => {
     setCameraError(null);
@@ -553,6 +554,10 @@ function VoiceRoomUI({
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">{channelLocked ? (<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />) : (<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />)}</svg>
               </button>
             )}
+            <button onClick={() => setQuickSettingsOpen(true)} className="btn-press px-3 py-1.5 text-sm rounded-md transition-colors bg-surface-container hover:bg-surface-container-highest text-on-surface flex items-center gap-1">
+              <span className="material-symbols-outlined text-sm">tune</span>
+              Quick
+            </button>
             <button onClick={() => openSettings("audio")} className="btn-press px-3 py-1.5 text-sm rounded-md transition-colors bg-surface-container hover:bg-surface-container-highest text-on-surface">Settings</button>
             <button onClick={disconnect} className="btn-press px-3 py-1.5 bg-error/20 hover:bg-error/30 text-error text-sm rounded-md transition-colors">Leave</button>
           </div>
@@ -566,13 +571,20 @@ function VoiceRoomUI({
       {/* Mobile header — compact, just channel name + connection */}
       <div className="md:hidden px-3 py-2 border-b border-outline-variant/15 flex-shrink-0 flex items-center gap-2">
         <ConnectionIndicator state={connectionState} />
-        <span className="text-on-surface-variant text-sm font-medium">#{channelName}</span>
+        <span className="text-on-surface-variant text-sm font-medium flex-1 truncate">#{channelName}</span>
         {activeServer?.bridgeType === "discord" && (
           <DiscordVoiceBridgeStatusBadge connected={discordBridgeConnected} compact />
         )}
         {(micError || cameraError || screenShareError) && (
-          <span className="text-error text-[10px] ml-auto truncate max-w-[50%]">{micError || cameraError || screenShareError}</span>
+          <span className="text-error text-[10px] truncate max-w-[30%]">{micError || cameraError || screenShareError}</span>
         )}
+        <button
+          onClick={() => setQuickSettingsOpen(true)}
+          aria-label="Voice settings"
+          className="btn-press flex items-center justify-center w-8 h-8 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
+        >
+          <span className="material-symbols-outlined text-base">tune</span>
+        </button>
       </div>
 
       {/* Ban overlay */}
@@ -1112,6 +1124,14 @@ function VoiceRoomUI({
           }}
         />
       )}
+
+      {quickSettingsOpen && (
+        <VoiceQuickSettingsSheet
+          localParticipant={localParticipant}
+          otherParticipants={visibleParticipants.filter((p) => p.identity !== localParticipant.identity)}
+          onClose={() => setQuickSettingsOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1182,6 +1202,133 @@ function ParticipantNameLabel({
         <span className="text-on-surface-variant text-xs ml-1">(you)</span>
       )}
     </span>
+  );
+}
+
+/* ── Voice Quick Settings ── */
+
+function useAudioInputDevices(): MediaDeviceInfo[] {
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  useEffect(() => {
+    const load = () => {
+      navigator.mediaDevices.enumerateDevices()
+        .then((all) => setDevices(all.filter((d) => d.kind === "audioinput")))
+        .catch(() => {});
+    };
+    load();
+    navigator.mediaDevices.addEventListener("devicechange", load);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", load);
+  }, []);
+  return devices;
+}
+
+function VoiceQuickSettingsSheet({
+  localParticipant,
+  otherParticipants,
+  onClose,
+}: {
+  localParticipant: ReturnType<typeof useLocalParticipant>["localParticipant"];
+  otherParticipants: ReturnType<typeof useParticipants>;
+  onClose: () => void;
+}) {
+  const devices = useAudioInputDevices();
+  const [audioLevel, setAudioLevel] = useState(0);
+  const preferredInputDeviceId = useSettingsStore((s) => s.preferredInputDeviceId);
+  const setPreferredInputDeviceId = useSettingsStore((s) => s.setPreferredInputDeviceId);
+  const userVolumes = useSettingsStore((s) => s.userVolumes);
+  const setUserVolume = useSettingsStore((s) => s.setUserVolume);
+
+  // Poll audio level while sheet is open
+  useEffect(() => {
+    const id = setInterval(() => setAudioLevel(localParticipant.audioLevel), 80);
+    return () => clearInterval(id);
+  }, [localParticipant]);
+
+  const levelBars = 14;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-md rounded-t-2xl bg-surface-container border border-outline-variant/20 shadow-2xl p-4 safe-bottom animate-[fadeSlideUp_0.2s_ease-out]">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-headline font-semibold text-on-surface">Voice Settings</h3>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors">
+            <span className="material-symbols-outlined text-lg">close</span>
+          </button>
+        </div>
+
+        {/* Input device + level */}
+        <div className="space-y-2 mb-4">
+          <p className="text-xs font-label text-on-surface-variant uppercase tracking-wider">Microphone</p>
+          <div className="flex gap-0.5 h-2.5 mb-2">
+            {Array.from({ length: levelBars }).map((_, i) => {
+              const threshold = i / levelBars;
+              const active = audioLevel > threshold;
+              const color = i < levelBars * 0.5 ? "bg-green-500" : i < levelBars * 0.75 ? "bg-yellow-400" : "bg-red-500";
+              return (
+                <div
+                  key={i}
+                  className={`flex-1 rounded-sm transition-all duration-75 ${active ? color : "bg-surface-container-highest"}`}
+                />
+              );
+            })}
+          </div>
+          <select
+            value={preferredInputDeviceId ?? ""}
+            onChange={(e) => setPreferredInputDeviceId(e.target.value || null)}
+            className="w-full px-3 py-2 bg-surface-container-highest rounded-lg text-sm text-on-surface border border-outline-variant/20 focus:border-primary/50 focus:outline-none"
+          >
+            <option value="">System default</option>
+            {devices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {d.label || `Microphone (${d.deviceId.slice(0, 6)})`}
+              </option>
+            ))}
+          </select>
+          {!localParticipant.isMicrophoneEnabled && (
+            <p className="text-xs text-on-surface-variant/60">Mic is muted — level shown when unmuted</p>
+          )}
+        </div>
+
+        {/* Per-user volumes */}
+        {otherParticipants.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs font-label text-on-surface-variant uppercase tracking-wider">User Volumes</p>
+            {otherParticipants.map((p) => {
+              const name = p.name || p.identity.split(":")[0].replace("@", "");
+              const vol = userVolumes[p.identity] ?? 1.0;
+              return (
+                <div key={p.identity} className="flex items-center gap-3">
+                  <span className="text-sm text-on-surface flex-1 truncate min-w-0">{name}</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    value={vol}
+                    onChange={(e) => setUserVolume(p.identity, parseFloat(e.target.value))}
+                    className="w-28 h-1 rounded-full appearance-none cursor-pointer bg-surface-container-highest
+                      [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3
+                      [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full
+                      [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-sm
+                      [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3
+                      [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white
+                      [&::-moz-range-thumb]:border-0"
+                    style={{ background: `linear-gradient(to right, #6366f1 0%, #6366f1 ${(vol / 2) * 100}%, #3f3f46 ${(vol / 2) * 100}%, #3f3f46 100%)` }}
+                  />
+                  <span className="text-xs text-on-surface-variant tabular-nums w-8 text-right flex-shrink-0">
+                    {Math.round(vol * 100)}%
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

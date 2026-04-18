@@ -902,6 +902,25 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const renderDesktopLayout = () => {
     const showSidebar = !sidebarCollapsed;
 
+    if (settingsOpen) {
+      return (
+        <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-hidden bg-surface text-on-surface">
+          <div className="h-12 flex items-center px-3 gap-2 bg-surface-container-low flex-shrink-0">
+            <button
+              onClick={() => { closeServerSettings(); closeSettings(); }}
+              className="btn-press flex items-center justify-center w-9 h-9 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
+              aria-label="Back"
+            >
+              <span className="material-symbols-outlined text-xl">arrow_back</span>
+            </button>
+            <h2 className="font-headline font-semibold">Settings</h2>
+          </div>
+          <SettingsPanel />
+          <ExploreModal isOpen={exploreOpen} onClose={closeExplore} />
+        </div>
+      );
+    }
+
     return (
       <div className="h-full w-full min-h-0 min-w-0 flex overflow-hidden bg-surface text-on-surface">
         {/* LEFT STACK — sidebar columns. Collapses to zero width when hidden. */}
@@ -1168,6 +1187,32 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       </div>
       </div>
 
+      {/* Panel navigation tabs — mouse/keyboard nav between page-depth panels */}
+      {PAGE_DEPTH.includes(mobileView as MobileView) && (
+        <div className="flex items-stretch bg-surface-container-low flex-shrink-0 px-1 border-b border-outline-variant/10">
+          {PAGE_DEPTH.map((view) => {
+            const meta = PAGE_PILL_META[view];
+            const isActive = mobileView === view;
+            return (
+              <button
+                key={view}
+                onClick={() => {
+                  skipNextScrollSyncRef.current = true;
+                  setMobileView(view as MobileView);
+                }}
+                className={`flex-1 flex items-center justify-center gap-1 py-1 text-xs font-label transition-colors relative ${
+                  isActive ? "text-on-surface font-medium" : "text-on-surface-variant hover:text-on-surface"
+                }`}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: "12px" }}>{meta.icon}</span>
+                {meta.label}
+                {isActive && <div className="absolute bottom-0 left-2 right-2 h-0.5 bg-primary rounded-t-full" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Main content area */}
       <div className="flex-1 min-h-0 overflow-hidden relative">
         {/* Page-depth views: horizontal scroll-snap strip.
@@ -1302,10 +1347,8 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         )}
       </div>
 
-      {/* Pill collapse toggle — always visible so the pill can be raised/lowered
-          regardless of its current state. "v" collapses, "^" floats above
-          the content area and restores. */}
-      <div className="flex justify-end px-3 flex-shrink-0">
+      {/* Pill collapse toggle — hidden in settings/DMs where the pill isn't shown */}
+      {!(mobileView === "settings" || mobileView === "dms") && <div className="flex justify-end px-3 flex-shrink-0">
         <button
           onClick={() => setPillHidden((h) => !h)}
           aria-label={pillHidden ? "Show navigation" : "Hide navigation"}
@@ -1315,11 +1358,11 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             {pillHidden ? "expand_less" : "expand_more"}
           </span>
         </button>
-      </div>
+      </div>}
 
       {/* INS-044: Bottom pill row with multi-tab browse support. */}
       <MobilePillRow
-        hidden={pillHidden}
+        hidden={pillHidden || mobileView === "settings" || mobileView === "dms"}
         active={mobileView}
         pageDepth={PAGE_DEPTH.includes(mobileView) ? mobileView : "servers"}
         voiceActive={voiceConnected}
@@ -1398,26 +1441,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // Shared main content renderer (desktop)
   const renderMainContent = () => {
     const showInlineAccountBanner = Boolean(userId && sidebarCollapsed);
-
-    if (settingsOpen) {
-      return (
-        <>
-          <div className="h-12 flex items-center px-4 justify-between bg-surface-container-low flex-shrink-0">
-            <h2 className="font-headline font-semibold">Settings</h2>
-            <button
-              onClick={() => {
-                closeServerSettings();
-                closeSettings();
-              }}
-              className="text-sm text-on-surface-variant hover:text-on-surface transition-colors font-label"
-            >
-              Back
-            </button>
-          </div>
-          <SettingsPanel />
-        </>
-      );
-    }
 
     return (
       <>
@@ -2907,19 +2930,19 @@ function AddSourceModal({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-sm mx-4 bg-surface-container rounded-2xl border border-outline-variant/20 shadow-2xl p-6">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full sm:max-w-sm sm:mx-4 bg-surface-container rounded-t-2xl sm:rounded-2xl border border-outline-variant/20 shadow-2xl p-4 sm:p-6 max-h-[88vh] overflow-y-auto safe-bottom">
 
         {/* ── Screen: pick ── */}
         {screen === "pick" && (
           <>
             <Header title="Explore Sources" />
-            <div className="space-y-3">
+            <div className="space-y-2">
               <button
                 onClick={() => setScreen("concord")}
-                className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/20 hover:border-primary/40 hover:bg-surface-container-high transition-all text-left group"
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-primary/40 hover:bg-surface-container-high transition-all text-left group"
               >
-                <div className="w-10 h-10 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
                   <SourceBrandIcon brand="concord" size={24} />
                 </div>
                 <div>
@@ -2931,9 +2954,9 @@ function AddSourceModal({
 
               <button
                 onClick={() => void handleDiscoverPresetMatrix("matrix.org")}
-                className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/20 hover:border-teal-500/40 hover:bg-surface-container-high transition-all text-left group"
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-teal-500/40 hover:bg-surface-container-high transition-all text-left group"
               >
-                <div className="w-10 h-10 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
                   <SourceBrandIcon brand="matrix" size={24} className="text-on-surface" />
                 </div>
                 <div>
@@ -2945,9 +2968,9 @@ function AddSourceModal({
 
               <button
                 onClick={() => void handleDiscoverPresetMatrix("chat.mozilla.org")}
-                className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/20 hover:border-orange-500/40 hover:bg-surface-container-high transition-all text-left group"
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-orange-500/40 hover:bg-surface-container-high transition-all text-left group"
               >
-                <div className="w-10 h-10 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
                   <SourceBrandIcon brand="mozilla" size={24} />
                 </div>
                 <div>
@@ -2959,9 +2982,9 @@ function AddSourceModal({
 
               <button
                 onClick={() => setScreen("matrix")}
-                className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/20 hover:border-teal-500/40 hover:bg-surface-container-high transition-all text-left group"
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-teal-500/40 hover:bg-surface-container-high transition-all text-left group"
               >
-                <div className="w-10 h-10 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
                   <SourceBrandIcon brand="matrix" size={24} className="text-on-surface" />
                 </div>
                 <div>
@@ -2973,9 +2996,9 @@ function AddSourceModal({
 
               <button
                 onClick={() => setScreen("discord")}
-                className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/20 hover:border-[#5865F2]/40 hover:bg-surface-container-high transition-all text-left group"
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-[#5865F2]/40 hover:bg-surface-container-high transition-all text-left group"
               >
-                <div className="w-10 h-10 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
                   <SourceBrandIcon brand="discord" size={24} className="text-[#5865F2]" />
                 </div>
                 <div>
@@ -2988,9 +3011,9 @@ function AddSourceModal({
               <button
                 type="button"
                 disabled
-                className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/10 bg-surface-container/40 text-left opacity-60 cursor-not-allowed"
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/10 bg-surface-container/40 text-left opacity-60 cursor-not-allowed"
               >
-                <div className="w-10 h-10 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
                   <span className="material-symbols-outlined text-on-surface-variant">forum</span>
                 </div>
                 <div className="flex-1">
@@ -3003,9 +3026,9 @@ function AddSourceModal({
               <button
                 type="button"
                 disabled
-                className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/10 bg-surface-container/40 text-left opacity-60 cursor-not-allowed"
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/10 bg-surface-container/40 text-left opacity-60 cursor-not-allowed"
               >
-                <div className="w-10 h-10 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
                   <span className="material-symbols-outlined text-on-surface-variant">sensors</span>
                 </div>
                 <div className="flex-1">
@@ -3149,7 +3172,7 @@ function AddSourceModal({
               {/* Bot bridge */}
               <button
                 onClick={handleCheckDiscordBridge}
-                className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/20 hover:border-[#5865F2]/40 hover:bg-surface-container-high transition-all text-left group"
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-[#5865F2]/40 hover:bg-surface-container-high transition-all text-left group"
               >
                 <div className="w-10 h-10 rounded-xl bg-[#5865F2]/15 flex items-center justify-center flex-shrink-0">
                   <span className="material-symbols-outlined text-[#5865F2] text-xl">videogame_asset</span>
@@ -3164,7 +3187,7 @@ function AddSourceModal({
               {/* Account login */}
               <button
                 onClick={() => setScreen("discord-account")}
-                className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/20 hover:border-[#5865F2]/40 hover:bg-surface-container-high transition-all text-left group"
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-[#5865F2]/40 hover:bg-surface-container-high transition-all text-left group"
               >
                 <div className="w-10 h-10 rounded-xl bg-[#5865F2]/15 flex items-center justify-center flex-shrink-0">
                   <span className="material-symbols-outlined text-[#5865F2] text-xl">person_play</span>
