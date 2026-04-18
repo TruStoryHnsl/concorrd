@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Server, Channel, ServerMember, AppAccess } from "../api/concord";
+import type { Server, Channel, ServerMember } from "../api/concord";
 import {
   listServers,
   createServer as apiCreateServer,
@@ -27,19 +27,6 @@ import { useToastStore } from "./toast";
  * layers and tests.
  */
 const FEDERATED_SERVER_ID_PREFIX = "federated:";
-
-function pickLobbyServer(servers: Server[]): Server | null {
-  return servers.find((server) => /\blobby\b/i.test(server.name)) ?? servers[0] ?? null;
-}
-
-function pickPreferredChannel(server: Server | null | undefined): Channel | null {
-  if (!server) return null;
-  return (
-    server.channels.find((channel) => channel.name.toLowerCase() === "welcome") ??
-    server.channels[0] ??
-    null
-  );
-}
 
 function discordGuildIdFromAlias(alias: string | null | undefined): string | null {
   const match = alias?.match(/^#_discord_(\d+)_\d+:/);
@@ -108,7 +95,6 @@ interface ServerState {
   activeServerId: string | null;
   activeChannelId: string | null; // matrix_room_id
   members: Record<string, ServerMember[]>; // keyed by server ID
-  resetState: () => void;
 
   loadServers: (accessToken: string) => Promise<void>;
   /**
@@ -151,7 +137,6 @@ interface ServerState {
     name: string,
     channelType: string,
     accessToken: string,
-    extras?: { extension_id?: string; app_access?: AppAccess },
   ) => Promise<Channel>;
   createInvite: (serverId: string, accessToken: string) => Promise<string>;
   deleteServer: (serverId: string, accessToken: string) => Promise<void>;
@@ -184,7 +169,6 @@ interface ServerState {
   ensureDiscordGuild: (guild: {
     guildId: string;
     guildName: string;
-    iconUrl?: string | null;
     channel: { roomId: string; name: string; channelType?: string; id?: number };
     preferBridgeServer?: boolean;
     activate?: boolean;
@@ -199,12 +183,6 @@ export const useServerStore = create<ServerState>((set, get) => ({
   activeServerId: null,
   activeChannelId: null,
   members: {},
-  resetState: () => set({
-    servers: [],
-    activeServerId: null,
-    activeChannelId: null,
-    members: {},
-  }),
 
   hydrateFederatedRooms: (client) => {
     const { servers } = get();
@@ -214,17 +192,6 @@ export const useServerStore = create<ServerState>((set, get) => ({
     const concordServers = servers.filter(
       (s) => !s.id.startsWith(FEDERATED_SERVER_ID_PREFIX),
     );
-    const existingDiscordGuilds = new Map<
-      string,
-      { name: string; iconUrl: string | null }
-    >();
-    for (const server of servers) {
-      if (!server.discordGuildId) continue;
-      existingDiscordGuilds.set(server.discordGuildId, {
-        name: server.name,
-        iconUrl: server.icon_url,
-      });
-    }
 
     // Build the set of matrix_room_ids already owned by a Concord server
     // so we don't double-render them as loose rooms.
@@ -531,12 +498,8 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
       synthetic.push({
         id: `${FEDERATED_SERVER_ID_PREFIX}${parentId}`,
-        name: discordGuildId
-          ? existingDiscordGuilds.get(discordGuildId)?.name ?? name
-          : name,
-        icon_url: discordGuildId
-          ? existingDiscordGuilds.get(discordGuildId)?.iconUrl ?? null
-          : null,
+        name,
+        icon_url: null,
         owner_id: userId,
         visibility: "public",
         abbreviation: isLocalSpace ? "D" : name.charAt(0).toUpperCase() || "#",
@@ -595,8 +558,8 @@ export const useServerStore = create<ServerState>((set, get) => ({
       if (!target) {
         target = {
           id: `${FEDERATED_SERVER_ID_PREFIX}discord_${overlay.guildId}`,
-          name: existingDiscordGuilds.get(overlay.guildId)?.name ?? `Guild ${overlay.guildId}`,
-          icon_url: existingDiscordGuilds.get(overlay.guildId)?.iconUrl ?? null,
+          name: `Guild ${overlay.guildId}`,
+          icon_url: null,
           owner_id: userId,
           visibility: "public",
           abbreviation: "D",
@@ -728,18 +691,15 @@ export const useServerStore = create<ServerState>((set, get) => ({
     }
 
     // Auto-select: land in the lobby's #welcome channel by default
-    const { activeServerId, activeChannelId } = get();
-    const activeServer = activeServerId
-      ? servers.find((server) => server.id === activeServerId)
-      : null;
-    const activeChannelStillExists = activeServer
-      ? activeServer.channels.some((channel) => channel.matrix_room_id === activeChannelId)
-      : false;
-    if ((!activeServer || !activeChannelStillExists) && servers.length > 0) {
-      const lobby = pickLobbyServer(servers);
-      const targetChannel = pickPreferredChannel(lobby);
+    const { activeServerId } = get();
+    if (!activeServerId && servers.length > 0) {
+      // Find the lobby (first server, which is oldest by created_at)
+      const lobby = servers[0];
+      // Prefer #welcome channel, fall back to first channel
+      const welcomeChannel = lobby.channels.find((ch) => ch.name === "welcome");
+      const targetChannel = welcomeChannel ?? lobby.channels[0];
       set({
-        activeServerId: lobby?.id ?? null,
+        activeServerId: lobby.id,
         activeChannelId: targetChannel?.matrix_room_id ?? null,
       });
     }
@@ -755,13 +715,12 @@ export const useServerStore = create<ServerState>((set, get) => ({
     return server;
   },
 
-  createChannel: async (serverId, name, channelType, accessToken, extras) => {
+  createChannel: async (serverId, name, channelType, accessToken) => {
     const channel = await apiCreateChannel(
       serverId,
       name,
       channelType,
       accessToken,
-      extras,
     );
     set((s) => ({
       servers: s.servers.map((srv) =>
@@ -906,10 +865,9 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   setActiveServer: (serverId) => {
     const server = get().servers.find((s) => s.id === serverId);
-    const targetChannel = pickPreferredChannel(server);
     set({
       activeServerId: serverId,
-      activeChannelId: targetChannel?.matrix_room_id ?? null,
+      activeChannelId: server?.channels[0]?.matrix_room_id ?? null,
     });
   },
 
@@ -917,9 +875,9 @@ export const useServerStore = create<ServerState>((set, get) => ({
     set({ activeChannelId: matrixRoomId });
   },
 
-  ensureDiscordGuild: ({ guildId, guildName, iconUrl, channel, preferBridgeServer, activate = true }) => {
+  ensureDiscordGuild: ({ guildId, guildName, channel, preferBridgeServer, activate = true }) => {
     const { servers } = get();
-    const channelType = (channel.channelType ?? "text") as Channel['channel_type'];
+    const channelType = channel.channelType ?? "text";
     const channelId = channel.id ?? 0;
 
     // Prefer any existing server that already contains this channel —
@@ -933,42 +891,16 @@ export const useServerStore = create<ServerState>((set, get) => ({
     );
 
     if (hostServer) {
-      const existingChannel = hostServer.channels.find(
-        (entry) => entry.matrix_room_id === channel.roomId,
-      );
       // Update name if we now have a real guild name and the tile still
       // shows the fallback "Guild <snowflake>" label.
       const betterName =
         guildName &&
         !guildName.startsWith("Guild ") &&
         hostServer.name.startsWith("Guild ");
-      const betterIcon = iconUrl && hostServer.icon_url !== iconUrl;
-      const betterChannelName =
-        existingChannel &&
-        channel.name &&
-        existingChannel.name !== channel.name;
-      const betterChannelType =
-        existingChannel &&
-        existingChannel.channel_type !== channelType;
-      if (betterName || betterIcon || betterChannelName || betterChannelType) {
+      if (betterName) {
         set({
           servers: servers.map((s) =>
-            s.id === hostServer.id
-              ? {
-                  ...s,
-                  ...(betterName ? { name: guildName } : {}),
-                  ...(betterIcon ? { icon_url: iconUrl } : {}),
-                  channels: s.channels.map((entry) =>
-                    entry.matrix_room_id === channel.roomId
-                      ? {
-                          ...entry,
-                          ...(betterChannelName ? { name: channel.name } : {}),
-                          ...(betterChannelType ? { channel_type: channelType } : {}),
-                        }
-                      : entry,
-                  ),
-                }
-              : s,
+            s.id === hostServer.id ? { ...s, name: guildName } : s,
           ),
         });
       }
@@ -984,41 +916,23 @@ export const useServerStore = create<ServerState>((set, get) => ({
       servers.find((s) => s.id === serverId);
 
     if (existing) {
-      const existingChannel = existing.channels.find(
+      const hasChannel = existing.channels.some(
         (c) => c.matrix_room_id === channel.roomId,
       );
-      const hasChannel = Boolean(existingChannel);
       const betterName =
         guildName &&
         !guildName.startsWith("Guild ") &&
         existing.name.startsWith("Guild ");
-      const betterIcon = iconUrl && existing.icon_url !== iconUrl;
-      const betterChannelName =
-        existingChannel &&
-        channel.name &&
-        existingChannel.name !== channel.name;
-      const betterChannelType =
-        existingChannel &&
-        existingChannel.channel_type !== channelType;
-      if (!hasChannel || betterName || betterIcon || betterChannelName || betterChannelType) {
+      if (!hasChannel || betterName) {
         set({
           servers: servers.map((s) =>
             s.id === existing.id
               ? {
                   ...s,
                   ...(betterName ? { name: guildName } : {}),
-                  ...(betterIcon ? { icon_url: iconUrl } : {}),
                   discordGuildId: guildId,
                   channels: hasChannel
-                    ? s.channels.map((entry) =>
-                        entry.matrix_room_id === channel.roomId
-                          ? {
-                              ...entry,
-                              ...(betterChannelName ? { name: channel.name } : {}),
-                              ...(betterChannelType ? { channel_type: channelType } : {}),
-                            }
-                          : entry,
-                      )
+                    ? s.channels
                     : [
                         ...s.channels,
                         {
@@ -1044,7 +958,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
           {
             id: serverId,
             name: guildName,
-            icon_url: iconUrl ?? null,
+            icon_url: null,
             owner_id: userId,
             visibility: "public",
             abbreviation: null,

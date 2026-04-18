@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useServerStore } from "../../stores/server";
 import { useAuthStore } from "../../stores/auth";
-import { useSettingsStore } from "../../stores/settings";
 import { useToastStore } from "../../stores/toast";
 import { FederationBadge } from "../ui/FederationBadge";
 import { useLocalServerName } from "../../hooks/useFederation";
@@ -24,20 +23,16 @@ import {
   sendDirectInvite,
   createInvite,
   listInvites,
-  revokeInvite,
   getAuthCode,
   getBanSettings,
   updateBanSettings,
   updateMemberPermissions,
-  updateInvite,
-  updateChannelCreationSetting,
   type BanSettings,
   type Invite,
 } from "../../api/concord";
 import type { ServerMember, ServerBan, ServerWhitelistEntry, Webhook, UserSearchResult } from "../../api/concord";
 
 type Tab = "general" | "members" | "invite" | "bans" | "whitelist" | "webhooks" | "moderation";
-const EMPTY_SERVER_MEMBERS: ServerMember[] = [];
 
 interface Props {
   serverId: string;
@@ -54,12 +49,11 @@ export function ServerSettingsPanel({ serverId }: Props) {
   const server = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
   const accessToken = useAuthStore((s) => s.accessToken);
   const userId = useAuthStore((s) => s.userId);
-  const membersByServer = useServerStore((s) => s.members);
-  const members = membersByServer[serverId] ?? EMPTY_SERVER_MEMBERS;
 
   if (!server || !accessToken) return null;
 
   const isOwner = server.owner_id === userId;
+  const members = useServerStore((s) => s.members[serverId] ?? []);
   const myMember = members.find((m) => m.user_id === userId);
   const isAdmin = isOwner || myMember?.role === "admin";
   const tabs: { key: Tab; label: string }[] = [
@@ -98,7 +92,7 @@ export function ServerSettingsPanel({ serverId }: Props) {
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-y-auto min-h-0 p-6">
+      <div className="flex-1 overflow-y-auto min-h-0 p-6 max-w-2xl">
         <ServerSettingsContent serverId={serverId} activeTab={tab} />
       </div>
     </div>
@@ -127,12 +121,6 @@ export function ServerSettingsContent({
 
   return (
     <>
-      {activeTab === "bridge" && (
-        <BridgeServerTab serverId={serverId} />
-      )}
-      {activeTab === "federation" && (
-        <FederatedServerTab serverId={serverId} />
-      )}
       {activeTab === "general" && (
         <GeneralTab serverId={serverId} accessToken={accessToken} />
       )}
@@ -158,120 +146,16 @@ export function ServerSettingsContent({
   );
 }
 
-function BridgeServerTab({ serverId }: { serverId: string }) {
-  const server = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
-  if (!server) return null;
-
-  const voiceChannels = server.channels.filter((channel) => channel.channel_type === "voice");
-  const textChannels = server.channels.filter((channel) => channel.channel_type !== "voice");
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-xl font-semibold text-on-surface">Discord Bridge</h3>
-        <p className="text-sm text-on-surface-variant mt-1">
-          This server is a Discord-backed projection. Discord owns the room catalog and Concord reflects it here.
-        </p>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <InfoCard label="Guild" value={server.name} />
-        <InfoCard label="Guild ID" value={server.discordGuildId ?? "Unknown"} mono />
-        <InfoCard label="Text Rooms" value={`${textChannels.length}`} />
-        <InfoCard label="Voice Rooms" value={`${voiceChannels.length}`} />
-      </div>
-
-      <section className="space-y-2">
-        <h4 className="text-sm font-semibold text-on-surface">Behavior</h4>
-        <ul className="space-y-1 text-sm text-on-surface-variant">
-          <li>Messages, members, and channel structure come from the Discord bridge.</li>
-          <li>Permissions and join failures usually have to be resolved in Discord, not here.</li>
-          <li>Voice links attach Concord voice transport to the Discord voice room you mapped.</li>
-        </ul>
-      </section>
-    </div>
-  );
-}
-
-function FederatedServerTab({ serverId }: { serverId: string }) {
-  const server = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
-  if (!server) return null;
-
-  const homeserver = server.id.startsWith("federated:")
-    ? server.id.slice("federated:".length)
-    : server.name;
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-xl font-semibold text-on-surface">Federation</h3>
-        <p className="text-sm text-on-surface-variant mt-1">
-          This server is a Matrix federation wrapper, not a local Concord server. Room access is controlled by the remote homeserver.
-        </p>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <InfoCard label="Homeserver" value={homeserver} mono />
-        <InfoCard label="Visible Rooms" value={`${server.channels.length}`} />
-      </div>
-
-      <section className="space-y-2">
-        <h4 className="text-sm font-semibold text-on-surface">Behavior</h4>
-        <ul className="space-y-1 text-sm text-on-surface-variant">
-          <li>Joining depends on that homeserver's join rules, federation policy, and your Matrix account.</li>
-          <li>Use Explore to browse public rooms and inspect join errors before assuming the bridge is broken.</li>
-          <li>There is no local delete or membership management surface for federated wrappers.</li>
-        </ul>
-      </section>
-    </div>
-  );
-}
-
-function InfoCard({
-  label,
-  value,
-  mono = false,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-}) {
-  return (
-    <div className="rounded-lg bg-surface-container-low border border-outline-variant/15 px-4 py-3">
-      <p className="text-[11px] uppercase tracking-wide text-on-surface-variant/70">{label}</p>
-      <p className={`mt-1 text-sm text-on-surface break-all ${mono ? "font-mono" : ""}`}>{value}</p>
-    </div>
-  );
-}
-
 function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: string }) {
   const server = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
   const updateServer = useServerStore((s) => s.updateServer);
-  const deleteServer = useServerStore((s) => s.deleteServer);
   const addToast = useToastStore((s) => s.addToast);
-  const userId = useAuthStore((s) => s.userId);
-  const membersByServer = useServerStore((s) => s.members);
-  const members = membersByServer[serverId] ?? EMPTY_SERVER_MEMBERS;
-  const closeSettings = useSettingsStore((s) => s.closeSettings);
-  const closeServerSettings = useSettingsStore((s) => s.closeServerSettings);
 
   const [name, setName] = useState(server?.name ?? "");
   const [abbreviation, setAbbreviation] = useState(server?.abbreviation ?? "");
   const [visibility, setVisibility] = useState(server?.visibility ?? "private");
   const [mediaUploads, setMediaUploads] = useState(server?.media_uploads_enabled ?? true);
-  const [rulesText, setRulesText] = useState(server?.rules_text ?? "");
-  // INS-053: per-server user channel creation toggle
-  const [allowUserChannelCreation, setAllowUserChannelCreation] = useState(
-    server?.allow_user_channel_creation ?? false
-  );
-  const [savingChannelCreation, setSavingChannelCreation] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [deleteConfirmation, setDeleteConfirmation] = useState("");
-  const [deleting, setDeleting] = useState(false);
-
-  const isOwner = server?.owner_id === userId;
-  const isAdmin = isOwner || members.some((member) => member.user_id === userId && member.role === "admin");
-  const canDelete = !!server && isAdmin;
 
   const handleSave = async () => {
     setSaving(true);
@@ -283,7 +167,6 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
           visibility,
           abbreviation: abbreviation || null,
           media_uploads_enabled: mediaUploads,
-          rules_text: rulesText || null,
         },
         accessToken,
       );
@@ -292,42 +175,12 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
         visibility: result.visibility,
         abbreviation: result.abbreviation,
         media_uploads_enabled: result.media_uploads_enabled,
-        rules_text: result.rules_text,
       });
       addToast("Settings saved", "success");
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleToggleChannelCreation = async (newValue: boolean) => {
-    setAllowUserChannelCreation(newValue);
-    setSavingChannelCreation(true);
-    try {
-      const result = await updateChannelCreationSetting(serverId, newValue, accessToken);
-      updateServer(serverId, { allow_user_channel_creation: result.allow_user_channel_creation });
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to update channel creation setting");
-      setAllowUserChannelCreation(!newValue); // revert
-    } finally {
-      setSavingChannelCreation(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!server || !canDelete || deleteConfirmation !== server.name) return;
-    setDeleting(true);
-    try {
-      await deleteServer(server.id, accessToken);
-      closeServerSettings();
-      closeSettings();
-      addToast("Server deleted", "success");
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to delete server");
-    } finally {
-      setDeleting(false);
     }
   };
 
@@ -426,55 +279,6 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
         </p>
       </div>
 
-      <div>
-        <label className="block text-sm font-medium text-on-surface mb-1">
-          Server Rules
-        </label>
-        <p className="text-xs text-on-surface-variant mb-2">
-          New members see this text before they can post. Leave blank to disable the rules gate.
-        </p>
-        <textarea
-          value={rulesText}
-          onChange={(e) => setRulesText(e.target.value)}
-          maxLength={2000}
-          rows={5}
-          placeholder="Be respectful. No spam. Follow the community guidelines..."
-          className="w-full px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30 resize-y"
-        />
-        <p className="text-xs text-on-surface-variant mt-1 text-right">
-          {rulesText.length}/2000
-        </p>
-      </div>
-
-      {/* INS-053: User channel creation toggle — only shown to admins */}
-      {isAdmin && (
-        <div className="flex items-center justify-between py-1">
-          <div>
-            <label className="block text-sm font-medium text-on-surface">
-              Allow user channel creation
-            </label>
-            <p className="text-xs text-on-surface-variant mt-0.5">
-              When enabled, any server member can create new channels.
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={savingChannelCreation}
-            onClick={() => handleToggleChannelCreation(!allowUserChannelCreation)}
-            data-testid="allow-user-channel-creation-toggle"
-            className={`relative w-11 h-6 rounded-full transition-colors disabled:opacity-60 ${
-              allowUserChannelCreation ? "bg-primary" : "bg-surface-container-highest"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
-                allowUserChannelCreation ? "translate-x-5" : ""
-              }`}
-            />
-          </button>
-        </div>
-      )}
-
       <button
         onClick={handleSave}
         disabled={saving}
@@ -482,32 +286,6 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
       >
         {saving ? "Saving..." : "Save Changes"}
       </button>
-
-      {server && canDelete && (
-        <section className="pt-6 border-t border-outline-variant/15 space-y-3">
-          <div>
-            <h4 className="text-sm font-semibold text-error">Delete Server</h4>
-            <p className="text-xs text-on-surface-variant mt-1">
-              Type <span className="text-on-surface font-medium">{server.name}</span> to confirm permanent deletion.
-            </p>
-          </div>
-          <input
-            type="text"
-            value={deleteConfirmation}
-            onChange={(e) => setDeleteConfirmation(e.target.value)}
-            placeholder={server.name}
-            className="w-full px-3 py-2 bg-surface-container border border-error/25 rounded text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-error/30"
-          />
-          <button
-            type="button"
-            onClick={handleDelete}
-            disabled={deleting || deleteConfirmation !== server.name}
-            className="px-4 py-2 rounded text-sm font-medium bg-error text-white disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {deleting ? "Deleting..." : "Delete Server"}
-          </button>
-        </section>
-      )}
     </div>
   );
 }
@@ -1330,33 +1108,11 @@ function InviteLinkSection({
 }) {
   const [passphrase, setPassphrase] = useState("");
   const [creating, setCreating] = useState(false);
-  const [createdLink, setCreatedLink] = useState<string | null>(null);
+  const [created, setCreated] = useState<string | null>(null);
   const [invites, setInvites] = useState<Invite[]>([]);
-  const [expiresInHours, setExpiresInHours] = useState(24);
-  const [maxUses, setMaxUses] = useState(1);
-  const [permanent, setPermanent] = useState(false);
-  const [savingInviteId, setSavingInviteId] = useState<number | null>(null);
-  const [inviteDrafts, setInviteDrafts] = useState<
-    Record<number, { expiresInHours: number; maxUses: number; permanent: boolean }>
-  >({});
   const [authCode, setAuthCode] = useState("");
   const [codeTtl, setCodeTtl] = useState(0);
   const addToast = useToastStore((s) => s.addToast);
-
-  const buildInviteLink = useCallback((token: string) => `${window.location.origin}?invite=${token}`, []);
-  const inviteHoursFromExpiresAt = useCallback((value: string) => {
-    const diffMs = new Date(value).getTime() - Date.now();
-    return Math.max(1, Math.round(diffMs / 3_600_000));
-  }, []);
-
-  const copyToClipboard = useCallback(async (text: string, label = "Invite link copied") => {
-    try {
-      await navigator.clipboard.writeText(text);
-      addToast(label, "success");
-    } catch {
-      addToast("Failed to copy invite link");
-    }
-  }, [addToast]);
 
   // Fetch and auto-refresh the rolling auth code
   useEffect(() => {
@@ -1389,46 +1145,17 @@ function InviteLinkSection({
       .catch(() => {});
   }, [serverId, accessToken]);
 
-  useEffect(() => {
-    setInviteDrafts((current) => {
-      const next = { ...current };
-      for (const invite of invites) {
-        next[invite.id] ??= {
-          expiresInHours: inviteHoursFromExpiresAt(invite.expires_at),
-          maxUses: invite.max_uses,
-          permanent: invite.permanent,
-        };
-      }
-      return next;
-    });
-  }, [invites, inviteHoursFromExpiresAt]);
-
-  const createLinkInvite = async (options?: { passphrase?: string }) => {
-    const invite = await createInvite(serverId, accessToken, {
-      passphrase: options?.passphrase,
-      max_uses: maxUses,
-      permanent,
-      ...(permanent ? {} : { expires_in_hours: expiresInHours }),
-    });
-    setInvites((prev) => [invite, ...prev]);
-    setInviteDrafts((prev) => ({
-      ...prev,
-      [invite.id]: {
-        expiresInHours: inviteHoursFromExpiresAt(invite.expires_at),
-        maxUses: invite.max_uses,
-        permanent: invite.permanent,
-      },
-    }));
-    const link = buildInviteLink(invite.token);
-    setCreatedLink(link);
-    await copyToClipboard(link);
-    return invite;
-  };
-
   const handleGenerate = async () => {
     setCreating(true);
     try {
-      await createLinkInvite();
+      // No passphrase — server generates a random short token
+      const invite = await createInvite(serverId, accessToken, {
+        max_uses: 1,
+        expires_in_hours: 1,
+      });
+      setCreated(invite.token);
+      setInvites((prev) => [invite, ...prev]);
+      addToast("Token generated — share it with your friend", "success");
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Failed to generate token");
     } finally {
@@ -1444,44 +1171,20 @@ function InviteLinkSection({
     }
     setCreating(true);
     try {
-      await createLinkInvite({ passphrase: phrase });
+      const invite = await createInvite(serverId, accessToken, {
+        passphrase: phrase,
+        max_uses: 1,
+        expires_in_hours: 1,
+      });
+      setCreated(invite.token);
+      setInvites((prev) => [invite, ...prev]);
       setPassphrase("");
+      addToast("Invite created — tell your friend the passphrase", "success");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to create invite";
       addToast(msg.includes("409") ? "That passphrase is already in use" : msg);
     } finally {
       setCreating(false);
-    }
-  };
-
-  const handleSaveInvite = async (inviteId: number) => {
-    const draft = inviteDrafts[inviteId];
-    if (!draft) return;
-    setSavingInviteId(inviteId);
-    try {
-      const updated = await updateInvite(inviteId, accessToken, {
-        max_uses: draft.maxUses,
-        permanent: draft.permanent,
-        ...(draft.permanent ? {} : { expires_in_hours: draft.expiresInHours }),
-      });
-      setInvites((current) => current.map((invite) => (
-        invite.id === inviteId ? updated : invite
-      )));
-      addToast("Invite updated", "success");
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to update invite");
-    } finally {
-      setSavingInviteId(null);
-    }
-  };
-
-  const handleRevokeInvite = async (inviteId: number) => {
-    try {
-      await revokeInvite(inviteId, accessToken);
-      setInvites((current) => current.filter((invite) => invite.id !== inviteId));
-      addToast("Invite revoked", "success");
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to revoke invite");
     }
   };
 
@@ -1511,42 +1214,8 @@ function InviteLinkSection({
       )}
 
       <p className="text-xs text-on-surface-variant mb-3">
-        Generate a copyable invite link or custom passphrase, then tune its lifetime and usage budget.
+        Generate a token or pick a custom passphrase. Expires in 1 hour, single use.
       </p>
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
-        <label className="flex flex-col gap-1">
-          <span className="text-[11px] uppercase tracking-wider text-on-surface-variant font-label">Hours</span>
-          <input
-            type="number"
-            min={1}
-            max={8760}
-            value={expiresInHours}
-            disabled={permanent}
-            onChange={(event) => setExpiresInHours(Math.max(1, Number(event.target.value) || 1))}
-            className="px-3 py-2 rounded-xl bg-surface-container border border-outline-variant/20 text-sm text-on-surface disabled:opacity-50"
-          />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-[11px] uppercase tracking-wider text-on-surface-variant font-label">Max uses</span>
-          <input
-            type="number"
-            min={1}
-            max={1000}
-            value={maxUses}
-            onChange={(event) => setMaxUses(Math.max(1, Number(event.target.value) || 1))}
-            className="px-3 py-2 rounded-xl bg-surface-container border border-outline-variant/20 text-sm text-on-surface"
-          />
-        </label>
-        <label className="flex items-center gap-2 rounded-xl bg-surface-container border border-outline-variant/20 px-3 py-2.5 mt-[18px]">
-          <input
-            type="checkbox"
-            checked={permanent}
-            onChange={(event) => setPermanent(event.target.checked)}
-          />
-          <span className="text-sm text-on-surface">Permanent</span>
-        </label>
-      </div>
 
       {/* One-tap generate button */}
       <button
@@ -1554,7 +1223,7 @@ function InviteLinkSection({
         disabled={creating}
         className="w-full py-2.5 rounded-xl primary-glow text-on-primary font-headline font-semibold hover:brightness-110 shadow-lg shadow-primary/20 transition-all disabled:opacity-40 active:scale-[0.98] mb-3"
       >
-        {creating ? "..." : "Generate Invite Link"}
+        {creating ? "..." : "Generate Token"}
       </button>
 
       {/* Or custom passphrase */}
@@ -1563,7 +1232,7 @@ function InviteLinkSection({
         <input
           type="text"
           value={passphrase}
-          onChange={(e) => { setPassphrase(e.target.value); setCreatedLink(null); }}
+          onChange={(e) => { setPassphrase(e.target.value); setCreated(null); }}
           placeholder="e.g. pizza123"
           className="flex-1 px-3 py-2.5 bg-surface-container border border-outline-variant/20 rounded-xl text-on-surface text-sm font-mono placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
           autoCapitalize="off"
@@ -1580,123 +1249,29 @@ function InviteLinkSection({
         </button>
       </div>
 
-      {createdLink && (
+      {created && (
         <div className="mt-2 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20">
-          <p className="text-xs text-green-300 font-label uppercase tracking-wider">Ready to paste</p>
-          <div className="mt-1 flex items-center gap-2">
-            <input
-              readOnly
-              value={createdLink}
-              className="flex-1 min-w-0 bg-transparent text-sm text-green-100 font-mono focus:outline-none"
-            />
-            <button
-              type="button"
-              onClick={() => void copyToClipboard(createdLink)}
-              className="px-2 py-1 rounded-md bg-green-500/20 text-green-100 text-xs"
-            >
-              Copy
-            </button>
-          </div>
+          <p className="text-sm text-green-400 font-body">
+            Tell your friend: <strong className="font-mono">{created}</strong>
+            <span className="text-xs text-on-surface-variant ml-2">(expires in 1 hour)</span>
+          </p>
         </div>
       )}
 
       {activeInvites.length > 0 && (
-        <div className="mt-4 space-y-2">
+        <div className="mt-4 space-y-1">
           <p className="text-xs text-on-surface-variant font-label uppercase tracking-wider mb-1">
             Active invites
           </p>
           {activeInvites.map((inv) => (
             <div
               key={inv.id}
-              className="rounded-xl bg-surface-container border border-outline-variant/15 p-3 space-y-3"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-container text-xs"
             >
-              <div className="flex items-center gap-2">
-                <input
-                  readOnly
-                  value={buildInviteLink(inv.token)}
-                  className="flex-1 min-w-0 bg-transparent text-xs text-on-surface font-mono truncate focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => void copyToClipboard(buildInviteLink(inv.token))}
-                  className="px-2 py-1 rounded-md bg-surface-container-high text-on-surface text-xs"
-                >
-                  Copy
-                </button>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <label className="flex flex-col gap-1">
-                  <span className="text-[10px] uppercase tracking-wider text-on-surface-variant font-label">Hours</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={8760}
-                    value={inviteDrafts[inv.id]?.expiresInHours ?? 1}
-                    disabled={inviteDrafts[inv.id]?.permanent}
-                    onChange={(event) => {
-                      const next = Math.max(1, Number(event.target.value) || 1);
-                      setInviteDrafts((current) => ({
-                        ...current,
-                        [inv.id]: { ...current[inv.id], expiresInHours: next },
-                      }));
-                    }}
-                    className="px-3 py-2 rounded-lg bg-surface-container-high border border-outline-variant/15 text-sm text-on-surface disabled:opacity-50"
-                  />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-[10px] uppercase tracking-wider text-on-surface-variant font-label">Max uses</span>
-                  <input
-                    type="number"
-                    min={Math.max(1, inv.use_count)}
-                    max={1000}
-                    value={inviteDrafts[inv.id]?.maxUses ?? inv.max_uses}
-                    onChange={(event) => {
-                      const next = Math.max(inv.use_count || 1, Number(event.target.value) || 1);
-                      setInviteDrafts((current) => ({
-                        ...current,
-                        [inv.id]: { ...current[inv.id], maxUses: next },
-                      }));
-                    }}
-                    className="px-3 py-2 rounded-lg bg-surface-container-high border border-outline-variant/15 text-sm text-on-surface"
-                  />
-                </label>
-                <label className="flex items-center gap-2 rounded-lg bg-surface-container-high border border-outline-variant/15 px-3 py-2 mt-[18px]">
-                  <input
-                    type="checkbox"
-                    checked={inviteDrafts[inv.id]?.permanent ?? inv.permanent}
-                    onChange={(event) => {
-                      setInviteDrafts((current) => ({
-                        ...current,
-                        [inv.id]: { ...current[inv.id], permanent: event.target.checked },
-                      }));
-                    }}
-                  />
-                  <span className="text-sm text-on-surface">Permanent</span>
-                </label>
-              </div>
-              <div className="flex items-center justify-between gap-3 text-xs text-on-surface-variant">
-                <span>
-                  {inv.permanent ? "Never expires" : `Expires ${new Date(inv.expires_at).toLocaleString()}`}
-                </span>
-                <span>{inv.use_count}/{inv.max_uses} used</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleSaveInvite(inv.id)}
-                  disabled={savingInviteId === inv.id}
-                  className="px-3 py-1.5 rounded-lg bg-primary/15 text-primary text-xs font-medium disabled:opacity-50"
-                >
-                  {savingInviteId === inv.id ? "Saving..." : "Save"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleRevokeInvite(inv.id)}
-                  className="px-3 py-1.5 rounded-lg bg-error/10 text-error text-xs font-medium"
-                >
-                  Revoke
-                </button>
-              </div>
+              <code className="flex-1 text-on-surface font-mono truncate">{inv.token}</code>
+              <span className="text-on-surface-variant whitespace-nowrap">
+                {inv.permanent ? "∞" : `${inv.use_count}/${inv.max_uses}`}
+              </span>
             </div>
           ))}
         </div>

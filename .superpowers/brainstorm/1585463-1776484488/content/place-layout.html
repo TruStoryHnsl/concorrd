@@ -1,0 +1,174 @@
+<h2>Place Channel — Voice Banner Layout</h2>
+<p class="subtitle">Primary: text chat. Secondary: pill banner under the top bar. Two states shown side-by-side.</p>
+
+<div class="split">
+
+  <!-- STATE 1: Audio only -->
+  <div class="mockup">
+    <div class="mockup-header">Audio-only — thin banner</div>
+    <div class="mockup-body" style="background:#111827;border-radius:8px;overflow:hidden;font-family:sans-serif;min-height:380px;display:flex;flex-direction:column;">
+
+      <!-- Top bar -->
+      <div style="background:#1f2937;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #374151;flex-shrink:0;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="color:#7c5cfc;font-size:14px;">◈</span>
+          <span style="color:#e5e7eb;font-size:13px;font-weight:600;">#general-place</span>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <div style="width:18px;height:18px;background:#374151;border-radius:4px;"></div>
+          <div style="width:18px;height:18px;background:#374151;border-radius:4px;"></div>
+        </div>
+      </div>
+
+      <!-- Voice pill banner (audio-only = thin) -->
+      <div style="background:#1a1f2e;border-bottom:1px solid #2d3748;padding:5px 10px;display:flex;align-items:center;gap:6px;flex-shrink:0;">
+        <!-- Pills share width equally -->
+        <div style="flex:1;background:#252d40;border-radius:20px;padding:4px 8px;display:flex;align-items:center;gap:6px;min-width:0;">
+          <div style="width:24px;height:24px;background:#7c5cfc;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;">C</div>
+          <span style="font-size:11px;color:#9ca3af;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">corr</span>
+          <span style="margin-left:auto;font-size:9px;color:#4ade80;">●</span>
+        </div>
+        <div style="flex:1;background:#252d40;border-radius:20px;padding:4px 8px;display:flex;align-items:center;gap:6px;min-width:0;">
+          <div style="width:24px;height:24px;background:#059669;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;">A</div>
+          <span style="font-size:11px;color:#9ca3af;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">alice</span>
+          <span style="margin-left:auto;font-size:9px;color:#6b7280;">🔇</span>
+        </div>
+        <div style="flex:1;background:#252d40;border-radius:20px;padding:4px 8px;display:flex;align-items:center;gap:6px;min-width:0;">
+          <div style="width:24px;height:24px;background:#d97706;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;">B</div>
+          <span style="font-size:11px;color:#9ca3af;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">bob</span>
+          <span style="margin-left:auto;font-size:9px;color:#4ade80;">●</span>
+        </div>
+        <!-- collapse button -->
+        <div style="width:20px;height:20px;background:#252d40;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;">
+          <span style="color:#6b7280;font-size:10px;">⌃</span>
+        </div>
+      </div>
+
+      <!-- Chat area -->
+      <div style="flex:1;padding:12px;display:flex;flex-direction:column;gap:10px;overflow:hidden;">
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <div style="width:28px;height:28px;background:#7c5cfc;border-radius:50%;flex-shrink:0;font-size:11px;color:#fff;display:flex;align-items:center;justify-content:center;">C</div>
+          <div>
+            <div style="font-size:11px;color:#7c5cfc;margin-bottom:2px;">corr</div>
+            <div style="background:#1f2937;border-radius:8px;padding:6px 10px;font-size:12px;color:#d1d5db;">Hey everyone, welcome to the place!</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <div style="width:28px;height:28px;background:#059669;border-radius:50%;flex-shrink:0;font-size:11px;color:#fff;display:flex;align-items:center;justify-content:center;">A</div>
+          <div>
+            <div style="font-size:11px;color:#10b981;margin-bottom:2px;">alice</div>
+            <div style="background:#1f2937;border-radius:8px;padding:6px 10px;font-size:12px;color:#d1d5db;">Sounds great 👋</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <div style="width:28px;height:28px;background:#d97706;border-radius:50%;flex-shrink:0;font-size:11px;color:#fff;display:flex;align-items:center;justify-content:center;">B</div>
+          <div>
+            <div style="font-size:11px;color:#f59e0b;margin-bottom:2px;">bob</div>
+            <div style="background:#1f2937;border-radius:8px;padding:6px 10px;font-size:12px;color:#d1d5db;">Can we do a quick screenshare?</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Input -->
+      <div style="padding:8px 10px;border-top:1px solid #1f2937;flex-shrink:0;">
+        <div style="background:#1f2937;border-radius:20px;padding:8px 12px;display:flex;align-items:center;gap:8px;">
+          <span style="color:#7c5cfc;font-weight:bold;font-size:14px;">+</span>
+          <div style="width:16px;height:16px;background:#374151;border-radius:3px;flex-shrink:0;"></div>
+          <div style="flex:1;height:8px;background:#374151;border-radius:4px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATE 2: Video active -->
+  <div class="mockup">
+    <div class="mockup-header">Video active — banner expands</div>
+    <div class="mockup-body" style="background:#111827;border-radius:8px;overflow:hidden;font-family:sans-serif;min-height:380px;display:flex;flex-direction:column;">
+
+      <!-- Top bar -->
+      <div style="background:#1f2937;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #374151;flex-shrink:0;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="color:#7c5cfc;font-size:14px;">◈</span>
+          <span style="color:#e5e7eb;font-size:13px;font-weight:600;">#general-place</span>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <div style="width:18px;height:18px;background:#374151;border-radius:4px;"></div>
+          <div style="width:18px;height:18px;background:#374151;border-radius:4px;"></div>
+        </div>
+      </div>
+
+      <!-- Voice pill banner (video = expanded height, pills wider for video) -->
+      <div style="background:#1a1f2e;border-bottom:1px solid #2d3748;padding:6px 10px;display:flex;align-items:stretch;gap:6px;flex-shrink:0;">
+
+        <!-- Audio-only pill (thin) -->
+        <div style="flex:1;background:#252d40;border-radius:14px;padding:5px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-width:0;">
+          <div style="width:28px;height:28px;background:#7c5cfc;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;">C</div>
+          <span style="font-size:10px;color:#9ca3af;">corr</span>
+          <span style="font-size:9px;color:#4ade80;">● live</span>
+        </div>
+
+        <!-- Video pill — square video scaled to pill width -->
+        <div style="flex:2;background:#252d40;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;position:relative;cursor:pointer;" title="Click to expand">
+          <!-- Simulated camera feed (square, fills pill width) -->
+          <div style="width:100%;padding-bottom:100%;background:linear-gradient(135deg,#1e3a5f,#0f2027);position:relative;flex-shrink:0;">
+            <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;">
+              <div style="width:40px;height:40px;background:#059669;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;color:#fff;">A</div>
+            </div>
+            <!-- expand icon -->
+            <div style="position:absolute;top:4px;right:4px;width:16px;height:16px;background:rgba(0,0,0,0.5);border-radius:4px;display:flex;align-items:center;justify-content:center;">
+              <span style="font-size:9px;color:#fff;">⛶</span>
+            </div>
+          </div>
+          <div style="padding:3px 6px;display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:10px;color:#9ca3af;">alice</span>
+            <span style="font-size:9px;color:#ef4444;">● cam</span>
+          </div>
+        </div>
+
+        <!-- Audio-only pill (thin) -->
+        <div style="flex:1;background:#252d40;border-radius:14px;padding:5px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-width:0;">
+          <div style="width:28px;height:28px;background:#d97706;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;">B</div>
+          <span style="font-size:10px;color:#9ca3af;">bob</span>
+          <span style="font-size:9px;color:#6b7280;">🔇 muted</span>
+        </div>
+
+        <!-- collapse -->
+        <div style="display:flex;align-items:center;">
+          <div style="width:20px;height:20px;background:#252d40;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;">
+            <span style="color:#6b7280;font-size:10px;">⌃</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chat (shorter now that banner is taller) -->
+      <div style="flex:1;padding:10px;display:flex;flex-direction:column;gap:8px;overflow:hidden;">
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <div style="width:24px;height:24px;background:#7c5cfc;border-radius:50%;flex-shrink:0;font-size:10px;color:#fff;display:flex;align-items:center;justify-content:center;">C</div>
+          <div>
+            <div style="font-size:10px;color:#7c5cfc;margin-bottom:2px;">corr</div>
+            <div style="background:#1f2937;border-radius:8px;padding:5px 9px;font-size:11px;color:#d1d5db;">Alice just turned on her camera 🎥</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <div style="width:24px;height:24px;background:#059669;border-radius:50%;flex-shrink:0;font-size:10px;color:#fff;display:flex;align-items:center;justify-content:center;">A</div>
+          <div>
+            <div style="font-size:10px;color:#10b981;margin-bottom:2px;">alice</div>
+            <div style="background:#1f2937;border-radius:8px;padding:5px 9px;font-size:11px;color:#d1d5db;">Here's the thing I wanted to show you</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Input -->
+      <div style="padding:8px 10px;border-top:1px solid #1f2937;flex-shrink:0;">
+        <div style="background:#1f2937;border-radius:20px;padding:7px 12px;display:flex;align-items:center;gap:8px;">
+          <span style="color:#7c5cfc;font-weight:bold;font-size:14px;">+</span>
+          <div style="width:16px;height:16px;background:#374151;border-radius:3px;flex-shrink:0;"></div>
+          <div style="flex:1;height:8px;background:#374151;border-radius:4px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:16px;">Left: audio-only — banner is a thin strip. Right: alice has video — her pill expands to a square viewport, audio-only pills stay thin alongside. Click alice's video to go full-screen. Does this match your vision?</p>

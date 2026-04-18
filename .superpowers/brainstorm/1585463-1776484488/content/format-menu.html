@@ -1,0 +1,170 @@
+<h2>Per-Message Format Panel — How should it open?</h2>
+<p class="subtitle">A format control lives near the username/avatar of each message. Which interaction model fits best?</p>
+
+<div class="cards">
+
+  <!-- Option A: Hover button → compact popover -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#111827;border-radius:12px;padding:14px;font-family:sans-serif;min-height:240px;position:relative;">
+
+      <!-- Message row -->
+      <div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;">
+        <div style="width:32px;height:32px;background:#7c5cfc;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;">C</div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
+            <span style="font-size:12px;color:#7c5cfc;font-weight:600;">corr</span>
+            <span style="font-size:10px;color:#6b7280;">2:14 PM</span>
+            <!-- Format brush button (appears on hover near username) -->
+            <div style="width:18px;height:18px;background:#252d40;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:1px solid #7c5cfc55;" title="Format this message">
+              <span style="font-size:10px;">🖌</span>
+            </div>
+          </div>
+          <div style="background:#1f2937;border-radius:8px;padding:7px 10px;font-size:12px;color:#d1d5db;">This is a message with some content in it.</div>
+        </div>
+      </div>
+
+      <!-- Compact popover anchored under the username line -->
+      <div style="position:absolute;top:52px;left:52px;background:#1e2235;border:1px solid #374151;border-radius:12px;padding:10px 12px;width:230px;box-shadow:0 8px 24px rgba(0,0,0,0.5);z-index:10;">
+        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Message Display</div>
+        <!-- Alignment row -->
+        <div style="display:flex;gap:4px;margin-bottom:8px;">
+          <div style="font-size:10px;color:#9ca3af;width:60px;line-height:26px;">Align</div>
+          <div style="display:flex;gap:3px;">
+            <div style="width:26px;height:26px;background:#7c5cfc;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;">⬛</div>
+            <div style="width:26px;height:26px;background:#252d40;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;">▣</div>
+            <div style="width:26px;height:26px;background:#252d40;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;">⬜</div>
+            <div style="width:26px;height:26px;background:#252d40;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:10px;">⇔</div>
+          </div>
+        </div>
+        <!-- Font size -->
+        <div style="display:flex;align-items:center;gap:4px;margin-bottom:8px;">
+          <div style="font-size:10px;color:#9ca3af;width:60px;">Size</div>
+          <div style="flex:1;height:4px;background:#252d40;border-radius:2px;position:relative;">
+            <div style="position:absolute;left:40%;top:-4px;width:12px;height:12px;background:#7c5cfc;border-radius:50%;cursor:pointer;"></div>
+          </div>
+          <span style="font-size:10px;color:#9ca3af;width:24px;text-align:right;">14</span>
+        </div>
+        <!-- Color -->
+        <div style="display:flex;align-items:center;gap:4px;margin-bottom:8px;">
+          <div style="font-size:10px;color:#9ca3af;width:60px;">Color</div>
+          <div style="display:flex;gap:4px;">
+            <div style="width:16px;height:16px;background:#e5e7eb;border-radius:50%;cursor:pointer;border:1px solid #555;"></div>
+            <div style="width:16px;height:16px;background:#7c5cfc;border-radius:50%;cursor:pointer;border:2px solid #fff;"></div>
+            <div style="width:16px;height:16px;background:#10b981;border-radius:50%;cursor:pointer;border:1px solid #555;"></div>
+            <div style="width:16px;height:16px;background:#f59e0b;border-radius:50%;cursor:pointer;border:1px solid #555;"></div>
+            <div style="width:16px;height:16px;background:#ef4444;border-radius:50%;cursor:pointer;border:1px solid #555;"></div>
+            <div style="width:16px;height:16px;background:linear-gradient(135deg,#7c5cfc,#10b981);border-radius:50%;cursor:pointer;"></div>
+          </div>
+        </div>
+        <!-- Font -->
+        <div style="display:flex;align-items:center;gap:4px;">
+          <div style="font-size:10px;color:#9ca3af;width:60px;">Font</div>
+          <div style="flex:1;background:#252d40;border-radius:6px;padding:4px 8px;font-size:10px;color:#d1d5db;">System Default ▾</div>
+        </div>
+      </div>
+
+    </div>
+    <div class="card-body">
+      <h3>A — Inline Popover</h3>
+      <p>Small 🖌 brush icon appears next to the username on hover/long-press. Tapping opens a compact popover anchored there with all format controls.</p>
+    </div>
+  </div>
+
+  <!-- Option B: Persistent thin strip below username on hover -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#111827;border-radius:12px;padding:14px;font-family:sans-serif;min-height:240px;">
+
+      <div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;">
+        <div style="width:32px;height:32px;background:#7c5cfc;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;">C</div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
+            <span style="font-size:12px;color:#7c5cfc;font-weight:600;">corr</span>
+            <span style="font-size:10px;color:#6b7280;">2:14 PM</span>
+          </div>
+
+          <!-- Format strip — inline, appears between username and message body -->
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:5px;background:#1a1f2e;border-radius:8px;padding:4px 8px;">
+            <!-- align -->
+            <div style="width:20px;height:20px;background:#7c5cfc22;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:10px;cursor:pointer;" title="Left">≡</div>
+            <div style="width:20px;height:20px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:10px;cursor:pointer;color:#6b7280;" title="Center">☰</div>
+            <div style="width:20px;height:20px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:10px;cursor:pointer;color:#6b7280;" title="Right">⇒</div>
+            <div style="width:1px;height:14px;background:#374151;margin:0 3px;"></div>
+            <!-- size -->
+            <span style="font-size:9px;color:#9ca3af;">Aa</span>
+            <div style="width:50px;height:4px;background:#252d40;border-radius:2px;position:relative;">
+              <div style="position:absolute;left:35%;top:-3px;width:10px;height:10px;background:#7c5cfc;border-radius:50%;"></div>
+            </div>
+            <div style="width:1px;height:14px;background:#374151;margin:0 3px;"></div>
+            <!-- color swatches -->
+            <div style="width:12px;height:12px;background:#e5e7eb;border-radius:50%;cursor:pointer;"></div>
+            <div style="width:12px;height:12px;background:#7c5cfc;border-radius:50%;cursor:pointer;border:1px solid #fff;"></div>
+            <div style="width:12px;height:12px;background:#10b981;border-radius:50%;cursor:pointer;"></div>
+            <div style="width:1px;height:14px;background:#374151;margin:0 3px;"></div>
+            <!-- font picker -->
+            <span style="font-size:9px;color:#9ca3af;cursor:pointer;">Serif ▾</span>
+          </div>
+
+          <div style="background:#1f2937;border-radius:8px;padding:7px 10px;font-size:12px;color:#d1d5db;font-family:serif;">This is a message with some content in it.</div>
+        </div>
+      </div>
+
+      <!-- Second message, no strip (not hovered) -->
+      <div style="display:flex;gap:8px;align-items:flex-start;margin-top:10px;opacity:0.5;">
+        <div style="width:32px;height:32px;background:#059669;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;">A</div>
+        <div>
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
+            <span style="font-size:12px;color:#10b981;font-weight:600;">alice</span>
+            <span style="font-size:10px;color:#6b7280;">2:15 PM</span>
+          </div>
+          <div style="background:#1f2937;border-radius:8px;padding:7px 10px;font-size:12px;color:#d1d5db;">Nice!</div>
+        </div>
+      </div>
+
+    </div>
+    <div class="card-body">
+      <h3>B — Inline Strip (hover reveals)</h3>
+      <p>Hovering a message reveals a compact format toolbar inline between the username and the message body. No popover — controls sit in the flow. Always compact.</p>
+    </div>
+  </div>
+
+  <!-- Option C: Right-click / long-press context menu -->
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#111827;border-radius:12px;padding:14px;font-family:sans-serif;min-height:240px;position:relative;">
+
+      <div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;">
+        <div style="width:32px;height:32px;background:#7c5cfc;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;">C</div>
+        <div style="flex:1;">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
+            <span style="font-size:12px;color:#7c5cfc;font-weight:600;">corr</span>
+            <span style="font-size:10px;color:#6b7280;">2:14 PM</span>
+          </div>
+          <div style="background:#1f2937;border-radius:8px;padding:7px 10px;font-size:12px;color:#d1d5db;outline:2px solid #7c5cfc44;">This is a message with some content in it.</div>
+        </div>
+      </div>
+
+      <!-- Context menu -->
+      <div style="position:absolute;top:80px;left:70px;background:#1e2235;border:1px solid #374151;border-radius:12px;overflow:hidden;width:180px;box-shadow:0 8px 24px rgba(0,0,0,0.6);z-index:10;">
+        <div style="padding:6px 12px;font-size:11px;color:#9ca3af;border-bottom:1px solid #2d3748;display:flex;align-items:center;gap:6px;">
+          <span>🖌</span> Format Display
+        </div>
+        <div style="padding:4px 0;">
+          <div style="padding:6px 14px;font-size:11px;color:#d1d5db;cursor:pointer;display:flex;justify-content:space-between;">Alignment <span style="color:#7c5cfc;">Left ▸</span></div>
+          <div style="padding:6px 14px;font-size:11px;color:#d1d5db;cursor:pointer;display:flex;justify-content:space-between;">Font size <span style="color:#7c5cfc;">14px ▸</span></div>
+          <div style="padding:6px 14px;font-size:11px;color:#d1d5db;cursor:pointer;display:flex;justify-content:space-between;">Text color <span style="color:#7c5cfc;">Default ▸</span></div>
+          <div style="padding:6px 14px;font-size:11px;color:#d1d5db;cursor:pointer;display:flex;justify-content:space-between;">Font <span style="color:#7c5cfc;">System ▸</span></div>
+          <div style="padding:4px 14px 6px;border-top:1px solid #2d3748;margin-top:2px;">
+            <div style="font-size:10px;color:#ef4444;cursor:pointer;">Reset to sender default</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="card-body">
+      <h3>C — Context Menu</h3>
+      <p>Right-click (desktop) or long-press (mobile) any message → context menu includes "Format Display" entry → submenus for each property. Keeps the UI clean until needed.</p>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:16px;">All three store sender defaults + let you override with your own mask. Which access pattern feels right?</p>

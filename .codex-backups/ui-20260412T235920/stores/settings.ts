@@ -1,11 +1,5 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { useServerStore } from "./server";
-import {
-  INPUT_NOISE_GATE_DB_DEFAULT,
-  INPUT_NOISE_GATE_DB_MAX,
-  INPUT_NOISE_GATE_DB_MIN,
-} from "../voice/noiseGate";
 
 interface SettingsState {
   // Output
@@ -34,8 +28,6 @@ interface SettingsState {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
-  inputNoiseGateEnabled: boolean;
-  inputNoiseGateThresholdDb: number;
 
   // Notifications
   notificationsEnabled: boolean;
@@ -51,11 +43,10 @@ interface SettingsState {
   // for users who want large, readable chat text without a bloated
   // interface.
   chatFontSize: number;
-  themePreset: ThemePreset;
 
   // UI (not persisted)
   settingsOpen: boolean;
-  settingsTab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation";
+  settingsTab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation";
   serverSettingsId: string | null;
 
   // Actions
@@ -80,8 +71,6 @@ interface SettingsState {
   setEchoCancellation: (v: boolean) => void;
   setNoiseSuppression: (v: boolean) => void;
   setAutoGainControl: (v: boolean) => void;
-  setInputNoiseGateEnabled: (v: boolean) => void;
-  setInputNoiseGateThresholdDb: (db: number) => void;
   setNotificationsEnabled: (v: boolean) => void;
   setDefaultNotificationLevel: (level: "all" | "mentions" | "nothing") => void;
   setServerNotificationLevel: (serverId: string, level: "all" | "mentions" | "nothing" | "default") => void;
@@ -94,13 +83,11 @@ interface SettingsState {
    * dropped to keep persisted state well-formed.
    */
   setChatFontSize: (px: number) => void;
-  setThemePreset: (preset: ThemePreset) => void;
-  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
+  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation") => void;
   closeSettings: () => void;
-  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
+  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation") => void;
   openServerSettings: (serverId: string) => void;
   closeServerSettings: () => void;
-  setServerSettingsId: (id: string | null) => void;
   resetToDefaults: () => void;
 }
 
@@ -115,13 +102,6 @@ interface SettingsState {
 export const CHAT_FONT_SIZE_MIN = 12;
 export const CHAT_FONT_SIZE_MAX = 32;
 export const CHAT_FONT_SIZE_DEFAULT = 14;
-export const THEME_PRESETS = [
-  "kinetic-node",
-  "verdant-signal",
-  "ember-circuit",
-  "arctic-current",
-] as const;
-export type ThemePreset = (typeof THEME_PRESETS)[number];
 
 const defaults = {
   masterOutputVolume: 1.0,
@@ -141,15 +121,12 @@ const defaults = {
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
-  inputNoiseGateEnabled: true,
-  inputNoiseGateThresholdDb: INPUT_NOISE_GATE_DB_DEFAULT,
   notificationsEnabled: true,
   defaultNotificationLevel: "all" as const,
   serverNotifications: {} as Record<string, "all" | "mentions" | "nothing">,
   channelNotifications: {} as Record<string, "all" | "mentions" | "nothing">,
   notificationSound: true,
   chatFontSize: CHAT_FONT_SIZE_DEFAULT,
-  themePreset: "kinetic-node" as ThemePreset,
 } as const;
 
 export const useSettingsStore = create<SettingsState>()(
@@ -186,15 +163,6 @@ export const useSettingsStore = create<SettingsState>()(
       setEchoCancellation: (v) => set({ echoCancellation: v }),
       setNoiseSuppression: (v) => set({ noiseSuppression: v }),
       setAutoGainControl: (v) => set({ autoGainControl: v }),
-      setInputNoiseGateEnabled: (v) => set({ inputNoiseGateEnabled: v }),
-      setInputNoiseGateThresholdDb: (db) => {
-        if (!Number.isFinite(db)) return;
-        const clamped = Math.max(
-          INPUT_NOISE_GATE_DB_MIN,
-          Math.min(INPUT_NOISE_GATE_DB_MAX, Math.round(db)),
-        );
-        set({ inputNoiseGateThresholdDb: clamped });
-      },
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setDefaultNotificationLevel: (level) => set({ defaultNotificationLevel: level }),
       setServerNotificationLevel: (serverId, level) =>
@@ -230,23 +198,13 @@ export const useSettingsStore = create<SettingsState>()(
         );
         set({ chatFontSize: clamped });
       },
-      setThemePreset: (preset) => set({ themePreset: preset }),
       openSettings: (tab) =>
         set({ settingsOpen: true, serverSettingsId: null, settingsTab: tab ?? "audio" }),
-      closeSettings: () => set({ settingsOpen: false, serverSettingsId: null }),
+      closeSettings: () => set({ settingsOpen: false }),
       setSettingsTab: (tab) => set({ settingsTab: tab }),
-      openServerSettings: (serverId) => {
-        const server = useServerStore.getState().servers.find((entry) => entry.id === serverId);
-        const settingsTab =
-          server?.bridgeType === "discord"
-            ? "server-bridge"
-            : server?.federated
-              ? "server-federation"
-              : "server-general";
-        set({ serverSettingsId: serverId, settingsOpen: true, settingsTab });
-      },
+      openServerSettings: (serverId) =>
+        set({ serverSettingsId: serverId, settingsOpen: true, settingsTab: "server-general" }),
       closeServerSettings: () => set({ serverSettingsId: null }),
-      setServerSettingsId: (id) => set({ serverSettingsId: id }),
       resetToDefaults: () => set({ ...defaults, userVolumes: {}, userMuted: {}, serverNotifications: {}, channelNotifications: {} }),
     }),
     {

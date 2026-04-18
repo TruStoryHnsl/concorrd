@@ -23,52 +23,100 @@ type TabDef = {
   group: "user" | "server";
 };
 
-const EMPTY_SERVER_MEMBERS: never[] = [];
+const EMPTY_MEMBERS: never[] = [];
+
+// Pure helper — compute server settings tabs for a given server/member context
+function buildServerTabs(
+  server: { id: string; owner_id: string; bridgeType?: string; federated?: boolean; visibility?: string },
+  members: { user_id: string; role: string }[],
+  userId: string | null,
+): TabDef[] {
+  if (server.bridgeType === "discord") {
+    return [{ key: "server-bridge", label: "Discord", icon: "hub", group: "server" }];
+  }
+  if (server.federated) {
+    return [{ key: "server-federation", label: "Federation", icon: "language", group: "server" }];
+  }
+  const myMember = members.find((m) => m.user_id === userId);
+  const isOwner = server.owner_id === userId;
+  const isAdmin = isOwner || myMember?.role === "admin";
+  const tabs: TabDef[] = [
+    { key: "server-general", label: "General", icon: "settings", group: "server" },
+    { key: "server-members", label: "Members", icon: "group", group: "server" },
+  ];
+  if (isAdmin) tabs.push({ key: "server-invite", label: "Invite", icon: "person_add", group: "server" });
+  tabs.push({ key: "server-bans", label: "Bans", icon: "block", group: "server" });
+  if (server.visibility === "private") tabs.push({ key: "server-whitelist", label: "Whitelist", icon: "verified_user", group: "server" });
+  tabs.push({ key: "server-webhooks", label: "Webhooks", icon: "webhook", group: "server" });
+  if (isAdmin) tabs.push({ key: "server-moderation", label: "Moderation", icon: "gavel", group: "server" });
+  return tabs;
+}
 
 /**
  * INS-012: Unified settings panel — a single navigable interface
  * that contains both User Settings and Server Settings as sibling
  * sections with clear visual separation.
  *
- * When no server is selected, only user settings tabs appear.
- * When a server is active (via `serverSettingsId`), server-scope
- * tabs appear in a second group below user settings tabs.
+ * Admin servers are always surfaced in the sidebar regardless of which
+ * tab is active, so admins can switch between user and server settings
+ * without losing their server context.
  */
 export function SettingsPanel() {
   const activeTab = useSettingsStore((s) => s.settingsTab);
   const setTab = useSettingsStore((s) => s.setSettingsTab);
   const close = useSettingsStore((s) => s.closeSettings);
-  const closeServerSettings = useSettingsStore((s) => s.closeServerSettings);
   const serverSettingsId = useSettingsStore((s) => s.serverSettingsId);
+  const setServerSettingsId = useSettingsStore((s) => s.setServerSettingsId);
   const accessToken = useAuthStore((s) => s.accessToken);
   const userId = useAuthStore((s) => s.userId);
   const [isAdmin, setIsAdmin] = useState(false);
   const { isTauri, isMobile, isTV } = usePlatform();
 
-  // TV mode (INS-023): every tab button gets
-  // DPAD focus attributes so the shared `useDpadNav({ group: "tv-main" })`
-  // handler registered in ChatLayout can traverse the settings shell.
-  // Helper stays local so the JSX stays compact.
   const tvFocusProps = isTV
-    ? ({
-        "data-focusable": "true",
-        "data-focus-group": "tv-main",
-      } as const)
+    ? ({ "data-focusable": "true", "data-focus-group": "tv-main" } as const)
     : ({} as const);
 
-  // Server context for server settings group
   const servers = useServerStore((s) => s.servers);
   const membersByServer = useServerStore((s) => s.members);
-  const activeServer = servers.find((s) => s.id === serverSettingsId);
-  const members = serverSettingsId
-    ? membersByServer[serverSettingsId] ?? EMPTY_SERVER_MEMBERS
-    : EMPTY_SERVER_MEMBERS;
-  const myMember = members.find((m) => m.user_id === userId);
-  const isOwner = activeServer?.owner_id === userId;
-  const isServerAdmin = isOwner || myMember?.role === "admin";
 
-  // Bridges tab is desktop-only (bridge process requires Linux bwrap).
-  // Node hosting is Tauri-only (no browser, no mobile).
+  // Servers where user is owner or has the admin role
+  const adminServers = useMemo(
+    () =>
+      servers.filter((s) => {
+        if (s.owner_id === userId) return true;
+        return membersByServer[s.id]?.some((m) => m.user_id === userId && m.role === "admin") ?? false;
+      }),
+    [servers, membersByServer, userId],
+  );
+
+  // Tab sets per admin server
+  const adminServerTabs = useMemo(() => {
+    const map = new Map<string, TabDef[]>();
+    for (const server of adminServers) {
+      map.set(server.id, buildServerTabs(server, membersByServer[server.id] ?? EMPTY_MEMBERS, userId));
+    }
+    return map;
+  }, [adminServers, membersByServer, userId]);
+
+  // If serverSettingsId points to a non-admin server (opened via context menu),
+  // still show that server's section so the user doesn't lose context.
+  const contextServer =
+    serverSettingsId && !adminServerTabs.has(serverSettingsId)
+      ? (servers.find((s) => s.id === serverSettingsId) ?? null)
+      : null;
+  const contextServerTabs = useMemo(
+    () =>
+      contextServer
+        ? buildServerTabs(contextServer, membersByServer[contextServer.id] ?? EMPTY_MEMBERS, userId)
+        : [],
+    [contextServer, membersByServer, userId],
+  );
+
+  // Tabs for whichever server is currently active in the content pane
+  const activeServerTabs = serverSettingsId
+    ? (adminServerTabs.get(serverSettingsId) ?? contextServerTabs)
+    : [];
+
   const userTabs = useMemo(() => {
     const tabs: TabDef[] = [
       { key: "audio", label: "Audio", icon: "headphones", group: "user" },
@@ -81,7 +129,6 @@ export function SettingsPanel() {
       tabs.push({ key: "node", label: "Node", icon: "dns", group: "user" });
       tabs.push({ key: "bridges", label: "Bridges", icon: "hub", group: "user" });
     }
-    // Show bridges tab on web too when user is admin (docker bridge management)
     if (!isTauri && isAdmin) {
       tabs.push({ key: "bridges", label: "Bridges", icon: "hub", group: "user" });
     }
@@ -90,32 +137,23 @@ export function SettingsPanel() {
     return tabs;
   }, [isTauri, isMobile, isAdmin]);
 
-  // Server settings tabs — only for API-backed servers (not synthetic bridge/federated)
-  const serverTabs = useMemo(() => {
-    if (!activeServer) return [];
-    if (activeServer.bridgeType === "discord") {
-      return [{ key: "server-bridge", label: "Discord", icon: "hub", group: "server" as const }];
-    }
-    if (activeServer.federated) {
-      return [{ key: "server-federation", label: "Federation", icon: "language", group: "server" as const }];
-    }
-    const tabs: TabDef[] = [
-      { key: "server-general", label: "General", icon: "settings", group: "server" },
-      { key: "server-members", label: "Members", icon: "group", group: "server" },
-    ];
-    if (isOwner || isServerAdmin) {
-      tabs.push({ key: "server-invite", label: "Invite", icon: "person_add", group: "server" });
-    }
-    tabs.push({ key: "server-bans", label: "Bans", icon: "block", group: "server" });
-    if (activeServer.visibility === "private") {
-      tabs.push({ key: "server-whitelist", label: "Whitelist", icon: "verified_user", group: "server" });
-    }
-    tabs.push({ key: "server-webhooks", label: "Webhooks", icon: "webhook", group: "server" });
-    if (isOwner || isServerAdmin) {
-      tabs.push({ key: "server-moderation", label: "Moderation", icon: "gavel", group: "server" });
-    }
-    return tabs;
-  }, [activeServer, isOwner, isServerAdmin]);
+  const adminTab: TabDef | null = useMemo(
+    () => (isAdmin ? { key: "admin", label: "Admin", icon: "shield_person", group: "user" } : null),
+    [isAdmin],
+  );
+
+  const userTabKeys = useMemo(
+    () => new Set<string>([...userTabs.map((t) => t.key), ...(adminTab ? [adminTab.key] : [])]),
+    [adminTab, userTabs],
+  );
+
+  // Auto-select first server tab when server context activates and active tab isn't valid
+  useEffect(() => {
+    if (!serverSettingsId || activeServerTabs.length === 0) return;
+    if (activeServerTabs.some((t) => t.key === activeTab)) return;
+    if (userTabKeys.has(activeTab)) return;
+    setTab(activeServerTabs[0].key as typeof activeTab);
+  }, [activeTab, serverSettingsId, activeServerTabs, setTab, userTabKeys]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -130,38 +168,63 @@ export function SettingsPanel() {
     return () => window.removeEventListener("keydown", handler);
   }, [close]);
 
-  const adminTab: TabDef | null = useMemo(
-    () =>
-      isAdmin
-        ? { key: "admin", label: "Admin", icon: "shield_person", group: "user" }
-        : null,
-    [isAdmin],
-  );
-  const userTabKeys = useMemo(
-    () => new Set<string>([
-      ...userTabs.map((tab) => tab.key),
-      ...(adminTab ? [adminTab.key] : []),
-    ]),
-    [adminTab, userTabs],
-  );
-
-  useEffect(() => {
-    if (!serverSettingsId || serverTabs.length === 0) return;
-    if (serverTabs.some((tab) => tab.key === activeTab)) return;
-    if (userTabKeys.has(activeTab)) return;
-    setTab(serverTabs[0].key as typeof activeTab);
-  }, [activeTab, serverSettingsId, serverTabs, setTab, userTabKeys]);
-
-  // Determine if the current tab is a server tab
   const isServerTab = activeTab.startsWith("server-");
-  // Extract the server sub-tab (e.g., "server-general" -> "general")
   const serverSubTab = isServerTab ? activeTab.replace("server-", "") : null;
 
+  // User tab click — no longer clears server context so admin sections stay visible
   const handleSelectTab = (tab: typeof activeTab) => {
-    if (!tab.startsWith("server-")) {
-      closeServerSettings();
-    }
     setTab(tab);
+  };
+
+  // Server tab click — set which server's content to show and switch tab
+  const handleSelectServerTab = (serverId: string, tab: typeof activeTab) => {
+    setServerSettingsId(serverId);
+    setTab(tab);
+  };
+
+  const tabBtnClass = (active: boolean) =>
+    `btn-press flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm whitespace-nowrap transition-all font-label ${
+      active
+        ? "bg-surface-container-highest text-on-surface"
+        : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
+    }`;
+
+  const filledIcon = { fontVariationSettings: '"FILL" 1, "wght" 500, "GRAD" 0, "opsz" 24' };
+
+  const renderServerSection = (server: (typeof servers)[0], tabs: TabDef[]) => {
+    if (tabs.length === 0) return null;
+    return (
+      <div key={server.id}>
+        <div className="border-t border-outline-variant/10 mx-4" />
+        <div className="px-4 pt-2 pb-1 flex items-center gap-2">
+          <span className="text-xs font-label font-medium text-on-surface-variant/60 uppercase tracking-wider">
+            Server
+          </span>
+          <span className="text-xs font-label text-on-surface-variant/40">{server.name}</span>
+        </div>
+        <div className="flex items-center gap-1 px-4 pb-2 overflow-x-auto">
+          {tabs.map((tab) => {
+            const active = activeTab === tab.key && serverSettingsId === server.id;
+            return (
+              <button
+                key={tab.key}
+                onClick={() => handleSelectServerTab(server.id, tab.key as typeof activeTab)}
+                {...tvFocusProps}
+                className={tabBtnClass(active)}
+              >
+                <span
+                  className="material-symbols-outlined text-base"
+                  style={active ? filledIcon : undefined}
+                >
+                  {tab.icon}
+                </span>
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -175,39 +238,34 @@ export function SettingsPanel() {
           </span>
         </div>
         <div className="flex items-center gap-1 px-4 pb-1 overflow-x-auto">
-          {userTabs.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => handleSelectTab(tab.key as typeof activeTab)}
-              {...tvFocusProps}
-              className={`btn-press flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm whitespace-nowrap transition-all font-label ${
-                activeTab === tab.key
-                  ? "bg-surface-container-highest text-on-surface"
-                  : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
-              }`}
-            >
-              <span
-                className="material-symbols-outlined text-base"
-                style={activeTab === tab.key ? { fontVariationSettings: '"FILL" 1, "wght" 500, "GRAD" 0, "opsz" 24' } : undefined}
+          {userTabs.map((tab) => {
+            const active = activeTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                onClick={() => handleSelectTab(tab.key as typeof activeTab)}
+                {...tvFocusProps}
+                className={tabBtnClass(active)}
               >
-                {tab.icon}
-              </span>
-              {tab.label}
-            </button>
-          ))}
+                <span
+                  className="material-symbols-outlined text-base"
+                  style={active ? filledIcon : undefined}
+                >
+                  {tab.icon}
+                </span>
+                {tab.label}
+              </button>
+            );
+          })}
           {adminTab && (
             <button
               onClick={() => handleSelectTab("admin")}
               {...tvFocusProps}
-              className={`btn-press flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm whitespace-nowrap transition-all font-label ${
-                activeTab === "admin"
-                  ? "bg-surface-container-highest text-on-surface"
-                  : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
-              }`}
+              className={tabBtnClass(activeTab === "admin")}
             >
               <span
                 className="material-symbols-outlined text-base"
-                style={activeTab === "admin" ? { fontVariationSettings: '"FILL" 1, "wght" 500, "GRAD" 0, "opsz" 24' } : undefined}
+                style={activeTab === "admin" ? filledIcon : undefined}
               >
                 {adminTab.icon}
               </span>
@@ -216,46 +274,15 @@ export function SettingsPanel() {
           )}
         </div>
 
-        {/* Server Settings group — only when a server is selected */}
-        {serverTabs.length > 0 && (
-          <>
-            <div className="border-t border-outline-variant/10 mx-4" />
-            <div className="px-4 pt-2 pb-1 flex items-center gap-2">
-              <span className="text-xs font-label font-medium text-on-surface-variant/60 uppercase tracking-wider">
-                Server Settings
-              </span>
-              <span className="text-xs font-label text-on-surface-variant/40">
-                {activeServer?.name}
-              </span>
-            </div>
-            <div className="flex items-center gap-1 px-4 pb-2 overflow-x-auto">
-              {serverTabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  onClick={() => handleSelectTab(tab.key as typeof activeTab)}
-                  {...tvFocusProps}
-                  className={`btn-press flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm whitespace-nowrap transition-all font-label ${
-                    activeTab === tab.key
-                      ? "bg-surface-container-highest text-on-surface"
-                      : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
-                  }`}
-                >
-                  <span
-                    className="material-symbols-outlined text-base"
-                    style={activeTab === tab.key ? { fontVariationSettings: '"FILL" 1, "wght" 500, "GRAD" 0, "opsz" 24' } : undefined}
-                  >
-                    {tab.icon}
-                  </span>
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
+        {/* Admin server sections — always visible when user admins servers */}
+        {adminServers.map((server) => renderServerSection(server, adminServerTabs.get(server.id) ?? []))}
+
+        {/* Contextual non-admin server section (opened via context menu) */}
+        {contextServer && renderServerSection(contextServer, contextServerTabs)}
       </div>
 
       {/* Tab content */}
-      <div key={`${serverSettingsId ?? "user"}:${activeTab}`} className="flex-1 overflow-y-auto min-h-0 p-6 max-w-2xl">
+      <div key={`${serverSettingsId ?? "user"}:${activeTab}`} className="flex-1 overflow-y-auto min-h-0 p-6">
         {/* User settings tabs */}
         {activeTab === "audio" && <AudioTab />}
         {activeTab === "voice" && <VoiceTab />}

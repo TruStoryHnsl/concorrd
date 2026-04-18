@@ -35,7 +35,7 @@ interface FormatState {
 
 export const useFormatStore = create<FormatState>()(
   persist(
-    (set, get) => ({
+    (set, _get) => ({
       messageFormats: {},
       senderFormats: {},
       setMessageFormat: (id, fmt) =>

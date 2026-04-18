@@ -1,0 +1,151 @@
+<h2>Format Button — Top Bar Placement</h2>
+<p class="subtitle">The format icon moves from the input area to the top bar. Shown on mobile (left) and desktop (right). Does the position look right?</p>
+
+<div class="split">
+
+  <!-- Mobile top bar -->
+  <div class="mockup">
+    <div class="mockup-header">Mobile — top right of top bar</div>
+    <div class="mockup-body" style="background:#111827;border-radius:8px;overflow:hidden;font-family:sans-serif;min-height:340px;display:flex;flex-direction:column;max-width:360px;margin:0 auto;">
+
+      <!-- Top bar -->
+      <div style="background:#1f2937;padding:9px 12px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #374151;flex-shrink:0;">
+        <!-- Left: back + channel name -->
+        <div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0;">
+          <span style="color:#9ca3af;font-size:16px;">‹</span>
+          <span style="color:#e5e7eb;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"># general</span>
+          <span style="font-size:10px;color:#6b7280;margin-left:2px;">● 3</span>
+        </div>
+        <!-- Right: format icon (just the logo/icon) + existing controls -->
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+          <div style="width:28px;height:28px;background:#7c5cfc22;border:1px solid #7c5cfc55;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;" title="Format">
+            <span style="font-size:14px;">🖌</span>
+          </div>
+          <div style="width:28px;height:28px;background:#252d40;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;">
+            <span style="font-size:12px;">⚙</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chat body -->
+      <div style="flex:1;padding:12px;display:flex;flex-direction:column;gap:10px;overflow:hidden;">
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <div style="width:30px;height:30px;background:#7c5cfc;border-radius:50%;flex-shrink:0;font-size:11px;color:#fff;display:flex;align-items:center;justify-content:center;">C</div>
+          <div>
+            <div style="font-size:11px;color:#7c5cfc;font-weight:600;margin-bottom:2px;">corr <span style="color:#6b7280;font-weight:400;">2:14 PM</span></div>
+            <div style="background:#1f2937;border-radius:8px;padding:6px 10px;font-size:12px;color:#d1d5db;">Hey everyone 👋</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <div style="width:30px;height:30px;background:#059669;border-radius:50%;flex-shrink:0;font-size:11px;color:#fff;display:flex;align-items:center;justify-content:center;">A</div>
+          <div>
+            <div style="font-size:11px;color:#10b981;font-weight:600;margin-bottom:2px;">alice <span style="color:#6b7280;font-weight:400;">2:15 PM</span></div>
+            <div style="background:#1f2937;border-radius:8px;padding:6px 10px;font-size:12px;color:#d1d5db;">Hello!</div>
+          </div>
+        </div>
+        <!-- Most recent message — bottom right, own message -->
+        <div style="display:flex;gap:8px;align-items:flex-start;flex-direction:row-reverse;">
+          <div style="width:30px;height:30px;background:#d97706;border-radius:50%;flex-shrink:0;font-size:11px;color:#fff;display:flex;align-items:center;justify-content:center;">B</div>
+          <div style="text-align:right;">
+            <div style="font-size:11px;color:#f59e0b;font-weight:600;margin-bottom:2px;">bob <span style="color:#6b7280;font-weight:400;">2:16 PM</span></div>
+            <div style="background:#7c5cfc33;border-radius:8px;padding:6px 10px;font-size:12px;color:#d1d5db;display:inline-block;">No old format button blocking this corner ✓</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Input bar (no format button here anymore) -->
+      <div style="padding:8px 10px;border-top:1px solid #1f2937;flex-shrink:0;">
+        <div style="background:#1f2937;border-radius:20px;padding:8px 12px;display:flex;align-items:center;gap:8px;">
+          <span style="color:#7c5cfc;font-weight:bold;font-size:14px;">+</span>
+          <div style="width:16px;height:16px;background:#374151;border-radius:3px;flex-shrink:0;"></div>
+          <div style="flex:1;height:8px;background:#374151;border-radius:6px;"></div>
+          <div style="width:18px;height:18px;background:#7c5cfc;border-radius:50%;flex-shrink:0;"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Desktop top bar -->
+  <div class="mockup">
+    <div class="mockup-header">Desktop — right side of channel top bar</div>
+    <div class="mockup-body" style="background:#111827;border-radius:8px;overflow:hidden;font-family:sans-serif;min-height:340px;display:flex;flex-direction:column;">
+
+      <!-- Desktop layout: server sidebar + channel sidebar + main -->
+      <div style="display:flex;flex:1;min-height:0;">
+
+        <!-- Server icons strip -->
+        <div style="width:52px;background:#0d1117;display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:8px;flex-shrink:0;">
+          <div style="width:36px;height:36px;background:#7c5cfc;border-radius:12px;"></div>
+          <div style="width:36px;height:36px;background:#252d40;border-radius:18px;"></div>
+          <div style="width:36px;height:36px;background:#252d40;border-radius:18px;"></div>
+        </div>
+
+        <!-- Channel list -->
+        <div style="width:130px;background:#161b27;padding:10px 8px;flex-shrink:0;border-right:1px solid #1f2937;">
+          <div style="font-size:9px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Channels</div>
+          <div style="padding:4px 6px;background:#252d40;border-radius:6px;font-size:11px;color:#e5e7eb;margin-bottom:3px;"># general</div>
+          <div style="padding:4px 6px;font-size:11px;color:#6b7280;margin-bottom:3px;"># random</div>
+          <div style="padding:4px 6px;font-size:11px;color:#6b7280;">◈ lounge</div>
+        </div>
+
+        <!-- Main content -->
+        <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
+
+          <!-- Channel top bar -->
+          <div style="background:#1f2937;padding:8px 14px;display:flex;align-items:center;border-bottom:1px solid #374151;flex-shrink:0;">
+            <div style="flex:1;display:flex;align-items:center;gap:6px;">
+              <span style="color:#9ca3af;font-size:12px;">#</span>
+              <span style="color:#e5e7eb;font-size:12px;font-weight:600;">general</span>
+              <span style="font-size:10px;color:#6b7280;">● 3 online</span>
+            </div>
+            <!-- Right side: format icon + other controls -->
+            <div style="display:flex;align-items:center;gap:6px;">
+              <div style="width:26px;height:26px;background:#7c5cfc22;border:1px solid #7c5cfc55;border-radius:7px;display:flex;align-items:center;justify-content:center;cursor:pointer;" title="Format">
+                <span style="font-size:12px;">🖌</span>
+              </div>
+              <div style="width:26px;height:26px;background:#252d40;border-radius:7px;display:flex;align-items:center;justify-content:center;cursor:pointer;">
+                <span style="font-size:11px;">🔔</span>
+              </div>
+              <div style="width:26px;height:26px;background:#252d40;border-radius:7px;display:flex;align-items:center;justify-content:center;cursor:pointer;">
+                <span style="font-size:11px;">⚙</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Chat messages -->
+          <div style="flex:1;padding:12px;display:flex;flex-direction:column;gap:8px;overflow:hidden;">
+            <div style="display:flex;gap:8px;">
+              <div style="width:28px;height:28px;background:#7c5cfc;border-radius:50%;flex-shrink:0;font-size:10px;color:#fff;display:flex;align-items:center;justify-content:center;">C</div>
+              <div>
+                <div style="font-size:10px;color:#7c5cfc;font-weight:600;margin-bottom:2px;">corr</div>
+                <div style="background:#1f2937;border-radius:6px;padding:5px 9px;font-size:11px;color:#d1d5db;">Hey everyone 👋</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <div style="width:28px;height:28px;background:#059669;border-radius:50%;flex-shrink:0;font-size:10px;color:#fff;display:flex;align-items:center;justify-content:center;">A</div>
+              <div>
+                <div style="font-size:10px;color:#10b981;font-weight:600;margin-bottom:2px;">alice</div>
+                <div style="background:#1f2937;border-radius:6px;padding:5px 9px;font-size:11px;color:#d1d5db;">Hello!</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Input -->
+          <div style="padding:8px 10px;border-top:1px solid #1f2937;flex-shrink:0;">
+            <div style="background:#1f2937;border-radius:16px;padding:7px 12px;display:flex;align-items:center;gap:8px;">
+              <span style="color:#7c5cfc;font-weight:bold;font-size:13px;">+</span>
+              <div style="width:14px;height:14px;background:#374151;border-radius:3px;flex-shrink:0;"></div>
+              <div style="flex:1;height:7px;background:#374151;border-radius:4px;"></div>
+              <div style="width:16px;height:16px;background:#7c5cfc;border-radius:50%;flex-shrink:0;"></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:16px;">Format icon (🖌) lives in the top bar right section on both platforms. Absent entirely when no text channel is active. Does the placement look right?</p>

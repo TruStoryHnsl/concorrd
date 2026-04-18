@@ -17,7 +17,7 @@ function statusColor(status: HostingStatus): string {
 
 function statusLabel(status: HostingStatus): string {
   switch (status) {
-    case "running": return "Server online";
+    case "running": return "Instance online";
     case "stopped": return "Server offline";
     case "error": return "Server error";
     default: return "Checking…";

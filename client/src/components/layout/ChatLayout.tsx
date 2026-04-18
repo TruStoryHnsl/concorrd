@@ -140,8 +140,8 @@ function newTabId(): string {
 /** True when running inside a Tauri native shell (iOS, Android, desktop).
  *  `__TAURI_INTERNALS__` is the canonical Tauri v2 global — see the
  *  comment in `client/src/api/serverUrl.ts` for the full history. */
-const isNativeApp =
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+// const isNativeApp =
+//   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 function lastChannelStorageKey(userId: string | null): string {
   return userId ? `concord_last_channel:${userId}` : "concord_last_channel";
@@ -178,6 +178,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const dmConversation = useDMStore((s) => s.activeConversation)();
   const loadConversations = useDMStore((s) => s.loadConversations);
 
+  // Format state (move up so useEffect can reference setFormatPanelOpen)
+  const draftFormat = useFormatStore((s) => s.draftFormat);
+  const formatPanelOpen = useFormatStore((s) => s.formatPanelOpen);
+  const setDraftFormat = useFormatStore((s) => s.setDraftFormat);
+  const setFormatPanelOpen = useFormatStore((s) => s.setFormatPanelOpen);
+
   // The active room — either a server channel or a DM room
   const activeRoomId = dmActive ? activeDMRoomId : activeChannelId;
 
@@ -212,6 +218,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const [showBugReport, setShowBugReport] = useState(false);
   const [statsTarget, setStatsTarget] = useState<{ type: "user" } | { type: "server"; serverId: string } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [placeBannerDismissed, setPlaceBannerDismissed] = useState(false);
 
   // INS-044: Multi-tab browse. Each BrowseTab has its own page-depth
   // position (sources → servers → channels → chat). Overlay views
@@ -312,7 +319,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // INS-016: Dashboard sheet state — setters are still called by desktop
   // quick-action handlers (they close the old sheet). The value isn't
   // read because mobile's ActionsPanel replaced the sheet overlay.
-  const [, setDashboardSheetOpen] = useState(false);
+  // const [, setDashboardSheetOpen] = useState(false); // TODO: unused, remove if truly not needed
   // INS-020: Add-source flow modal. The `onAddSource` prop is an
   // App.tsx escape hatch so the hollow-shell boot can open this
   // modal from outside; internally, tiles call `setAddSourceOpen`.
@@ -538,7 +545,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   // TV capability banner state — shown when a TV user selects a voice channel
   const [tvBannerDismissed, setTvBannerDismissed] = useState(false);
-  const [placeBannerDismissed, setPlaceBannerDismissed] = useState(false);
 
   // TASK T2: DPAD navigation for TV builds. When isTV is true, the hook
   // registers a keydown listener that takes over arrow keys for spatial
@@ -577,11 +583,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const extensionMenuOpen = useExtensionStore((s) => s.menuOpen);
   const setExtensionMenuOpen = useExtensionStore((s) => s.setMenuOpen);
   const extensionCatalog = useExtensionStore((s) => s.catalog);
-
-  const draftFormat = useFormatStore((s) => s.draftFormat);
-  const formatPanelOpen = useFormatStore((s) => s.formatPanelOpen);
-  const setDraftFormat = useFormatStore((s) => s.setDraftFormat);
-  const setFormatPanelOpen = useFormatStore((s) => s.setFormatPanelOpen);
 
   // Extension / chat vertical split resize (desktop)
   // extMediaPercent = percentage of container height used by the extension (top pane)
@@ -657,7 +658,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const origSetActiveChannel = useServerStore((s) => s.setActiveChannel);
   const setActiveServer = useServerStore((s) => s.setActiveServer);
   const setActiveDM = useDMStore((s) => s.setActiveDM);
-  const addToast = useToastStore((s) => s.addToast);
+  // const _addToast = useToastStore((s) => s.addToast); // TODO: unused, remove if not needed
   const setDMActive = useDMStore((s) => s.setDMActive);
   const hasDiscordBridgeServers = useMemo(
     () => servers.some((server) => server.bridgeType === "discord"),
@@ -832,67 +833,8 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   /* ── TASK 26: Mobile dashboard quick actions ── */
 
-  // 1) Reconnect to last channel: read persisted last (server, channel) and
-  //    restore it; falls back to the first text channel of the first server
-  //    if nothing is persisted.
-  const handleReconnectLastChannel = useCallback(() => {
-    setDashboardSheetOpen(false);
-    try {
-      const raw = localStorage.getItem(lastChannelStorageKey(userId));
-      if (raw) {
-        const parsed = JSON.parse(raw) as { serverId?: string; roomId?: string };
-        const server = servers.find((s) => s.id === parsed.serverId);
-        const channel = server?.channels.find((c) => c.matrix_room_id === parsed.roomId);
-        if (server && channel) {
-          setDMActive(false);
-          setActiveServer(server.id);
-          origSetActiveChannel(channel.matrix_room_id);
-          setMobileView("chat");
-          return;
-        }
-      }
-    } catch {}
-    // Fallback: first text channel of first server
-    const firstServer = servers[0];
-    const firstText = firstServer?.channels.find((c) => c.channel_type === "text") ?? firstServer?.channels[0];
-    if (firstServer && firstText) {
-      setDMActive(false);
-      setActiveServer(firstServer.id);
-      origSetActiveChannel(firstText.matrix_room_id);
-      setMobileView("chat");
-    } else {
-      addToast("No channel to reconnect to — join a server first");
-    }
-  }, [servers, origSetActiveChannel, setActiveServer, setDMActive, addToast, userId]);
-
-  // 2) Host text/voice/video exchange: there is no dedicated "host" handler
-  //    yet — the existing affordance is ChannelSidebar's "+ Add Channel"
-  //    form (owner-only). Route the user to the mobile channel list where
-  //    that form lives; non-owners land on the channel browser which is
-  //    still the closest analogue. The dedicated servitude host flow is
-  //    downstream work per the 2026-04-08 embedded-module decision.
-  const handleHostExchange = useCallback(() => {
-    setDashboardSheetOpen(false);
-    setDMActive(false);
-    setMobileView("channels");
-    if (!activeServerId) {
-      addToast("Select a server first to host a channel");
-    }
-  }, [setDMActive, activeServerId, addToast]);
-
-  // 3) Open profile customization: routes to settings on the profile tab.
-  const handleOpenProfile = useCallback(() => {
-    setDashboardSheetOpen(false);
-    openSettings("profile");
-    setMobileView("settings");
-  }, [openSettings]);
-
-  // 4) Node settings: generic app settings (audio tab is the default landing).
-  const handleOpenNodeSettings = useCallback(() => {
-    setDashboardSheetOpen(false);
-    openSettings();
-    setMobileView("settings");
-  }, [openSettings]);
+  // TODO: Mobile action handlers scaffolding (not yet wired to any UI element).
+  // Uncomment when implementing the corresponding mobile action flows.
 
   // When app settings or server settings is opened, switch to the mobile
   // settings view. Without the serverSettingsId branch, tapping the gear
@@ -1699,7 +1641,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             <TopBarMoreMenu
               voiceMicActive={voiceConnected && voiceMicGranted}
               showExtension={!!(activeChannel && !isVoiceChannel && !isAppChannel)}
-              onExtension={() => setExtensionMenuOpen((v) => !v)}
+              onExtension={() => setExtensionMenuOpen(!extensionMenuOpen)}
               onHelp={() => setShowHelp(true)}
               onStats={() => setStatsTarget({ type: "user" })}
               onBug={() => setShowBugReport(true)}
@@ -2695,7 +2637,7 @@ const PAGE_PILL_META: Record<string, { icon: string; label: string }> = {
 function MobilePillRow({
   active,
   onNavigate,
-  pageDepth,
+  pageDepth: _pageDepth,
   voiceActive,
   voiceChannelName,
   onVoiceReturn,

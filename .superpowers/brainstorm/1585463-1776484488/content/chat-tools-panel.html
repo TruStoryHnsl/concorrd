@@ -1,0 +1,139 @@
+<h2>Chat Tools Panel — How should the + button open?</h2>
+<p class="subtitle">Tap the + icon next to the attach button. Which panel style fits Concord best?</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#1a1a2e;border-radius:12px;padding:16px;font-family:sans-serif;min-height:220px;position:relative;">
+      <!-- Input bar -->
+      <div style="position:absolute;bottom:16px;left:16px;right:16px;">
+        <div style="background:#2a2a3e;border-radius:20px;padding:10px 14px;display:flex;align-items:center;gap:8px;">
+          <div style="width:22px;height:22px;border-radius:50%;background:#7c5cfc;display:flex;align-items:center;justify-content:center;font-size:14px;color:#fff;font-weight:bold;flex-shrink:0;">+</div>
+          <div style="width:18px;height:18px;border-radius:4px;background:#555;flex-shrink:0;"></div>
+          <div style="flex:1;height:10px;background:#3a3a4e;border-radius:6px;"></div>
+          <div style="width:18px;height:18px;border-radius:50%;background:#7c5cfc;flex-shrink:0;"></div>
+        </div>
+      </div>
+      <!-- Pop-up grid panel -->
+      <div style="position:absolute;bottom:70px;left:16px;background:#252538;border:1px solid #3a3a5c;border-radius:16px;padding:12px;width:260px;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+        <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;padding:0 4px;">Chat Tools</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;background:#2a2a3e;border-radius:10px;cursor:pointer;">
+            <span style="font-size:20px;">📊</span><span style="font-size:10px;color:#aaa;">Poll</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;background:#2a2a3e;border-radius:10px;cursor:pointer;">
+            <span style="font-size:20px;">📅</span><span style="font-size:10px;color:#aaa;">Schedule</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;background:#2a2a3e;border-radius:10px;cursor:pointer;">
+            <span style="font-size:20px;">🖼️</span><span style="font-size:10px;color:#aaa;">Gallery</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;background:#2a2a3e;border-radius:10px;cursor:pointer;">
+            <span style="font-size:20px;">⏱️</span><span style="font-size:10px;color:#aaa;">Timed</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;background:#2a2a3e;border-radius:10px;cursor:pointer;">
+            <span style="font-size:20px;">🔥</span><span style="font-size:10px;color:#aaa;">Heatmap</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;background:#2a2a3e;border-radius:10px;cursor:pointer;">
+            <span style="font-size:20px;">📨</span><span style="font-size:10px;color:#aaa;">Delayed</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;background:#2a2a3e;border-radius:10px;cursor:pointer;">
+            <span style="font-size:20px;">🎞️</span><span style="font-size:10px;color:#aaa;">GIF</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;background:#2a2a3e;border-radius:10px;cursor:pointer;">
+            <span style="font-size:20px;">➕</span><span style="font-size:10px;color:#aaa;">More</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Grid Pop-up</h3>
+      <p>Floating 4-column icon grid anchored above the + button. Fast scanning, touch-friendly. Similar to iMessage / WhatsApp.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#1a1a2e;border-radius:12px;padding:16px;font-family:sans-serif;min-height:220px;position:relative;overflow:hidden;">
+      <!-- Input bar -->
+      <div style="position:absolute;bottom:16px;left:16px;right:16px;">
+        <div style="background:#2a2a3e;border-radius:20px;padding:10px 14px;display:flex;align-items:center;gap:8px;">
+          <div style="width:22px;height:22px;border-radius:50%;background:#7c5cfc;display:flex;align-items:center;justify-content:center;font-size:14px;color:#fff;font-weight:bold;flex-shrink:0;">+</div>
+          <div style="width:18px;height:18px;border-radius:4px;background:#555;flex-shrink:0;"></div>
+          <div style="flex:1;height:10px;background:#3a3a4e;border-radius:6px;"></div>
+          <div style="width:18px;height:18px;border-radius:50%;background:#7c5cfc;flex-shrink:0;"></div>
+        </div>
+      </div>
+      <!-- Slide-up sheet -->
+      <div style="position:absolute;bottom:62px;left:0;right:0;background:#252538;border-top:1px solid #3a3a5c;border-radius:20px 20px 0 0;padding:16px;">
+        <div style="width:36px;height:4px;background:#444;border-radius:2px;margin:0 auto 14px;"></div>
+        <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Chat Tools</div>
+        <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:4px;">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:60px;padding:10px 6px;background:#2a2a3e;border-radius:12px;">
+            <span style="font-size:22px;">📊</span><span style="font-size:10px;color:#aaa;white-space:nowrap;">Poll</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:60px;padding:10px 6px;background:#2a2a3e;border-radius:12px;">
+            <span style="font-size:22px;">📅</span><span style="font-size:10px;color:#aaa;white-space:nowrap;">Schedule</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:60px;padding:10px 6px;background:#2a2a3e;border-radius:12px;">
+            <span style="font-size:22px;">🖼️</span><span style="font-size:10px;color:#aaa;white-space:nowrap;">Gallery</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:60px;padding:10px 6px;background:#2a2a3e;border-radius:12px;">
+            <span style="font-size:22px;">🔥</span><span style="font-size:10px;color:#aaa;white-space:nowrap;">Heatmap</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:60px;padding:10px 6px;background:#2a2a3e;border-radius:12px;">
+            <span style="font-size:22px;">⏱️</span><span style="font-size:10px;color:#aaa;white-space:nowrap;">Timed</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:60px;padding:10px 6px;background:#2a2a3e;border-radius:12px;">
+            <span style="font-size:22px;">➕</span><span style="font-size:10px;color:#aaa;white-space:nowrap;">More</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Slide-up Sheet</h3>
+      <p>Bottom sheet slides up over the chat. Horizontal scroll for overflow tools. Native mobile feel, easy thumb reach.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#1a1a2e;border-radius:12px;padding:16px;font-family:sans-serif;min-height:220px;position:relative;">
+      <!-- Input bar with expanded toolbar -->
+      <div style="position:absolute;bottom:16px;left:16px;right:16px;">
+        <!-- Expanded tool row (appears above input) -->
+        <div style="background:#252538;border:1px solid #3a3a5c;border-radius:14px;padding:8px 10px;display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+          <div style="display:flex;align-items:center;gap:4px;padding:5px 10px;background:#2a2a3e;border-radius:20px;cursor:pointer;font-size:11px;color:#ccc;">
+            <span>📊</span><span>Poll</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;padding:5px 10px;background:#2a2a3e;border-radius:20px;cursor:pointer;font-size:11px;color:#ccc;">
+            <span>📅</span><span>Schedule</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;padding:5px 10px;background:#2a2a3e;border-radius:20px;cursor:pointer;font-size:11px;color:#ccc;">
+            <span>🖼️</span><span>Gallery</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;padding:5px 10px;background:#2a2a3e;border-radius:20px;cursor:pointer;font-size:11px;color:#ccc;">
+            <span>🔥</span><span>Heatmap</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;padding:5px 10px;background:#2a2a3e;border-radius:20px;cursor:pointer;font-size:11px;color:#ccc;">
+            <span>⏱️</span><span>Timed</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;padding:5px 10px;background:#7c5cfc33;border:1px solid #7c5cfc55;border-radius:20px;cursor:pointer;font-size:11px;color:#aaa;">
+            <span>➕</span><span>More</span>
+          </div>
+        </div>
+        <!-- Input bar -->
+        <div style="background:#2a2a3e;border-radius:20px;padding:10px 14px;display:flex;align-items:center;gap:8px;">
+          <div style="width:22px;height:22px;border-radius:50%;background:#7c5cfc;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;font-weight:bold;flex-shrink:0;transform:rotate(45deg);">+</div>
+          <div style="width:18px;height:18px;border-radius:4px;background:#555;flex-shrink:0;"></div>
+          <div style="flex:1;height:10px;background:#3a3a4e;border-radius:6px;"></div>
+          <div style="width:18px;height:18px;border-radius:50%;background:#7c5cfc;flex-shrink:0;"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — Inline Pill Toolbar</h3>
+      <p>+ rotates to ✕, reveals a row of labeled pill buttons inline above the input. No overlay, stays in flow. Desktop-friendly.</p>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:16px;">Click a card to select — or let me know in the terminal if you want a hybrid or something different.</p>

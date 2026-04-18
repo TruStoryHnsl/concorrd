@@ -260,6 +260,16 @@ textarea,
   user-select: text;
 }
 
+/* Prevent iOS Safari auto-zoom on input/select focus.
+   Safari zooms when font-size < 16px; enforce 16px minimum without
+   altering visual size (inheriting em units still scale normally via
+   Tailwind utilities that override this with explicit rem values). */
+input,
+textarea,
+select {
+  font-size: max(16px, 1em);
+}
+
 /* ── Material Symbols ── */
 .material-symbols-outlined {
   font-variation-settings:
