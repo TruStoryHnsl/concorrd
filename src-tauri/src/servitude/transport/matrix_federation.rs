@@ -736,8 +736,19 @@ mod tests {
     }
 
     #[test]
-    fn test_env_vars_include_admin_execute_when_registered() {
-        // Write a temporary registration YAML so read_to_string succeeds.
+    fn test_build_execute_arg_emits_appservices_register_when_registered() {
+        // Contract revision: CONDUWUIT_ADMIN_EXECUTE is NO LONGER emitted
+        // from env_vars() — tuwunel's admin_execute doesn't support the
+        // multiline body needed for `appservices register`. The post-
+        // startup register_appservices() path now calls
+        // build_execute_arg() to produce the register command and sends
+        // it via the admin HTTP API after tuwunel is reachable. This
+        // test pins the new contract: after add_appservice_registration,
+        // (a) env_vars() MUST NOT contain CONDUWUIT_ADMIN_EXECUTE (so
+        // stale readers don't resurrect the old path), (b) the
+        // registration path is reachable via the accessor, and (c)
+        // build_execute_arg() returns Some(cmd) containing the
+        // `appservices register` verb + the file's YAML body.
         let tmp_dir = std::env::temp_dir().join("concord-env-test-with-as");
         let _ = std::fs::create_dir_all(&tmp_dir);
         let reg_path = tmp_dir.join("registration.yaml");
@@ -745,30 +756,38 @@ mod tests {
             .expect("write test registration");
 
         let mut t = MatrixFederationTransport::from_config(&config_on_port(8765));
-        t.add_appservice_registration(reg_path);
+        t.add_appservice_registration(reg_path.clone());
 
+        // (a) env_vars() must stay free of CONDUWUIT_ADMIN_EXECUTE.
         let envs = t.env_vars(&tmp_dir);
         let keys: Vec<&str> = envs.iter().map(|(k, _)| k.as_str()).collect();
         assert!(
-            keys.contains(&"CONDUWUIT_ADMIN_EXECUTE"),
-            "CONDUWUIT_ADMIN_EXECUTE must be present after add_appservice_registration"
+            !keys.contains(&"CONDUWUIT_ADMIN_EXECUTE"),
+            "CONDUWUIT_ADMIN_EXECUTE must NOT be emitted via env_vars \
+             — registrations are registered post-startup via \
+             register_appservices(), not via tuwunel's --execute env"
         );
 
-        let value = envs
-            .iter()
-            .find(|(k, _)| k == "CONDUWUIT_ADMIN_EXECUTE")
-            .map(|(_, v)| v.as_str())
-            .unwrap();
-        let parsed: Vec<String> = serde_json::from_str(value)
-            .expect("CONDUWUIT_ADMIN_EXECUTE must be valid JSON");
-        assert_eq!(parsed.len(), 1, "exactly one command expected");
+        // (b) the registration path is retrievable through the
+        // public accessor.
+        assert_eq!(
+            t.appservice_registrations(),
+            &[reg_path],
+            "add_appservice_registration must persist the path"
+        );
+
+        // (c) build_execute_arg produces a command containing both
+        // the register verb and the YAML body.
+        let cmd = t
+            .build_execute_arg()
+            .expect("build_execute_arg must return Some after registration added");
         assert!(
-            parsed[0].contains("appservice register"),
-            "command must contain 'appservice register'"
+            cmd.contains("appservices register"),
+            "command must contain 'appservices register' verb: {cmd}"
         );
         assert!(
-            parsed[0].contains("test_bridge"),
-            "command must contain registration content"
+            cmd.contains("test_bridge"),
+            "command must contain registration YAML content: {cmd}"
         );
     }
 

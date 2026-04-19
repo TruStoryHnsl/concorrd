@@ -1095,7 +1095,11 @@ mod tests {
         }
 
         // `--` separator must exist and the command after it must be
-        // the sandbox-internal binary path, not the host path.
+        // the sandbox-internal binary path, not the host path. We use
+        // `/usr/bin/mautrix-discord` (NOT `/usr/local/bin/`) because
+        // `/usr/bin` is guaranteed to exist inside the sandbox via the
+        // `--ro-bind /usr /usr` triplet above; `/usr/local/bin` is not
+        // always present on minimal hosts and would break the launch.
         let sep_idx = argv
             .iter()
             .position(|a| a == "--")
@@ -1104,11 +1108,26 @@ mod tests {
             sep_idx < argv.len() - 1,
             "`--` separator must not be the last argv entry"
         );
-        assert_eq!(argv[sep_idx + 1], "/usr/local/bin/mautrix-discord");
+        assert_eq!(argv[sep_idx + 1], "/usr/bin/mautrix-discord");
         assert_eq!(argv[sep_idx + 2], "-c");
         assert_eq!(argv[sep_idx + 3], "/data/config.yaml");
         assert_eq!(argv[sep_idx + 4], "-r");
         assert_eq!(argv[sep_idx + 5], "/data/registration.yaml");
+
+        // Defense-in-depth: the binary must also be ro-bound INTO
+        // `/usr/bin/mautrix-discord` so the launch command above
+        // actually has a file to execute. Verify the triplet.
+        let mut found_binary_rebind = false;
+        for window in argv.windows(3) {
+            if window[0] == "--ro-bind" && window[2] == "/usr/bin/mautrix-discord" {
+                found_binary_rebind = true;
+                break;
+            }
+        }
+        assert!(
+            found_binary_rebind,
+            "expected `--ro-bind <host> /usr/bin/mautrix-discord` triplet in argv"
+        );
     }
 
     #[test]
