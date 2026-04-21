@@ -15,6 +15,7 @@ import {
   discordBridgeHttpGetBotProfile,
   discordBridgeHttpUpdateBotProfile,
   discordBridgeHttpRotate,
+  discordBridgeHttpForceReset,
   discordBridgeHttpSaveBotToken,
   discordVoiceBridgeHttpDeleteRoom,
   discordVoiceBridgeHttpListRooms,
@@ -845,6 +846,32 @@ function DockerBridgeSection({ accessToken }: { accessToken: string }) {
     }
   }, [accessToken, refresh]);
 
+  const handleForceReset = useCallback(async () => {
+    const confirmed = window.confirm(
+      "Force-reset will wipe ALL Discord bridge state:\n\n" +
+      "• Stop the bridge container\n" +
+      "• Remove every concord appservice entry from tuwunel.toml\n" +
+      "• Delete registration.yaml\n" +
+      "• Restart conduwuit\n\n" +
+      "The Discord bot token is preserved. Continue?"
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    setError(null);
+    setLastResult(null);
+    try {
+      const result = await discordBridgeHttpForceReset(accessToken);
+      if (!mountedRef.current) return;
+      setLastResult(result);
+      await refresh();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  }, [accessToken, refresh]);
+
   const handleSaveBotName = useCallback(async () => {
     const username = botNameInput.trim();
     if (!username) return;
@@ -865,6 +892,40 @@ function DockerBridgeSection({ accessToken }: { accessToken: string }) {
 
   return (
     <div className="space-y-4" data-testid="docker-bridge-section">
+      {/* Desync warning — shown when the server reports broken state.
+          Surfaced at the top so users can't miss it, with a direct
+          "Reset" action that cleans up regardless of what's on disk. */}
+      {status?.desync && (
+        <div
+          className="border border-amber-500/40 bg-amber-500/10 rounded-lg p-4 space-y-2"
+          data-testid="docker-bridge-desync-banner"
+        >
+          <div className="flex items-start gap-3">
+            <span className="text-xl">⚠️</span>
+            <div className="flex-1 min-w-0">
+              <h4 className="text-sm font-medium text-amber-300">
+                Bridge state is out of sync
+              </h4>
+              <p className="text-xs text-amber-200/80 mt-1">{status.desync}</p>
+              {status.stale_appservice_ids.length > 0 && (
+                <p className="text-xs text-amber-200/60 mt-1 font-mono">
+                  stale ids: {status.stale_appservice_ids.join(", ")}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={handleForceReset}
+              disabled={busy}
+              data-testid="docker-bridge-force-reset-btn"
+              className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px] shrink-0"
+            >
+              {busy ? "…" : "Reset to clean state"}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Status card */}
       <div className="border border-outline-variant/20 rounded-lg overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-low/60">
@@ -1166,6 +1227,37 @@ function DockerBridgeSection({ accessToken }: { accessToken: string }) {
             </p>
           </div>
         </div>
+      )}
+
+      {/* Troubleshoot — always visible at the bottom of the bridges tab.
+          Escape hatch for when Disable can't clean up a broken state (e.g.
+          after a code upgrade renamed the appservice constant, or a prior
+          enable/disable crashed mid-flow). Users don't have to wait for
+          the auto-detected desync banner to surface a specific problem. */}
+      {status !== null && (
+        <details className="border border-outline-variant/20 rounded-lg" data-testid="docker-bridge-troubleshoot">
+          <summary className="px-4 py-3 text-xs text-on-surface-variant cursor-pointer select-none hover:text-on-surface transition-colors">
+            Troubleshoot
+          </summary>
+          <div className="px-4 pb-4 space-y-3 border-t border-outline-variant/10 pt-3">
+            <p className="text-xs text-on-surface-variant leading-relaxed">
+              <strong className="text-on-surface">Force-reset</strong> wipes all bridge
+              state — stops the container, removes every concord appservice entry from
+              tuwunel.toml, deletes registration.yaml, and restarts conduwuit. Use this
+              when Disable is stuck or Enable keeps failing because old state is in the way.
+              Your Discord bot token is preserved.
+            </p>
+            <button
+              type="button"
+              onClick={handleForceReset}
+              disabled={busy}
+              data-testid="docker-bridge-reset-btn"
+              className="px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
+            >
+              {busy ? "Resetting…" : "Reset to clean state"}
+            </button>
+          </div>
+        </details>
       )}
     </div>
   );
