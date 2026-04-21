@@ -303,7 +303,7 @@ export function MessageInput({
 
       <div className="px-4 py-3">
         <div
-          className={`flex items-end gap-2 bg-surface-container rounded-xl px-2 transition-all ${
+          className={`flex items-end gap-0.5 bg-surface-container rounded-xl px-2 transition-all ${
             dragOver
               ? "ring-1 ring-primary/30 bg-primary/5"
               : editingMessage
@@ -311,20 +311,27 @@ export function MessageInput({
                 : ""
           }`}
         >
+          {/* Chat-tools "+" button. Sized to match the paperclip, not
+             the send button — both live in the leading utility cluster
+             and should read as equal-weight siblings. Previously at
+             44×44 (mobile touch-target), it double-spaced the leading
+             edge on desktop and pushed the text input inward. Dropping
+             to a 32×32 target brings it in line with the paperclip
+             while remaining comfortably tappable. */}
           <button
             type="button"
             onClick={() => setToolsPanelOpen((o) => !o)}
-            className="btn-press p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center text-primary hover:text-primary/80 transition-colors flex-shrink-0 rounded-xl font-bold text-lg leading-none"
+            className="btn-press p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center text-primary hover:text-primary/80 transition-colors flex-shrink-0 rounded-lg"
             title="Chat tools"
           >
-            +
+            <span className="material-symbols-outlined text-xl">add</span>
           </button>
           {onSendFile && (
             <>
               <button
                 type="button"
                 onClick={() => fileRef.current?.click()}
-                className="btn-press p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center text-on-surface-variant hover:text-on-surface active:text-primary transition-colors flex-shrink-0 rounded-xl"
+                className="btn-press p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center text-on-surface-variant hover:text-on-surface active:text-primary transition-colors flex-shrink-0 rounded-lg"
                 title="Upload file"
               >
                 <span className="material-symbols-outlined text-xl">attach_file</span>

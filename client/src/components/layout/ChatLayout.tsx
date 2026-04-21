@@ -3184,19 +3184,12 @@ function AddSourceModal({
                 <span className="material-symbols-outlined text-on-surface-variant/40 ml-auto group-hover:text-on-surface-variant">chevron_right</span>
               </button>
 
-              <button
-                onClick={() => setScreen("discord")}
-                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-[#5865F2]/40 hover:bg-surface-container-high transition-all text-left group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
-                  <SourceBrandIcon brand="discord" size={24} className="text-[#5865F2]" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-on-surface">Discord</p>
-                  <p className="text-xs text-on-surface-variant">Bridge guilds or connect your account</p>
-                </div>
-                <span className="material-symbols-outlined text-on-surface-variant/40 ml-auto group-hover:text-on-surface-variant">chevron_right</span>
-              </button>
+              {/* Discord is managed under Settings → Connections in the
+                 user-scoped bridge redesign. It's not an "add source" —
+                 it's a personal account connection, and the bridge only
+                 surfaces Discord guilds as Concord rooms once auth
+                 actually succeeds. See docs/bridges/user-scoped-bridge-
+                 redesign.md. */}
 
               <button
                 type="button"

@@ -206,9 +206,25 @@ export function SourcesPanel({
   mobile?: boolean;
 }) {
   const currentUserId = useAuthStore((s) => s.userId);
-  const sources = useSourcesStore((s) => s.sources);
+  const rawSources = useSourcesStore((s) => s.sources);
   const toggleSource = useSourcesStore((s) => s.toggleSource);
   const setSourceOrder = useSourcesStore((s) => s.setSourceOrder);
+
+  // Hide Discord source tiles entirely. In the user-scoped bridge
+  // redesign, Discord is a personal "Connection" (managed under
+  // Settings → Connections), not a "Source". Bridged Discord guilds
+  // surface as regular Matrix rooms under the user's own homeserver
+  // session, so a standalone Discord tile offers no extra navigation —
+  // only the potential to mislead (tile present, but auth may not have
+  // completed, so clicking it lands the user in an empty browser).
+  //
+  // Discord tiles may still exist in the sources store from legacy
+  // flows (pre-PR4 admin bot mode); filtering keeps them out of the UI
+  // without rewriting the store. A later cleanup can prune them entirely.
+  const sources = rawSources.filter((source) => {
+    const isDiscord = source.platform === "discord-bot" || source.platform === "discord-account";
+    return !isDiscord;
+  });
 
   const isTouchDevice =
     typeof window !== "undefined" &&

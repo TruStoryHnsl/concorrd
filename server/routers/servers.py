@@ -766,10 +766,22 @@ async def leave_server(
 @router.get("/discover", response_model=list[ServerDiscoverOut])
 async def discover_servers(
     q: str = Query(default="", max_length=200),
-    user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """List public servers, optionally filtered by search query."""
+    """List public servers, optionally filtered by search query.
+
+    Intentionally unauthenticated: ``visibility=public`` is a server-
+    admin-set flag, and the whole point of "public" is that anyone —
+    including users on OTHER instances who've added this one as a
+    source, and haven't registered a local account — can see the
+    listing to decide whether to join.
+
+    Only five fields are returned per entry (id, name, icon_url,
+    abbreviation, member_count). No member identities, no channel
+    graph, no private settings. Joining still requires authentication
+    through the normal ``/servers/{id}/join`` route, which is and
+    remains gated.
+    """
     from sqlalchemy import func
 
     query = select(
