@@ -522,6 +522,46 @@ export async function getServerRules(
   return apiFetch(`/servers/${serverId}/rules`, {}, accessToken);
 }
 
+/** ISSUE D (2026-04-18): upload a custom server tile icon.
+ *
+ * Uses multipart/form-data directly (NOT apiFetch, which forces JSON). The
+ * backend endpoint validates extension + magic bytes + size and writes the
+ * file under DATA_DIR/server-icons/<id>.<ext>. On success returns
+ * {icon_url} pointing at the authenticated serve endpoint.
+ */
+export async function uploadServerIcon(
+  serverId: string,
+  file: File,
+  accessToken: string,
+): Promise<{ icon_url: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  const resp = await fetch(`${getBase()}/servers/${serverId}/icon`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(
+      typeof err.detail === "string" ? err.detail : "Failed to upload icon",
+    );
+  }
+  return resp.json();
+}
+
+/** ISSUE D: clear the custom icon and fall back to the abbreviation glyph. */
+export async function deleteServerIcon(
+  serverId: string,
+  accessToken: string,
+): Promise<{ icon_url: string | null }> {
+  return apiFetch(
+    `/servers/${serverId}/icon`,
+    { method: "DELETE" },
+    accessToken,
+  );
+}
+
 /** INS-053: Toggle per-server user channel creation. Admin-only. */
 export async function updateChannelCreationSetting(
   serverId: string,

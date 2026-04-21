@@ -1,22 +1,44 @@
 import asyncio
 import logging
+import mimetypes
+import secrets
 import shutil
 import time
+from pathlib import Path
 from typing import Literal, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from config import MATRIX_HOMESERVER_URL, SOUNDBOARD_DIR
+from config import DATA_DIR, MATRIX_HOMESERVER_URL, SOUNDBOARD_DIR
 from database import get_db
 from dependencies import require_server_member, require_server_admin, require_server_owner
 from errors import ConcordError
 from models import Server, Channel, ServerMember, ServerBan, ServerWhitelist, SoundboardClip
 from services.matrix_admin import create_matrix_room, invite_to_room, join_room, set_room_name
+
+# Server-tile custom icons (ISSUE D, 2026-04-18).
+# Stored on disk under DATA_DIR/server-icons/<server_id>.<ext>. Server.icon_url
+# references the authenticated serve endpoint below (/api/servers/<id>/icon).
+# Matches the soundboard file-storage pattern for consistency.
+SERVER_ICON_DIR = DATA_DIR / "server-icons"
+SERVER_ICON_DIR.mkdir(parents=True, exist_ok=True)
+SERVER_ICON_ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+SERVER_ICON_MAX_BYTES = 2 * 1024 * 1024  # 2 MiB — plenty for a tile glyph.
+# Content-type sniff: first bytes should match one of these for the declared
+# extension. Prevents a caller uploading `.png` with a malicious HTML payload.
+SERVER_ICON_MAGIC = {
+    ".png": (b"\x89PNG\r\n\x1a\n",),
+    ".jpg": (b"\xff\xd8\xff",),
+    ".jpeg": (b"\xff\xd8\xff",),
+    ".gif": (b"GIF87a", b"GIF89a"),
+    ".webp": (b"RIFF",),  # RIFF....WEBP — prefix check is sufficient for sniff
+}
 
 
 # Matrix user ID regex shared across server endpoints. Bounds the
@@ -107,6 +129,15 @@ class ServerSettingsUpdate(BaseModel):
     )
     media_uploads_enabled: bool | None = None
     rules_text: str | None = Field(default=None, max_length=2000)
+    # ISSUE D: admin can clear a custom server icon by PATCHing
+    # icon_url: "" (empty string → NULL → fallback to abbreviation glyph).
+    # Setting a non-empty value is NOT supported via PATCH — the only way
+    # to set icon_url is via the POST /icon upload endpoint, which writes
+    # the stored file and updates the DB in one atomic step. A raw string
+    # here would let an admin point the tile at arbitrary URLs, including
+    # credential-leak vectors (referer headers, tracking pixels). Keep
+    # the surface minimal.
+    icon_url: str | None = Field(default=None, max_length=500)
 
 
 class MemberOut(BaseModel):
@@ -932,6 +963,18 @@ async def update_server_settings(
     if body.rules_text is not None:
         # Empty string clears the rules.
         server.rules_text = body.rules_text if body.rules_text.strip() else None
+    if body.icon_url is not None:
+        # Per the model comment, PATCH with icon_url accepts only "" to clear.
+        # Any non-empty value is rejected — the upload endpoint is the only
+        # way to SET a custom icon, so we can trust icon_url to either be NULL
+        # or point at our own /icon endpoint.
+        if body.icon_url.strip():
+            raise HTTPException(
+                400,
+                "icon_url can only be cleared (\"\") via this endpoint; upload via POST /icon to set.",
+            )
+        _delete_server_icon_file(server.id)
+        server.icon_url = None
 
     await db.commit()
     return {
@@ -939,9 +982,136 @@ async def update_server_settings(
         "name": server.name,
         "visibility": server.visibility,
         "abbreviation": server.abbreviation,
+        "icon_url": server.icon_url,
         "media_uploads_enabled": server.media_uploads_enabled,
         "rules_text": server.rules_text,
     }
+
+
+def _delete_server_icon_file(server_id: str) -> None:
+    """Remove every server-icon file for a given server id, regardless of
+    extension. Safe to call when no file exists. Used on clear and on
+    re-upload to keep the storage dir from accumulating orphans."""
+    for ext in SERVER_ICON_ALLOWED_EXTENSIONS:
+        p = SERVER_ICON_DIR / f"{server_id}{ext}"
+        try:
+            if p.is_file():
+                p.unlink()
+        except OSError:
+            logger.warning("Failed to unlink stale server icon %s", p, exc_info=True)
+
+
+# ── Server-tile custom icons (ISSUE D, 2026-04-18) ────────────────────────
+
+@router.post("/{server_id}/icon")
+async def upload_server_icon(
+    server_id: str,
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a custom tile icon. Admin/owner only.
+
+    Validates extension, content-type sniff, and max size. Persists the file
+    to DATA_DIR/server-icons/<server_id>.<ext>, then sets
+    ``Server.icon_url`` to the authenticated serve endpoint below. Returns
+    the updated icon_url so the client can push it into its server store
+    without a full refetch.
+
+    Follows the soundboard file-upload pattern (routers/soundboard.py) —
+    same storage root, same FileResponse serve pattern, same tight
+    validation.
+    """
+    await require_server_admin(server_id, user_id, db)
+    server = await db.get(Server, server_id)
+    if not server:
+        raise HTTPException(404, "Server not found")
+
+    # Extension sniff. UploadFile.filename is caller-supplied so we only
+    # trust it for the suffix, and even that we whitelist.
+    raw_name = (file.filename or "").lower()
+    ext = Path(raw_name).suffix
+    if ext not in SERVER_ICON_ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            400,
+            f"Unsupported image extension {ext!r}. Allowed: {sorted(SERVER_ICON_ALLOWED_EXTENSIONS)}",
+        )
+
+    # Read fully into memory — icons are capped at 2 MiB and this lets us
+    # magic-byte sniff before touching the filesystem. Streaming to disk and
+    # then validating risks a partial-write race on error.
+    data = await file.read(SERVER_ICON_MAX_BYTES + 1)
+    if len(data) > SERVER_ICON_MAX_BYTES:
+        raise HTTPException(413, f"Icon exceeds {SERVER_ICON_MAX_BYTES} bytes")
+    if not data:
+        raise HTTPException(400, "Uploaded file is empty")
+
+    magic_prefixes = SERVER_ICON_MAGIC.get(ext, ())
+    if magic_prefixes and not any(data.startswith(m) for m in magic_prefixes):
+        raise HTTPException(
+            400, f"File content does not match declared extension {ext!r}"
+        )
+
+    # Normalise .jpeg to .jpg so we have exactly one on-disk filename per
+    # server — keeps _delete_server_icon_file cleanup trivial.
+    if ext == ".jpeg":
+        ext = ".jpg"
+
+    # Remove any previous icon (might have had a different extension) BEFORE
+    # writing the new one so if the write fails the DB stays consistent.
+    _delete_server_icon_file(server_id)
+    dest = SERVER_ICON_DIR / f"{server_id}{ext}"
+    try:
+        dest.write_bytes(data)
+    except OSError:
+        logger.error("Failed to write server icon to %s", dest, exc_info=True)
+        raise HTTPException(500, "Failed to persist icon")
+
+    # Authenticated serve endpoint. Cache-bust via upload timestamp so clients
+    # that cached a previous tile image refresh automatically when the admin
+    # uploads a replacement.
+    icon_url = f"/api/servers/{server_id}/icon?v={int(time.time())}"
+    server.icon_url = icon_url
+    await db.commit()
+    return {"icon_url": icon_url}
+
+
+@router.get("/{server_id}/icon")
+async def serve_server_icon(
+    server_id: str,
+    v: str | None = Query(default=None),  # cache-bust passthrough, unused
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the custom icon file. Requires server membership so private
+    server icons don't leak to outsiders via URL guessing."""
+    await require_server_member(server_id, user_id, db)
+    # Find whichever allowed extension is on disk for this server.
+    for ext in (".png", ".jpg", ".gif", ".webp"):
+        p = SERVER_ICON_DIR / f"{server_id}{ext}"
+        if p.is_file():
+            content_type, _ = mimetypes.guess_type(p.name)
+            return FileResponse(p, media_type=content_type or "image/png")
+    raise HTTPException(404, "No custom icon")
+
+
+@router.delete("/{server_id}/icon")
+async def delete_server_icon(
+    server_id: str,
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clear the custom icon. Admin/owner only. Equivalent to PATCHing
+    settings with ``icon_url=""`` — provided as a convenience so the UI
+    can wire a Remove button directly."""
+    await require_server_admin(server_id, user_id, db)
+    server = await db.get(Server, server_id)
+    if not server:
+        raise HTTPException(404, "Server not found")
+    _delete_server_icon_file(server_id)
+    server.icon_url = None
+    await db.commit()
+    return {"icon_url": None}
 
 
 @router.get("/{server_id}/rules")

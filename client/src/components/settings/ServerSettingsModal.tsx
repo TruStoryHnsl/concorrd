@@ -31,6 +31,8 @@ import {
   updateMemberPermissions,
   updateInvite,
   updateChannelCreationSetting,
+  uploadServerIcon,
+  deleteServerIcon,
   type BanSettings,
   type Invite,
 } from "../../api/concord";
@@ -260,6 +262,12 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
   const [visibility, setVisibility] = useState(server?.visibility ?? "private");
   const [mediaUploads, setMediaUploads] = useState(server?.media_uploads_enabled ?? true);
   const [rulesText, setRulesText] = useState(server?.rules_text ?? "");
+  // ISSUE D (2026-04-18): custom tile icon upload. Local state tracks only
+  // the in-flight upload/delete — the authoritative icon_url lives in the
+  // server store (useServerStore.servers[].icon_url), which ServerSidebar's
+  // ServerGlyph already reads when rendering the tile.
+  const [iconBusy, setIconBusy] = useState(false);
+  const iconInputId = `server-icon-file-${serverId}`;
   // INS-053: per-server user channel creation toggle
   const [allowUserChannelCreation, setAllowUserChannelCreation] = useState(
     server?.allow_user_channel_creation ?? false
@@ -316,6 +324,36 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
     }
   };
 
+  const handleIconUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.target;
+    const file = input.files?.[0];
+    input.value = "";  // reset so the same file can be re-picked
+    if (!file) return;
+    setIconBusy(true);
+    try {
+      const { icon_url } = await uploadServerIcon(serverId, file, accessToken);
+      updateServer(serverId, { icon_url });
+      addToast("Icon updated", "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to upload icon");
+    } finally {
+      setIconBusy(false);
+    }
+  };
+
+  const handleIconRemove = async () => {
+    setIconBusy(true);
+    try {
+      await deleteServerIcon(serverId, accessToken);
+      updateServer(serverId, { icon_url: null });
+      addToast("Icon removed", "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to remove icon");
+    } finally {
+      setIconBusy(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!server || !canDelete || deleteConfirmation !== server.name) return;
     setDeleting(true);
@@ -350,8 +388,65 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
 
       <div>
         <label className="block text-sm font-medium text-on-surface mb-1">
+          Icon
+          <span className="text-on-surface-variant font-normal ml-1">
+            (custom image shown on the sidebar tile; falls back to abbreviation when cleared)
+          </span>
+        </label>
+        <div className="flex items-center gap-3">
+          {/* Live preview: custom image if set, else abbreviation glyph */}
+          <div className="w-12 h-12 rounded-2xl overflow-hidden bg-surface-container flex items-center justify-center text-sm font-bold text-on-surface-variant">
+            {server?.icon_url ? (
+              <img
+                src={server.icon_url}
+                alt=""
+                className="w-full h-full object-cover"
+                data-testid="server-icon-preview"
+              />
+            ) : (
+              abbreviation || name.charAt(0).toUpperCase()
+            )}
+          </div>
+          <label
+            htmlFor={iconInputId}
+            className={`px-3 py-1.5 rounded text-sm transition-colors cursor-pointer ${
+              iconBusy
+                ? "bg-surface-container-highest text-on-surface-variant opacity-50"
+                : "bg-surface-container hover:bg-surface-container-highest text-on-surface"
+            }`}
+          >
+            {iconBusy ? "Working..." : server?.icon_url ? "Replace" : "Upload"}
+          </label>
+          <input
+            id={iconInputId}
+            type="file"
+            accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
+            className="hidden"
+            disabled={iconBusy}
+            onChange={handleIconUpload}
+            data-testid="server-icon-input"
+          />
+          {server?.icon_url && (
+            <button
+              type="button"
+              onClick={handleIconRemove}
+              disabled={iconBusy}
+              className="px-3 py-1.5 rounded text-sm bg-surface-container hover:bg-error/15 hover:text-error text-on-surface-variant transition-colors disabled:opacity-40"
+              data-testid="server-icon-remove"
+            >
+              Remove
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-on-surface-variant mt-1">
+          PNG, JPG, GIF, or WebP up to 2 MiB. Square images render best.
+        </p>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-on-surface mb-1">
           Abbreviation
-          <span className="text-on-surface-variant font-normal ml-1">(3 chars max, shown on sidebar)</span>
+          <span className="text-on-surface-variant font-normal ml-1">(3 chars max, shown when no icon is set)</span>
         </label>
         <div className="flex items-center gap-3">
           <input
@@ -362,7 +457,7 @@ function GeneralTab({ serverId, accessToken }: { serverId: string; accessToken: 
             placeholder={name.charAt(0).toUpperCase()}
             className="w-24 px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface text-center focus:outline-none focus:ring-1 focus:ring-primary/30"
           />
-          {/* Preview bubble */}
+          {/* Preview bubble (abbreviation-only; icon preview is above) */}
           <div className="w-12 h-12 rounded-2xl bg-surface-container flex items-center justify-center text-sm font-bold text-on-surface-variant">
             {abbreviation || name.charAt(0).toUpperCase()}
           </div>
