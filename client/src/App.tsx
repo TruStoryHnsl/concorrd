@@ -24,6 +24,7 @@ import { ToastContainer } from "./components/ui/Toast";
 import { VoiceConnectionBar } from "./components/voice/VoiceConnectionBar";
 import { DirectInviteBanner } from "./components/DirectInviteBanner";
 import { CustomAudioRenderer } from "./components/voice/CustomAudioRenderer";
+import { FloatingVideoTiles } from "./components/voice/FloatingVideoTiles";
 import { buildLiveKitAudioCaptureOptions } from "./voice/noiseGate";
 
 // Capture invite token immediately at module load — before React mounts,
@@ -552,6 +553,11 @@ export default function App() {
             style={{ display: "contents" }}
           >
             <CustomAudioRenderer />
+            {/* Issue E (2026-04-18): floating picture-in-picture tiles so
+             *  camera/screen streams stay visible when the user navigates
+             *  away from the voice channel. Renders null when the user is
+             *  viewing the voice channel's docked UI. */}
+            <FloatingVideoTiles />
             {shellContent}
           </LiveKitRoom>
         ) : (
