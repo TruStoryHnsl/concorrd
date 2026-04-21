@@ -1009,20 +1009,18 @@ export function UserBar({
               closeSettings();
               return;
             }
-            openSettings();
+            openSettings("profile");
           }}
           className="flex items-center gap-1 px-2 py-1 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
-          title="Settings"
+          title="Profile & account"
+          aria-label="Profile and account settings"
         >
-          <span className="material-symbols-outlined text-lg">settings</span>
-        </button>
-        <button
-          onClick={logout}
-          className="flex items-center gap-1 px-2 py-1 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
-          title="Logout"
-          aria-label="Logout"
-        >
-          <span className="material-symbols-outlined text-lg">logout</span>
+          {/* `manage_accounts` = person glyph with a small gear at the
+             shoulder — reads as "account management" specifically,
+             whereas a plain `settings` gear conflates with app-wide
+             settings (which live in the top-bar wrench menu). The user
+             banner is personal, so the icon should be too. */}
+          <span className="material-symbols-outlined text-lg">manage_accounts</span>
         </button>
         {isNative && (
           <button

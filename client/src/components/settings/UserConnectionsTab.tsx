@@ -257,9 +257,9 @@ export function UserConnectionsTab() {
                 onClick={handleDiscordConnect}
                 disabled={busy}
                 data-testid="user-discord-connect-btn"
-                className="px-3 py-1.5 bg-[#5865F2]/15 hover:bg-[#5865F2]/25 text-[#5865F2] text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
+                className="px-3 py-1.5 bg-primary/10 hover:bg-primary/15 text-primary text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
               >
-                {busy ? "…" : "Connect with Discord"}
+                {busy ? "…" : "Connect"}
               </button>
             )}
           </div>

@@ -1253,12 +1253,38 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               )}
             </div>
           )}
+          {/* DMs moved here from the removed MobilePillRow (INS-044).
+             Toggles between the active page-depth view and the DMs
+             overlay; the active state is visually reflected. */}
+          <TopBarIconButton
+            icon="chat_bubble"
+            label="Direct messages"
+            className={mobileView === "dms" ? "bg-primary/20 border border-primary/40" : ""}
+            onClick={() => {
+              if (mobileView === "dms") {
+                useDMStore.getState().setDMActive(false);
+                setMobileView(prevPageDepthRef.current);
+              } else {
+                if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
+                useDMStore.getState().setDMActive(true);
+                setMobileView("dms");
+              }
+            }}
+          />
           <HostingStatusButton
             status={hostingStatus}
             onClick={() => {
               if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
               openSettings("hosting");
               setMobileView("settings");
+            }}
+          />
+          <TopBarIconButton
+            icon="logout"
+            label="Logout"
+            onClick={() => {
+              logout();
+              if (typeof window !== "undefined") window.location.reload();
             }}
           />
           <TopBarMoreMenu
@@ -1470,48 +1496,21 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         </button>
       </div>}
 
-      {/* INS-044: Bottom pill row with multi-tab browse support. */}
-      <MobilePillRow
-        hidden={pillHidden || mobileView === "settings"}
-        active={mobileView}
-        pageDepth={PAGE_DEPTH.includes(mobileView) ? mobileView : "servers"}
-        voiceActive={voiceConnected}
-        voiceChannelName={useVoiceStore.getState().channelName ?? undefined}
-        onVoiceReturn={() => setMobileView("chat")}
-        browseTabs={tabs}
-        activeTabId={activeTabIdVal}
-        onAddTab={addBrowseTab}
-        onSwitchTab={switchToTab}
-        onNavigate={(view) => {
-          if (view === "dms") {
-            if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
-            useDMStore.getState().setDMActive(true);
-          } else if (view === "servers" || view === "channels" || view === "chat") {
-            useDMStore.getState().setDMActive(false);
-          }
-          if (view === "settings") {
-            if (mobileView === "settings" || settingsOpen || serverSettingsId) {
-              closeServerSettings();
-              closeSettings();
-              setMobileView(prevPageDepthRef.current);
-              return;
-            }
-            if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
-            openSettings();
-          }
-          // INS-043: For page-depth views, instantly scroll without animation.
-          // Non-page views (dms, settings, actions) are rendered as full-screen
-          // overlays outside the scroll strip, so no scroll needed.
-          if (PAGE_DEPTH.includes(view as MobileView)) {
-            const depthIdx = PAGE_DEPTH.indexOf(view as MobileView);
-            if (depthIdx >= 0) {
-              skipNextScrollSyncRef.current = true;
-              scrollToPanel(depthIdx, "instant");
-            }
-          }
-          setMobileView(view);
-        }}
-      />
+      {/* MobilePillRow removed. It implemented tabs via imperative state-
+         swapping on useServerStore / useDMStore — each pill click called
+         setState() to restore a saved snapshot. That's not "parallel
+         displays"; it's a state-mutating nav that loses React-internal
+         state (scroll positions, expanded folders, chat compose drafts)
+         on every switch. Real per-tab persistence would require
+         mounting one subtree per tab (each with store-scoping), which
+         is a separate architectural project. Per the user's call, the
+         illusion goes away rather than stay in. The horizontal scroll
+         strip above (sources/servers/channels/chat) remains because
+         IT really is parallel — all four panels are mounted
+         simultaneously and scroll position picks which is visible.
+         DMs moved to the top bar (see TopBarIconButton with chat_bubble
+         above) so this row isn't replaced with a smaller version of
+         itself. */}
 
       {/* Mobile extension menu overlay */}
       {extensionMenuOpen && (
@@ -1731,6 +1730,19 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               icon={sidebarCollapsed ? "left_panel_open" : "left_panel_close"}
               label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
               onClick={() => setSidebarCollapsed((c) => !c)}
+            />
+            {/* Logout moved from the user banner to the top bar so a
+               destructive action isn't a one-pixel neighbour of the
+               profile button. Confirmation flow is the browser's
+               default: a full page reload after logout makes the state
+               transition obvious. */}
+            <TopBarIconButton
+              icon="logout"
+              label="Logout"
+              onClick={() => {
+                logout();
+                if (typeof window !== "undefined") window.location.reload();
+              }}
             />
           </div>
         </div>

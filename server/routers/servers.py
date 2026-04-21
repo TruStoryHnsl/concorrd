@@ -766,21 +766,23 @@ async def leave_server(
 @router.get("/discover", response_model=list[ServerDiscoverOut])
 async def discover_servers(
     q: str = Query(default="", max_length=200),
+    user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
     """List public servers, optionally filtered by search query.
 
-    Intentionally unauthenticated: ``visibility=public`` is a server-
-    admin-set flag, and the whole point of "public" is that anyone —
-    including users on OTHER instances who've added this one as a
-    source, and haven't registered a local account — can see the
-    listing to decide whether to join.
+    Authentication is required. ``visibility=public`` means visible to
+    authenticated callers — it is NOT a wide-open listing. An operator
+    who doesn't want their instance's server catalogue hit by arbitrary
+    internet traffic can keep the default (local users + federated
+    peers with valid tokens only).
 
-    Only five fields are returned per entry (id, name, icon_url,
-    abbreviation, member_count). No member identities, no channel
-    graph, no private settings. Joining still requires authentication
-    through the normal ``/servers/{id}/join`` route, which is and
-    remains gated.
+    Cross-instance discovery (a user on instance A adding instance B as
+    a source, wanting to browse B's public servers) is a separate
+    problem solved by an opt-in inter-instance listing token configured
+    in B's admin settings. Clients present that token as a normal
+    Authorization bearer; the token grants read access to this endpoint
+    and nothing else.
     """
     from sqlalchemy import func
 
