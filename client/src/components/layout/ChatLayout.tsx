@@ -337,6 +337,20 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       setAddSourceOpen(true);
     }
   }, []);
+
+  // INS-024 user-scoped bridge redesign: settings panel's Connections
+  // tab can request the Add-Source modal (e.g. "Connect another
+  // Concord instance"). Consume and open the modal whenever a pending
+  // request shows up.
+  const pendingAddSourceScreen = useSettingsStore((s) => s.pendingAddSourceScreen);
+  const consumeAddSourceRequest = useSettingsStore((s) => s.consumeAddSourceRequest);
+  useEffect(() => {
+    if (pendingAddSourceScreen !== null) {
+      consumeAddSourceRequest();
+      setAddSourceOpen(true);
+      onAddSource?.();
+    }
+  }, [pendingAddSourceScreen, consumeAddSourceRequest, onAddSource]);
   // Explore modal state. Hoisted from ServerSidebar to ChatLayout
   // so the SourcesPanel — which now owns the Explore tile per the
   // 2026-04-11 spec — can open the modal from inside the Sources

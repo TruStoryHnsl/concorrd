@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthStore } from "../../stores/auth";
+import { useSettingsStore } from "../../stores/settings";
+import { useSourcesStore } from "../../stores/sources";
 import {
   userDiscordStatus,
   userDiscordLogin,
@@ -7,42 +9,48 @@ import {
   type UserDiscordStatus,
 } from "../../api/bridges";
 import { DiscordTosModal } from "./DiscordTosModal";
+import { SourceBrandIcon } from "../sources/sourceBrand";
 
 /**
- * Per-user Connections tab (PR3/5 of the user-scoped bridge redesign).
+ * Per-user Connections tab (PR3/5 of the user-scoped bridge redesign,
+ * expanded to cover all source types in the Sources menu).
  *
  * Lives under the user's own profile settings — NOT the admin section.
- * Any authenticated user can connect or disconnect their personal
- * Discord account here; admins have no equivalent "manage someone
- * else's connection" path.
+ * Any authenticated user can manage their own connections here; admins
+ * have no "manage someone else's connection" path.
  *
- * Flow:
- *   1. User clicks "Connect Discord".
- *   2. ToS modal (token-at-rest caveat for web users; closes when the
- *      native Tauri client ships).
- *   3. On accept, frontend calls POST /users/me/discord/login.
- *   4. Backend creates a DM between the user and @discordbot and posts
- *      "login". The bridge bot replies in that DM with a QR code the
- *      user scans from their phone's Discord app.
- *   5. Frontend shows "Check your DM with Discord Bot for the QR code"
- *      and polls /users/me/discord until connected goes true.
+ * Available connection types mirror the Add-Source modal in ChatLayout:
+ *   - Concord instance (custom hostname + invite token)
+ *   - matrix.org (preset Matrix homeserver)
+ *   - chat.mozilla.org (preset, delegated SSO)
+ *   - Custom Matrix homeserver
+ *   - Discord (bot-free, user-owned login via bridge)
+ *   - Slack, Reticulum (placeholders — "Soon")
  *
- * PR3 intentionally keeps the status endpoint stub (always false); the
- * real detection lands once we wire mautrix-discord's provisioning API
- * per-user. Polling is already in place so no frontend change needed
- * when that lands.
+ * Non-Discord entries hand off to the existing AddSourceModal in
+ * ChatLayout via the settings store's `requestAddSource` action —
+ * clicking closes the settings panel and opens the modal pre-targeted
+ * to the chosen screen.
+ *
+ * Discord is handled inline because it's the flagship case of the
+ * user-scoped redesign: one click, ToS gate on first use, inline
+ * status + disconnect, no deep-link into a separate modal.
  */
 export function UserConnectionsTab() {
   const accessToken = useAuthStore((s) => s.accessToken);
+  const requestAddSource = useSettingsStore((s) => s.requestAddSource);
+  const sources = useSourcesStore((s) => s.sources);
+
   const [status, setStatus] = useState<UserDiscordStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showTos, setShowTos] = useState(false);
   const [tosAccepted, setTosAccepted] = useState(false);
+  const [pendingConnect, setPendingConnect] = useState(false);
   const [lastLoginRoomId, setLastLoginRoomId] = useState<string | null>(null);
+  const [lastStatusMsg, setLastStatusMsg] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
-  // Mirror the existing ToS-persistence convention from BridgesTab/UserModeSection.
   useEffect(() => {
     try {
       const raw = localStorage.getItem("concord_settings");
@@ -53,7 +61,7 @@ export function UserConnectionsTab() {
         }
       }
     } catch {
-      // Ignore — fresh device, nothing to restore.
+      // Fresh device — nothing to restore.
     }
   }, []);
 
@@ -72,9 +80,6 @@ export function UserConnectionsTab() {
   useEffect(() => {
     mountedRef.current = true;
     refresh();
-    // Poll every 5s while the tab is mounted. Cheap — a GET with no
-    // side effects. Picks up completion of the QR flow even if the
-    // user stays on this tab the whole time.
     const interval = window.setInterval(refresh, 5000);
     return () => {
       mountedRef.current = false;
@@ -82,13 +87,25 @@ export function UserConnectionsTab() {
     };
   }, [refresh]);
 
-  // Tracks whether the user clicked Connect before ToS was accepted.
-  // If they accept in the modal, we auto-run the connect flow so they
-  // don't have to click a second time.
-  const [pendingConnect, setPendingConnect] = useState(false);
+  const runDiscordLogin = useCallback(async () => {
+    if (!accessToken) return;
+    setBusy(true);
+    setError(null);
+    setLastStatusMsg(null);
+    try {
+      const result = await userDiscordLogin(accessToken);
+      if (!mountedRef.current) return;
+      setLastLoginRoomId(result.room_id);
+      setLastStatusMsg(result.message);
+      window.setTimeout(refresh, 500);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  }, [accessToken, refresh]);
 
-  // DiscordTosModal owns the localStorage write — we just re-read it on
-  // close to see if the user actually checked the box and accepted.
   const handleTosClosed = useCallback(() => {
     setShowTos(false);
     try {
@@ -97,29 +114,9 @@ export function UserConnectionsTab() {
         const parsed = JSON.parse(raw);
         if (parsed?.state?.discord_bridge_tos_accepted_at) {
           setTosAccepted(true);
-          // If user hit Connect first and THEN accepted, start the
-          // login flow now without requiring a second click.
           if (pendingConnect) {
             setPendingConnect(false);
-            // Defer to next tick so state updates flush first.
-            window.setTimeout(() => {
-              // Trigger the login flow via a direct API call (can't
-              // call handleConnect here — it depends on tosAccepted
-              // state that hasn't propagated yet).
-              if (accessToken) {
-                userDiscordLogin(accessToken).then(
-                  (result) => {
-                    if (!mountedRef.current) return;
-                    setLastLoginRoomId(result.room_id);
-                    refresh();
-                  },
-                  (err) => {
-                    if (!mountedRef.current) return;
-                    setError(err instanceof Error ? err.message : String(err));
-                  },
-                );
-              }
-            }, 0);
+            window.setTimeout(() => { void runDiscordLogin(); }, 0);
           }
         } else {
           setPendingConnect(false);
@@ -128,34 +125,19 @@ export function UserConnectionsTab() {
     } catch {
       setPendingConnect(false);
     }
-  }, [pendingConnect, accessToken, refresh]);
+  }, [pendingConnect, runDiscordLogin]);
 
-  const handleConnect = useCallback(async () => {
+  const handleDiscordConnect = useCallback(() => {
     if (!accessToken) return;
     if (!tosAccepted) {
-      // Queue the connect so it runs automatically after the user
-      // accepts the ToS in the modal.
       setPendingConnect(true);
       setShowTos(true);
       return;
     }
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await userDiscordLogin(accessToken);
-      if (!mountedRef.current) return;
-      setLastLoginRoomId(result.room_id);
-      // Refresh after a short delay to pick up any early state change.
-      window.setTimeout(refresh, 500);
-    } catch (err) {
-      if (!mountedRef.current) return;
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (mountedRef.current) setBusy(false);
-    }
-  }, [accessToken, tosAccepted, refresh]);
+    void runDiscordLogin();
+  }, [accessToken, tosAccepted, runDiscordLogin]);
 
-  const handleDisconnect = useCallback(async () => {
+  const handleDiscordDisconnect = useCallback(async () => {
     if (!accessToken) return;
     setBusy(true);
     setError(null);
@@ -163,6 +145,7 @@ export function UserConnectionsTab() {
       await userDiscordLogout(accessToken);
       if (!mountedRef.current) return;
       setLastLoginRoomId(null);
+      setLastStatusMsg("Disconnected.");
       await refresh();
     } catch (err) {
       if (!mountedRef.current) return;
@@ -183,22 +166,65 @@ export function UserConnectionsTab() {
     );
   }
 
-  const connected = status?.connected ?? false;
+  const discordConnected = status?.connected ?? false;
+
+  // Count how many of each platform the user has already added via the
+  // Sources flow, so we can show "Add another" instead of "Connect" when
+  // they have ≥1.
+  const concordCount = sources.filter((s) => s.platform === "concord").length;
+  const matrixCount = sources.filter((s) => s.platform === "matrix").length;
 
   return (
     <div className="space-y-6" data-testid="user-connections-tab">
       <div>
         <h3 className="text-xl font-semibold text-on-surface">Connections</h3>
         <p className="text-sm text-on-surface-variant mt-1">
-          Link external accounts to Concord. Each connection is personal to
-          you — other users and admins can't see or act on your connections.
+          Link external accounts and instances to Concord. Each connection
+          is personal to you — other users and admins can't see or act on
+          your connections.
         </p>
       </div>
 
-      {/* Discord */}
+      {/* ── Concord instance ──────────────────────────────────────── */}
+      <ConnectionCard
+        brand="concord"
+        title="Concord Instance"
+        subtitle="Connect to another Concord domain with an invite token"
+        action={concordCount === 0 ? "Connect" : "Add another"}
+        onAction={() => requestAddSource("concord")}
+        count={concordCount}
+      />
+
+      {/* ── Matrix presets + custom ───────────────────────────────── */}
+      <ConnectionCard
+        brand="matrix"
+        title="matrix.org"
+        subtitle="Discover public rooms with Matrix login flows"
+        action={matrixCount === 0 ? "Connect" : "Add another"}
+        onAction={() => requestAddSource("matrix.org")}
+      />
+      <ConnectionCard
+        brand="mozilla"
+        title="Mozilla"
+        subtitle="Use Mozilla's delegated Matrix login"
+        action="Connect"
+        onAction={() => requestAddSource("chat.mozilla.org")}
+      />
+      <ConnectionCard
+        brand="matrix"
+        title="Custom Matrix Homeserver"
+        subtitle="Enter any Matrix domain manually"
+        action="Connect"
+        onAction={() => requestAddSource("matrix")}
+        count={matrixCount > 0 ? matrixCount : undefined}
+      />
+
+      {/* ── Discord (inline, handled by this tab) ─────────────────── */}
       <div className="border border-outline-variant/20 rounded-lg overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-low/60">
-          <span className="text-xl">🎮</span>
+          <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+            <SourceBrandIcon brand="discord" size={24} className="text-[#5865F2]" />
+          </div>
           <div className="flex-1 min-w-0">
             <h4 className="text-sm font-medium text-on-surface">Discord</h4>
             <p className="text-xs text-on-surface-variant">
@@ -209,7 +235,7 @@ export function UserConnectionsTab() {
           <div className="flex items-center gap-2 shrink-0">
             {status === null ? (
               <span className="text-xs text-on-surface-variant/50">Loading…</span>
-            ) : connected ? (
+            ) : discordConnected ? (
               <>
                 <span className="inline-flex items-center gap-1 text-xs text-green-500">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
@@ -217,7 +243,7 @@ export function UserConnectionsTab() {
                 </span>
                 <button
                   type="button"
-                  onClick={handleDisconnect}
+                  onClick={handleDiscordDisconnect}
                   disabled={busy}
                   data-testid="user-discord-disconnect-btn"
                   className="px-3 py-1.5 bg-error/10 hover:bg-error/15 text-error text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
@@ -228,10 +254,10 @@ export function UserConnectionsTab() {
             ) : (
               <button
                 type="button"
-                onClick={handleConnect}
+                onClick={handleDiscordConnect}
                 disabled={busy}
                 data-testid="user-discord-connect-btn"
-                className="px-3 py-1.5 bg-primary/10 hover:bg-primary/15 text-primary text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
+                className="px-3 py-1.5 bg-[#5865F2]/15 hover:bg-[#5865F2]/25 text-[#5865F2] text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
               >
                 {busy ? "…" : "Connect with Discord"}
               </button>
@@ -247,10 +273,18 @@ export function UserConnectionsTab() {
           </div>
         )}
 
-        {lastLoginRoomId && !connected && (
+        {lastStatusMsg && !error && (
+          <div className="px-4 py-2 bg-primary/5 border-t border-primary/10">
+            <p className="text-xs text-on-surface" data-testid="user-discord-msg">
+              {lastStatusMsg}
+            </p>
+          </div>
+        )}
+
+        {lastLoginRoomId && !discordConnected && (
           <div className="px-4 py-3 border-t border-outline-variant/10 bg-primary/5">
             <p className="text-xs text-on-surface">
-              Login started. Open your DM with <code
+              Login triggered. Open your DM with <code
                 className="bg-surface-container-highest px-1 py-0.5 rounded"
               >@discordbot</code> in Concord to scan the QR code with your
               Discord phone app. This page will update automatically once
@@ -259,8 +293,7 @@ export function UserConnectionsTab() {
           </div>
         )}
 
-        {/* Connection context for a connected user */}
-        {connected && (
+        {discordConnected && (
           <div className="px-4 py-3 border-t border-outline-variant/10 bg-surface-container-lowest/40">
             <p className="text-xs text-on-surface-variant">
               Signed in as{" "}
@@ -274,12 +307,92 @@ export function UserConnectionsTab() {
         )}
       </div>
 
-      {/* Future connections (Slack, Telegram, ...) go here as additional
-          cards with the same shape. */}
+      {/* ── Placeholders for future platforms ─────────────────────── */}
+      <ConnectionCard
+        brand="slack"
+        title="Slack"
+        subtitle="Preloaded release target"
+        action="Soon"
+        disabled
+      />
+      <ConnectionCard
+        brand="reticulum"
+        title="Reticulum"
+        subtitle="Preloaded release target"
+        action="Soon"
+        disabled
+      />
 
-      {showTos && (
-        <DiscordTosModal onClose={handleTosClosed} />
-      )}
+      {showTos && <DiscordTosModal onClose={handleTosClosed} />}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Presentation helper: a uniform card for each connection platform.
+// Keeps the Discord card inline in the parent so it can own its busy
+// / error / status-message state; this helper is for the simpler
+// "deep-link to Add Source" tiles.
+// ─────────────────────────────────────────────────────────────────────
+
+function ConnectionCard({
+  brand,
+  title,
+  subtitle,
+  action,
+  onAction,
+  disabled,
+  count,
+}: {
+  brand: "concord" | "matrix" | "mozilla" | "discord" | "slack" | "reticulum";
+  title: string;
+  subtitle: string;
+  action: string;
+  onAction?: () => void;
+  disabled?: boolean;
+  count?: number;
+}) {
+  // Only a subset of brands has a dedicated SourceBrandIcon. For the
+  // placeholder platforms (slack / reticulum) fall back to a generic
+  // material icon, matching the AddSourceModal's "Soon" tile treatment.
+  const brandedIcon =
+    brand === "concord" || brand === "matrix" || brand === "mozilla" || brand === "discord"
+      ? <SourceBrandIcon brand={brand} size={24} />
+      : <span className="material-symbols-outlined text-on-surface-variant">
+          {brand === "slack" ? "forum" : "sensors"}
+        </span>;
+
+  return (
+    <div className="border border-outline-variant/20 rounded-lg overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-low/60">
+        <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+          {brandedIcon}
+        </div>
+        <div className="flex-1 min-w-0">
+          <h4 className="text-sm font-medium text-on-surface">
+            {title}
+            {count !== undefined && count > 0 && (
+              <span className="ml-2 text-xs text-on-surface-variant">
+                · {count} connected
+              </span>
+            )}
+          </h4>
+          <p className="text-xs text-on-surface-variant">{subtitle}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onAction}
+          disabled={disabled}
+          data-testid={`connection-action-${brand}`}
+          className={
+            disabled
+              ? "px-3 py-1.5 bg-surface-container/40 text-on-surface-variant/60 text-xs rounded-md min-h-[32px] cursor-not-allowed"
+              : "px-3 py-1.5 bg-primary/10 hover:bg-primary/15 text-primary text-xs rounded-md transition-colors min-h-[32px]"
+          }
+        >
+          {action}
+        </button>
+      </div>
     </div>
   );
 }

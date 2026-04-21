@@ -49,14 +49,15 @@ All under ``/api/users/me``:
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from config import MATRIX_SERVER_NAME
+from config import MATRIX_HOMESERVER_URL, MATRIX_SERVER_NAME
 from routers.servers import get_access_token, get_user_id
-from services.bot import bot_send_message
 from services.matrix_admin import create_dm_room
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,30 @@ def _bridge_bot_mxid() -> str:
     return f"@discordbot:{MATRIX_SERVER_NAME}"
 
 
+async def _send_as_user(
+    access_token: str,
+    room_id: str,
+    body: str,
+) -> None:
+    """PUT an m.room.message as the CALLER (not the concord-bot).
+
+    Critical for mautrix-discord's login protocol — the bridge binds
+    the Discord session to the MXID of whoever sent the ``login``
+    command. If we sent via the bot, the bot's account would get
+    bridged instead of the user's. Since ``create_dm_room`` already
+    establishes the user's presence in the room via the /createRoom
+    call, sending as the user requires no additional join step.
+    """
+    txn_id = secrets.token_hex(8)
+    async with httpx.AsyncClient() as client:
+        resp = await client.put(
+            f"{MATRIX_HOMESERVER_URL}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"msgtype": "m.text", "body": body},
+        )
+        resp.raise_for_status()
+
+
 # ---------------------------------------------------------------------
 # GET /discord
 # ---------------------------------------------------------------------
@@ -196,18 +221,10 @@ async def user_discord_login(
         ) from exc
 
     try:
-        # IMPORTANT: we deliberately send from the BRIDGE BOT's perspective
-        # here (bot_send_message uses the concord-bot access token). In
-        # mautrix-discord's login DM protocol, the user types "login" to
-        # trigger the QR. Since we don't have the user's client sending on
-        # their behalf, the concord-bot sends the trigger message into the
-        # shared DM room. The bridge bot treats the sender MXID as the
-        # logging-in user — which is the caller, because the DM room has
-        # exactly two members (caller + bridge bot) and the caller created
-        # it. Confirm this assumption during PR testing; if mautrix ties
-        # login to the literal message author instead of the DM peer, we
-        # need to switch to sending via the caller's access token.
-        await bot_send_message(room_id, {"msgtype": "m.text", "body": "login"})
+        # Send "login" AS THE USER — mautrix-discord binds the Discord
+        # session to the MXID of whoever authored this message. Sending
+        # via the concord-bot would bridge the bot, not the user.
+        await _send_as_user(access_token, room_id, "login")
     except Exception as exc:
         logger.warning(
             "user_discord_login: login trigger send failed for %s: %s",
@@ -247,7 +264,7 @@ async def _send_logout(user_id: str, access_token: str) -> DiscordLogoutResponse
         ) from exc
 
     try:
-        await bot_send_message(room_id, {"msgtype": "m.text", "body": "logout"})
+        await _send_as_user(access_token, room_id, "logout")
     except Exception as exc:
         logger.warning(
             "user_discord_logout: logout send failed for %s: %s", user_id, exc

@@ -33,18 +33,23 @@ def mock_matrix(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
     """Mock the two Matrix side-effects.
 
     ``create_dm_room`` would hit the real homeserver, and
-    ``bot_send_message`` would post through the concord-bot account.
-    Both are replaced with AsyncMocks whose return values are asserted.
+    ``_send_as_user`` would PUT a Matrix event as the caller. Both are
+    replaced with AsyncMocks whose return values are asserted.
+
+    The ``bot_send_message`` key in the returned dict is kept for
+    backwards-compatible test reads but now points at the user-scoped
+    sender — the name is preserved so existing assertions continue to
+    work while making it clear in the code that the send is USER-scoped.
     """
     from routers import user_connections as uc_mod
 
     create = AsyncMock(return_value="!roomid:test.local")
-    send = AsyncMock(return_value={"event_id": "$evt:test.local"})
+    send = AsyncMock(return_value=None)
 
     monkeypatch.setattr(uc_mod, "create_dm_room", create)
-    monkeypatch.setattr(uc_mod, "bot_send_message", send)
+    monkeypatch.setattr(uc_mod, "_send_as_user", send)
 
-    return {"create_dm_room": create, "bot_send_message": send}
+    return {"create_dm_room": create, "bot_send_message": send, "send_as_user": send}
 
 
 @pytest.fixture(autouse=True)
@@ -126,20 +131,22 @@ async def test_login_sends_login_command(
     client: AsyncClient,
     mock_matrix: dict[str, AsyncMock],
 ) -> None:
-    """Login posts the literal string 'login' to the DM room.
+    """Login posts the literal string 'login' to the DM room AS THE USER.
 
-    mautrix-discord's user-mode protocol is triggered by a message
-    whose body is exactly 'login'. Any deviation breaks the QR flow.
+    mautrix-discord binds the Discord session to whichever MXID authored
+    the 'login' message. We must send as the caller, not the concord-bot,
+    or the wrong account gets bridged. The body must be exactly 'login'
+    for mautrix's user-mode trigger to fire.
     """
     login_as("@alice:test.local")
     await client.post("/api/users/me/discord/login")
 
-    mock_matrix["bot_send_message"].assert_awaited_once()
-    args, _ = mock_matrix["bot_send_message"].call_args
-    # args: (room_id, content_dict)
-    assert args[0] == "!roomid:test.local"
-    assert args[1]["body"] == "login"
-    assert args[1]["msgtype"] == "m.text"
+    mock_matrix["send_as_user"].assert_awaited_once()
+    args, _ = mock_matrix["send_as_user"].call_args
+    # args: (access_token, room_id, body)
+    assert args[0] == "fake-token-for-tests"  # CALLER's token, not bot's
+    assert args[1] == "!roomid:test.local"
+    assert args[2] == "login"
 
 
 async def test_login_unauthenticated_rejected(client: AsyncClient) -> None:
@@ -177,7 +184,7 @@ async def test_login_send_failure_returns_502(
     client: AsyncClient,
     mock_matrix: dict[str, AsyncMock],
 ) -> None:
-    mock_matrix["bot_send_message"].side_effect = RuntimeError("appservice_unavailable")
+    mock_matrix["send_as_user"].side_effect = RuntimeError("appservice_unavailable")
     login_as("@alice:test.local")
     resp = await client.post("/api/users/me/discord/login")
     assert resp.status_code == 502
@@ -198,9 +205,10 @@ async def test_logout_sends_logout_command(
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
-    mock_matrix["bot_send_message"].assert_awaited_once()
-    args, _ = mock_matrix["bot_send_message"].call_args
-    assert args[1]["body"] == "logout"
+    mock_matrix["send_as_user"].assert_awaited_once()
+    args, _ = mock_matrix["send_as_user"].call_args
+    # args: (access_token, room_id, body)
+    assert args[2] == "logout"
 
 
 async def test_delete_is_alias_for_logout(
@@ -213,9 +221,9 @@ async def test_delete_is_alias_for_logout(
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
-    mock_matrix["bot_send_message"].assert_awaited_once()
-    args, _ = mock_matrix["bot_send_message"].call_args
-    assert args[1]["body"] == "logout"
+    mock_matrix["send_as_user"].assert_awaited_once()
+    args, _ = mock_matrix["send_as_user"].call_args
+    assert args[2] == "logout"
 
 
 async def test_logout_unauthenticated_rejected(client: AsyncClient) -> None:
