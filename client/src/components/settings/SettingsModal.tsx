@@ -10,7 +10,6 @@ import { NotificationsTab } from "./NotificationsTab";
 import { ProfileTab } from "./ProfileTab";
 import { AppearanceTab } from "./AppearanceTab";
 import { NodeHostingTab } from "./NodeHostingTab";
-import { BridgesTab } from "./BridgesTab";
 import { UserConnectionsTab } from "./UserConnectionsTab";
 import { AboutTab } from "./AboutTab";
 import { HostingTab } from "./HostingTab";
@@ -130,17 +129,13 @@ export function SettingsPanel() {
     if (isTauri) {
       // INS-022: Node tab is visible on mobile Tauri too — the embedded
       // servitude module runs on mobile (foreground-active; backgrounded
-      // pauses are handled by the app-level lifecycle hook). Desktop
-      // Tauri keeps Bridges beside it; mobile hides Bridges to reduce
-      // clutter on small screens (Bridges is a desktop-oriented power
-      // feature).
+      // pauses are handled by the app-level lifecycle hook).
+      //
+      // The admin-gated "Bridges" tab was removed in the user-scoped
+      // bridge redesign (PR4). Per-user Discord lives under the
+      // "Connections" tab (above); bridge infrastructure bootstraps
+      // itself on concord-api startup — nothing left to admin.
       tabs.push({ key: "node", label: "Node", icon: "dns", group: "user" });
-      if (!isMobile) {
-        tabs.push({ key: "bridges", label: "Bridges", icon: "hub", group: "user" });
-      }
-    }
-    if (!isTauri && isAdmin) {
-      tabs.push({ key: "bridges", label: "Bridges", icon: "hub", group: "user" });
     }
     tabs.push({ key: "hosting", label: "Hosting", icon: "dns", group: "user" });
     tabs.push({ key: "about", label: "About", icon: "info", group: "user" });
@@ -301,7 +296,6 @@ export function SettingsPanel() {
         {activeTab === "connections" && <UserConnectionsTab />}
         {activeTab === "appearance" && <AppearanceTab />}
         {activeTab === "node" && <NodeHostingTab />}
-        {activeTab === "bridges" && <BridgesTab />}
         {activeTab === "hosting" && <HostingTab />}
         {activeTab === "about" && <AboutTab />}
         {activeTab === "admin" && isAdmin && <AdminTab />}

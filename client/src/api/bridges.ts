@@ -49,7 +49,11 @@ export interface HttpBridgeMutationStep {
 }
 
 export interface HttpBridgeMutationResponse {
-  action: "enable" | "disable" | "rotate" | "force_reset";
+  // The mutation response shape predates the user-scoped redesign. Kept
+  // because /bot-token / /bot-profile still return it for voice-bridge
+  // callers. The action literals enable/disable/rotate/force_reset were
+  // removed along with their endpoints in PR4.
+  action: string;
   ok: boolean;
   steps: HttpBridgeMutationStep[];
   message: string;
@@ -153,55 +157,11 @@ export async function discordBridgeHttpStatus(
   );
 }
 
-export async function discordBridgeHttpEnable(
-  accessToken: string,
-): Promise<HttpBridgeMutationResponse> {
-  return bridgeApiFetch<HttpBridgeMutationResponse>(
-    "/admin/bridges/discord/enable",
-    accessToken,
-    { method: "POST", body: "{}" },
-  );
-}
-
-export async function discordBridgeHttpDisable(
-  accessToken: string,
-): Promise<HttpBridgeMutationResponse> {
-  return bridgeApiFetch<HttpBridgeMutationResponse>(
-    "/admin/bridges/discord/disable",
-    accessToken,
-    { method: "POST", body: "{}" },
-  );
-}
-
-export async function discordBridgeHttpRotate(
-  accessToken: string,
-): Promise<HttpBridgeMutationResponse> {
-  return bridgeApiFetch<HttpBridgeMutationResponse>(
-    "/admin/bridges/discord/rotate",
-    accessToken,
-    { method: "POST", body: "{}" },
-  );
-}
-
-/**
- * Aggressive cleanup for broken / desynced bridge state.
- *
- * Use when Disable can't clean up — typically when `status.desync` is
- * non-null, meaning the on-disk registration.yaml ID doesn't match the
- * active constant (e.g. after a code upgrade that renamed the
- * appservice ID), or multiple stale registrations are lingering.
- *
- * After this completes, call Enable to start fresh.
- */
-export async function discordBridgeHttpForceReset(
-  accessToken: string,
-): Promise<HttpBridgeMutationResponse> {
-  return bridgeApiFetch<HttpBridgeMutationResponse>(
-    "/admin/bridges/discord/force-reset",
-    accessToken,
-    { method: "POST", body: "{}" },
-  );
-}
+// enable/disable/rotate/force-reset wrappers were deleted in PR4 of the
+// user-scoped bridge redesign. The backend endpoints are gone — the bridge
+// now bootstraps automatically at concord-api startup. Per-user connection
+// management happens via userDiscordStatus / userDiscordLogin /
+// userDiscordLogout below.
 
 export async function discordBridgeHttpSaveBotToken(
   accessToken: string,

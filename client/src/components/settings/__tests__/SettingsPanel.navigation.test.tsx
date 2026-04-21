@@ -37,7 +37,6 @@ vi.mock("../AppearanceTab", () => ({
 vi.mock("../NodeHostingTab", () => ({
   NodeHostingTab: () => <div>Node Hosting Tab</div>,
 }));
-vi.mock("../BridgesTab", () => ({ BridgesTab: () => <div>Bridges Tab</div> }));
 vi.mock("../AboutTab", () => ({ AboutTab: () => <div>About Tab</div> }));
 vi.mock("../AdminTab", () => ({ AdminTab: () => <div>Admin Tab</div> }));
 vi.mock("../ServerSettingsModal", () => ({
