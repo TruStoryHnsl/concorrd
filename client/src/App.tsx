@@ -37,34 +37,6 @@ if (initialInviteToken) {
 
 export { INVITE_STORAGE_KEY };
 
-function buildConcordFavicon(primary: string, secondary: string): string {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-      <defs>
-        <mask id="primary-mask">
-          <rect x="0" y="0" width="512" height="512" fill="white" />
-          <circle cx="192" cy="320" r="168" fill="black" />
-          <rect x="0" y="0" width="512" height="256" fill="white" />
-        </mask>
-        <mask id="secondary-mask">
-          <rect x="0" y="0" width="512" height="512" fill="white" />
-          <circle cx="320" cy="192" r="168" fill="black" />
-          <rect x="0" y="256" width="512" height="256" fill="white" />
-        </mask>
-      </defs>
-      <g mask="url(#primary-mask)">
-        <circle cx="320" cy="192" r="120" fill="none" stroke="${primary}" stroke-width="48" />
-      </g>
-      <circle cx="288" cy="172" r="28" fill="${primary}" />
-      <g mask="url(#secondary-mask)">
-        <circle cx="192" cy="320" r="120" fill="none" stroke="${secondary}" stroke-width="48" />
-      </g>
-      <circle cx="224" cy="340" r="28" fill="${secondary}" />
-    </svg>
-  `.trim();
-  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
-}
-
 export default function App() {
   const hasNewConfig = useServerConfigStore((s) => s.config !== null);
   const { isTauri, isTV } = usePlatform();
@@ -165,19 +137,17 @@ export default function App() {
     document.documentElement.setAttribute("data-theme", themePreset);
   }, [themePreset]);
 
+  // Mirror the theme's surface colour into the <meta name="theme-color">
+  // tag so mobile browser chrome matches the active palette. The
+  // runtime favicon rewrite that used to live here has been removed:
+  // the tab icon now comes exclusively from the PNG links declared
+  // in index.html (regenerated from the raster master by the branding
+  // pipeline). That way changing logo.png propagates to the tab icon
+  // without any JS participation.
   useEffect(() => {
     if (typeof document === "undefined") return;
     const styles = window.getComputedStyle(document.documentElement);
-    const primary = styles.getPropertyValue("--color-logo-primary").trim() || "#a4a5ff";
-    const secondary = styles.getPropertyValue("--color-logo-secondary").trim() || "#afefdd";
     const surface = styles.getPropertyValue("--color-surface").trim() || "#0c0e11";
-    const faviconHref = buildConcordFavicon(primary, secondary);
-
-    document.querySelectorAll<HTMLLinkElement>('link[rel="icon"]').forEach((link) => {
-      link.href = faviconHref;
-      link.type = "image/svg+xml";
-    });
-
     const themeMeta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
     if (themeMeta) themeMeta.content = surface;
   }, [themePreset]);
