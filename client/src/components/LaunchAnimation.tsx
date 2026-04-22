@@ -41,7 +41,11 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getBootSplashWaitingLabel, handoffBootSplash } from "../bootSplash";
-import bootSplashSrc from "../assets/boot-splash.webp";
+
+// Served from client/public/boot-splash.webp so both the pre-React
+// index.html <img> and this React mirror hit the same preloaded URL —
+// browser cache delivers the asset instantly for React's render.
+const BOOT_SPLASH_SRC = "/boot-splash.webp";
 
 export interface LaunchAnimationProps {
   /**
@@ -209,9 +213,8 @@ export function LaunchAnimation({
         }}
       >
         <img
-          src={bootSplashSrc}
+          src={BOOT_SPLASH_SRC}
           alt=""
-          decoding="sync"
           style={{
             width: "192px",
             height: "192px",
