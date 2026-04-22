@@ -41,7 +41,7 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getBootSplashWaitingLabel, handoffBootSplash } from "../bootSplash";
-import { ConcordLogo } from "./brand/ConcordLogo";
+import bootSplashSrc from "../assets/boot-splash.webp";
 
 export interface LaunchAnimationProps {
   /**
@@ -199,12 +199,6 @@ export function LaunchAnimation({
     >
       <div
         style={{
-          // Opaque-footprint sizing. ConcordLogo's 512x512 viewBox has
-          // the two rings confined to a central 416x416 region, so
-          // rendering the SVG at 192px lands the opaque marks at
-          // ~156px — the intended visual weight for the splash. The
-          // wrapper is 204px to give the drop-shadow and node dots
-          // breathing room. See the matching comment in index.html.
           position: "relative",
           width: "204px",
           height: "204px",
@@ -214,41 +208,14 @@ export function LaunchAnimation({
           filter: "drop-shadow(0 20px 42px rgba(0, 0, 0, 0.35))",
         }}
       >
-        <ConcordLogo
-          size={192}
-          title="Concord"
-          showNodes={false}
+        <img
+          src={bootSplashSrc}
+          alt=""
+          decoding="sync"
           style={{
-            overflow: "visible",
-            animation: "concord-launch-mark 1600ms cubic-bezier(0.22, 1, 0.36, 1) infinite",
-          }}
-        />
-        <span
-          aria-hidden="true"
-          style={{
-            position: "absolute",
-            left: "58.5%",
-            top: "31%",
-            width: "22px",
-            height: "22px",
-            borderRadius: "999px",
-            background: "var(--color-logo-primary, #a4a5ff)",
-            boxShadow: "0 0 0 7px color-mix(in srgb, var(--color-logo-primary, #a4a5ff) 16%, transparent)",
-            animation: "concord-launch-node-primary 1650ms cubic-bezier(0.2, 0.84, 0.24, 1) infinite",
-          }}
-        />
-        <span
-          aria-hidden="true"
-          style={{
-            position: "absolute",
-            left: "43%",
-            top: "64%",
-            width: "22px",
-            height: "22px",
-            borderRadius: "999px",
-            background: "var(--color-logo-secondary, #afefdd)",
-            boxShadow: "0 0 0 7px color-mix(in srgb, var(--color-logo-secondary, #afefdd) 18%, transparent)",
-            animation: "concord-launch-node-secondary 1650ms cubic-bezier(0.2, 0.84, 0.24, 1) infinite 120ms",
+            width: "192px",
+            height: "192px",
+            display: "block",
           }}
         />
       </div>
@@ -276,72 +243,6 @@ export function LaunchAnimation({
       >
         {isLoading ? waitingLabel : "Ready"}
       </div>
-      {/* Inline keyframes so the splash animates even before
-          `index.css` has finished loading. */}
-      <style>
-        {`@keyframes concord-launch-mark {
-          0% {
-            transform: translateY(-8px) scale(0.965);
-            opacity: 0.76;
-          }
-          38% {
-            transform: translateY(0) scale(1);
-            opacity: 1;
-          }
-          56% {
-            transform: translateY(3px) scale(1.012);
-            opacity: 1;
-          }
-          100% {
-            transform: translateY(0) scale(1);
-            opacity: 0.98;
-          }
-        }
-        @keyframes concord-launch-node-primary {
-          0% {
-            transform: translate3d(0, -34px, 0) scale(0.72);
-            opacity: 0.2;
-          }
-          42% {
-            transform: translate3d(0, 14px, 0) scale(1.08);
-            opacity: 1;
-          }
-          58% {
-            transform: translate3d(0, -6px, 0) scale(0.96);
-            opacity: 1;
-          }
-          74% {
-            transform: translate3d(0, 2px, 0) scale(1.02);
-            opacity: 1;
-          }
-          100% {
-            transform: translate3d(0, 0, 0) scale(1);
-            opacity: 1;
-          }
-        }
-        @keyframes concord-launch-node-secondary {
-          0% {
-            transform: translate3d(0, -26px, 0) scale(0.7);
-            opacity: 0.15;
-          }
-          45% {
-            transform: translate3d(0, 12px, 0) scale(1.06);
-            opacity: 1;
-          }
-          62% {
-            transform: translate3d(0, -5px, 0) scale(0.97);
-            opacity: 1;
-          }
-          78% {
-            transform: translate3d(0, 2px, 0) scale(1.01);
-            opacity: 1;
-          }
-          100% {
-            transform: translate3d(0, 0, 0) scale(1);
-            opacity: 1;
-          }
-        }`}
-      </style>
     </div>
   );
 }
