@@ -43,6 +43,16 @@ pub enum Transport {
     /// pre-pass in `ServitudeHandle::start`). Linux-only at the
     /// transport layer — macOS / Windows return `NotImplemented`.
     DiscordBridge,
+    /// Reticulum overlay transport (INS-037). Spawns `rnsd` as a child
+    /// process and provides mesh-style peer discovery + encrypted channels
+    /// as an additive overlay alongside Matrix federation.
+    ///
+    /// Available only when the `reticulum` Cargo feature is enabled.
+    /// Non-critical: `rnsd` failures are recorded in
+    /// `ServitudeHandle::degraded` without stopping the rest of the
+    /// servitude. Requires `rnsd` on PATH or the `RNSD_BIN` env var.
+    #[cfg(feature = "reticulum")]
+    Reticulum,
 }
 
 /// Validated servitude configuration.

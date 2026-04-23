@@ -36,6 +36,9 @@ thiserror = "1.0"
 tokio = { version = "1", features = ["process", "net", "time", "io-util", "sync", "macros", "rt-multi-thread"] }
 # Trait async support for the Transport trait.
 async-trait = "0.1"
+# Platform-specific data/config directory resolution (used by ReticulumTransport
+# and MatrixFederationTransport to locate XDG_DATA_HOME, ~/Library, %APPDATA%).
+dirs = "5"
 # Cryptographic random token generation for AS registration tokens.
 rand = "0.8"
 # Hex encoding for token strings.

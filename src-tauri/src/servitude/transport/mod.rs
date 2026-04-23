@@ -33,6 +33,8 @@ use crate::servitude::config::{ServitudeConfig, Transport as TransportVariant};
 
 pub mod discord_bridge;
 pub mod matrix_federation;
+#[cfg(feature = "reticulum")]
+pub mod reticulum;
 
 /// Errors surfaced by any transport implementation.
 #[derive(Debug, Error)]
@@ -139,6 +141,11 @@ pub enum TransportRuntime {
     /// Placeholder for HTTP/QUIC tunnel — returns `NotImplemented`
     /// until the wire-up lands.
     Tunnel,
+    /// Reticulum overlay transport (INS-037). Spawns `rnsd` as a
+    /// child process. Non-critical — failures land in `degraded`.
+    /// Only available when the `reticulum` Cargo feature is enabled.
+    #[cfg(feature = "reticulum")]
+    Reticulum(reticulum::ReticulumTransport),
     /// No-op runtime used only by unit tests that drive the
     /// `ServitudeHandle` state machine without spawning any real
     /// transport. Intentionally `#[doc(hidden)]` — the public
@@ -181,6 +188,10 @@ impl TransportRuntime {
             TransportVariant::WireGuard => TransportRuntime::WireGuard,
             TransportVariant::Mesh => TransportRuntime::Mesh,
             TransportVariant::Tunnel => TransportRuntime::Tunnel,
+            #[cfg(feature = "reticulum")]
+            TransportVariant::Reticulum => TransportRuntime::Reticulum(
+                reticulum::ReticulumTransport::from_config(config),
+            ),
         }
     }
 
@@ -206,6 +217,8 @@ impl TransportRuntime {
             TransportRuntime::WireGuard => "wireguard",
             TransportRuntime::Mesh => "mesh",
             TransportRuntime::Tunnel => "tunnel",
+            #[cfg(feature = "reticulum")]
+            TransportRuntime::Reticulum(_) => "reticulum",
             TransportRuntime::Noop => "noop",
             TransportRuntime::NoopNonCritical => "noop_noncritical",
             TransportRuntime::FailingNonCritical => "failing_noncritical",
@@ -228,6 +241,8 @@ impl TransportRuntime {
             TransportRuntime::WireGuard
             | TransportRuntime::Mesh
             | TransportRuntime::Tunnel => true,
+            #[cfg(feature = "reticulum")]
+            TransportRuntime::Reticulum(t) => t.is_critical(),
             // Test-only variants. Noop is critical (matches the
             // existing Wave 2 lifecycle tests); the dedicated
             // non-critical noops below override to false.
@@ -253,6 +268,8 @@ impl TransportRuntime {
             TransportRuntime::Tunnel => {
                 Err(TransportError::NotImplemented("tunnel"))
             }
+            #[cfg(feature = "reticulum")]
+            TransportRuntime::Reticulum(t) => t.start().await,
             TransportRuntime::Noop | TransportRuntime::NoopNonCritical => Ok(()),
             TransportRuntime::FailingNonCritical => {
                 Err(TransportError::NotImplemented("failing_noncritical"))
@@ -285,6 +302,8 @@ impl TransportRuntime {
             | TransportRuntime::Noop
             | TransportRuntime::NoopNonCritical
             | TransportRuntime::FailingNonCritical => Ok(()),
+            #[cfg(feature = "reticulum")]
+            TransportRuntime::Reticulum(t) => t.stop().await,
         }
     }
 
@@ -300,6 +319,8 @@ impl TransportRuntime {
             TransportRuntime::WireGuard
             | TransportRuntime::Mesh
             | TransportRuntime::Tunnel => false,
+            #[cfg(feature = "reticulum")]
+            TransportRuntime::Reticulum(t) => t.is_healthy().await,
             TransportRuntime::Noop | TransportRuntime::NoopNonCritical => true,
             TransportRuntime::FailingNonCritical => false,
         }
