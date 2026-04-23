@@ -77,6 +77,19 @@ export function LaunchAnimation({
   const fadeTimerRef = useRef<number | null>(null);
   const maxTimerRef = useRef<number | null>(null);
 
+  // Mirror onDone into a ref so the gate effect's deps stay stable
+  // across re-renders. Inline arrow functions in the parent
+  // (`onDone={() => setLaunchDone(true)}`) would otherwise flip the
+  // dep on every parent render and re-invoke the effect — even
+  // though the effect's guards short-circuit, an unstable dep is the
+  // textbook trigger for "Maximum update depth exceeded" if ANY
+  // setState in this component or its descendants ever lands during
+  // the same tick the parent re-rendered.
+  const onDoneRef = useRef(onDone);
+  useEffect(() => {
+    onDoneRef.current = onDone;
+  }, [onDone]);
+
   // Cleanup timers on unmount.
   useEffect(() => {
     return () => {
@@ -112,16 +125,15 @@ export function LaunchAnimation({
     fadeTimerRef.current = scheduler(() => {
       fadeTimerRef.current = null;
       setPhase("done");
-      onDone?.();
+      onDoneRef.current?.();
     }, FADE_DURATION_MS) as unknown as number;
-  }, [
-    isLoading,
-    isAppReady,
-    maxElapsed,
-    phase,
-    onDone,
-    setTimeoutFn,
-  ]);
+    // setTimeoutFn intentionally omitted from deps — it's a test
+    // seam, only read at the moment the gate fires and never
+    // changes in production. Including it would re-invoke this
+    // effect on every parent render via the same unstable-ref
+    // problem the onDoneRef pattern above is meant to solve.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading, isAppReady, maxElapsed, phase]);
 
   return null;
 }

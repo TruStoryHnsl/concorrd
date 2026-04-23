@@ -379,11 +379,15 @@ export default function App() {
   // render activity (auth restore, store subscriptions, StrictMode
   // double-mount) can't invalidate the splash's paint and interrupt
   // the animated WebP.
+  // Stabilize the onDone callback reference. Inline arrow functions
+  // create a new ref every render of App, which flips the dep array
+  // of LaunchAnimation's gate-check useEffect on every parent render.
+  // The gate inside short-circuits, but if anything in the dep chain
+  // ever causes a setState->re-render cycle, the unstable ref turns
+  // it into an infinite loop. Memoizing keeps the dep stable.
+  const handleLaunchDone = useCallback(() => setLaunchDone(true), []);
   const launchOverlay = !launchDone ? (
-    <LaunchAnimation
-      isLoading={isLoading}
-      onDone={() => setLaunchDone(true)}
-    />
+    <LaunchAnimation isLoading={isLoading} onDone={handleLaunchDone} />
   ) : null;
 
   // Public submit page — no auth required
@@ -478,6 +482,7 @@ export default function App() {
       </div>
       <VoiceConnectionBar />
       <DirectInviteBanner />
+      <MarkReady />
     </div>
   );
 
