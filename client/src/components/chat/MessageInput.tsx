@@ -42,6 +42,12 @@ export function MessageInput({
   const [toolsPanelOpen, setToolsPanelOpen] = useState(false);
   const [activeTool, setActiveTool] = useState<ChatTool | null>(null);
   const clearDraftFormat = useFormatStore((s) => s.clearDraftFormat);
+  // INS-FIX-B: read the draft format so the textarea previews what the user
+  // has selected in the format popover. Previously FormatPopover mutated
+  // `draftFormat` via setDraftFormat but nothing on the compose side read
+  // it, so every selection appeared to close the menu without doing
+  // anything — the failure mode the user reported.
+  const draftFormat = useFormatStore((s) => s.draftFormat);
   const pendingRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -226,6 +232,7 @@ export function MessageInput({
           <ChatToolsPanel
             onSelectTool={handleToolSelect}
             onClose={() => setToolsPanelOpen(false)}
+            onAttach={onSendFile ? () => fileRef.current?.click() : undefined}
           />
         </div>
       )}
@@ -314,29 +321,21 @@ export function MessageInput({
           <button
             type="button"
             onClick={() => setToolsPanelOpen((o) => !o)}
-            className="btn-press p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center text-primary hover:text-primary/80 transition-colors flex-shrink-0 rounded-xl font-bold text-lg leading-none"
+            aria-label="Chat tools"
+            data-testid="chat-tools-plus"
+            className="btn-press w-9 h-9 flex items-center justify-center text-primary hover:text-primary/80 transition-colors flex-shrink-0 rounded-full font-bold text-lg leading-none"
             title="Chat tools"
           >
             +
           </button>
           {onSendFile && (
-            <>
-              <button
-                type="button"
-                onClick={() => fileRef.current?.click()}
-                className="btn-press p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center text-on-surface-variant hover:text-on-surface active:text-primary transition-colors flex-shrink-0 rounded-xl"
-                title="Upload file"
-              >
-                <span className="material-symbols-outlined text-xl">attach_file</span>
-              </button>
-              <input
-                ref={fileRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={handleFileChange}
-              />
-            </>
+            <input
+              ref={fileRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleFileChange}
+            />
           )}
           <textarea
             ref={inputRef}
@@ -359,7 +358,29 @@ export function MessageInput({
                     ? "Add a message or press Enter to send"
                     : `Message #${roomName}`
             }
-            className="flex-1 px-2 py-3 bg-transparent text-on-surface placeholder-on-surface-variant/50 focus:outline-none text-base md:text-sm font-body resize-none leading-[22px]"
+            /* INS-FIX-B: apply draft format as inline style so the user sees
+             * the result of their selection in the format popover. Without
+             * this, onChange in FormatPopover mutated the store but nothing
+             * in the compose view consumed it — menu appeared to close
+             * without applying anything.
+             *
+             * `leading-[22px]` is preserved via lineHeight so the auto-grow
+             * math (useLayoutEffect above) still gets a sensible computed
+             * line height when fontSize grows. */
+            style={{
+              fontSize: `${draftFormat.fontSize}px`,
+              lineHeight: `${Math.max(draftFormat.fontSize + 8, 22)}px`,
+              color: draftFormat.color || undefined,
+              textAlign: draftFormat.alignment,
+              fontFamily:
+                draftFormat.fontFamily === "serif"
+                  ? "Georgia, serif"
+                  : draftFormat.fontFamily === "mono"
+                    ? "ui-monospace, Menlo, monospace"
+                    : undefined,
+            }}
+            data-testid="message-input-textarea"
+            className="flex-1 px-2 py-3 bg-transparent text-on-surface placeholder-on-surface-variant/50 focus:outline-none text-base md:text-sm font-body resize-none"
           />
           {hasContent && (
             <button

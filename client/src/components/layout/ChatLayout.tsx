@@ -3609,7 +3609,11 @@ function TopBarMoreMenu({
           <OverflowMenuItem icon="bar_chart" label="Your stats" onClick={handle(onStats)} />
           <OverflowMenuItem icon="bug_report" label="Report a bug" onClick={handle(onBug)} />
           <div className="mx-3 my-1 border-t border-outline-variant/15" />
-          <OverflowMenuItem icon="handyman" label="Settings" onClick={handle(onSettings)} />
+          {/* ISSUE C (2026-04-18): outer Tools/wrench button keeps `handyman`
+           *  (it's the button that OPENS this menu), but the inner Settings
+           *  row must use the universal gear glyph `settings` — `handyman`
+           *  inside `handyman` looked like "tools inside tools". */}
+          <OverflowMenuItem icon="settings" label="Settings" onClick={handle(onSettings)} />
         </div>
       )}
     </div>

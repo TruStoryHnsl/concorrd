@@ -13,6 +13,10 @@ export interface ChatTool {
   id: string;
   label: string;
   icon: string; // emoji or material symbol name
+  /** 'emoji' (default) renders the icon glyph directly; 'material' wraps it in
+   *  a material-symbols-outlined span so we can mix material glyphs into the
+   *  otherwise emoji-based grid. */
+  iconKind?: "emoji" | "material";
   composer: React.ComponentType<ComposerProps> | null; // null = send immediately
 }
 
@@ -26,12 +30,22 @@ export const CHAT_TOOLS: ChatTool[] = [
   { id: "more", label: "More", icon: "➕", composer: null },
 ];
 
+/** Special tool id for the file-attachment entry. MessageInput wires this to
+ *  its hidden file input via the onAttach callback rather than through
+ *  ComposerProps, since attach is a native browser picker not an in-app
+ *  composer. */
+export const ATTACH_TOOL_ID = "attach";
+
 interface ChatToolsPanelProps {
   onSelectTool: (tool: ChatTool) => void;
   onClose: () => void;
+  /** When provided, a "Attach" tile appears at the front of the grid and
+   *  clicking it invokes this callback (then closes the panel). Lets the
+   *  paperclip live inside the `+` popover instead of as a sibling button. */
+  onAttach?: () => void;
 }
 
-export function ChatToolsPanel({ onSelectTool, onClose }: ChatToolsPanelProps) {
+export function ChatToolsPanel({ onSelectTool, onClose, onAttach }: ChatToolsPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -56,6 +70,24 @@ export function ChatToolsPanel({ onSelectTool, onClose }: ChatToolsPanelProps) {
       style={{ width: "256px" }}
     >
       <div className="grid grid-cols-4 gap-2">
+        {onAttach && (
+          <button
+            key={ATTACH_TOOL_ID}
+            type="button"
+            onClick={() => {
+              onAttach();
+              onClose();
+            }}
+            className="btn-press flex flex-col items-center justify-center gap-1 p-2 rounded-xl bg-surface-container-high hover:bg-surface-container-highest transition-colors min-h-[48px] min-w-[48px]"
+            title="Attach file"
+            data-testid="chat-tool-attach"
+          >
+            <span className="material-symbols-outlined text-2xl leading-none">attach_file</span>
+            <span className="text-[9px] text-on-surface-variant font-label truncate w-full text-center">
+              Attach
+            </span>
+          </button>
+        )}
         {CHAT_TOOLS.map((tool) => (
           <button
             key={tool.id}
@@ -67,7 +99,11 @@ export function ChatToolsPanel({ onSelectTool, onClose }: ChatToolsPanelProps) {
             className="btn-press flex flex-col items-center justify-center gap-1 p-2 rounded-xl bg-surface-container-high hover:bg-surface-container-highest transition-colors min-h-[48px] min-w-[48px]"
             title={tool.label}
           >
-            <span className="text-2xl leading-none">{tool.icon}</span>
+            {tool.iconKind === "material" ? (
+              <span className="material-symbols-outlined text-2xl leading-none">{tool.icon}</span>
+            ) : (
+              <span className="text-2xl leading-none">{tool.icon}</span>
+            )}
             <span className="text-[9px] text-on-surface-variant font-label truncate w-full text-center">
               {tool.label}
             </span>
