@@ -1412,3 +1412,74 @@ export async function listExploreServers(
 ): Promise<ExploreServerEntry[]> {
   return apiFetch("/explore/servers", {}, accessToken);
 }
+
+// ---------------------------------------------------------------------------
+// Admin-level ban management (instance-wide, not per-server)
+// ---------------------------------------------------------------------------
+
+/** A ban entry as returned by GET /api/admin/bans */
+export interface AdminBan {
+  user_id: string;
+  banned_by: string;
+  created_at: string;
+  reason?: string;
+}
+
+/**
+ * List all instance-wide bans. Requires admin token.
+ * GET /api/admin/bans
+ */
+export async function getAdminBans(accessToken: string): Promise<AdminBan[]> {
+  return apiFetch("/admin/bans", {}, accessToken);
+}
+
+/**
+ * Add an instance-wide ban for a user. Requires admin token.
+ * POST /api/admin/bans { user_id, reason? }
+ */
+export async function adminBanUser(
+  userId: string,
+  accessToken: string,
+  reason?: string,
+): Promise<void> {
+  await apiFetch(
+    "/admin/bans",
+    { method: "POST", body: JSON.stringify({ user_id: userId, reason: reason ?? null }) },
+    accessToken,
+  );
+}
+
+/**
+ * Remove an instance-wide ban. Requires admin token.
+ * DELETE /api/admin/bans/:userId
+ */
+export async function adminUnbanUser(
+  userId: string,
+  accessToken: string,
+): Promise<void> {
+  await apiFetch(
+    `/admin/bans/${encodeURIComponent(userId)}`,
+    { method: "DELETE" },
+    accessToken,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Guest / anonymous session
+// ---------------------------------------------------------------------------
+
+export interface GuestSessionResponse {
+  access_token: string;
+  user_id: string;
+  device_id: string;
+  guest: boolean;
+}
+
+/**
+ * Create a temporary anonymous guest session.
+ * POST /api/register/guest
+ * No auth required. Returns a short-lived access_token for read-only browsing.
+ */
+export async function createGuestSession(): Promise<GuestSessionResponse> {
+  return apiFetch("/register/guest", { method: "POST" });
+}
