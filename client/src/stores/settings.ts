@@ -55,7 +55,7 @@ interface SettingsState {
 
   // UI (not persisted)
   settingsOpen: boolean;
-  settingsTab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation";
+  settingsTab: "audio" | "voice" | "notifications" | "profile" | "connections" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation";
   serverSettingsId: string | null;
 
   // Actions
@@ -95,9 +95,18 @@ interface SettingsState {
    */
   setChatFontSize: (px: number) => void;
   setThemePreset: (preset: ThemePreset) => void;
-  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
+  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "connections" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
   closeSettings: () => void;
-  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
+  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "connections" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
+  /**
+   * INS-024 user-scoped bridge redesign: cross-component hand-off for the
+   * "Add Source" modal. Set the screen to pre-open (e.g. "discord",
+   * "matrix", "concord"), and ChatLayout's effect hook opens the modal
+   * at that screen. Cleared immediately after consumption.
+   */
+  pendingAddSourceScreen: string | null;
+  requestAddSource: (screen?: string) => void;
+  consumeAddSourceRequest: () => string | null;
   openServerSettings: (serverId: string) => void;
   closeServerSettings: () => void;
   setServerSettingsId: (id: string | null) => void;
@@ -165,6 +174,7 @@ export const useSettingsStore = create<SettingsState>()(
       settingsOpen: false,
       settingsTab: "audio" as const,
       serverSettingsId: null,
+      pendingAddSourceScreen: null,
 
       setMasterOutputVolume: (v) => set({ masterOutputVolume: v }),
       setPreferredOutputDeviceId: (id) =>
@@ -235,6 +245,22 @@ export const useSettingsStore = create<SettingsState>()(
         set({ settingsOpen: true, serverSettingsId: null, settingsTab: tab ?? "audio" }),
       closeSettings: () => set({ settingsOpen: false, serverSettingsId: null }),
       setSettingsTab: (tab) => set({ settingsTab: tab }),
+      requestAddSource: (screen) => set({
+        settingsOpen: false,
+        serverSettingsId: null,
+        pendingAddSourceScreen: screen ?? "pick",
+      }),
+      consumeAddSourceRequest: () => {
+        // Read-and-clear. Functional update atomically captures the
+        // current value and nulls it so the effect in ChatLayout fires
+        // exactly once per request.
+        let captured: string | null = null;
+        set((state) => {
+          captured = state.pendingAddSourceScreen;
+          return { pendingAddSourceScreen: null };
+        });
+        return captured;
+      },
       openServerSettings: (serverId) => {
         const server = useServerStore.getState().servers.find((entry) => entry.id === serverId);
         const settingsTab =

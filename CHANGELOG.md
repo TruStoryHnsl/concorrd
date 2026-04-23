@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — User-scoped Discord bridge (breaking for admins)
+- **Bridge is now user-scoped.** Admin "Enable / Disable / Rotate / Force-Reset" controls are gone. Each user connects their own Discord account from user-settings → **Connections**. Admins have no path to trigger, read, or revoke another user's session. See `docs/bridges/user-scoped-bridge-redesign.md` for the full design.
+- **Bridge infrastructure is now invisible.** On concord-api startup, the lifespan bootstrap reconciles `registration.yaml` against `tuwunel.toml` and self-heals common drift states (fresh-install, orphaned entries, mismatched appservice IDs). Operators no longer click Enable; the bridge is always-on.
+- **Admin "Bridges" settings tab removed.** Client settings navigation no longer shows Bridges for web admins or desktop Tauri users. All self-service flows live under the new **Connections** tab on every account.
+- **Relay-bot mode retired.** Messages from Matrix users without a personal Discord connection no longer go to Discord via a shared admin bot. If this matters for a deployment, users must connect their own account.
+- **Admin endpoints deleted**: `POST /api/admin/bridges/discord/{enable,disable,rotate,force-reset}`. The corresponding client wrappers (`discordBridgeHttpEnable` / `Disable` / `Rotate` / `ForceReset`) are gone.
+- **Admin endpoints kept (temporarily)**: `GET /status`, `/guilds`, `/channels/{id}`, `/bot-profile`, `/bot-invite-url`; `POST /bot-token`, `/bot-profile`, `/login-relay`. Voice-bridge setup still relies on these until its own user-mode port lands. Will be removed in a follow-up.
+
+### Added
+- **Per-user Discord connections** — `GET /api/users/me/discord` (status), `POST /api/users/me/discord/login` (trigger bridge-bot DM + `login` command), `POST /api/users/me/discord/logout` / `DELETE /api/users/me/discord` (revoke). All authenticated as the caller; no admin override. `client/src/api/bridges.ts` exports `userDiscordStatus`, `userDiscordLogin`, `userDiscordLogout`.
+- **Connections settings tab** (`client/src/components/settings/UserConnectionsTab.tsx`) — Connect / Disconnect buttons, 5s status polling, DiscordTosModal gate on first connect. Auto-resumes the login flow after ToS acceptance so users don't have to double-click.
+- **Lifespan bridge bootstrap** (`server/services/bridge_bootstrap.py`) — reconciles registration + tuwunel.toml on every concord-api start. Fresh-install, orphan cleanup, drift re-injection, and full reset on ID-mismatch are all handled. Never blocks startup; logs degraded state for the admin to see via the status endpoint's `desync` field.
+
+### Security — token-at-rest caveat (web client only)
+- The mautrix-discord process stores per-user Discord tokens in its own on-host database. An operator with host or database access could theoretically read them. This caveat is documented in the `DiscordTosModal` users must accept before their first connect, and will be closed when the native Tauri client ships with a client-side bridge (tokens never leave the device). Web users accept this trade for convenience.
+- Scrubbed leaked bridge tokens from `config/tuwunel.toml` (originally committed in `fd221f3`; rotate if you were running that revision).
+
 ### Added
 - **Mobile logout** — always-visible 44×44 account button in the mobile top bar opens an `AccountSheet` glass panel with username and a Logout action. Reachable from every mobile view (chat, channels, DMs, servers, settings). Fallback Logout button also appended to the bottom of `SettingsPanel`. (INS-001)
 - **Markdown rendering in chat** — chat message bodies now render markdown via `react-markdown` + `remark-gfm` with a hardened `rehype-sanitize` schema. Supports bold, italic, inline `code`, fenced code blocks, ordered/unordered lists, links (open in new tab with `rel="noopener noreferrer"`), headings (h1–h6), and blockquotes. URL link previews still work because URL extraction runs on the raw body before parsing. New deps: `react-markdown ^9`, `remark-gfm ^4`, `rehype-sanitize ^6`. (INS-002)

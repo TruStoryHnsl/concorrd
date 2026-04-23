@@ -800,7 +800,21 @@ async def discover_servers(
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """List public servers, optionally filtered by search query."""
+    """List public servers, optionally filtered by search query.
+
+    Authentication is required. ``visibility=public`` means visible to
+    authenticated callers — it is NOT a wide-open listing. An operator
+    who doesn't want their instance's server catalogue hit by arbitrary
+    internet traffic can keep the default (local users + federated
+    peers with valid tokens only).
+
+    Cross-instance discovery (a user on instance A adding instance B as
+    a source, wanting to browse B's public servers) is a separate
+    problem solved by an opt-in inter-instance listing token configured
+    in B's admin settings. Clients present that token as a normal
+    Authorization bearer; the token grants read access to this endpoint
+    and nothing else.
+    """
     from sqlalchemy import func
 
     query = select(

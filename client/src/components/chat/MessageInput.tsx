@@ -310,7 +310,7 @@ export function MessageInput({
 
       <div className="px-4 py-3">
         <div
-          className={`flex items-end gap-2 bg-surface-container rounded-xl px-2 transition-all ${
+          className={`flex items-end gap-0.5 bg-surface-container rounded-xl px-2 transition-all ${
             dragOver
               ? "ring-1 ring-primary/30 bg-primary/5"
               : editingMessage
@@ -318,6 +318,13 @@ export function MessageInput({
                 : ""
           }`}
         >
+          {/* Chat-tools "+" button. Sized to match the paperclip, not
+             the send button — both live in the leading utility cluster
+             and should read as equal-weight siblings. Previously at
+             44×44 (mobile touch-target), it double-spaced the leading
+             edge on desktop and pushed the text input inward. Dropping
+             to a 32×32 target brings it in line with the paperclip
+             while remaining comfortably tappable. */}
           <button
             type="button"
             onClick={() => setToolsPanelOpen((o) => !o)}
@@ -326,7 +333,7 @@ export function MessageInput({
             className="btn-press w-9 h-9 flex items-center justify-center text-primary hover:text-primary/80 transition-colors flex-shrink-0 rounded-full font-bold text-lg leading-none"
             title="Chat tools"
           >
-            +
+            <span className="material-symbols-outlined text-xl">add</span>
           </button>
           {onSendFile && (
             <input

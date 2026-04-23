@@ -49,7 +49,11 @@ export interface HttpBridgeMutationStep {
 }
 
 export interface HttpBridgeMutationResponse {
-  action: "enable" | "disable" | "rotate" | "force_reset";
+  // The mutation response shape predates the user-scoped redesign. Kept
+  // because /bot-token / /bot-profile still return it for voice-bridge
+  // callers. The action literals enable/disable/rotate/force_reset were
+  // removed along with their endpoints in PR4.
+  action: string;
   ok: boolean;
   steps: HttpBridgeMutationStep[];
   message: string;
@@ -91,6 +95,31 @@ export interface DiscordBotProfile {
   avatar: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Per-user connections (user-scoped bridge, PR1/PR3)
+// ---------------------------------------------------------------------------
+//
+// The /api/users/me/discord/* endpoints are user-scoped — any authenticated
+// user manages THEIR OWN Discord connection without admin intervention.
+// Admins have no path to read another user's state or trigger their login.
+// See docs/bridges/user-scoped-bridge-redesign.md for the full trust model.
+
+export interface UserDiscordStatus {
+  connected: boolean;
+  mxid: string;
+}
+
+export interface UserDiscordLoginResponse {
+  ok: boolean;
+  room_id: string;
+  message: string;
+}
+
+export interface UserDiscordLogoutResponse {
+  ok: boolean;
+  message: string;
+}
+
 async function bridgeApiFetch<T>(
   path: string,
   accessToken: string,
@@ -128,55 +157,11 @@ export async function discordBridgeHttpStatus(
   );
 }
 
-export async function discordBridgeHttpEnable(
-  accessToken: string,
-): Promise<HttpBridgeMutationResponse> {
-  return bridgeApiFetch<HttpBridgeMutationResponse>(
-    "/admin/bridges/discord/enable",
-    accessToken,
-    { method: "POST", body: "{}" },
-  );
-}
-
-export async function discordBridgeHttpDisable(
-  accessToken: string,
-): Promise<HttpBridgeMutationResponse> {
-  return bridgeApiFetch<HttpBridgeMutationResponse>(
-    "/admin/bridges/discord/disable",
-    accessToken,
-    { method: "POST", body: "{}" },
-  );
-}
-
-export async function discordBridgeHttpRotate(
-  accessToken: string,
-): Promise<HttpBridgeMutationResponse> {
-  return bridgeApiFetch<HttpBridgeMutationResponse>(
-    "/admin/bridges/discord/rotate",
-    accessToken,
-    { method: "POST", body: "{}" },
-  );
-}
-
-/**
- * Aggressive cleanup for broken / desynced bridge state.
- *
- * Use when Disable can't clean up — typically when `status.desync` is
- * non-null, meaning the on-disk registration.yaml ID doesn't match the
- * active constant (e.g. after a code upgrade that renamed the
- * appservice ID), or multiple stale registrations are lingering.
- *
- * After this completes, call Enable to start fresh.
- */
-export async function discordBridgeHttpForceReset(
-  accessToken: string,
-): Promise<HttpBridgeMutationResponse> {
-  return bridgeApiFetch<HttpBridgeMutationResponse>(
-    "/admin/bridges/discord/force-reset",
-    accessToken,
-    { method: "POST", body: "{}" },
-  );
-}
+// enable/disable/rotate/force-reset wrappers were deleted in PR4 of the
+// user-scoped bridge redesign. The backend endpoints are gone — the bridge
+// now bootstraps automatically at concord-api startup. Per-user connection
+// management happens via userDiscordStatus / userDiscordLogin /
+// userDiscordLogout below.
 
 export async function discordBridgeHttpSaveBotToken(
   accessToken: string,
@@ -459,4 +444,56 @@ export async function discordBridgeUnbridgeGuild(guildId: string): Promise<void>
   }
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("discord_bridge_unbridge_guild", { guildId });
+}
+
+// ---------------------------------------------------------------------------
+// Per-user connections API (user-scoped; admin-independent)
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the caller's own Discord connection status.
+ *
+ * The response never contains another user's data. Both web and
+ * native paths go through the same backend endpoint.
+ */
+export async function userDiscordStatus(accessToken: string): Promise<UserDiscordStatus> {
+  return bridgeApiFetch<UserDiscordStatus>(
+    "/users/me/discord",
+    accessToken,
+  );
+}
+
+/**
+ * Trigger the Discord login flow for the caller.
+ *
+ * Backend creates a DM between the user and the bridge bot (using
+ * the caller's access token — no admin proxying possible) and
+ * posts "login". The bridge bot responds in that DM with a QR code
+ * the user scans from their phone's Discord app to complete the
+ * handshake.
+ *
+ * Returns the DM room id so the UI can deep-link the user into the
+ * room in their Matrix client.
+ */
+export async function userDiscordLogin(accessToken: string): Promise<UserDiscordLoginResponse> {
+  return bridgeApiFetch<UserDiscordLoginResponse>(
+    "/users/me/discord/login",
+    accessToken,
+    { method: "POST", body: "{}" },
+  );
+}
+
+/**
+ * Disconnect the caller's Discord session by posting "logout" to
+ * their bridge-bot DM. mautrix-discord purges the user's Discord
+ * token from its DB on receipt.
+ *
+ * DELETE /users/me/discord is an alias; either works.
+ */
+export async function userDiscordLogout(accessToken: string): Promise<UserDiscordLogoutResponse> {
+  return bridgeApiFetch<UserDiscordLogoutResponse>(
+    "/users/me/discord/logout",
+    accessToken,
+    { method: "POST", body: "{}" },
+  );
 }

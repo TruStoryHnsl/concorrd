@@ -71,10 +71,25 @@ export function DiscordTosModal({ onClose }: DiscordTosModalProps) {
               banned as a result of using this feature.
             </li>
             <li>
-              <strong>Your Discord token never touches Concord.</strong> It flows
-              directly from Discord to the sandboxed mautrix-discord bridge
-              process and is stored in the bridge's encrypted database, not in
-              Concord's settings or logs.
+              <strong>Your Discord token is stored on this server.</strong> It
+              flows from Discord to the mautrix-discord bridge process on the
+              instance you're connected to and is saved in the bridge's database
+              on that host. The instance operator has the technical ability to
+              read it. Concord itself never handles the token — only the bridge
+              process does — but the host's trust boundary still applies.
+            </li>
+            <li>
+              <strong>For full privacy, use the native Concord app</strong> (shipping
+              soon). It runs the Discord bridge locally on your device, so the
+              token never leaves your machine. The web client trades this for
+              convenience.
+            </li>
+            <li>
+              <strong>Bridged Discord messages are not end-to-end encrypted</strong>
+              in your Matrix rooms. The bridge needs plaintext to forward content
+              to Discord; that content is persisted in conduwuit's database on
+              the instance host. Don't share through the bridge anything you
+              wouldn't share with the instance operator.
             </li>
           </ul>
         </div>
@@ -91,9 +106,11 @@ export function DiscordTosModal({ onClose }: DiscordTosModalProps) {
             className="mt-1 w-4 h-4 accent-primary"
           />
           <span className="text-sm text-on-surface">
-            I understand the risks described above and accept full responsibility
-            for my use of Discord user mode. I acknowledge that Concord provides
-            no warranty regarding Discord account safety.
+            I understand that my Discord token and bridged messages will be
+            stored on this instance's host, that the operator can technically
+            access them, and that Concord provides no warranty regarding
+            Discord account safety or host-side data handling. I accept full
+            responsibility for my use of Discord user mode.
           </span>
         </label>
 
