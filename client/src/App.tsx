@@ -217,19 +217,11 @@ export default function App() {
     voiceDisconnect();
   }, [voiceDisconnect]);
 
-<<<<<<< HEAD
   const handleVoiceError = useCallback((error: Error) => {
     console.error("LiveKit connection error:", error);
     addToast(`Voice failed: ${error.message}`, "error");
     voiceDisconnect();
   }, [voiceDisconnect, addToast]);
-=======
-  const handleVoiceError = useCallback((err: Error) => {
-    console.error("LiveKit connection error:", err);
-    addToast(`Voice failed: ${err.message}`, "error");
-    voiceDisconnect();
-  }, [addToast, voiceDisconnect]);
->>>>>>> feat/design-docs-70bc
 
   const handleMediaDeviceFailure = useCallback(() => {
     console.warn("LiveKit media device failure — continuing without mic");
