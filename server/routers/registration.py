@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
-from models import InviteToken, Channel, ServerMember
+from models import InviteToken, Channel, Server, ServerMember
 from services.matrix_admin import register_matrix_user, join_room
 
 logger = logging.getLogger(__name__)
@@ -194,32 +194,73 @@ async def register_user(
     try:
         import json
         from config import INSTANCE_SETTINGS_FILE
+        from services.bot import BOT_USER_ID
         if INSTANCE_SETTINGS_FILE.exists():
             inst_settings = json.loads(INSTANCE_SETTINGS_FILE.read_text())
             default_id = inst_settings.get("default_server_id")
             if default_id:
                 # Check not already joining via invite to same server
                 if not invite or invite.server_id != default_id:
+                    # On first boot, the operator takes ownership of the
+                    # bot-seeded Lobby. The seed flow assigns the bot as
+                    # placeholder owner so the server exists before any
+                    # humans; the first human registrant inherits it so
+                    # they can actually administer invites, channels, etc.
+                    default_server = await db.get(Server, default_id)
+                    promote_to_owner = (
+                        is_first_boot
+                        and default_server is not None
+                        and default_server.owner_id == BOT_USER_ID
+                    )
+
                     existing = await db.execute(
                         select(ServerMember).where(
                             ServerMember.server_id == default_id,
                             ServerMember.user_id == user_id,
                         )
                     )
-                    if not existing.scalar_one_or_none():
+                    existing_member = existing.scalar_one_or_none()
+                    role = "owner" if promote_to_owner else "member"
+                    if not existing_member:
                         db.add(ServerMember(
                             server_id=default_id,
                             user_id=user_id,
-                            role="member",
+                            role=role,
+                            can_kick=promote_to_owner,
+                            can_ban=promote_to_owner,
                         ))
-                        default_channels = await db.execute(
-                            select(Channel).where(Channel.server_id == default_id)
+                    elif promote_to_owner:
+                        existing_member.role = "owner"
+                        existing_member.can_kick = True
+                        existing_member.can_ban = True
+
+                    if promote_to_owner:
+                        default_server.owner_id = user_id
+                        # Demote the bot from owner to admin so it still
+                        # has rights to drive bot-side functionality but
+                        # can no longer be mistaken for the human operator.
+                        bot_member = await db.execute(
+                            select(ServerMember).where(
+                                ServerMember.server_id == default_id,
+                                ServerMember.user_id == BOT_USER_ID,
+                            )
                         )
-                        for ch in default_channels.scalars().all():
-                            try:
-                                await join_room(access_token, ch.matrix_room_id)
-                            except Exception as e:
-                                logger.warning("Auto-join default room %s failed: %s", ch.matrix_room_id, e)
+                        bot_row = bot_member.scalar_one_or_none()
+                        if bot_row and bot_row.role == "owner":
+                            bot_row.role = "admin"
+                        logger.info(
+                            "First-boot Lobby ownership transferred from %s to %s",
+                            BOT_USER_ID, user_id,
+                        )
+
+                    default_channels = await db.execute(
+                        select(Channel).where(Channel.server_id == default_id)
+                    )
+                    for ch in default_channels.scalars().all():
+                        try:
+                            await join_room(access_token, ch.matrix_room_id)
+                        except Exception as e:
+                            logger.warning("Auto-join default room %s failed: %s", ch.matrix_room_id, e)
     except Exception as e:
         logger.warning("Default server auto-join failed: %s", e)
 

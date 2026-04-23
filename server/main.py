@@ -22,8 +22,40 @@ from routers import servers, invites, registration, voice, soundboard, webhooks,
 from services.discord_voice_config import write_voice_bridge_rooms
 
 
+def _bootstrap_tuwunel_config() -> None:
+    """Ensure /etc/concord-config/tuwunel.toml exists at runtime.
+
+    The committed repo ships ``tuwunel.toml.template`` (federation defaults
+    only — never tokens). The live ``tuwunel.toml`` is gitignored and
+    rewritten by the admin UI whenever bridges are enabled/disabled or
+    federation settings change. On fresh installs or when the live file
+    has been manually removed, we seed it from the template so conduwuit
+    has something to read at startup.
+
+    Historic bug reference: commit fd221f3 committed a live tuwunel.toml
+    with real appservice tokens into the repo. Splitting the committed
+    baseline from the runtime file prevents that from happening again —
+    the committed .template has no [appservice] section, and the admin
+    flow only writes to the (gitignored) runtime file.
+    """
+    import shutil
+    from pathlib import Path
+
+    live = Path("/etc/concord-config/tuwunel.toml")
+    template = Path("/etc/concord-config/tuwunel.toml.template")
+
+    if live.exists():
+        return
+    if not template.exists():
+        # Neither exists. Don't guess — let conduwuit fail loudly so the
+        # operator knows the config mount is wrong.
+        return
+    shutil.copy(template, live)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _bootstrap_tuwunel_config()
     await init_db()
 
     # Migrate existing tables: add new columns if missing

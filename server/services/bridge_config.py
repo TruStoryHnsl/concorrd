@@ -895,6 +895,103 @@ def ensure_appservice_entry(
     return path
 
 
+def remove_all_concord_appservice_entries(
+    *,
+    tuwunel_toml_path: Path | None = None,
+    prefix: str = "concord_discord",
+) -> list[str]:
+    """Drop every appservice table whose ID starts with ``prefix``.
+
+    Used by the force-reset flow to recover from a desync where the
+    active constant (``concord_discord_2``) doesn't match the registered
+    ID in ``tuwunel.toml`` (could be ``concord_discord``, ``concord_discord_1``,
+    etc. from an older build). A plain Disable can only remove the
+    entry matching today's constant; this function finds and removes
+    anything that looks like one of ours.
+
+    Returns the list of removed bridge_ids so the caller can log which
+    stale entries were cleaned up. Never errors on "already empty" —
+    reset must be idempotent.
+    """
+    path = tuwunel_toml_path or TUWUNEL_CONFIG_PATH
+    if not path.exists():
+        return []
+    try:
+        existing = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise TuwunelTomlInjectionError(
+            f"Cannot parse existing {path}: {exc}"
+        ) from exc
+
+    global_table = dict(existing.get("global", {}))
+    appservice_table = dict(global_table.get("appservice", {}))
+    matching_ids = [k for k in appservice_table.keys() if k.startswith(prefix)]
+    if not matching_ids:
+        return []
+    for bridge_id in matching_ids:
+        del appservice_table[bridge_id]
+    if appservice_table:
+        global_table["appservice"] = appservice_table
+    else:
+        global_table.pop("appservice", None)
+
+    body = _emit_bridge_tuwunel_toml(global_table)
+
+    tmp_fd, tmp_path_str = tempfile.mkstemp(
+        prefix=".tuwunel-",
+        suffix=".toml.tmp",
+        dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp:
+            tmp.write(body)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_path, path)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise TuwunelTomlInjectionError(
+            f"Failed to write tuwunel.toml at {path}: {exc}"
+        ) from exc
+
+    logger.info(
+        "force-reset removed %d concord appservice entries from %s: %s",
+        len(matching_ids), path, matching_ids,
+    )
+    return matching_ids
+
+
+def read_appservice_ids(
+    *,
+    tuwunel_toml_path: Path | None = None,
+    prefix: str = "concord_discord",
+) -> list[str]:
+    """Return all appservice IDs matching the concord prefix. Read-only.
+
+    Used by ``/status`` to detect a desync between the homeserver's view
+    (tuwunel.toml) and the bridge's view (registration.yaml).
+    """
+    path = tuwunel_toml_path or TUWUNEL_CONFIG_PATH
+    if not path.exists():
+        return []
+    try:
+        existing = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return []
+    appservice_table = existing.get("global", {}).get("appservice", {}) or {}
+    if isinstance(appservice_table, str):
+        # Legacy serialisation wrote appservice as a stringified dict.
+        # Surface those IDs too so the reset can clear them.
+        import re
+        return sorted(set(re.findall(r"'([a-z0-9_]+)'\s*:\s*\{", appservice_table)))
+    return [k for k in appservice_table.keys() if k.startswith(prefix)]
+
+
 def remove_appservice_entry(
     bridge_id: str = DISCORD_BRIDGE_APPSERVICE_ID,
     *,

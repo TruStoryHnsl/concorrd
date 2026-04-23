@@ -1,9 +1,0 @@
-# Tuwunel runtime configuration — federation settings
-# Managed by the Concord admin UI. Hand edits to [global] keys
-# will be overwritten on the next federation allowlist update.
-
-[global]
-allow_federation = true
-forbidden_remote_server_names = []
-allowed_remote_server_names = ["^matrix\\.org$", "^mozilla\\.org$", "^concorrd\\.com$"]
-appservice = "{'concord_discord_2': {'as_token': 'as_mVSxf0urwntCOlAzLgYBJqu-CZfLtCRr1--GJNbE6Sk', 'hs_token': 'hs_xL0TeDfD4_TG5RYZNtQyblRHLDIcCOX7nM5EGSxge8o', 'id': 'concord_discord_2', 'protocols': ['discord'], 'rate_limited': False, 'sender_localpart': 'discordbot', 'url': 'http://concord-discord-bridge:29334', 'users': [{'exclusive': True, 'regex': '@(discordbot|_discord_[^:]*):192\\\\.168\\\\.1\\\\.152'}], 'aliases': [{'exclusive': True, 'regex': '#_discord_.*'}]}}"

@@ -505,3 +505,172 @@ async def test_register_matrix_failure_releases_reserved_invite_slot(
         "registration failed — this invite is now permanently leaking "
         "a use count per failed registration"
     )
+
+
+async def test_first_boot_operator_inherits_bot_owned_lobby(
+    client, db_session, monkeypatch, tmp_path
+):
+    """Regression for: the first human operator landed as `role='member'`
+    on a Lobby the bot had seeded as placeholder owner, which left the
+    operator unable to see the per-server Invite User tab (gated on
+    `isOwner || isAdmin`). First-boot registration must transfer the
+    bot-seeded Lobby's ownership to the new user so they can administer
+    their own instance.
+
+    Empirical signal that drove this test: on the local dev instance,
+    ``servers.owner_id`` was ``@concord-bot:…`` while the only human
+    (``@corr:…``) sat in ``server_members`` with ``role='member'`` —
+    confirmed by a direct DB read.
+    """
+    import services.bot as bot_module
+
+    bot_user = "@concord-bot:test.local"
+    monkeypatch.setattr(bot_module, "BOT_USER_ID", bot_user)
+
+    lobby = Server(
+        id="srv_lobby_bootstrap",
+        name="Concord Lobby",
+        owner_id=bot_user,
+        visibility="public",
+    )
+    db_session.add(lobby)
+    db_session.add(ServerMember(
+        server_id=lobby.id,
+        user_id=bot_user,
+        role="owner",
+    ))
+    db_session.add(Channel(
+        server_id=lobby.id,
+        matrix_room_id="!lobby-general:test.local",
+        name="general",
+        position=0,
+    ))
+    await db_session.commit()
+
+    instance_file = tmp_path / "instance.json"
+    # First boot: file either missing or without first_boot_complete.
+    instance_file.write_text(json.dumps({"default_server_id": lobby.id}))
+    monkeypatch.setattr(config_module, "INSTANCE_SETTINGS_FILE", instance_file)
+
+    async def fake_register(username, password):
+        return {
+            "access_token": "tok",
+            "user_id": f"@{username}:test.local",
+            "device_id": "D",
+        }
+
+    async def fake_join_room(access_token, room_id):
+        return None
+
+    monkeypatch.setattr(registration_module, "register_matrix_user", fake_register)
+    monkeypatch.setattr(registration_module, "join_room", fake_join_room)
+
+    resp = await client.post(
+        "/api/register",
+        json={"username": "corr", "password": "hunter2hunter2"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    await db_session.refresh(lobby)
+    assert lobby.owner_id == "@corr:test.local", (
+        "BUG: first-boot operator did not inherit the bot-seeded Lobby. "
+        f"lobby.owner_id is still {lobby.owner_id!r}. This is the regression "
+        "that left corr as a plain member on the only server on their instance."
+    )
+
+    corr_membership = (await db_session.execute(
+        select(ServerMember).where(
+            ServerMember.server_id == lobby.id,
+            ServerMember.user_id == "@corr:test.local",
+        )
+    )).scalar_one()
+    assert corr_membership.role == "owner"
+    assert corr_membership.can_kick is True
+    assert corr_membership.can_ban is True
+
+    bot_membership = (await db_session.execute(
+        select(ServerMember).where(
+            ServerMember.server_id == lobby.id,
+            ServerMember.user_id == bot_user,
+        )
+    )).scalar_one()
+    assert bot_membership.role == "admin", (
+        "Bot should be demoted from owner to admin so it retains rights "
+        "for bot-driven features without being the instance owner."
+    )
+
+    # Instance-admin list also records the operator on first boot.
+    settings = json.loads(instance_file.read_text())
+    assert settings.get("first_boot_complete") is True
+    assert "@corr:test.local" in settings.get("admin_user_ids", [])
+
+
+async def test_second_user_does_not_hijack_bot_lobby(
+    client, db_session, monkeypatch, tmp_path
+):
+    """Negative control for the above: once first boot is complete, a
+    subsequent registrant must NOT be promoted to owner, even if the
+    Lobby is still bot-owned (e.g. an older instance where the operator
+    never registered). Ownership transfer is a one-shot first-boot
+    privilege, not a free-for-all."""
+    import services.bot as bot_module
+
+    bot_user = "@concord-bot:test.local"
+    monkeypatch.setattr(bot_module, "BOT_USER_ID", bot_user)
+
+    lobby = Server(
+        id="srv_lobby_late",
+        name="Concord Lobby",
+        owner_id=bot_user,
+        visibility="public",
+    )
+    db_session.add(lobby)
+    db_session.add(ServerMember(server_id=lobby.id, user_id=bot_user, role="owner"))
+    db_session.add(Channel(
+        server_id=lobby.id,
+        matrix_room_id="!late:test.local",
+        name="general",
+        position=0,
+    ))
+    await db_session.commit()
+
+    instance_file = tmp_path / "instance.json"
+    instance_file.write_text(json.dumps({
+        "default_server_id": lobby.id,
+        "first_boot_complete": True,
+        "admin_user_ids": ["@someone-else:test.local"],
+    }))
+    monkeypatch.setattr(config_module, "INSTANCE_SETTINGS_FILE", instance_file)
+    monkeypatch.setenv("OPEN_REGISTRATION", "true")
+
+    async def fake_register(username, password):
+        return {
+            "access_token": "tok",
+            "user_id": f"@{username}:test.local",
+            "device_id": "D",
+        }
+
+    async def fake_join_room(access_token, room_id):
+        return None
+
+    monkeypatch.setattr(registration_module, "register_matrix_user", fake_register)
+    monkeypatch.setattr(registration_module, "join_room", fake_join_room)
+
+    resp = await client.post(
+        "/api/register",
+        json={"username": "drifter", "password": "hunter2hunter2"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    await db_session.refresh(lobby)
+    assert lobby.owner_id == bot_user, (
+        "Only the first-boot registrant may inherit the Lobby. A later "
+        "sign-up must NOT hijack ownership."
+    )
+    drifter = (await db_session.execute(
+        select(ServerMember).where(
+            ServerMember.server_id == lobby.id,
+            ServerMember.user_id == "@drifter:test.local",
+        )
+    )).scalar_one()
+    assert drifter.role == "member"

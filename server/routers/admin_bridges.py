@@ -79,10 +79,12 @@ from services.bridge_config import (
     delete_registration_file,
     ensure_appservice_entry,
     generate_registration,
+    read_appservice_ids,
     read_discord_bot_token,
     read_registration_file,
     redact_for_logging,
     registration_file_path,
+    remove_all_concord_appservice_entries,
     remove_appservice_entry,
     write_bridge_runtime_config,
     write_discord_bot_token,
@@ -166,10 +168,27 @@ class BridgeStatusResponse(BaseModel):
         default=False,
         description="True when a Discord bot token has been saved via POST /bot-token or config.yaml",
     )
+    desync: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable description when the bridge is in a broken "
+            "state (registration.yaml and tuwunel.toml disagree, or only "
+            "one of them exists). Null when the state is consistent. "
+            "UI should show a 'Reset to clean state' button when set."
+        ),
+    )
+    stale_appservice_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "All concord-prefixed appservice IDs currently in tuwunel.toml. "
+            "Surfaced so the UI can warn operators when leftover IDs from "
+            "previous builds are still registered with the homeserver."
+        ),
+    )
 
 
 class BridgeMutationResponse(BaseModel):
-    """Response body shared by enable / disable / rotate.
+    """Response body shared by enable / disable / rotate / force-reset.
 
     The ``steps`` list captures the ordered sequence the server
     executed and their outcomes, so a partial failure can be
@@ -178,7 +197,7 @@ class BridgeMutationResponse(BaseModel):
     ``failed``), and ``detail`` (redacted — never echoes a token).
     """
 
-    action: Literal["enable", "disable", "rotate"]
+    action: Literal["enable", "disable", "rotate", "force_reset"]
     ok: bool
     steps: list[dict[str, Any]] = Field(default_factory=list)
     message: str
@@ -289,19 +308,62 @@ async def discord_bridge_status(
     they belong). Tokens are never returned.
     """
     require_admin(user_id)
+
+    # Read both sides of the bridge state so we can surface desync as a
+    # first-class signal. If registration.yaml is unreadable we still
+    # want to report "broken" rather than raising — the UI needs to be
+    # able to offer a reset even when disk state is garbage.
+    registration = None
+    registration_error: str | None = None
     try:
         registration = read_registration_file()
     except BridgeConfigError as exc:
+        registration_error = str(exc)
         logger.warning(
             "bridge status: registration file unreadable: %s",
-            redact_for_logging({"error": str(exc)}),
+            redact_for_logging({"error": registration_error}),
         )
-        raise _map_bridge_error(exc) from exc
+
+    stale_ids = read_appservice_ids()
+    bot_token_configured = read_discord_bot_token() is not None
+
+    # Desync detection:
+    #   (a) registration.yaml unreadable -> broken
+    #   (b) registration exists but its ID not in tuwunel.toml -> homeserver
+    #       doesn't know about this bridge
+    #   (c) registration missing but tuwunel.toml still has entries -> ghost
+    #       registrations from a previous build or failed disable
+    #   (d) tuwunel.toml has entries with a DIFFERENT id than registration.yaml
+    #       -> the two sides don't match; auth will fail
+    desync: str | None = None
+    if registration_error is not None:
+        desync = f"Registration file unreadable: {registration_error}"
+    elif registration is None and stale_ids:
+        desync = (
+            f"Homeserver still knows about stale appservice registration(s): "
+            f"{', '.join(stale_ids)}. Reset to clear."
+        )
+    elif registration is not None:
+        if registration.id not in stale_ids:
+            desync = (
+                f"Bridge registration.yaml has id={registration.id} but "
+                f"the homeserver has {stale_ids or 'no concord appservice'}. "
+                f"Tokens will fail to authenticate. Reset to clear."
+            )
+        elif len(stale_ids) > 1:
+            extras = [x for x in stale_ids if x != registration.id]
+            desync = (
+                f"Multiple concord appservice registrations in tuwunel.toml "
+                f"({', '.join(extras)} beyond the active {registration.id}). "
+                f"Reset to clear."
+            )
 
     if registration is None:
         return BridgeStatusResponse(
             enabled=False,
-            bot_token_configured=read_discord_bot_token() is not None,
+            bot_token_configured=bot_token_configured,
+            desync=desync,
+            stale_appservice_ids=stale_ids,
         )
 
     return BridgeStatusResponse(
@@ -311,7 +373,9 @@ async def discord_bridge_status(
         user_namespace_regex=registration.user_namespace_regex,
         alias_namespace_regex=registration.alias_namespace_regex,
         registration_file_path=str(registration_file_path()),
-        bot_token_configured=read_discord_bot_token() is not None,
+        bot_token_configured=bot_token_configured,
+        desync=desync,
+        stale_appservice_ids=stale_ids,
     )
 
 
@@ -510,6 +574,125 @@ async def discord_bridge_disable(
         redact_for_logging({"ok": ok, "steps": steps, "user": user_id}),
     )
     return BridgeMutationResponse(action="disable", ok=ok, steps=steps, message=message)
+
+
+# ---------------------------------------------------------------------
+# POST /force-reset — aggressive cleanup for broken / desynced state
+# ---------------------------------------------------------------------
+
+
+async def _run_force_reset_steps() -> tuple[bool, list[dict[str, Any]]]:
+    """Clean up ALL concord bridge state regardless of current constant.
+
+    Unlike Disable (which assumes the current ``DISCORD_BRIDGE_APPSERVICE_ID``
+    matches what's on disk), this finds and removes every appservice
+    entry whose ID starts with ``concord_discord``. It also unconditionally
+    deletes ``registration.yaml`` even if its ID doesn't match today's
+    constant. This is the escape hatch for a desync caused by code
+    changes renaming the constant, partial-failure previous runs, or
+    hand-edits.
+    """
+    steps: list[dict[str, Any]] = []
+
+    # 1. Stop the bridge container (best-effort; the container might
+    # already be stopped or might not even exist yet).
+    try:
+        result = await stop_compose_service("concord-discord-bridge")
+        steps.append({
+            "name": "stop_bridge",
+            "status": "ok",
+            "detail": redact_for_logging(result),
+        })
+    except DockerControlError as exc:
+        steps.append({
+            "name": "stop_bridge",
+            "status": "skipped",
+            "detail": f"container not running or not found: {exc}",
+        })
+
+    # 2. Strip every concord appservice entry from tuwunel.toml.
+    try:
+        removed_ids = remove_all_concord_appservice_entries()
+        if removed_ids:
+            steps.append({
+                "name": "clear_tuwunel_entries",
+                "status": "ok",
+                "detail": f"removed: {', '.join(removed_ids)}",
+            })
+        else:
+            steps.append({
+                "name": "clear_tuwunel_entries",
+                "status": "skipped",
+                "detail": "no concord entries present",
+            })
+    except BridgeConfigError as exc:
+        steps.append({
+            "name": "clear_tuwunel_entries",
+            "status": "failed",
+            "detail": str(exc),
+        })
+        return False, steps
+
+    # 3. Restart conduwuit so it forgets the removed registrations.
+    try:
+        result = await restart_compose_service("conduwuit")
+        steps.append({
+            "name": "restart_conduwuit",
+            "status": "ok",
+            "detail": redact_for_logging(result),
+        })
+    except DockerControlError as exc:
+        steps.append({
+            "name": "restart_conduwuit",
+            "status": "failed",
+            "detail": str(exc),
+        })
+
+    # 4. Delete registration.yaml unconditionally.
+    try:
+        removed = delete_registration_file()
+        steps.append({
+            "name": "delete_registration",
+            "status": "ok" if removed else "skipped",
+            "detail": None if removed else "no file present",
+        })
+    except Exception as exc:  # noqa: BLE001
+        steps.append({
+            "name": "delete_registration",
+            "status": "failed",
+            "detail": str(exc),
+        })
+
+    all_ok = not any(step["status"] == "failed" for step in steps)
+    return all_ok, steps
+
+
+@router.post("/force-reset", response_model=BridgeMutationResponse)
+async def discord_bridge_force_reset(
+    body: NoBodyRequest | None = None,
+    user_id: str = Depends(get_user_id),
+) -> BridgeMutationResponse:
+    """Nuke all bridge state and clean up from a desynced / broken install.
+
+    This is the UI-visible escape hatch for when Disable can't clean up
+    (because it relies on matching the current constant, but on-disk
+    state has an older ID from a previous build). After a successful
+    reset, a fresh Enable should succeed.
+    """
+    require_admin(user_id)
+    logger.info("bridge force-reset requested by %s", user_id)
+
+    ok, steps = await _run_force_reset_steps()
+    message = (
+        "Bridge state fully reset. Enable to start fresh."
+        if ok
+        else "Force-reset completed with errors; see steps for detail."
+    )
+    logger.info(
+        "bridge force-reset result: %s",
+        redact_for_logging({"ok": ok, "steps": steps, "user": user_id}),
+    )
+    return BridgeMutationResponse(action="force_reset", ok=ok, steps=steps, message=message)
 
 
 # ---------------------------------------------------------------------

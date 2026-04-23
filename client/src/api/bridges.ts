@@ -27,6 +27,19 @@ export interface HttpBridgeStatus {
   user_namespace_regex: string | null;
   alias_namespace_regex: string | null;
   registration_file_path: string | null;
+  /**
+   * Human-readable description of a broken state when registration.yaml
+   * and tuwunel.toml disagree, or when stale registrations from previous
+   * builds are still present. Null when everything is consistent.
+   * When non-null, the UI should surface a "Reset to clean state" button.
+   */
+  desync: string | null;
+  /**
+   * All concord-prefixed appservice IDs currently registered with the
+   * homeserver. More than one entry, or an entry that doesn't match
+   * `appservice_id`, indicates a desync.
+   */
+  stale_appservice_ids: string[];
 }
 
 export interface HttpBridgeMutationStep {
@@ -36,7 +49,7 @@ export interface HttpBridgeMutationStep {
 }
 
 export interface HttpBridgeMutationResponse {
-  action: "enable" | "disable" | "rotate";
+  action: "enable" | "disable" | "rotate" | "force_reset";
   ok: boolean;
   steps: HttpBridgeMutationStep[];
   message: string;
@@ -140,6 +153,26 @@ export async function discordBridgeHttpRotate(
 ): Promise<HttpBridgeMutationResponse> {
   return bridgeApiFetch<HttpBridgeMutationResponse>(
     "/admin/bridges/discord/rotate",
+    accessToken,
+    { method: "POST", body: "{}" },
+  );
+}
+
+/**
+ * Aggressive cleanup for broken / desynced bridge state.
+ *
+ * Use when Disable can't clean up — typically when `status.desync` is
+ * non-null, meaning the on-disk registration.yaml ID doesn't match the
+ * active constant (e.g. after a code upgrade that renamed the
+ * appservice ID), or multiple stale registrations are lingering.
+ *
+ * After this completes, call Enable to start fresh.
+ */
+export async function discordBridgeHttpForceReset(
+  accessToken: string,
+): Promise<HttpBridgeMutationResponse> {
+  return bridgeApiFetch<HttpBridgeMutationResponse>(
+    "/admin/bridges/discord/force-reset",
     accessToken,
     { method: "POST", body: "{}" },
   );
