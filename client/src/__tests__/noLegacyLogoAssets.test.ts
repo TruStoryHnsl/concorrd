@@ -9,16 +9,22 @@ import { fileURLToPath } from "node:url";
  *
  * History: until 2026-04-21 the Concord mark shipped as a single
  * full-colour raster master at `branding/logo.png` plus a duplicate
- * at `client/src/assets/concord-logo.png` and a baked-in
- * `client/public/boot-splash.mp4`. None of those files responded to
+ * at `client/src/assets/concord-logo.png`. Neither responded to
  * theme switching — their colours were committed into the bytes.
  *
- * The new pipeline ships the mark as two grayscale-alpha mask PNGs
- * (`logo-upper.png` + `logo-lower.png`) which are tinted at runtime
- * via CSS `mask-image` + `background-color`. The legacy assets must
- * never be re-introduced — they would silently regress the theming
- * behaviour and make the next theme switch invisible to half the
- * surfaces in the app.
+ * The static-mark pipeline now ships the mark as two grayscale-alpha
+ * mask PNGs (`logo-upper.png` + `logo-lower.png`) which are tinted at
+ * runtime via CSS `mask-image` + `background-color`. The two raster
+ * masters are permanently banned — they would silently regress
+ * theming on every still-mark surface (sidebar, source tiles,
+ * favicon).
+ *
+ * The animated splash (`client/public/boot-splash.mp4`) is the
+ * user's hand-crafted Blender render and is canonical. It is NOT
+ * banned. Theme-tinting for the animation is a separate engineering
+ * track (alpha-mask sequence renders, channel-separated tinting,
+ * or per-theme variants) — that work must preserve the existing
+ * mp4, never replace it with a lesser experience.
  *
  * This test enforces the ban at two layers:
  *
@@ -62,12 +68,9 @@ const FORBIDDEN_FILES = [
   // pipeline — its only consumers were a Vite ?url import and the
   // favicon generator's secondary write. Both are gone.
   "client/src/assets/concord-logo.png",
-  // The hand-rendered MP4 splash. Replaced by the same mask-tinted
-  // half mechanism that powers the React `<ConcordLogo />`.
-  "client/public/boot-splash.mp4",
-  // Earlier WebP / GIF iterations of the same splash that lived in
-  // public during the splash-format experimentation phase. None of
-  // them are theme-responsive and all were superseded.
+  // Earlier WebP / GIF iterations of the splash from the format
+  // experimentation phase. The canonical animation is the user's
+  // hand-rendered `boot-splash.mp4` (which is NOT banned).
   "client/public/boot-splash.webp",
   "client/public/boot-splash.gif",
 ];
@@ -83,10 +86,6 @@ const FORBIDDEN_REFERENCES: Array<{ regex: RegExp; description: string }> = [
   {
     regex: /\blogo-interlocking-circles\.png\b/,
     description: 'reference to deleted "logo-interlocking-circles.png" master',
-  },
-  {
-    regex: /\bboot-splash\.mp4\b/,
-    description: 'reference to deleted boot-splash.mp4 asset',
   },
   {
     regex: /\bboot-splash\.webp\b/,
@@ -203,5 +202,22 @@ describe("regression guard: legacy logo assets are permanently banned", () => {
       );
     }
     expect(missing).toEqual([]);
+  });
+
+  it("the hand-crafted splash animation is present", () => {
+    const splash = join(REPO_ROOT, "client/public/boot-splash.mp4");
+    if (!existsSync(splash)) {
+      throw new Error(
+        "boot-splash.mp4 is missing. This is the user's hand-rendered " +
+          "Blender animation and is canonical — it must NOT be deleted " +
+          "or replaced with a static fallback. If theme-responsive " +
+          "tinting of the animation is needed, engineer it on top of " +
+          "the existing asset (alpha-mask sequence renders, channel " +
+          "separation, or per-theme variants). See " +
+          "`branding/BRAND.md` and the feedback memory at " +
+          "`feedback_never_remove_user_creative_assets.md`.",
+      );
+    }
+    expect(existsSync(splash)).toBe(true);
   });
 });

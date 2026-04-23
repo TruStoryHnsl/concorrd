@@ -64,27 +64,32 @@
         contain: strict;
         transform: translateZ(0);
       }
-      /* The two halves of the brand mark — each rendered as a div
-       * with the matching PNG used as a CSS mask and the colour
-       * supplied by a theme-driven custom property. This is the same
-       * mechanism the React `<ConcordLogo />` component uses, just
-       * inlined here so the splash paints at first byte before any
-       * JS or stylesheet from `src/` has loaded. */
-      .boot-splash-half {
-        position: absolute;
-        inset: 0;
-        -webkit-mask-image: var(--mask);
-        mask-image: var(--mask);
-        -webkit-mask-repeat: no-repeat;
-        mask-repeat: no-repeat;
-        -webkit-mask-position: center;
-        mask-position: center;
-        -webkit-mask-size: contain;
-        mask-size: contain;
-        background-color: var(--tint);
+      .boot-splash-anim {
+        /* Promoted so the decoded video frames live on the GPU
+         * and survive any paint invalidation in the parent chain. */
         will-change: transform;
         transform: translateZ(0);
         backface-visibility: hidden;
+      }
+      /* Ping-pong loop: only one of the two stacked videos is visible
+       * at a time. The hidden one keeps its decoder warm at t=0 so the
+       * handover on `ended` is a single-frame class swap. `visibility`
+       * (not `display:none`) keeps the decode pipeline alive. The
+       * native HTML5 `loop` attribute pauses for one frame on every
+       * loop iteration while the demuxer rewinds — visible as an
+       * "interrupt and restart" once per clip. The JS at the bottom
+       * of <body> drives the swap; `loop` is intentionally omitted. */
+      .boot-splash-anim-hidden {
+        visibility: hidden;
+      }
+      #boot-splash-logo > .boot-splash-anim {
+        position: absolute;
+        inset: 0;
+        margin: auto;
+        width: 192px;
+        height: 192px;
+        display: block;
+        image-rendering: auto;
       }
       #boot-splash[data-state="visible"] {
         opacity: 1;
@@ -112,18 +117,11 @@
       }
       #boot-splash-logo {
         position: relative;
-        /*
-         * Mask sizing — the PNG halves are 1024×1024 with the brand
-         * mark occupying roughly the central ~70% of the canvas. The
-         * outer container is 204px to leave breathing room for the
-         * drop-shadow, and `mask-size: contain` on the half divs
-         * scales the mark to fit. Resulting visible footprint is
-         * roughly 145px square — close to the previous splash and
-         * within the design brief.
-         */
         width: 204px;
         height: 204px;
-        display: block;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         filter: drop-shadow(0 20px 42px rgba(0, 0, 0, 0.35));
       }
       /*
@@ -220,24 +218,33 @@
     <div id="boot-splash" data-state="visible" aria-hidden="true">
       <div id="boot-splash-logo">
         <!--
-          Mask-tinted brand mark — the same mechanism React's
-          `<ConcordLogo />` uses, inlined so the splash paints
-          before any application JS or CSS has loaded. Each half
-          is a `<div>` with `mask-image` set to the matching PNG
-          and `background-color` set to the theme's primary or
-          secondary CSS variable. Theme switches retint the splash
-          without re-fetching the asset.
+          Hand-crafted Blender animation. Two stacked <video> elements
+          ping-pong so the loop is seamless: A plays while B sits
+          buffered at t=0; on A's `ended` event, B is shown and
+          played, A is hidden and rewound. Native `loop` is omitted
+          because it pauses one frame to rewind the demuxer (visible
+          as a stutter every clip length). Bronze/teal colors are
+          baked into the render and match the default theme.
         -->
-        <div
-          class="boot-splash-half boot-ring-secondary"
-          style="--mask: url('/logo-lower.png'); --tint: var(--splash-logo-secondary);"
+        <video
+          id="boot-splash-anim-a"
+          class="boot-splash-anim"
+          src="/boot-splash.mp4"
+          autoplay
+          muted
+          playsinline
+          preload="auto"
           aria-hidden="true"
-        ></div>
-        <div
-          class="boot-splash-half boot-ring-primary"
-          style="--mask: url('/logo-upper.png'); --tint: var(--splash-logo-primary);"
+        ></video>
+        <video
+          id="boot-splash-anim-b"
+          class="boot-splash-anim boot-splash-anim-hidden"
+          src="/boot-splash.mp4"
+          muted
+          playsinline
+          preload="auto"
           aria-hidden="true"
-        ></div>
+        ></video>
       </div>
       <div id="boot-splash-brand">Concord</div>
       <div id="boot-splash-status">Waiting for host</div>
@@ -248,6 +255,23 @@
         if (status) {
           status.textContent = `Waiting for ${window.location.host || "host"}`;
         }
+        const a = document.getElementById("boot-splash-anim-a");
+        const b = document.getElementById("boot-splash-anim-b");
+        if (!a || !b) return;
+        let active = a, standby = b;
+        const swap = () => {
+          standby.currentTime = 0;
+          standby.classList.remove("boot-splash-anim-hidden");
+          active.classList.add("boot-splash-anim-hidden");
+          standby.play().catch(() => {});
+          active.pause();
+          active.currentTime = 0;
+          const tmp = active;
+          active = standby;
+          standby = tmp;
+        };
+        a.addEventListener("ended", swap);
+        b.addEventListener("ended", swap);
       })();
     </script>
     <div id="root"></div>
