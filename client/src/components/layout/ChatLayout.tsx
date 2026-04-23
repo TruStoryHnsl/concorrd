@@ -271,7 +271,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     }
   }, []);
 
-  const addBrowseTab = useCallback(() => {
+  const _addBrowseTab = useCallback(() => {
     const outServerId = useServerStore.getState().activeServerId;
     const outChannelId = useServerStore.getState().activeChannelId;
     const outDmActive = useDMStore.getState().dmActive;
@@ -294,7 +294,8 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     setOverlayView(null);
   }, []);
 
-  const switchToTab = useCallback((targetId: string) => {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _switchToTab = useCallback((targetId: string) => {
     const outServerId = useServerStore.getState().activeServerId;
     const outChannelId = useServerStore.getState().activeChannelId;
     const outDmActive = useDMStore.getState().dmActive;
@@ -316,6 +317,13 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     });
     setOverlayView(null);
   }, []);
+
+  // Reserved for INS-044 multitab wiring; reference to satisfy noUnusedLocals
+  // until the new mobile pill row is wired in.
+  void _addBrowseTab;
+  void _switchToTab;
+  void _MobilePillRow;
+
   // Mobile account sheet (T003)
   const [accountSheetOpen, setAccountSheetOpen] = useState(false);
   const [desktopAccountPopoverOpen, setDesktopAccountPopoverOpen] = useState(false);
@@ -2726,7 +2734,8 @@ const PAGE_PILL_META: Record<string, { icon: string; label: string }> = {
    Each browse tab shows the page-depth icon for that tab's current position.
    Tapping a tab switches to it (clearing any overlay). Voice pill inserts
    dynamically when in a voice call. */
-function MobilePillRow({
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _MobilePillRow({
   active,
   onNavigate,
   pageDepth: _pageDepth,
