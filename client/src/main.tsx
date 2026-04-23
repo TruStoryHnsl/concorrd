@@ -3,25 +3,12 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App";
 
-// Service worker self-heal path. We used to register a pass-through SW
-// to qualify for Chrome's PWA install prompt; it caused stale-shell
-// support pain so we pulled it out. Any browser that still has the old
-// SW registered needs it replaced by the current sw.js stub (which no
-// longer reloads clients on activate — see public/sw.js), so:
-//
-//   1. Register /sw.js to push the update-check. If the browser has an
-//      older copy it installs the new one, skipWaiting → activate →
-//      unregister, all without reloading the page.
-//   2. Also kick off a direct unregister on any registrations already
-//      present in case the browser didn't pick the new one up.
-if ("serviceWorker" in navigator && !("__TAURI_INTERNALS__" in window)) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
-    navigator.serviceWorker.getRegistrations().then((regs) => {
-      for (const r of regs) r.unregister().catch(() => {});
-    }).catch(() => {});
-  });
-}
+// Service worker was removed. The pre-React inline script in
+// index.html already unregisters any leftover SW from a previous
+// deploy at HTML-parse time, before anything else runs. Registering
+// a new one here would defeat that — it would install the stub SW
+// again, whose activate handler would then run its cleanup cycle on
+// every page load. One-shot unregister + no registration = no SW.
 import { initServerUrl } from "./api/serverUrl";
 import { useSourcesStore } from "./stores/sources";
 

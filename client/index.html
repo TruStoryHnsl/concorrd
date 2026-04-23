@@ -34,18 +34,13 @@
       body { min-height: 100vh; }
       #boot-splash {
         /*
-         * Transparent overlay. The dark app surface is painted by
-         * html/body above, so the splash itself does NOT own a
-         * backdrop — that's what was crowding the logo and forcing
-         * surrounding UI to reflow. The splash overlays whatever is
-         * underneath (body background during cold boot, the hydrated
-         * React tree during handoff) without introducing its own
-         * opaque rectangle.
-         *
-         * pointer-events:none on the container lets any stray click
-         * the user makes during the splash window reach the app
-         * underneath, rather than being swallowed by a full-viewport
-         * absorbing layer.
+         * Opaque backdrop — the splash owns its own dark rectangle
+         * so on refresh, the browser paints the splash's backdrop
+         * in the same pass as the logo animation. A transparent
+         * splash let the old page's pixels show through during
+         * paint-holding, so the user saw the logo floating over
+         * whatever was on screen before the reload until the body
+         * background caught up.
          */
         position: fixed;
         inset: 0;
@@ -55,7 +50,7 @@
         align-items: center;
         justify-content: center;
         gap: 1.5rem;
-        background: transparent;
+        background: #0c0e11;
         color: #f4f4f7;
         pointer-events: none;
       }
@@ -141,6 +136,20 @@
     <!-- Tag <html> before first paint so CSS can branch on native vs. web.
          __TAURI__ is injected at document-start by withGlobalTauri. -->
     <script>if(window.__TAURI__)document.documentElement.classList.add('tauri')</script>
+    <!-- Kill any leftover service worker from a previous deploy the
+         moment this page parses, before React or the old SW's own
+         activate handler can trigger a reload. This fires earlier
+         than main.tsx's register() call and handles the case where
+         a browser has a stuck SW that keeps reloading the page. -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          for (var i = 0; i < regs.length; i++) {
+            regs[i].unregister();
+          }
+        }).catch(function() {});
+      }
+    </script>
     <!-- Block pinch-zoom-IN on WebKit/iOS/Orion.
          viewport maximum-scale=1.0 is ignored by Safari/Orion, so two layers:
          1. gesturechange (WebKit-specific): scale>1 = zoom-in, block it.
