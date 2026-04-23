@@ -258,6 +258,50 @@ cargo tauri android build           # release APK / AAB
 cargo tauri android dev             # iterate against a USB device or emulator
 ```
 
+### 7c. Build script (recommended)
+
+Use `scripts/build_android_native.sh` instead of calling `cargo tauri android build`
+directly. It handles:
+
+- Auto-detection of `ANDROID_HOME` / `ANDROID_NDK_HOME`
+- Rust target installation if any are missing
+- React client build (with `npm ci` freshness check)
+- Signing via env vars (debug skips signing)
+- Artifact collection to `dist/android-release/` or `dist/android-debug/`
+
+**Environment variables:**
+
+| Variable | Required for | Description |
+|---|---|---|
+| `ANDROID_HOME` | All builds | Android SDK root (`~/Android/Sdk`). Auto-detected from common paths. |
+| `ANDROID_NDK_HOME` | All builds | Android NDK root. Auto-detected from `$ANDROID_HOME/ndk/*`. |
+| `KEYSTORE_PATH` | Signed release | Absolute path to `.jks` / `.keystore` file |
+| `KEYSTORE_PASS` | Signed release | Keystore password |
+| `KEY_ALIAS` | Signed release | Key alias within the keystore |
+| `KEY_PASS` | Signed release | Key password (defaults to `KEYSTORE_PASS` if unset) |
+| `RELEASE_DIR` | Optional | Override output directory |
+
+**Usage:**
+
+```bash
+# Debug APK (unsigned, fast — good for device-over-USB iteration):
+scripts/build_android_native.sh --debug
+
+# Unsigned release APK (requires signing before distribution):
+scripts/build_android_native.sh
+
+# Signed release APK (ready for Play Store / direct install):
+KEYSTORE_PATH=/path/to/concord.jks \
+KEYSTORE_PASS=mypassword \
+KEY_ALIAS=concord \
+  scripts/build_android_native.sh
+
+# Install debug build on connected device:
+adb install dist/android-debug/concord.apk
+```
+
+**Output:** `dist/android-release/concord.apk` (release) or `dist/android-debug/concord.apk` (debug).
+
 The `[target.'cfg(target_os = "android")'.dependencies]` section in
 `src-tauri/Cargo.toml` is reserved for Android-only crates (e.g. JNI helpers)
 when servitude grows real platform integration.
