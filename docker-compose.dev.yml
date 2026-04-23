@@ -31,18 +31,19 @@ services:
       context: .
       dockerfile: web/Dockerfile.dev
     volumes:
-      - ./client/src:/app/src:ro
-      - ./client/index.html:/app/index.html:ro
-      - ./client/vite.config.ts:/app/vite.config.ts:ro
-      - ./client/tsconfig.json:/app/tsconfig.json:ro
-      - ./client/tsconfig.app.json:/app/tsconfig.app.json:ro
-      - ./client/tsconfig.node.json:/app/tsconfig.node.json:ro
-      - ./client/eslint.config.js:/app/eslint.config.js:ro
-      - ./client/package.json:/app/package.json:ro
-      - ./client/package-lock.json:/app/package-lock.json:ro
-      # Named volume so node_modules persists across container recreates.
-      # First startup on a fresh volume takes ~30-60s for npm ci; subsequent
-      # startups skip it if the lockfile matches.
+      # Mount the whole client/ directory as a single bind. Per-file
+      # binds (the previous layout) pin an inode; git operations on
+      # the host — merge, checkout, cherry-pick — replace files with
+      # fresh inodes, silently breaking the mount inside the running
+      # container. The symptom is "my edits don't show up in the dev
+      # server" followed by hours of debugging. A directory bind
+      # resolves names through the host's dirent tree at read time,
+      # so inode churn is invisible to the container.
+      - ./client:/app:ro
+      # Named volume overlays /app/node_modules so the container's
+      # own node_modules (populated by `npm ci` on first run) is used
+      # instead of whatever is on the host. Must come AFTER the
+      # parent /app bind so compose layers it on top.
       - concord-vite-node-modules:/app/node_modules
     networks:
       - concord
