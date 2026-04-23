@@ -512,6 +512,15 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
   // Invite URL — fetched lazily when the invite-bot screen is opened.
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [inviteUrlLoading, setInviteUrlLoading] = useState(false);
+  // ISSUE F (2026-04-18): the previous implementation silently swallowed
+  // every error from discordBridgeHttpGetInviteUrl and left the button
+  // permanently disabled with no user-visible reason. After instrumenting,
+  // the actual failure mode is the backend returning 400 with
+  // "No bot token configured." when the admin hasn't saved a bot token
+  // yet — see server/routers/admin_bridges.py:discord_bridge_bot_invite_url.
+  // We now surface the error inline so the user knows what to do (go to
+  // Settings > Bridges and save a token).
+  const [inviteUrlError, setInviteUrlError] = useState<string | null>(null);
 
   // Discord guilds — fetched when bridge-guild screen opens
   const [discordGuilds, setDiscordGuilds] = useState<{ id: string; name: string; icon: string | null }[]>([]);
@@ -550,13 +559,21 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
     setScreen("invite-bot");
     if (inviteUrl) return; // already fetched
     setInviteUrlLoading(true);
+    setInviteUrlError(null);
     try {
       if (!accessToken) throw new Error("Not logged in");
       const result = await discordBridgeHttpGetInviteUrl(accessToken);
       setInviteUrl(result.invite_url);
-    } catch {
-      // Non-fatal — show a manual fallback link
+    } catch (err) {
+      // ISSUE F: log AND surface. The previous silent swallow is the
+      // reason the "Open Discord Invite" button looked broken (disabled
+      // with no explanation) whenever the backend wasn't ready to mint
+      // a URL (no bot token saved, admin-only check failed, bridge not
+      // enabled, etc.).
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[discord-invite] failed to fetch invite URL:", err);
       setInviteUrl(null);
+      setInviteUrlError(message);
     } finally {
       setInviteUrlLoading(false);
     }
@@ -1693,6 +1710,36 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
                   </span>
                 </li>
               </ol>
+              {/* ISSUE F: when the invite URL fetch fails, show the actual
+                  server-reported reason inline with a Retry. Without this,
+                  the button stays disabled forever and the user has no way
+                  to tell whether the bridge is unconfigured, the network is
+                  down, or they lack admin perms. */}
+              {inviteUrlError && !inviteUrl && (
+                <div
+                  className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"
+                  data-testid="discord-invite-error"
+                >
+                  <p className="font-medium">Couldn't generate an invite URL</p>
+                  <p className="mt-1 opacity-90">{inviteUrlError}</p>
+                  <p className="mt-1 opacity-75">
+                    Tip: open Settings {"\u203a"} Bridges and make sure a Discord bot token
+                    has been saved for this server.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInviteUrlError(null);
+                      setInviteUrl(null);
+                      openInviteScreen();
+                    }}
+                    disabled={inviteUrlLoading}
+                    className="mt-2 text-xs text-primary hover:underline disabled:opacity-50"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
               <button
                 onClick={() => {
                   if (inviteUrl) {
@@ -1700,6 +1747,12 @@ export function DiscordSourceBrowser({ onClose }: { onClose: () => void }) {
                   }
                 }}
                 disabled={inviteUrlLoading || !inviteUrl}
+                title={
+                  inviteUrlError && !inviteUrl
+                    ? `Can't generate invite: ${inviteUrlError}`
+                    : undefined
+                }
+                data-testid="discord-invite-open-btn"
                 className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#5865F2] hover:bg-[#4752c4] text-white text-sm font-medium disabled:opacity-50 transition-colors"
               >
                 {inviteUrlLoading ? (
