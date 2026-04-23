@@ -7,15 +7,15 @@ import App from "./App";
 // here to qualify for Chrome's PWA install prompt. It caused enough
 // stale-shell support issues (browsers served old bundles even after
 // vite re-bundled) that we pulled it out. For users who had the old SW
-// registered, `/sw.js` is now a self-unregistering stub — we still
-// register it here ONCE so the install → activate cycle runs, which
-// drops caches and calls `registration.unregister()`. After that the
-// browser never touches it again unless we add one back.
+// registered, unregister anything currently live so the shell isn't
+// served from cache next load.
+//
+// DO NOT re-register `/sw.js` here. The stub SW's activate handler
+// reloads every controlled client to flush its cache, so re-registering
+// on every page load creates a flash loop (load → new SW installs →
+// activates → reloads page → repeat).
 if ("serviceWorker" in navigator && !("__TAURI_INTERNALS__" in window)) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
-    // Also unregister anything currently registered so the cleanup
-    // happens immediately, not on the next navigation.
     navigator.serviceWorker.getRegistrations().then((regs) => {
       for (const r of regs) r.unregister().catch(() => {});
     }).catch(() => {});
