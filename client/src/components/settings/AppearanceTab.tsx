@@ -46,6 +46,11 @@ const THEME_META: Record<ThemePreset, {
   description: string;
   swatches: [string, string, string];
 }> = {
+  "bronze-teal": {
+    label: "Bronze Teal",
+    description: "Warm bronze, cool teal, ember black.",
+    swatches: ["#a5823f", "#408c96", "#1b1915"],
+  },
   "kinetic-node": {
     label: "Kinetic Node",
     description: "Indigo, mint, graphite.",

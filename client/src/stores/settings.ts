@@ -125,6 +125,7 @@ export const CHAT_FONT_SIZE_MIN = 12;
 export const CHAT_FONT_SIZE_MAX = 32;
 export const CHAT_FONT_SIZE_DEFAULT = 14;
 export const THEME_PRESETS = [
+  "bronze-teal",
   "kinetic-node",
   "verdant-signal",
   "ember-circuit",
@@ -158,7 +159,7 @@ const defaults = {
   channelNotifications: {} as Record<string, "all" | "mentions" | "nothing">,
   notificationSound: true,
   chatFontSize: CHAT_FONT_SIZE_DEFAULT,
-  themePreset: "kinetic-node" as ThemePreset,
+  themePreset: "bronze-teal" as ThemePreset,
 } as const;
 
 export const useSettingsStore = create<SettingsState>()(

@@ -27,8 +27,8 @@
        * with no re-paint when index.css finally resolves.
        */
       :root {
-        --splash-logo-primary: var(--color-logo-primary, #a4a5ff);
-        --splash-logo-secondary: var(--color-logo-secondary, #afefdd);
+        --splash-logo-primary: var(--color-logo-primary, #a5823f);
+        --splash-logo-secondary: var(--color-logo-secondary, #408c96);
       }
       html, body { background: #0c0e11; color: #f4f4f7; margin: 0; }
       html { color-scheme: dark; }
@@ -63,12 +63,24 @@
         contain: strict;
         transform: translateZ(0);
       }
-      #boot-splash-anim {
-        /* Also promoted so the decoded WebP frames live on the GPU
+      .boot-splash-anim {
+        /* Also promoted so the decoded video frames live on the GPU
          * and survive any paint invalidation in the parent chain. */
         will-change: transform;
         transform: translateZ(0);
         backface-visibility: hidden;
+      }
+      /* Ping-pong loop: only one of the two stacked videos is visible
+       * at a time. The hidden one keeps its decoder warm at t=0 so the
+       * handover on `ended` is a single-frame class swap. `visibility`
+       * (not `display:none`) keeps the decode pipeline alive. */
+      .boot-splash-anim-hidden {
+        visibility: hidden;
+      }
+      #boot-splash-logo > .boot-splash-anim {
+        position: absolute;
+        inset: 0;
+        margin: auto;
       }
       #boot-splash[data-state="visible"] {
         opacity: 1;
@@ -117,7 +129,7 @@
         justify-content: center;
         filter: drop-shadow(0 20px 42px rgba(0, 0, 0, 0.35));
       }
-      #boot-splash-anim {
+      .boot-splash-anim {
         width: 192px;
         height: 192px;
         display: block;
@@ -150,8 +162,11 @@
       }
     </style>
     <!-- Tag <html> before first paint so CSS can branch on native vs. web.
-         __TAURI__ is injected at document-start by withGlobalTauri. -->
-    <script>if(window.__TAURI__)document.documentElement.classList.add('tauri')</script>
+         Tauri v2 exposes `__TAURI_INTERNALS__` at document-start;
+         the legacy `__TAURI__` key is a v1 holdover that does NOT
+         exist in v2 and was the source of the 2026-04-10 detection
+         bug. See `client/src/api/serverUrl.ts` for the full story. -->
+    <script>if(window.__TAURI_INTERNALS__)document.documentElement.classList.add('tauri')</script>
     <!-- Kill any leftover service worker from a previous deploy the
          moment this page parses, before React or the old SW's own
          activate handler can trigger a reload. This fires earlier
@@ -213,12 +228,30 @@
   <body>
     <div id="boot-splash" data-state="visible" aria-hidden="true">
       <div id="boot-splash-logo">
+        <!--
+          The native HTML5 `loop` attribute pauses for one frame on every
+          loop iteration while the demuxer rewinds — a 6.25s clip read as
+          a visible "interrupt and restart" once every 6 seconds. Two
+          stacked `<video>` elements in ping-pong (A plays while B is
+          buffered to t=0; on A's end, hide A, show B and play, swap
+          roles) gives a genuinely seamless loop. `loop` is omitted —
+          the JS below drives the cycle.
+        -->
         <video
-          id="boot-splash-anim"
+          id="boot-splash-anim-a"
+          class="boot-splash-anim"
           src="/boot-splash.mp4"
           autoplay
           muted
-          loop
+          playsinline
+          preload="auto"
+          aria-hidden="true"
+        ></video>
+        <video
+          id="boot-splash-anim-b"
+          class="boot-splash-anim boot-splash-anim-hidden"
+          src="/boot-splash.mp4"
+          muted
           playsinline
           preload="auto"
           aria-hidden="true"
@@ -233,6 +266,29 @@
         if (status) {
           status.textContent = `Waiting for ${window.location.host || "host"}`;
         }
+        // Ping-pong loop: when the active clip ends, swap to the
+        // pre-buffered standby clip immediately. The standby has been
+        // sitting at t=0 since DOM parse, so the swap is a single
+        // class-toggle frame — no demux rewind, no visible stutter.
+        const a = document.getElementById("boot-splash-anim-a");
+        const b = document.getElementById("boot-splash-anim-b");
+        if (!a || !b) return;
+        let active = a, standby = b;
+        const swap = () => {
+          standby.currentTime = 0;
+          standby.classList.remove("boot-splash-anim-hidden");
+          active.classList.add("boot-splash-anim-hidden");
+          standby.play().catch(() => {});
+          // Pre-seek the now-hidden one back to 0 so it's ready for next swap.
+          active.pause();
+          active.currentTime = 0;
+          // Swap roles.
+          const tmp = active;
+          active = standby;
+          standby = tmp;
+        };
+        a.addEventListener("ended", swap);
+        b.addEventListener("ended", swap);
       })();
     </script>
     <div id="root"></div>

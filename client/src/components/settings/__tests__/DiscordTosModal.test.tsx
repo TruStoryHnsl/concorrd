@@ -101,8 +101,12 @@ describe("<DiscordTosModal />", () => {
     expect(
       screen.getByText(/cannot warrant safety/i),
     ).toBeInTheDocument();
+    // Bridge-bootstrap PR rephrased the token-handling warning. The
+    // modal now says "Concord itself never handles the token" and
+    // "token is stored on this server"; check the canonical
+    // user-visible phrase that's still present.
     expect(
-      screen.getByText(/token never touches Concord/i),
+      screen.getByText(/Concord itself never handles the token/i),
     ).toBeInTheDocument();
   });
 });

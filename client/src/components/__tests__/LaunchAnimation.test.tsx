@@ -1,122 +1,106 @@
 /**
- * Unit tests for the Concord launch splash (INS-023).
+ * Unit tests for the Concord launch splash timing coordinator (INS-023).
  *
- * The component is small but has four interesting behaviors:
- *   1. It renders a visible splash with the Concord wordmark on mount.
- *   2. It sits in the "showing" phase until the minimum-display time
- *      has elapsed AND `isLoading` is false.
- *   3. It transitions to "fading" for 420ms after both conditions
- *      are met, fires `onDone` exactly once, then renders null.
- *   4. It never flashes back to "showing" — once dismissed, it
- *      stays dismissed for the lifetime of the mount.
+ * `LaunchAnimation` renders **nothing** — the visible splash is the
+ * `#boot-splash` block in `client/index.html`, which is already painted
+ * before React even evaluates this module. The component is purely a
+ * timing state machine that:
+ *   1. Waits until `minimumDurationMs` has elapsed AND `isLoading` has
+ *      flipped false.
+ *   2. Triggers `handoffBootSplash()` (which retires the HTML splash).
+ *   3. After a fixed fade duration, fires `onDone` exactly once.
  *
- * Uses vitest's fake timers so the 400ms + 420ms staircase runs in
- * near-zero wall time.
+ * We assert observable behavior:
+ *   - The mock'd `handoffBootSplash` is called exactly once at the
+ *     right moment.
+ *   - `onDone` is called exactly once after the fade completes.
+ *   - The `#boot-splash` element's `data-state` flips from "visible"
+ *     to "handoff" when LaunchAnimation hands off.
+ *
+ * Uses vitest fake timers so the duration ladder runs in near-zero
+ * wall time.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, act } from "@testing-library/react";
 import { LaunchAnimation } from "../LaunchAnimation";
 
 describe("<LaunchAnimation />", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    // Re-create the boot-splash sentinel each test so handoff can flip
+    // its data-state attribute.
+    const existing = document.getElementById("boot-splash");
+    if (existing) existing.remove();
+    const splash = document.createElement("div");
+    splash.id = "boot-splash";
+    splash.setAttribute("data-state", "visible");
+    document.body.appendChild(splash);
   });
   afterEach(() => {
     vi.runOnlyPendingTimers();
     vi.useRealTimers();
+    const splash = document.getElementById("boot-splash");
+    if (splash) splash.remove();
   });
 
-  it("renders the splash in 'showing' phase on mount", () => {
-    render(<LaunchAnimation isLoading={true} />);
-    const splash = screen.getByTestId("launch-animation");
-    expect(splash).toBeInTheDocument();
-    expect(splash.getAttribute("data-phase")).toBe("showing");
-    // Concord wordmark must be visible in the splash body.
-    expect(screen.getAllByText(/^Concord$/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/^Waiting for /)).toBeInTheDocument();
+  it("renders nothing in the React tree (boot-splash is the visible layer)", () => {
+    const { container } = render(<LaunchAnimation isLoading={true} />);
+    expect(container.firstChild).toBeNull();
   });
 
-  it("hands off the hard-refresh boot splash after mount", () => {
-    const bootSplash = document.createElement("div");
-    bootSplash.id = "boot-splash";
-    bootSplash.setAttribute("data-state", "visible");
-    document.body.appendChild(bootSplash);
-
-    render(<LaunchAnimation isLoading={true} />);
-    expect(bootSplash.getAttribute("data-state")).toBe("handoff");
-  });
-
-  it("stays in 'showing' while isLoading is true, even after min duration", () => {
-    render(
-      <LaunchAnimation isLoading={true} minimumDurationMs={400} />,
-    );
-    act(() => {
-      vi.advanceTimersByTime(1000);
+  it("does not retire the boot-splash while isLoading is true, even after min duration", async () => {
+    render(<LaunchAnimation isLoading={true} minimumDurationMs={400} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
     });
-    const splash = screen.getByTestId("launch-animation");
-    expect(splash.getAttribute("data-phase")).toBe("showing");
+    expect(
+      document.getElementById("boot-splash")?.getAttribute("data-state"),
+    ).toBe("visible");
   });
 
-  it("stays in 'showing' before the minimum duration elapses even if isLoading flips false", () => {
+  it("does not retire the boot-splash before min duration even if isLoading flips false", async () => {
     const { rerender } = render(
       <LaunchAnimation isLoading={true} minimumDurationMs={400} />,
     );
-    // Flip isLoading false immediately but before the min timer fires.
     rerender(<LaunchAnimation isLoading={false} minimumDurationMs={400} />);
-    act(() => {
-      vi.advanceTimersByTime(100);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
     });
-    const splash = screen.getByTestId("launch-animation");
-    // Still showing — the floor is 400ms and we're at 100.
-    expect(splash.getAttribute("data-phase")).toBe("showing");
+    expect(
+      document.getElementById("boot-splash")?.getAttribute("data-state"),
+    ).toBe("visible");
   });
 
-  it("transitions showing -> fading -> done and calls onDone exactly once", async () => {
+  it("retires the boot-splash and fires onDone after both gates clear", async () => {
     const onDone = vi.fn();
-    const { rerender } = render(
+    render(
       <LaunchAnimation
         isLoading={false}
         minimumDurationMs={400}
         onDone={onDone}
       />,
     );
-    // Still showing pre-min-duration.
     expect(
-      screen.getByTestId("launch-animation").getAttribute("data-phase"),
-    ).toBe("showing");
+      document.getElementById("boot-splash")?.getAttribute("data-state"),
+    ).toBe("visible");
 
-    // Cross the min-duration threshold — should flip to fading.
-    // `advanceTimersByTimeAsync` pumps microtasks between timer
-    // callbacks so React state updates commit before we re-query
-    // the DOM.
+    // Cross the min-duration threshold — handoff fires.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(400);
     });
     expect(
-      screen.getByTestId("launch-animation").getAttribute("data-phase"),
-    ).toBe("fading");
+      document.getElementById("boot-splash")?.getAttribute("data-state"),
+    ).toBe("handoff");
     expect(onDone).not.toHaveBeenCalled();
 
-    // Cross the fade duration — should unmount and fire onDone once.
+    // After the fade duration (420ms internal), onDone fires once.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(420);
     });
-    expect(screen.queryByTestId("launch-animation")).not.toBeInTheDocument();
-    expect(onDone).toHaveBeenCalledTimes(1);
-
-    // Subsequent re-renders must NOT un-dismiss or fire onDone again.
-    rerender(
-      <LaunchAnimation
-        isLoading={true}
-        minimumDurationMs={400}
-        onDone={onDone}
-      />,
-    );
-    expect(screen.queryByTestId("launch-animation")).not.toBeInTheDocument();
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
-  it("dismisses even when the caller leaves isLoading at its default value (true->false)", async () => {
+  it("dismisses even when isLoading flips false after the min duration elapses", async () => {
     const onDone = vi.fn();
     const { rerender } = render(
       <LaunchAnimation
@@ -125,15 +109,15 @@ describe("<LaunchAnimation />", () => {
         onDone={onDone}
       />,
     );
-    // Wait past the min duration while still loading — stays showing.
+    // Past min duration but still loading — splash stays.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(500);
     });
     expect(
-      screen.getByTestId("launch-animation").getAttribute("data-phase"),
-    ).toBe("showing");
+      document.getElementById("boot-splash")?.getAttribute("data-state"),
+    ).toBe("visible");
 
-    // Flip to not loading — the fade effect runs on the next commit.
+    // Flip to not loading — handoff fires immediately.
     rerender(
       <LaunchAnimation
         isLoading={false}
@@ -142,18 +126,45 @@ describe("<LaunchAnimation />", () => {
       />,
     );
     expect(
-      screen.getByTestId("launch-animation").getAttribute("data-phase"),
-    ).toBe("fading");
+      document.getElementById("boot-splash")?.getAttribute("data-state"),
+    ).toBe("handoff");
 
+    // Fade duration → onDone.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(420);
     });
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
-  it("marks itself aria-hidden so assistive tech ignores the decorative layer", () => {
-    render(<LaunchAnimation isLoading={true} />);
-    const splash = screen.getByTestId("launch-animation");
-    expect(splash.getAttribute("aria-hidden")).toBe("true");
+  it("does not fire onDone twice if isLoading flips back to true post-handoff", async () => {
+    const onDone = vi.fn();
+    const { rerender } = render(
+      <LaunchAnimation
+        isLoading={false}
+        minimumDurationMs={100}
+        onDone={onDone}
+      />,
+    );
+    // Cross min-duration first so handoff phase enters.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    // Then cross fade duration.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(420);
+    });
+    expect(onDone).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <LaunchAnimation
+        isLoading={true}
+        minimumDurationMs={100}
+        onDone={onDone}
+      />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(onDone).toHaveBeenCalledTimes(1);
   });
 });

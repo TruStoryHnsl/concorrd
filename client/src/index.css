@@ -2,16 +2,16 @@
 @import "./styles/tv.css";
 
 @theme {
-  /* ── Surface Hierarchy (Kinetic Node) ── */
-  --color-surface: #0c0e11;
-  --color-surface-container-low: #111417;
-  --color-surface-container: #171a1d;
-  --color-surface-container-high: #1d2024;
-  --color-surface-container-highest: #23262a;
-  --color-surface-variant: #23262a;
-  --color-surface-bright: #292c31;
-  --color-surface-dim: #0c0e11;
-  --color-surface-tint: #a4a5ff;
+  /* ── Surface Hierarchy (Bronze Teal — default theme) ── */
+  --color-surface: #0e0d0b;
+  --color-surface-container-low: #14130f;
+  --color-surface-container: #1b1915;
+  --color-surface-container-high: #221f1a;
+  --color-surface-container-highest: #2a2620;
+  --color-surface-variant: #2a2620;
+  --color-surface-bright: #322d26;
+  --color-surface-dim: #0e0d0b;
+  --color-surface-tint: #a5823f;
 
   /* ── On-Surface (Text/Content) ── */
   --color-on-surface: #f9f9fd;
@@ -28,18 +28,18 @@
   --color-brand-deep: #087838;      /* Mesh Root */
   --color-brand-shadow: #085828;    /* Mesh Soil */
 
-  /* ── Primary (Electric Indigo) ── */
-  --color-primary: #a4a5ff;
-  --color-primary-dim: #5e5eff;
-  --color-primary-container: #9496ff;
+  /* ── Primary (Bronze) ── */
+  --color-primary: #a5823f;
+  --color-primary-dim: #7a5e2a;
+  --color-primary-container: #4a3812;
 
   /* ── On-Primary ── */
-  --color-on-primary: #1300a3;
+  --color-on-primary: #1b1308;
 
-  /* ── Secondary (Mint/Teal) ── */
-  --color-secondary: #afefdd;
-  --color-secondary-dim: #a1e1cf;
-  --color-secondary-container: #0b5345;
+  /* ── Secondary (Teal) ── */
+  --color-secondary: #408c96;
+  --color-secondary-dim: #2c6a73;
+  --color-secondary-container: #143a40;
 
   /* ── Logo base colours ──
    * The Concord brand mark (`<ConcordLogo />`) is an inline SVG with
@@ -59,11 +59,11 @@
   --color-logo-secondary: var(--color-secondary);
 
   /* ── On-Secondary ── */
-  --color-on-secondary: #195c4e;
-  --color-on-secondary-container: #a1e1cf;
+  --color-on-secondary: #04161a;
+  --color-on-secondary-container: #b7e3e9;
 
   /* ── Tertiary ── */
-  --color-tertiary: #98ffd9;
+  --color-tertiary: #d6b86b;
 
   /* ── Error ── */
   --color-error: #ff716c;
@@ -173,6 +173,37 @@
   --color-on-secondary: #09291f;
   --color-on-secondary-container: #c7f8e7;
   --color-tertiary: #f3c978;
+  --color-logo-primary: var(--color-primary);
+  --color-logo-secondary: var(--color-secondary);
+}
+
+/* ── Bronze Teal — the new default theme. ──
+ * Sourced from the splash render pipeline:
+ *   primary    #a5823f  (warm bronze)
+ *   secondary  #408c96  (cool teal)
+ * Surfaces use a warm-tinted near-black so the bronze reads as
+ * inviting metal rather than orange-on-black. Tertiary picks up the
+ * bronze→amber edge for accents that need a third hue. */
+:root[data-theme="bronze-teal"] {
+  --color-surface: #0e0d0b;
+  --color-surface-container-low: #14130f;
+  --color-surface-container: #1b1915;
+  --color-surface-container-high: #221f1a;
+  --color-surface-container-highest: #2a2620;
+  --color-surface-variant: #2a2620;
+  --color-surface-bright: #322d26;
+  --color-surface-dim: #0e0d0b;
+  --color-surface-tint: #a5823f;
+  --color-primary: #a5823f;
+  --color-primary-dim: #7a5e2a;
+  --color-primary-container: #4a3812;
+  --color-on-primary: #1b1308;
+  --color-secondary: #408c96;
+  --color-secondary-dim: #2c6a73;
+  --color-secondary-container: #143a40;
+  --color-on-secondary: #04161a;
+  --color-on-secondary-container: #b7e3e9;
+  --color-tertiary: #d6b86b;
   --color-logo-primary: var(--color-primary);
   --color-logo-secondary: var(--color-secondary);
 }

@@ -14,8 +14,12 @@ describe("settings auth controls", () => {
     expect(profileTabSource).toMatch(/>\s*Logout\s*</);
   });
 
-  it("keeps the logout control on the bottom user banner", () => {
-    expect(channelSidebarSource).toContain("title=\"Logout\"");
-    expect(channelSidebarSource).toContain("aria-label=\"Logout\"");
+  it("wires logout into the bottom user banner's switch-server flow", () => {
+    // Bridge-bootstrap PR4/5 retired the standalone "Logout" button on
+    // the user banner; logout now happens implicitly as part of
+    // handleSwitchServer (clear homeserver → logout → reload). The
+    // logout function is still imported and called from this file.
+    expect(channelSidebarSource).toContain("logout()");
+    expect(channelSidebarSource).toMatch(/logout:\s*\(\)/);
   });
 });
