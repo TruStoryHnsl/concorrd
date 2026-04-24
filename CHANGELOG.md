@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-23
+
 ### Changed — User-scoped Discord bridge (breaking for admins)
 - **Bridge is now user-scoped.** Admin "Enable / Disable / Rotate / Force-Reset" controls are gone. Each user connects their own Discord account from user-settings → **Connections**. Admins have no path to trigger, read, or revoke another user's session. See `docs/bridges/user-scoped-bridge-redesign.md` for the full design.
 - **Bridge infrastructure is now invisible.** On concord-api startup, the lifespan bootstrap reconciles `registration.yaml` against `tuwunel.toml` and self-heals common drift states (fresh-install, orphaned entries, mismatched appservice IDs). Operators no longer click Enable; the bridge is always-on.
