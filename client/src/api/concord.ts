@@ -1089,12 +1089,60 @@ export async function getInstanceInfo(): Promise<InstanceInfo> {
 }
 
 export async function updateInstanceSettings(
-  settings: { name?: string; require_totp?: boolean },
+  settings: { name?: string; require_totp?: boolean; open_registration?: boolean },
   accessToken: string,
 ): Promise<InstanceInfo> {
   return apiFetch(
     "/admin/instance",
     { method: "PATCH", body: JSON.stringify(settings) },
+    accessToken,
+  );
+}
+
+// --- Admin invites ---
+
+export interface AdminInvite {
+  id: number;
+  token: string;
+  server_id: string;
+  server_name: string | null;
+  created_by: string;
+  max_uses: number;
+  use_count: number;
+  permanent: boolean;
+  expires_at: string | null;
+  is_valid: boolean;
+  created_at: string | null;
+}
+
+export async function adminListInvites(accessToken: string): Promise<AdminInvite[]> {
+  return apiFetch("/admin/invites", {}, accessToken);
+}
+
+export async function adminCreateInvite(
+  body: {
+    /** When omitted, defaults to the instance's lobby (instance.json::default_server_id). */
+    server_id?: string;
+    max_uses?: number;
+    expires_in_hours?: number;
+    permanent?: boolean;
+  },
+  accessToken: string,
+): Promise<AdminInvite> {
+  return apiFetch(
+    "/admin/invites",
+    { method: "POST", body: JSON.stringify(body) },
+    accessToken,
+  );
+}
+
+export async function adminRevokeInvite(
+  inviteId: number,
+  accessToken: string,
+): Promise<void> {
+  await apiFetch(
+    `/admin/invites/${inviteId}`,
+    { method: "DELETE" },
     accessToken,
   );
 }
