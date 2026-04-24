@@ -1147,6 +1147,59 @@ export async function adminRevokeInvite(
   );
 }
 
+// --- Admin extensions (catalog + install flow) ---
+
+export interface CatalogExtension {
+  id: string;
+  version: string;
+  name: string;
+  description: string;
+  pricing?: string;
+  modes?: string[] | null;
+  permissions?: string[];
+  min_concord_version?: string;
+  bundle_url: string;
+  bundle_size_bytes?: number;
+  entry?: string;
+}
+
+export interface ExtensionCatalogResponse {
+  catalog_url: string;
+  catalog: {
+    catalog_version?: number;
+    extensions: CatalogExtension[];
+  };
+  installed_ids: string[];
+}
+
+export async function adminGetExtensionCatalog(
+  accessToken: string,
+): Promise<ExtensionCatalogResponse> {
+  return apiFetch("/admin/extensions/catalog", {}, accessToken);
+}
+
+export async function adminInstallExtension(
+  extensionId: string,
+  accessToken: string,
+): Promise<{ status: string; extension_id: string }> {
+  return apiFetch(
+    "/admin/extensions/install",
+    { method: "POST", body: JSON.stringify({ extension_id: extensionId }) },
+    accessToken,
+  );
+}
+
+export async function adminUninstallExtension(
+  extensionId: string,
+  accessToken: string,
+): Promise<void> {
+  await apiFetch(
+    `/admin/extensions/${encodeURIComponent(extensionId)}`,
+    { method: "DELETE" },
+    accessToken,
+  );
+}
+
 // --- Admin ---
 
 export async function checkAdmin(

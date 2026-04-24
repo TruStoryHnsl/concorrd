@@ -24,6 +24,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from config import DATA_DIR
 from routers.servers import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -31,10 +32,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/extensions", tags=["extensions"])
 
 # ── Config ──────────────────────────────────────────────────────
+# The registry is persisted on the data volume (installed_extensions.json)
+# so the admin install flow survives image rebuilds. The legacy
+# server/extensions.json (inside the code bundle) is honoured as a
+# fallback only if the data-volume file is missing, which keeps
+# fresh-install deployments that haven't hit the install flow yet
+# behaving the same as before — with one key difference: the shipped
+# file is now empty ([]), so the fallback returns no extensions.
 
-_CONFIG_PATH = Path(
-    os.getenv("EXTENSIONS_CONFIG", Path(__file__).resolve().parent.parent / "extensions.json")
-)
+_DATA_CONFIG = DATA_DIR / "installed_extensions.json"
+_BUNDLED_CONFIG = Path(__file__).resolve().parent.parent / "extensions.json"
+
+
+def _resolve_config_path() -> Path:
+    """Prefer the data-volume registry when it exists; otherwise use
+    the bundled fallback. Resolved at every read so an install flow
+    that creates the data file at runtime is picked up without a
+    process restart.
+    """
+    override = os.getenv("EXTENSIONS_CONFIG")
+    if override:
+        return Path(override)
+    if _DATA_CONFIG.exists():
+        return _DATA_CONFIG
+    return _BUNDLED_CONFIG
 
 
 class ExtensionDef(BaseModel):
@@ -51,17 +72,17 @@ _catalog: list[ExtensionDef] = []
 
 def _load_catalog() -> list[ExtensionDef]:
     """Read and parse the extensions config file."""
-    if not _CONFIG_PATH.exists():
-        logger.info("No extensions config at %s — catalog empty", _CONFIG_PATH)
+    if not _resolve_config_path().exists():
+        logger.info("No extensions config at %s — catalog empty", _resolve_config_path())
         return []
     try:
-        raw = json.loads(_CONFIG_PATH.read_text())
+        raw = json.loads(_resolve_config_path().read_text())
         if isinstance(raw, list):
             return [ExtensionDef(**entry) for entry in raw]
         logger.warning("extensions.json is not a JSON array")
         return []
     except Exception:
-        logger.exception("Failed to parse %s", _CONFIG_PATH)
+        logger.exception("Failed to parse %s", _resolve_config_path())
         return []
 
 

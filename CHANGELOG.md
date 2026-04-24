@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-24
+
+### Added
+- **Extension catalog + one-click install from the concord-extensions library.** Admin → Extensions lists every package published in the `concord-extensions` workspace (worldview, botc, card-suite, chess-checkers, game-maker at time of writing) and lets the instance admin install or uninstall each one. Implementation:
+  - `GET /api/admin/extensions/catalog` proxies the remote catalog (default: `https://raw.githubusercontent.com/TruStoryHnsl/concord-extensions/main/catalog.json`, override via `CONCORD_EXTENSION_CATALOG_URL`) and also returns the set of already-installed ids so the UI can render Install / Installed / Uninstall buttons.
+  - `POST /api/admin/extensions/install {extension_id}` downloads the bundle_url from the catalog (not from the client — no arbitrary-URL installs), extracts the zip into `<DATA_DIR>/extensions/<id>/` with traversal-safe path clamping and a 50 MB size cap, and registers the extension in `<DATA_DIR>/installed_extensions.json`.
+  - `DELETE /api/admin/extensions/{id}` reverses both.
+  - Installed bundles are served by FastAPI at `/ext/<id>/*` — resolved relatively inside the iframe (`./assets/...`), clamped to the extension's own dir so `../etc/passwd` 404s instead of leaking the host.
+  - `routers/extensions.py` now reads the persistent registry on the data volume (falling back to the old bundled `server/extensions.json` only when the data-volume file is missing), so installs survive image rebuilds.
+
 ## [0.3.0] - 2026-04-24
 
 ### Added
