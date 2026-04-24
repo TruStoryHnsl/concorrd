@@ -51,21 +51,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - name: Enable pnpm
-        run: corepack enable
+          cache: npm
+          cache-dependency-path: client/package-lock.json
 
       - name: Install client dependencies
         working-directory: client
-        run: pnpm install --frozen-lockfile
+        run: npm ci --no-audit --no-fund
 
       - name: Run client tests
         working-directory: client
-        run: pnpm test
+        run: npm test
 
       - name: Build client
         working-directory: client
-        run: pnpm build
+        run: npm run build
 
   server-tests:
     name: server / pytest
@@ -94,14 +93,15 @@ jobs:
       - name: Run pytest
         working-directory: server
         env:
-          # conftest.py sets test-safe defaults via os.environ.setdefault,
-          # but we also provide explicit values here so anyone reading
-          # the CI log can see exactly what the server was configured
-          # with during the run.
+          # conftest.py seeds test-safe defaults (CONDUWUIT_SERVER_NAME=test.local
+          # etc.) via os.environ.setdefault. We intentionally do NOT override
+          # CONDUWUIT_SERVER_NAME / ADMIN_USER_IDS here: several tests pin
+          # "test.local" as the canonical local instance hostname, and a CI
+          # override would lose the conftest race (setdefault is a no-op when
+          # the var is already set). Only vars without in-code defaults are
+          # supplied below.
           CONDUWUIT_REGISTRATION_TOKEN: ci-token-do-not-use-in-prod
-          CONDUWUIT_SERVER_NAME: ci.test
           MATRIX_HOMESERVER_URL: http://unused-in-ci.invalid
-          ADMIN_USER_IDS: "@test_admin:test.local"
           LIVEKIT_API_KEY: ci-livekit-key
           LIVEKIT_API_SECRET: ci-livekit-secret-at-least-32-chars
           LIVEKIT_URL: ws://livekit.invalid:7880
