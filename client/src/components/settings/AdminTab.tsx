@@ -17,11 +17,15 @@ import {
   getAdminBans,
   adminUnbanUser,
   adminBanUser,
+  adminListInvites,
+  adminCreateInvite,
+  adminRevokeInvite,
   type AdminStats,
   type AdminServer,
   type AdminUser,
   type AdminBugReport,
   type AdminBan,
+  type AdminInvite,
   type FederationStatus,
   type ServiceNodeConfig,
   type ServiceNodeRole,
@@ -30,6 +34,7 @@ import {
 type Section =
   | "overview"
   | "instance"
+  | "invites"
   | "federation"
   | "service-node"
   | "servers"
@@ -50,6 +55,7 @@ export function AdminTab() {
           [
             "overview",
             "instance",
+            "invites",
             "federation",
             "service-node",
             "servers",
@@ -78,6 +84,7 @@ export function AdminTab() {
 
       {section === "overview" && <OverviewSection token={accessToken} />}
       {section === "instance" && <InstanceSection token={accessToken} />}
+      {section === "invites" && <InvitesSection token={accessToken} />}
       {section === "federation" && <FederationSection token={accessToken} />}
       {section === "service-node" && <ServiceNodeSection token={accessToken} />}
       {section === "servers" && <ServersSection token={accessToken} />}
@@ -143,12 +150,14 @@ function InstanceSection({ token }: { token: string | null }) {
   const addToast = useToastStore((s) => s.addToast);
   const [name, setName] = useState("");
   const [requireTOTP, setRequireTOTP] = useState(false);
+  const [openRegistration, setOpenRegistration] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     getInstanceInfo().then((info) => {
       setName(info.name);
       setRequireTOTP(info.require_totp);
+      setOpenRegistration(info.open_registration);
     }).catch(() => {});
   }, []);
 
@@ -176,6 +185,25 @@ function InstanceSection({ token }: { token: string | null }) {
         result.require_totp
           ? "Two-factor authentication is now required"
           : "Two-factor authentication requirement removed",
+        "success",
+      );
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to update", "error");
+    }
+  };
+
+  const handleToggleOpenRegistration = async () => {
+    if (!token) return;
+    try {
+      const result = await updateInstanceSettings(
+        { open_registration: !openRegistration },
+        token,
+      );
+      setOpenRegistration(result.open_registration);
+      addToast(
+        result.open_registration
+          ? "Open registration enabled — anyone can sign up"
+          : "Open registration disabled — invite tokens required",
         "success",
       );
     } catch (err) {
@@ -230,6 +258,203 @@ function InstanceSection({ token }: { token: string | null }) {
             />
           </button>
         </div>
+      </div>
+
+      <div className="border-t border-outline-variant/15 pt-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="text-sm text-on-surface-variant block">Open Registration</label>
+            <p className="text-xs text-on-surface-variant mt-0.5">
+              When enabled, anyone who can reach this instance can sign up without an invite token.
+              Off by default — leave disabled unless you explicitly want an open sign-up page.
+            </p>
+          </div>
+          <button
+            onClick={handleToggleOpenRegistration}
+            className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${
+              openRegistration ? "bg-primary" : "bg-surface-container-highest"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                openRegistration ? "translate-x-5" : ""
+              }`}
+            />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Invites — instance-admin view of account-creation tokens across all servers
+// ---------------------------------------------------------------------------
+
+function InvitesSection({ token }: { token: string | null }) {
+  const addToast = useToastStore((s) => s.addToast);
+  const [invites, setInvites] = useState<AdminInvite[] | null>(null);
+  const [maxUses, setMaxUses] = useState(10);
+  const [expiresInHours, setExpiresInHours] = useState(168);
+  const [permanent, setPermanent] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  const refresh = async () => {
+    if (!token) return;
+    try {
+      const list = await adminListInvites(token);
+      setInvites(list);
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to load invites", "error");
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const handleCreate = async () => {
+    if (!token) return;
+    setCreating(true);
+    try {
+      // server_id is intentionally omitted — the backend falls back to
+      // the instance's default lobby. This is the whole point of the
+      // instance-admin invite flow: generate a token that lets someone
+      // create an account without having to pick a server first.
+      await adminCreateInvite(
+        permanent
+          ? { max_uses: maxUses, permanent: true }
+          : { max_uses: maxUses, expires_in_hours: expiresInHours, permanent: false },
+        token,
+      );
+      addToast("Invite created", "success");
+      await refresh();
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to create invite", "error");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleRevoke = async (id: number) => {
+    if (!token) return;
+    try {
+      await adminRevokeInvite(id, token);
+      addToast("Invite revoked", "success");
+      await refresh();
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to revoke invite", "error");
+    }
+  };
+
+  const copyToken = async (tok: string) => {
+    try {
+      await navigator.clipboard.writeText(tok);
+      addToast("Invite token copied", "success");
+    } catch {
+      addToast("Couldn't copy to clipboard", "error");
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h4 className="text-sm font-semibold text-on-surface mb-1">Create Invite</h4>
+        <p className="text-xs text-on-surface-variant mb-3">
+          Generates a token that lets a new user register an account on this instance and land in the default lobby.
+          Revoke from the list below at any time.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
+          <label className="text-xs text-on-surface-variant">
+            Max uses
+            <input
+              type="number"
+              min={1}
+              max={10000}
+              value={maxUses}
+              onChange={(e) => setMaxUses(Math.max(1, Number(e.target.value) || 1))}
+              className="block w-full mt-1 px-2 py-1.5 bg-surface-container border border-outline-variant rounded text-sm text-on-surface"
+            />
+          </label>
+          <label className="text-xs text-on-surface-variant">
+            Expires in (hours)
+            <input
+              type="number"
+              min={1}
+              max={87600}
+              value={expiresInHours}
+              onChange={(e) => setExpiresInHours(Math.max(1, Number(e.target.value) || 1))}
+              disabled={permanent}
+              className="block w-full mt-1 px-2 py-1.5 bg-surface-container border border-outline-variant rounded text-sm text-on-surface disabled:opacity-40"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-on-surface-variant select-none pb-1">
+            <input
+              type="checkbox"
+              checked={permanent}
+              onChange={(e) => setPermanent(e.target.checked)}
+            />
+            Permanent (never expires)
+          </label>
+        </div>
+        <button
+          onClick={handleCreate}
+          disabled={creating}
+          className="mt-3 px-4 py-2 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface text-sm rounded transition-colors"
+        >
+          {creating ? "Creating…" : "Create Invite"}
+        </button>
+      </div>
+
+      <div className="border-t border-outline-variant/15 pt-4">
+        <h4 className="text-sm font-semibold text-on-surface mb-2">Active Invites</h4>
+        {invites === null ? (
+          <p className="text-sm text-on-surface-variant">Loading…</p>
+        ) : invites.length === 0 ? (
+          <p className="text-sm text-on-surface-variant">No invites on this instance yet.</p>
+        ) : (
+          <ul className="space-y-2">
+            {invites.map((inv) => (
+              <li
+                key={inv.id}
+                className="bg-surface-container rounded-lg p-3 border border-outline-variant/15 flex items-center gap-3"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <code className="text-xs font-mono text-on-surface bg-surface-container-highest px-1.5 py-0.5 rounded truncate">
+                      {inv.token}
+                    </code>
+                    {!inv.is_valid && (
+                      <span className="text-[10px] uppercase tracking-wider text-error">expired / used up</span>
+                    )}
+                    {inv.permanent && (
+                      <span className="text-[10px] uppercase tracking-wider text-on-surface-variant">permanent</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-on-surface-variant mt-1">
+                    {inv.server_name ?? inv.server_id} · {inv.use_count}/{inv.max_uses} used
+                    {inv.expires_at && !inv.permanent
+                      ? ` · expires ${new Date(inv.expires_at).toLocaleString()}`
+                      : ""}
+                  </p>
+                </div>
+                <button
+                  onClick={() => void copyToken(inv.token)}
+                  className="px-2 py-1 text-xs rounded bg-surface-container-high hover:bg-surface-container-highest text-on-surface transition-colors"
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={() => void handleRevoke(inv.id)}
+                  className="px-2 py-1 text-xs rounded bg-error/20 hover:bg-error/30 text-error transition-colors"
+                >
+                  Revoke
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );

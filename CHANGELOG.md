@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-24
+
+### Added
+- **Instance-admin invite management.** New Admin → Invites section lists every invite token on the instance (across all servers), lets the admin create new tokens with an optional server_id (defaults to the instance's default lobby), and revokes any invite regardless of server membership. Backed by a new `DELETE /api/admin/invites/{id}` endpoint (bypasses the server-admin check the server-scoped DELETE enforces). Closes the "I can't issue account-creation tokens without picking a server first" gap.
+- **Open-registration toggle** in Admin → Instance. Persists to `instance.json::open_registration` and takes precedence over the `OPEN_REGISTRATION` env var at runtime, so operators can flip the invite gate from the UI without shelling into the host. The env var remains the bootstrap default on fresh installs. `/api/instance` and `/api/register` share a single `_open_registration_enabled` resolver so they can't disagree.
+
+### Fixed
+- **Discord bridge DM room spawning.** `create_dm_room` consults the caller's `m.direct` account data and reuses a live DM with the bridge bot (both parties still joined) before falling back to `POST /createRoom`. Previous behaviour was to create a fresh room on every call — consecutive Connect clicks left a trail of orphan DMs and the "login" command often landed in a room the bot had never joined, producing the "UI says QR sent but no DM arrives" symptom. Newly-created DMs are registered in `m.direct` so the next call finds them.
+
 ## [0.2.4] - 2026-04-24
 
 ### Fixed

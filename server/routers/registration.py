@@ -117,11 +117,15 @@ async def register_user(
     # first-boot here either — that would silently relax the invite gate.
     import json
     from config import INSTANCE_SETTINGS_FILE
-    from routers.admin import _is_first_boot
+    from routers.admin import _is_first_boot, _open_registration_enabled
     _inst = json.loads(INSTANCE_SETTINGS_FILE.read_text()) if INSTANCE_SETTINGS_FILE.exists() else {}
     is_first_boot = _is_first_boot(_inst)
 
-    open_reg = os.getenv("OPEN_REGISTRATION", "").lower() in ("true", "1", "yes")
+    # Honour the admin-UI toggle stored in instance.json when present;
+    # fall back to the OPEN_REGISTRATION env var otherwise. The helper
+    # is the single source of truth so /api/instance and /api/register
+    # can't disagree about whether the gate is open.
+    open_reg = _open_registration_enabled(_inst)
     if not is_first_boot and not open_reg and not body.invite_token:
         raise HTTPException(403, "Registration requires an invite token")
 

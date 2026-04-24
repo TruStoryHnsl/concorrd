@@ -203,14 +203,17 @@ async def user_discord_login(
     3. Return the room id so the frontend can navigate the user into
        it (or render the QR inline from the bot's response).
 
-    If the caller already has a DM with the bridge bot, Matrix's
-    createRoom with ``is_direct: True`` tends to return the existing
-    room id — the flow is naturally idempotent.
+    ``create_dm_room`` is now find-or-create: it consults the caller's
+    ``m.direct`` account data first and reuses an existing live DM with
+    the bridge bot before falling back to ``POST /createRoom``. Before
+    that landed, repeated login triggers produced a pile of orphan DM
+    rooms and the "login" command often ended up in one the bot had
+    never joined — the symptom was "UI says QR sent, but no DM arrives".
     """
     bridge_bot = _bridge_bot_mxid()
 
     try:
-        room_id = await create_dm_room(access_token, bridge_bot)
+        room_id = await create_dm_room(access_token, bridge_bot, user_id=user_id)
     except Exception as exc:
         logger.warning(
             "user_discord_login: create_dm_room failed for %s: %s", user_id, exc
@@ -253,7 +256,7 @@ async def _send_logout(user_id: str, access_token: str) -> DiscordLogoutResponse
     bridge_bot = _bridge_bot_mxid()
 
     try:
-        room_id = await create_dm_room(access_token, bridge_bot)
+        room_id = await create_dm_room(access_token, bridge_bot, user_id=user_id)
     except Exception as exc:
         logger.warning(
             "user_discord_logout: create_dm_room failed for %s: %s", user_id, exc

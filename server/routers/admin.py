@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 import httpx
@@ -91,8 +92,7 @@ async def get_instance():
 
     settings = _read_instance_settings()
     node_view = _public_node_view()
-    import os
-    open_reg = os.getenv("OPEN_REGISTRATION", "").lower() in ("true", "1", "yes")
+    open_reg = _open_registration_enabled(settings)
     first_boot = _is_first_boot(settings)
     return {
         "name": settings.get("name", INSTANCE_NAME_DEFAULT),
@@ -351,6 +351,26 @@ async def admin_check(user_id: str = Depends(get_user_id)):
 class InstanceUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=64)
     require_totp: bool | None = None
+    # When set, overrides the OPEN_REGISTRATION env var at runtime.
+    # Persisted in instance.json so operators can flip it from the admin
+    # UI without shelling into the host. Three-state on the wire:
+    #   None       — leave current setting untouched
+    #   True/False — persist this value and use it going forward
+    open_registration: bool | None = None
+
+
+def _open_registration_enabled(settings: dict) -> bool:
+    """Resolve the effective open-registration state.
+
+    Precedence: the persisted `open_registration` key in instance.json
+    wins when present, so the admin UI toggle is authoritative; only
+    when it's absent do we fall back to the OPEN_REGISTRATION env var
+    (the bootstrap default on fresh installs).
+    """
+    persisted = settings.get("open_registration")
+    if isinstance(persisted, bool):
+        return persisted
+    return os.getenv("OPEN_REGISTRATION", "").lower() in ("true", "1", "yes")
 
 
 @router.patch("/api/admin/instance")
@@ -367,10 +387,13 @@ async def admin_update_instance(
         settings["name"] = body.name
     if body.require_totp is not None:
         settings["require_totp"] = body.require_totp
+    if body.open_registration is not None:
+        settings["open_registration"] = body.open_registration
     _write_instance_settings(settings)
     return {
         "name": settings.get("name", INSTANCE_NAME_DEFAULT),
         "require_totp": settings.get("require_totp", False),
+        "open_registration": _open_registration_enabled(settings),
     }
 
 
@@ -416,7 +439,14 @@ async def admin_stats(
 # ---------------------------------------------------------------------------
 
 class AdminInviteCreate(BaseModel):
-    server_id: str
+    # Optional so instance admins can issue "account-creation" invites
+    # without picking a server up front. When omitted, the invite lands
+    # on the instance's default server (the lobby recorded in
+    # `instance.json::default_server_id`) — new accounts that redeem it
+    # auto-join that server, exactly the same as if the admin had typed
+    # the lobby's id in here. If no default lobby is set yet the request
+    # fails with a clear message; fall back to the explicit form.
+    server_id: str | None = None
     max_uses: int = Field(default=10, ge=1, le=10000)
     expires_in_hours: int = Field(default=168, ge=1, le=87600)  # default 7 days, max 10 years
     permanent: bool = False
@@ -433,19 +463,32 @@ async def admin_create_invite(
     Unlike POST /api/invites (which requires server membership), this
     endpoint lets a system admin create invite tokens for any server —
     including the first invite for a fresh deployment where no members
-    exist yet.
+    exist yet. Omitting ``server_id`` pins the invite to the instance's
+    default lobby, giving the admin a single "account-creation token"
+    without needing to know the lobby's id.
     """
     require_admin(user_id)
 
+    server_id = body.server_id
+    if not server_id:
+        settings = _read_instance_settings()
+        server_id = settings.get("default_server_id")
+        if not server_id:
+            raise HTTPException(
+                400,
+                "Instance has no default server set. Pass server_id explicitly "
+                "or set default_server_id in instance.json first.",
+            )
+
     # Verify server exists
     server = (await db.execute(
-        select(Server).where(Server.id == body.server_id)
+        select(Server).where(Server.id == server_id)
     )).scalar_one_or_none()
     if not server:
         raise HTTPException(404, "Server not found")
 
     invite = InviteToken(
-        server_id=body.server_id,
+        server_id=server_id,
         created_by=user_id,
         max_uses=body.max_uses,
         permanent=body.permanent,
@@ -459,6 +502,7 @@ async def admin_create_invite(
     await db.refresh(invite)
 
     return {
+        "id": invite.id,
         "token": invite.token,
         "server_id": invite.server_id,
         "server_name": server.name,
@@ -467,6 +511,30 @@ async def admin_create_invite(
         "expires_at": invite.expires_at.isoformat() if invite.expires_at else None,
         "is_valid": invite.is_valid,
     }
+
+
+@router.delete("/api/admin/invites/{invite_id}", status_code=204)
+async def admin_revoke_invite(
+    invite_id: int,
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke any invite token (admin-only).
+
+    Unlike the server-scoped ``DELETE /api/invites/{id}`` (which requires
+    membership in the target server), this endpoint lets an instance
+    admin revoke invites they didn't create and/or on servers they
+    aren't members of. The point is giving instance admins a single
+    "kill switch" over outstanding account-creation tokens without
+    having to first join every server on the box.
+    """
+    require_admin(user_id)
+    invite = await db.get(InviteToken, invite_id)
+    if not invite:
+        raise HTTPException(404, "Invite not found")
+    await db.delete(invite)
+    await db.commit()
+    return
 
 
 @router.get("/api/admin/invites")
