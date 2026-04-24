@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-24
+
+### Fixed
+- **Caddy didn't route `/ext/*` to concord-api**, so installed extension bundles fell through to the SPA catch-all and returned concord's own `index.html` instead of the extension. Added `handle /ext/*` → `concord-api:8000` in both `config/Caddyfile` and `config/Caddyfile.dev`. Replaces the legacy `handle_path /ext/worldview/* -> worldview:8080` block that was tied to the deprecated Python-server worldview container.
+
 ## [0.4.0] - 2026-04-24
 
 ### Added

@@ -119,6 +119,18 @@
         }
     }
 
+    # Installed extension bundles (v0.4.0+). concord-api serves these
+    # out of <DATA_DIR>/extensions/<id>/ — the admin install flow
+    # extracts the zips there, and iframes load index.html +
+    # relative ./assets/ out of this same prefix. Replaces the legacy
+    # /ext/worldview -> worldview:8080 block that was tied to the
+    # deprecated python-server worldview container.
+    handle /ext/* {
+        reverse_proxy concord-api:8000 {
+            header_up X-Forwarded-Proto {http.request.scheme}
+        }
+    }
+
     # LiveKit WebSocket signaling (strip /livekit/ prefix)
     # flush_interval -1 disables response buffering (required for WebSocket/streaming)
     # X-Forwarded-Proto ensures wss:// is used on HTTPS sites

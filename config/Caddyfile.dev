@@ -58,6 +58,15 @@
         }
     }
 
+    # Installed extension bundles (v0.4.0+). concord-api serves out of
+    # <DATA_DIR>/extensions/<id>/ — iframes load index.html + relative
+    # ./assets/ under this prefix. Matches prod Caddyfile behaviour.
+    handle /ext/* {
+        reverse_proxy concord-api:8000 {
+            header_up X-Forwarded-Proto {http.request.scheme}
+        }
+    }
+
     # LiveKit WebSocket signaling
     handle_path /livekit/* {
         reverse_proxy livekit:7880 {
