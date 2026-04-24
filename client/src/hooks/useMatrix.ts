@@ -145,7 +145,16 @@ export function useMatrixSync() {
         client.startClient({
           initialSyncLimit: 20,
           lazyLoadMembers: true,
-          pollTimeout: 30000,
+          // 20s long-poll, deliberately under the typical 30s
+          // idle timeout on Cloudflare Tunnel and most CDN paths.
+          // Previous 30s was right at or beyond the edge cutoff,
+          // so every empty-poll completion came back as a NetworkError
+          // ("sync /sync error ... fetch failed"). 20s gives the SDK
+          // a clean response, then immediately re-issues the next
+          // poll. The cost is ~50% more sync requests on idle
+          // accounts, all empty {} responses; trivially cheap and
+          // a vastly cleaner console.
+          pollTimeout: 20000,
         }),
       );
     })();
