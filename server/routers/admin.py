@@ -398,6 +398,112 @@ async def admin_update_instance(
 
 
 # ---------------------------------------------------------------------------
+# Runtime-managed integration credentials (admin UI replaces .env edits)
+#
+# Each integration stores its secrets in instance.json rather than the
+# host .env file. The admin UI writes them here; the consuming router
+# reads at call time. Advantages over .env:
+#
+#   - No container restart required to apply changes.
+#   - Operators don't need SSH to rotate keys.
+#   - Secrets stay in the data volume (survives image rebuilds) instead
+#     of the host's .env (which rsync deploys can stomp on).
+#
+# GET endpoints mask the secret value; the PATCH endpoint accepts
+# empty strings as "clear this field". "" in the payload means intent,
+# None means "leave untouched".
+# ---------------------------------------------------------------------------
+
+
+def _mask_secret(value: str | None) -> str | None:
+    if not value:
+        return None
+    # Reveal length + first/last char so operators can confirm they
+    # pasted the right value without leaking the secret in the UI.
+    if len(value) <= 4:
+        return "****"
+    return f"{value[0]}***{value[-1]} (len {len(value)})"
+
+
+class DiscordOAuthConfig(BaseModel):
+    client_id: str | None = Field(
+        default=None,
+        description="Discord OAuth2 app Client ID. ``null`` to clear; omit (or undefined) to leave current value.",
+    )
+    client_secret: str | None = Field(
+        default=None,
+        description="Discord OAuth2 app Client Secret. Write-only on the wire; reads return a masked indicator.",
+    )
+
+
+@router.get("/api/admin/integrations/discord-oauth")
+async def admin_get_discord_oauth(
+    user_id: str = Depends(get_user_id),
+):
+    """Surface the Discord OAuth2 credentials state for the admin UI.
+
+    The full secret is never returned — the UI shows a presence
+    indicator and the client_id. The redirect_uri is computed here so
+    the operator can copy it into Discord's developer portal without
+    hand-assembling the URL.
+    """
+    require_admin(user_id)
+    settings = _read_instance_settings()
+    cid = settings.get("discord_oauth_client_id") or os.getenv(
+        "DISCORD_OAUTH_CLIENT_ID"
+    )
+    sec = settings.get("discord_oauth_client_secret") or os.getenv(
+        "DISCORD_OAUTH_CLIENT_SECRET"
+    )
+    base = (
+        os.getenv("PUBLIC_BASE_URL")
+        or (
+            f"https://{os.getenv('CONCORD_DOMAIN') or os.getenv('CONDUWUIT_SERVER_NAME', '')}"
+            if os.getenv("CONCORD_DOMAIN") or os.getenv("CONDUWUIT_SERVER_NAME")
+            else ""
+        )
+    ).rstrip("/")
+    redirect_uri = (
+        f"{base}/api/users/me/discord/oauth/callback" if base else None
+    )
+    return {
+        "client_id": cid or None,
+        "client_secret_set": bool(sec),
+        "client_secret_masked": _mask_secret(sec),
+        "redirect_uri": redirect_uri,
+        "configured": bool(cid and sec and base),
+    }
+
+
+@router.patch("/api/admin/integrations/discord-oauth")
+async def admin_set_discord_oauth(
+    body: DiscordOAuthConfig,
+    user_id: str = Depends(get_user_id),
+):
+    """Upsert the Discord OAuth credentials.
+
+    ``None`` fields mean "leave alone" — this makes it easy for the UI
+    to rotate just the secret without resubmitting the client_id. An
+    explicit empty string clears the field (useful if the operator is
+    disabling the integration).
+    """
+    require_admin(user_id)
+    settings = _read_instance_settings()
+    if body.client_id is not None:
+        if body.client_id.strip() == "":
+            settings.pop("discord_oauth_client_id", None)
+        else:
+            settings["discord_oauth_client_id"] = body.client_id.strip()
+    if body.client_secret is not None:
+        if body.client_secret.strip() == "":
+            settings.pop("discord_oauth_client_secret", None)
+        else:
+            settings["discord_oauth_client_secret"] = body.client_secret.strip()
+    _write_instance_settings(settings)
+    return await admin_get_discord_oauth(user_id=user_id)
+
+
+# ---------------------------------------------------------------------------
 # Admin: dashboard stats
 # ---------------------------------------------------------------------------
 

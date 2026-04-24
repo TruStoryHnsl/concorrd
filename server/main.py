@@ -18,7 +18,7 @@ logging.basicConfig(
 
 from database import async_session, init_db
 from errors import ConcordError, ErrorResponse
-from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_bridges, admin_discord_voice, admin_extensions, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms, service_node, user_connections
+from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_bridges, admin_discord_voice, admin_extensions, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms, service_node, user_discord_oauth
 from services.discord_voice_config import write_voice_bridge_rooms
 
 
@@ -703,7 +703,7 @@ app.include_router(soundboard.router)
 app.include_router(webhooks.router)
 app.include_router(admin.router)
 app.include_router(admin_bridges.router)
-app.include_router(user_connections.router)
+app.include_router(user_discord_oauth.router)
 app.include_router(admin_discord_voice.router)
 app.include_router(direct_invites.router)
 app.include_router(stats.router)

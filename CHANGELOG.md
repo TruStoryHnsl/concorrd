@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-24
+
+### Changed — Discord user integration moved from bridge to OAuth2 (breaking)
+- **`/api/users/me/discord/*` now means Discord OAuth2, not the mautrix-discord bridge.** Per-user QR-login-via-bridge was the wrong mental model: the bridge is an admin/operator integration, a user signing in is a personal OAuth account connection. New endpoints:
+  - `GET /api/users/me/discord/oauth/config` — reports whether OAuth is usable on this instance.
+  - `POST /api/users/me/discord/oauth/start` — returns Discord's authorize URL with a CSRF state token.
+  - `GET /api/users/me/discord/oauth/callback` — exchanges the code for access + refresh tokens, upserts `UserDiscordOAuth`, redirects the user back.
+  - `DELETE /api/users/me/discord/oauth` — revokes and deletes the row.
+  - `GET /api/users/me/discord` — now returns OAuth-backed status (username, global name, avatar) instead of the bridge-timeline heuristic.
+  - `GET /api/users/me/discord/guilds` — lists the caller's Discord servers using the `guilds` scope. Transparent token refresh on 401.
+  - `GET /api/users/me/discord/guilds/{id}/channels` + `GET /api/users/me/discord/channels/{id}/messages` + `POST .../messages` — best-effort Phase-3 hybrid. Uses the mautrix-discord captured-session token (read from the bridge's SQLite volume) when present; otherwise returns `limited_by_discord: true` so the UI can explain the gap. Discord's OAuth2 scopes do not include message read/send for third-party web apps — this is a hard Discord-policy limit.
+- **Removed endpoints** (breaking): `POST /api/users/me/discord/login`, `POST /api/users/me/discord/logout`. The whole bridge-QR flow is out. Admin-level bridge configuration remains under `/api/admin/bridges/discord/*`.
+- **UserDiscordOAuth + DiscordOAuthState tables** land via `Base.metadata.create_all` on startup — no migration file required; SQLite picks them up automatically.
+
+### Added — credentials move from .env to the admin UI
+- **`/api/admin/integrations/discord-oauth` GET/PATCH**: operators set the Discord OAuth Client ID + Client Secret from Admin → Integrations → Discord OAuth. Values persist to `instance.json` and take precedence over the legacy `DISCORD_OAUTH_CLIENT_ID` / `DISCORD_OAUTH_CLIENT_SECRET` env vars (kept only as bootstrap defaults). No container restart required to rotate keys; the consuming router reads at call time.
+- **Admin UI**: new Admin → Integrations section with a Discord OAuth card — redirect URL computed server-side so operators can paste it into Discord's developer portal verbatim; secret field is write-only with a masked read-back (`x***y (len N)`).
+
+### Added — user-facing Discord browser
+- **Settings → Connections → "Sign in with Discord"** kicks off the OAuth redirect. The same card hosts a "Browse servers" button once connected.
+- **DiscordBrowser overlay**: guild rail → channels list → messages pane → composer. Polls messages every 4s via the captured-session hybrid. Renders a clear amber explainer card when only OAuth scopes are available ("Enable the mautrix-discord bridge + QR-capture flow for full read/send, or open the guild in Discord directly").
+
+### Removed
+- `server/routers/user_connections.py` and its test file — the bridge-based per-user login surface is gone; the file's helpers (`_send_as_user`, `_bridge_bot_mxid`) had no remaining callers after the OAuth cutover.
+- Client-side `userDiscordLogin` / `userDiscordLogout` / `UserDiscordStatus` in `client/src/api/bridges.ts`. Replacements live in `client/src/api/concord.ts`.
+
 ## [0.4.4] - 2026-04-24
 
 ### Fixed

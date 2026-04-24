@@ -3,74 +3,55 @@ import { useAuthStore } from "../../stores/auth";
 import { useSettingsStore } from "../../stores/settings";
 import { useSourcesStore } from "../../stores/sources";
 import {
+  userDiscordOAuthConfig,
   userDiscordStatus,
-  userDiscordLogin,
-  userDiscordLogout,
-  type UserDiscordStatus,
-} from "../../api/bridges";
-import { DiscordTosModal } from "./DiscordTosModal";
+  userDiscordOAuthStart,
+  userDiscordOAuthRevoke,
+  type DiscordConnectionStatus,
+  type DiscordOAuthUserConfig,
+} from "../../api/concord";
 import { SourceBrandIcon } from "../sources/sourceBrand";
+import { DiscordBrowser } from "../discord/DiscordBrowser";
 
 /**
- * Per-user Connections tab (PR3/5 of the user-scoped bridge redesign,
- * expanded to cover all source types in the Sources menu).
+ * Per-user Connections tab.
  *
- * Lives under the user's own profile settings — NOT the admin section.
- * Any authenticated user can manage their own connections here; admins
- * have no "manage someone else's connection" path.
+ * Architecture (post v0.5.0):
+ *   - Discord is the flagship per-user OAuth2 integration. User clicks
+ *     "Sign in with Discord", we POST /oauth/start, navigate the browser
+ *     to Discord's authorize URL, Discord redirects back to our
+ *     callback, and the server stores the access + refresh tokens.
+ *   - The admin-managed mautrix-discord bridge is a SEPARATE thing —
+ *     its configuration lives under the Admin surface now, not here.
+ *   - Other platforms (Concord / Matrix / Mozilla) still deep-link to
+ *     the AddSource modal via requestAddSource.
+ *   - Slack / Reticulum remain placeholder tiles until their flows ship.
  *
- * Available connection types mirror the Add-Source modal in ChatLayout:
- *   - Concord instance (custom hostname + invite token)
- *   - matrix.org (preset Matrix homeserver)
- *   - chat.mozilla.org (preset, delegated SSO)
- *   - Custom Matrix homeserver
- *   - Discord (bot-free, user-owned login via bridge)
- *   - Slack, Reticulum (placeholders — "Soon")
- *
- * Non-Discord entries hand off to the existing AddSourceModal in
- * ChatLayout via the settings store's `requestAddSource` action —
- * clicking closes the settings panel and opens the modal pre-targeted
- * to the chosen screen.
- *
- * Discord is handled inline because it's the flagship case of the
- * user-scoped redesign: one click, ToS gate on first use, inline
- * status + disconnect, no deep-link into a separate modal.
+ * Each connection is personal to the caller; admins have no path to
+ * manage anyone else's Discord login.
  */
 export function UserConnectionsTab() {
   const accessToken = useAuthStore((s) => s.accessToken);
   const requestAddSource = useSettingsStore((s) => s.requestAddSource);
   const sources = useSourcesStore((s) => s.sources);
 
-  const [status, setStatus] = useState<UserDiscordStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<DiscordConnectionStatus | null>(null);
+  const [oauthCfg, setOauthCfg] = useState<DiscordOAuthUserConfig | null>(null);
   const [busy, setBusy] = useState(false);
-  const [showTos, setShowTos] = useState(false);
-  const [tosAccepted, setTosAccepted] = useState(false);
-  const [pendingConnect, setPendingConnect] = useState(false);
-  const [lastLoginRoomId, setLastLoginRoomId] = useState<string | null>(null);
-  const [lastStatusMsg, setLastStatusMsg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [browserOpen, setBrowserOpen] = useState(false);
   const mountedRef = useRef(true);
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("concord_settings");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed?.state?.discord_bridge_tos_accepted_at) {
-          setTosAccepted(true);
-        }
-      }
-    } catch {
-      // Fresh device — nothing to restore.
-    }
-  }, []);
 
   const refresh = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const s = await userDiscordStatus(accessToken);
+      const [s, cfg] = await Promise.all([
+        userDiscordStatus(accessToken),
+        userDiscordOAuthConfig(accessToken),
+      ]);
       if (!mountedRef.current) return;
       setStatus(s);
+      setOauthCfg(cfg);
     } catch (err) {
       if (!mountedRef.current) return;
       setError(err instanceof Error ? err.message : String(err));
@@ -79,7 +60,12 @@ export function UserConnectionsTab() {
 
   useEffect(() => {
     mountedRef.current = true;
-    refresh();
+    void refresh();
+    // Poll so that after the user completes the Discord redirect the
+    // status flips from "not connected" to "connected" without a manual
+    // refresh. 5s matches the cadence we used for the retired bridge
+    // flow — slow enough to not hammer the API, fast enough to feel
+    // instant after the redirect lands.
     const interval = window.setInterval(refresh, 5000);
     return () => {
       mountedRef.current = false;
@@ -87,65 +73,51 @@ export function UserConnectionsTab() {
     };
   }, [refresh]);
 
-  const runDiscordLogin = useCallback(async () => {
+  // Surface an error param that may be appended to the URL after a
+  // failed OAuth redirect (see /oauth/callback). One-shot read + URL
+  // scrub so refreshes don't keep showing a stale error.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const err = params.get("discord_oauth_error");
+    const msg = params.get("message");
+    if (err) {
+      setError(msg ? `${err}: ${msg}` : err);
+      params.delete("discord_oauth_error");
+      params.delete("message");
+      const qs = params.toString();
+      window.history.replaceState(
+        {},
+        "",
+        window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
+      );
+    }
+  }, []);
+
+  const handleConnect = useCallback(async () => {
     if (!accessToken) return;
     setBusy(true);
     setError(null);
-    setLastStatusMsg(null);
     try {
-      const result = await userDiscordLogin(accessToken);
-      if (!mountedRef.current) return;
-      setLastLoginRoomId(result.room_id);
-      setLastStatusMsg(result.message);
-      window.setTimeout(refresh, 500);
+      const { authorize_url } = await userDiscordOAuthStart(
+        { return_to: window.location.pathname + window.location.search },
+        accessToken,
+      );
+      // Full-page redirect — Discord's consent screen is outside our
+      // origin and must own the browser until the callback fires.
+      window.location.href = authorize_url;
     } catch (err) {
       if (!mountedRef.current) return;
+      setBusy(false);
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (mountedRef.current) setBusy(false);
     }
-  }, [accessToken, refresh]);
+  }, [accessToken]);
 
-  const handleTosClosed = useCallback(() => {
-    setShowTos(false);
-    try {
-      const raw = localStorage.getItem("concord_settings");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed?.state?.discord_bridge_tos_accepted_at) {
-          setTosAccepted(true);
-          if (pendingConnect) {
-            setPendingConnect(false);
-            window.setTimeout(() => { void runDiscordLogin(); }, 0);
-          }
-        } else {
-          setPendingConnect(false);
-        }
-      }
-    } catch {
-      setPendingConnect(false);
-    }
-  }, [pendingConnect, runDiscordLogin]);
-
-  const handleDiscordConnect = useCallback(() => {
-    if (!accessToken) return;
-    if (!tosAccepted) {
-      setPendingConnect(true);
-      setShowTos(true);
-      return;
-    }
-    void runDiscordLogin();
-  }, [accessToken, tosAccepted, runDiscordLogin]);
-
-  const handleDiscordDisconnect = useCallback(async () => {
+  const handleDisconnect = useCallback(async () => {
     if (!accessToken) return;
     setBusy(true);
     setError(null);
     try {
-      await userDiscordLogout(accessToken);
-      if (!mountedRef.current) return;
-      setLastLoginRoomId(null);
-      setLastStatusMsg("Disconnected.");
+      await userDiscordOAuthRevoke(accessToken);
       await refresh();
     } catch (err) {
       if (!mountedRef.current) return;
@@ -167,10 +139,9 @@ export function UserConnectionsTab() {
   }
 
   const discordConnected = status?.connected ?? false;
+  const discordProfile = status?.user;
+  const oauthReady = oauthCfg?.enabled ?? false;
 
-  // Count how many of each platform the user has already added via the
-  // Sources flow, so we can show "Add another" instead of "Connect" when
-  // they have ≥1.
   const concordCount = sources.filter((s) => s.platform === "concord").length;
   const matrixCount = sources.filter((s) => s.platform === "matrix").length;
 
@@ -185,7 +156,6 @@ export function UserConnectionsTab() {
         </p>
       </div>
 
-      {/* ── Concord instance ──────────────────────────────────────── */}
       <ConnectionCard
         brand="concord"
         title="Concord Instance"
@@ -195,7 +165,6 @@ export function UserConnectionsTab() {
         count={concordCount}
       />
 
-      {/* ── Matrix presets + custom ───────────────────────────────── */}
       <ConnectionCard
         brand="matrix"
         title="matrix.org"
@@ -219,7 +188,7 @@ export function UserConnectionsTab() {
         count={matrixCount > 0 ? matrixCount : undefined}
       />
 
-      {/* ── Discord (inline, handled by this tab) ─────────────────── */}
+      {/* ── Discord (OAuth2) ─────────────────────────────────────── */}
       <div className="border border-outline-variant/20 rounded-lg overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-low/60">
           <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
@@ -228,13 +197,15 @@ export function UserConnectionsTab() {
           <div className="flex-1 min-w-0">
             <h4 className="text-sm font-medium text-on-surface">Discord</h4>
             <p className="text-xs text-on-surface-variant">
-              Connect your personal Discord account. Your guilds appear as
-              Concord rooms scoped to you.
+              Sign in with Discord via OAuth. Your servers appear as
+              Discord-scoped sources in the sidebar.
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {status === null ? (
+            {status === null || oauthCfg === null ? (
               <span className="text-xs text-on-surface-variant/50">Loading…</span>
+            ) : !oauthReady ? (
+              <span className="text-xs text-on-surface-variant/70">Not configured</span>
             ) : discordConnected ? (
               <>
                 <span className="inline-flex items-center gap-1 text-xs text-green-500">
@@ -243,7 +214,7 @@ export function UserConnectionsTab() {
                 </span>
                 <button
                   type="button"
-                  onClick={handleDiscordDisconnect}
+                  onClick={handleDisconnect}
                   disabled={busy}
                   data-testid="user-discord-disconnect-btn"
                   className="px-3 py-1.5 bg-error/10 hover:bg-error/15 text-error text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
@@ -254,16 +225,26 @@ export function UserConnectionsTab() {
             ) : (
               <button
                 type="button"
-                onClick={handleDiscordConnect}
+                onClick={handleConnect}
                 disabled={busy}
                 data-testid="user-discord-connect-btn"
-                className="px-3 py-1.5 bg-primary/10 hover:bg-primary/15 text-primary text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px]"
+                className="px-3 py-1.5 bg-[#5865F2]/15 hover:bg-[#5865F2]/25 text-[#5865F2] text-xs rounded-md transition-colors disabled:opacity-40 min-h-[32px] font-medium"
               >
-                {busy ? "…" : "Connect"}
+                {busy ? "…" : "Sign in with Discord"}
               </button>
             )}
           </div>
         </div>
+
+        {!oauthReady && status !== null && oauthCfg !== null && (
+          <div className="px-4 py-2 bg-surface-container/50 border-t border-outline-variant/10">
+            <p className="text-xs text-on-surface-variant">
+              Discord OAuth isn't configured yet. An admin needs to register
+              a Discord app and set the Client ID + Secret under
+              Admin&nbsp;→&nbsp;Integrations&nbsp;→&nbsp;Discord OAuth.
+            </p>
+          </div>
+        )}
 
         {error && (
           <div className="px-4 py-2 bg-error/10 border-t border-error/20">
@@ -273,41 +254,42 @@ export function UserConnectionsTab() {
           </div>
         )}
 
-        {lastStatusMsg && !error && (
-          <div className="px-4 py-2 bg-primary/5 border-t border-primary/10">
-            <p className="text-xs text-on-surface" data-testid="user-discord-msg">
-              {lastStatusMsg}
-            </p>
-          </div>
-        )}
-
-        {lastLoginRoomId && !discordConnected && (
-          <div className="px-4 py-3 border-t border-outline-variant/10 bg-primary/5">
-            <p className="text-xs text-on-surface">
-              Login triggered. Open your DM with <code
-                className="bg-surface-container-highest px-1 py-0.5 rounded"
-              >@discordbot</code> in Concord to scan the QR code with your
-              Discord phone app. This page will update automatically once
-              the handshake completes.
-            </p>
-          </div>
-        )}
-
-        {discordConnected && (
-          <div className="px-4 py-3 border-t border-outline-variant/10 bg-surface-container-lowest/40">
-            <p className="text-xs text-on-surface-variant">
-              Signed in as{" "}
-              <code className="bg-surface-container-highest px-1 py-0.5 rounded">
-                {status?.mxid}
-              </code>
-              . Disconnect to revoke access and purge your session from the
-              bridge.
-            </p>
+        {discordConnected && discordProfile && (
+          <div className="px-4 py-3 border-t border-outline-variant/10 bg-surface-container-lowest/40 flex items-center gap-3">
+            {discordProfile.avatar && (
+              <img
+                src={`https://cdn.discordapp.com/avatars/${discordProfile.id}/${discordProfile.avatar}.png?size=64`}
+                alt=""
+                className="w-8 h-8 rounded-full"
+              />
+            )}
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-on-surface-variant">
+                Signed in as{" "}
+                <strong className="text-on-surface">
+                  {discordProfile.global_name || discordProfile.username}
+                </strong>
+                {" "}
+                <code className="bg-surface-container-highest px-1 py-0.5 rounded text-[11px]">
+                  @{discordProfile.username}
+                </code>
+                . Disconnect revokes the token on Discord's side and clears
+                your session here.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setBrowserOpen(true)}
+              className="flex-shrink-0 px-3 py-1.5 text-xs rounded-md bg-[#5865F2] hover:bg-[#5865F2]/90 text-white transition-colors font-medium"
+            >
+              Browse servers
+            </button>
           </div>
         )}
       </div>
 
-      {/* ── Placeholders for future platforms ─────────────────────── */}
+      {browserOpen && <DiscordBrowser onClose={() => setBrowserOpen(false)} />}
+
       <ConnectionCard
         brand="slack"
         title="Slack"
@@ -322,8 +304,6 @@ export function UserConnectionsTab() {
         action="Soon"
         disabled
       />
-
-      {showTos && <DiscordTosModal onClose={handleTosClosed} />}
     </div>
   );
 }
@@ -352,9 +332,6 @@ function ConnectionCard({
   disabled?: boolean;
   count?: number;
 }) {
-  // Only a subset of brands has a dedicated SourceBrandIcon. For the
-  // placeholder platforms (slack / reticulum) fall back to a generic
-  // material icon, matching the AddSourceModal's "Soon" tile treatment.
   const brandedIcon =
     brand === "concord" || brand === "matrix" || brand === "mozilla" || brand === "discord"
       ? <SourceBrandIcon brand={brand} size={24} />

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAuthStore } from "../../stores/auth";
 import { useToastStore } from "../../stores/toast";
 import {
@@ -23,6 +23,9 @@ import {
   adminGetExtensionCatalog,
   adminInstallExtension,
   adminUninstallExtension,
+  adminGetDiscordOAuth,
+  adminSetDiscordOAuth,
+  type DiscordOAuthIntegration,
   type AdminStats,
   type AdminServer,
   type AdminUser,
@@ -40,6 +43,7 @@ type Section =
   | "instance"
   | "invites"
   | "extensions"
+  | "integrations"
   | "federation"
   | "service-node"
   | "servers"
@@ -62,6 +66,7 @@ export function AdminTab() {
             "instance",
             "invites",
             "extensions",
+            "integrations",
             "federation",
             "service-node",
             "servers",
@@ -92,6 +97,7 @@ export function AdminTab() {
       {section === "instance" && <InstanceSection token={accessToken} />}
       {section === "invites" && <InvitesSection token={accessToken} />}
       {section === "extensions" && <ExtensionsSection token={accessToken} />}
+      {section === "integrations" && <IntegrationsSection token={accessToken} />}
       {section === "federation" && <FederationSection token={accessToken} />}
       {section === "service-node" && <ServiceNodeSection token={accessToken} />}
       {section === "servers" && <ServersSection token={accessToken} />}
@@ -619,6 +625,204 @@ function ExtensionsSection({ token }: { token: string | null }) {
           })}
         </ul>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Integrations — runtime-managed credentials that used to live in .env
+//
+// First tenant: Discord OAuth2 (Client ID + Secret + computed redirect URI).
+// Values are persisted to instance.json via the /api/admin/integrations
+// endpoints, so rotating keys doesn't require a container restart.
+// ---------------------------------------------------------------------------
+
+function IntegrationsSection({ token }: { token: string | null }) {
+  return (
+    <div className="space-y-8">
+      <DiscordOAuthIntegrationCard token={token} />
+    </div>
+  );
+}
+
+function DiscordOAuthIntegrationCard({ token }: { token: string | null }) {
+  const addToast = useToastStore((s) => s.addToast);
+  const [state, setState] = useState<DiscordOAuthIntegration | null>(null);
+  const [clientIdDraft, setClientIdDraft] = useState("");
+  const [clientSecretDraft, setClientSecretDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!token) return;
+    try {
+      const data = await adminGetDiscordOAuth(token);
+      setState(data);
+      setClientIdDraft(data.client_id ?? "");
+      setClientSecretDraft("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const handleSave = async () => {
+    if (!token) return;
+    setSaving(true);
+    setError(null);
+    try {
+      // Null / undefined in the payload means "leave alone"; "" means
+      // "clear". Differentiate so operators can rotate just the secret
+      // without re-pasting the client ID.
+      const payload: { client_id?: string | null; client_secret?: string | null } = {};
+      if ((state?.client_id ?? "") !== clientIdDraft) {
+        payload.client_id = clientIdDraft;
+      }
+      if (clientSecretDraft) {
+        payload.client_secret = clientSecretDraft;
+      }
+      if (Object.keys(payload).length === 0) {
+        addToast("No changes to save", "info");
+        return;
+      }
+      const next = await adminSetDiscordOAuth(payload, token);
+      setState(next);
+      setClientIdDraft(next.client_id ?? "");
+      setClientSecretDraft("");
+      addToast("Discord OAuth settings saved", "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to save", "error");
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClearSecret = async () => {
+    if (!token) return;
+    if (!confirm("Clear the stored Discord Client Secret? Users won't be able to sign in until a new secret is set.")) return;
+    setSaving(true);
+    try {
+      const next = await adminSetDiscordOAuth({ client_secret: "" }, token);
+      setState(next);
+      addToast("Discord Client Secret cleared", "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to clear secret", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start gap-3">
+        <div className="w-10 h-10 rounded-xl bg-[#5865F2]/15 flex items-center justify-center flex-shrink-0">
+          <span className="material-symbols-outlined text-[#5865F2]">login</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <h4 className="text-sm font-semibold text-on-surface">Discord OAuth</h4>
+          <p className="text-xs text-on-surface-variant mt-1">
+            Lets users click "Sign in with Discord" under Settings → Connections.
+            Register an app at <a
+              href="https://discord.com/developers/applications"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary underline"
+            >discord.com/developers</a>, add the Redirect URL shown below, then paste the Client ID + Client Secret here.
+          </p>
+          <p className="text-xs text-on-surface-variant mt-2">
+            Status:{" "}
+            <span className={state?.configured ? "text-green-500" : "text-on-surface-variant/60"}>
+              {state === null ? "loading…" : state.configured ? "configured" : "not configured"}
+            </span>
+          </p>
+        </div>
+      </div>
+
+      {state?.redirect_uri && (
+        <div>
+          <label className="text-xs text-on-surface-variant block mb-1">Redirect URL (copy into your Discord app)</label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              readOnly
+              value={state.redirect_uri}
+              className="flex-1 px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface font-mono"
+              onClick={(e) => (e.target as HTMLInputElement).select()}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard.writeText(state.redirect_uri ?? "");
+                addToast("Redirect URL copied", "success");
+              }}
+              className="px-3 py-2 text-xs bg-surface-container-high hover:bg-surface-container-highest text-on-surface rounded transition-colors"
+            >
+              Copy
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div>
+        <label className="text-xs text-on-surface-variant block mb-1">Client ID</label>
+        <input
+          type="text"
+          value={clientIdDraft}
+          onChange={(e) => setClientIdDraft(e.target.value)}
+          placeholder="Discord OAuth application ID"
+          className="w-full px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface font-mono"
+        />
+      </div>
+
+      <div>
+        <label className="text-xs text-on-surface-variant block mb-1">
+          Client Secret
+          {state?.client_secret_set && (
+            <span className="ml-2 text-on-surface-variant/60 font-mono">
+              stored: {state.client_secret_masked}
+            </span>
+          )}
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="password"
+            value={clientSecretDraft}
+            onChange={(e) => setClientSecretDraft(e.target.value)}
+            placeholder={state?.client_secret_set ? "•••••••••• (leave blank to keep current)" : "Paste Discord app client secret"}
+            className="flex-1 px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface font-mono"
+          />
+          {state?.client_secret_set && (
+            <button
+              type="button"
+              onClick={() => void handleClearSecret()}
+              disabled={saving}
+              className="px-3 py-2 text-xs rounded bg-error/20 hover:bg-error/30 text-error disabled:opacity-40 transition-colors"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div className="p-3 rounded border border-error/40 bg-error/10 text-xs text-error">
+          {error}
+        </div>
+      )}
+
+      <div>
+        <button
+          onClick={() => void handleSave()}
+          disabled={saving}
+          className="px-4 py-2 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface text-sm rounded transition-colors"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
     </div>
   );
 }

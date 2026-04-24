@@ -114,7 +114,7 @@ export interface RegisterResult {
   server_name: string | null;
 }
 
-async function apiFetch<T>(
+export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
   accessToken?: string,
@@ -1198,6 +1198,103 @@ export async function adminUninstallExtension(
     { method: "DELETE" },
     accessToken,
   );
+}
+
+// --- Admin integrations (Discord OAuth) ---
+
+export interface DiscordOAuthIntegration {
+  client_id: string | null;
+  client_secret_set: boolean;
+  client_secret_masked: string | null;
+  redirect_uri: string | null;
+  configured: boolean;
+}
+
+export async function adminGetDiscordOAuth(
+  accessToken: string,
+): Promise<DiscordOAuthIntegration> {
+  return apiFetch("/admin/integrations/discord-oauth", {}, accessToken);
+}
+
+export async function adminSetDiscordOAuth(
+  body: { client_id?: string | null; client_secret?: string | null },
+  accessToken: string,
+): Promise<DiscordOAuthIntegration> {
+  return apiFetch(
+    "/admin/integrations/discord-oauth",
+    { method: "PATCH", body: JSON.stringify(body) },
+    accessToken,
+  );
+}
+
+// --- User-scoped Discord OAuth (per-user sign-in) ---
+
+export interface DiscordOAuthUserConfig {
+  enabled: boolean;
+  client_id?: string | null;
+  redirect_uri?: string | null;
+  scopes?: string[];
+}
+
+export interface DiscordUserProfile {
+  id: string;
+  username: string;
+  global_name?: string | null;
+  avatar?: string | null;
+}
+
+export interface DiscordConnectionStatus {
+  connected: boolean;
+  mxid: string;
+  user?: DiscordUserProfile | null;
+}
+
+export interface DiscordGuild {
+  id: string;
+  name: string;
+  icon?: string | null;
+  owner?: boolean;
+  permissions?: string | null;
+  icon_url?: string | null;
+}
+
+export async function userDiscordOAuthConfig(
+  accessToken: string,
+): Promise<DiscordOAuthUserConfig> {
+  return apiFetch("/users/me/discord/oauth/config", {}, accessToken);
+}
+
+export async function userDiscordStatus(
+  accessToken: string,
+): Promise<DiscordConnectionStatus> {
+  return apiFetch("/users/me/discord", {}, accessToken);
+}
+
+export async function userDiscordOAuthStart(
+  body: { return_to?: string },
+  accessToken: string,
+): Promise<{ authorize_url: string }> {
+  return apiFetch(
+    "/users/me/discord/oauth/start",
+    { method: "POST", body: JSON.stringify(body) },
+    accessToken,
+  );
+}
+
+export async function userDiscordOAuthRevoke(
+  accessToken: string,
+): Promise<void> {
+  await apiFetch(
+    "/users/me/discord/oauth",
+    { method: "DELETE" },
+    accessToken,
+  );
+}
+
+export async function userDiscordGuilds(
+  accessToken: string,
+): Promise<{ guilds: DiscordGuild[] }> {
+  return apiFetch("/users/me/discord/guilds", {}, accessToken);
 }
 
 // --- Admin ---
