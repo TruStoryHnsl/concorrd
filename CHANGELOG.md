@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-23
+
+### Fixed
+- **Client build** — `ExtensionEmbed.surfaces` now accepts both layout-level `SurfaceDescriptor[]` and session-model `ExtensionSurface[]`, normalizing the latter via a new `toSurfaceDescriptor` helper. `ChatLayout.tsx:1747` had been passing store-level surfaces into a prop typed against the SDK descriptor since the `efa90fe` merge, breaking `tsc -b && vite build`. Dev was unaffected because Vite's dev transform skips type-checking. Supersedes the unbuildable v0.2.0 artifact.
+
 ## [0.2.0] - 2026-04-23
 
 ### Changed — User-scoped Discord bridge (breaking for admins)

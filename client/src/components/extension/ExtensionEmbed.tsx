@@ -40,6 +40,7 @@ import {
   buildSurfaceResizeMessage,
   type ConcordInitPayload,
 } from "../../extensions/sdk";
+import type { ExtensionSurface } from "../../stores/extension";
 
 export interface SurfaceDescriptor {
   surface_id: string;
@@ -51,15 +52,60 @@ export interface SurfaceDescriptor {
   z_index?: number;
 }
 
+/** Input accepted by the `surfaces` prop — either the layout-level
+ *  `SurfaceDescriptor` (used by SDK / legacy callers) or the session-model
+ *  `ExtensionSurface` coming straight from the store. The latter is normalized
+ *  to the former by `toSurfaceDescriptor` before any rendering or SDK dispatch. */
+export type SurfaceInput = SurfaceDescriptor | ExtensionSurface;
+
+const VALID_ANCHORS: ReadonlyArray<SurfaceDescriptor["anchor"]> = [
+  "left_sidebar",
+  "right_sidebar",
+  "bottom_bar",
+  "center",
+  "none",
+];
+
+/** Normalize a store-level `ExtensionSurface` into a layout `SurfaceDescriptor`.
+ *  Pulls anchor / sizing hints out of the freeform `layout` record when present;
+ *  otherwise falls back to a right-sidebar panel — same defaults as DEFAULT_SURFACE. */
+export function toSurfaceDescriptor(s: SurfaceInput): SurfaceDescriptor {
+  if ("type" in s) return s;
+  const layout = (s.layout ?? {}) as Record<string, unknown>;
+  const anchor = layout.anchor;
+  const minW = layout.min_width_px;
+  const minH = layout.min_height_px;
+  const preferredAspect = layout.preferred_aspect;
+  const zIndex = layout.z_index;
+  return {
+    surface_id: s.surface_id,
+    type: "panel",
+    anchor:
+      typeof anchor === "string" && (VALID_ANCHORS as readonly string[]).includes(anchor)
+        ? (anchor as SurfaceDescriptor["anchor"])
+        : "right_sidebar",
+    min_width_px: typeof minW === "number" ? minW : undefined,
+    min_height_px: typeof minH === "number" ? minH : undefined,
+    preferred_aspect:
+      typeof preferredAspect === "string" || preferredAspect === null
+        ? (preferredAspect as string | null)
+        : undefined,
+    z_index: typeof zIndex === "number" ? zIndex : undefined,
+  };
+}
+
 interface ExtensionSurfaceManagerProps {
   url: string;
   extensionName: string;
   hostUserId: string;
   isHost: boolean;
   onStop: () => void;
-  /** Optional array of surface descriptors from the session model.
+  /** Optional array of surfaces from the session model. Accepts either
+   *  layout-level `SurfaceDescriptor`s (SDK / legacy callers) or store-level
+   *  `ExtensionSurface`s straight from the session state; the latter are
+   *  normalized internally via `toSurfaceDescriptor`.
    *  When absent or empty, a single panel surface is rendered. */
-  surfaces?: SurfaceDescriptor[];
+  surfaces?: SurfaceInput[];
   /**
    * Session interaction mode from the extension session model §2.2.
    * Defaults to "shared" for backward compat.
@@ -229,12 +275,23 @@ export default function ExtensionSurfaceManager({
   // W4: Container ref for SDK message targeting and ResizeObserver.
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Normalize the union input down to SurfaceDescriptor[] once so every
+  // downstream path (SDK init payload, ResizeObserver, render) sees a single
+  // shape. Both the layout-level descriptor and the session-model surface
+  // carry enough info for rendering; the normalizer defaults missing fields.
+  const normalizedSurfaces: SurfaceDescriptor[] | undefined = surfaces?.map(
+    toSurfaceDescriptor,
+  );
+
   // W4: Send concord:init to all iframes in the container on mount.
   // Deferred 100 ms so the iframes have time to load their srcdoc/src before
   // they can receive postMessage events.
   useEffect(() => {
     if (!sdkInit) return;
-    const activeSurfs = surfaces && surfaces.length > 0 ? surfaces : [DEFAULT_SURFACE];
+    const activeSurfs =
+      normalizedSurfaces && normalizedSurfaces.length > 0
+        ? normalizedSurfaces
+        : [DEFAULT_SURFACE];
     const payload: ConcordInitPayload = { ...sdkInit, surfaces: activeSurfs };
     const msg = buildInitMessage(payload);
     const timer = setTimeout(() => {
@@ -258,7 +315,10 @@ export default function ExtensionSurfaceManager({
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
         // Use the first matching surface_id or the default.
-        const activeSurfs = surfaces && surfaces.length > 0 ? surfaces : [DEFAULT_SURFACE];
+        const activeSurfs =
+          normalizedSurfaces && normalizedSurfaces.length > 0
+            ? normalizedSurfaces
+            : [DEFAULT_SURFACE];
         activeSurfs.forEach((s) => {
           const msg = buildSurfaceResizeMessage({
             surfaceId: s.surface_id,
@@ -315,7 +375,9 @@ export default function ExtensionSurfaceManager({
 
   // Normalize: empty/absent → single default panel surface.
   const activeSurfaces =
-    surfaces && surfaces.length > 0 ? surfaces : [DEFAULT_SURFACE];
+    normalizedSurfaces && normalizedSurfaces.length > 0
+      ? normalizedSurfaces
+      : [DEFAULT_SURFACE];
 
   // Sort by z_index ascending so index 0 is the "primary" (lowest z / first).
   const sorted = [...activeSurfaces].sort(
