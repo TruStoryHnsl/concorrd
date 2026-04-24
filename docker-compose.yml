@@ -366,24 +366,6 @@ services:
     networks:
       - concord
 
-  # WorldView extension — serves static files + API proxies.
-  # Source is mounted as a volume so Syncthing changes are live.
-  worldview:
-    image: python:3.13-slim
-    restart: unless-stopped
-    working_dir: /app
-    volumes:
-      - ./ext/worldview:/app:ro
-    command: python server.py -p 8080
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/')\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-    networks:
-      - concord
-
   # Bundled TURN relay for NAT traversal.
   #
   # coturn runs in host networking mode because it must relay UDP media

@@ -136,15 +136,6 @@
         file_server
     }
 
-    # WorldView extension — proxied to the worldview container.
-    # Strips the /ext/worldview prefix so the app sees bare paths.
-    # Permissive framing: the iframe is loaded from the same origin
-    # so SAMEORIGIN already allows it; we just make sure the
-    # extension responses don't override with DENY.
-    handle_path /ext/worldview/* {
-        reverse_proxy worldview:8080
-    }
-
     # React SPA — serve static files, fall back to index.html
     #
     # Cache strategy:

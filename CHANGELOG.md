@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-04-23
+
+### Removed
+- **Legacy `ext/worldview` submodule** — Worldview's canonical source now lives in the `concord-extensions` workspace (`packages/worldview/`) as a Vite/TS extension package. The empty gitlink, `worldview` compose service, Caddy `/ext/worldview/*` reverse-proxy, and the `server/extensions.json` registration have all been dropped. Concord's extension-integration surfaces (`client/src/components/extension/*`, session model, InputRouter, SDK) are unchanged.
+
 ## [0.2.1] - 2026-04-23
 
 ### Fixed
