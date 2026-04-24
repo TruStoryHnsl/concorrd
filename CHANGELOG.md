@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-24
+
+### Added — extension upstream-API proxy
+- **`/api/ext-proxy/{ext_id}/{provider}/{path:path}`** lets installed extensions hit upstream APIs that need an OAuth client_secret without ever shipping the secret to the browser. Built around a small provider registry: `opensky` (OAuth2 client_credentials → Bearer), `sentinel` (OAuth2 → Sentinel Hub WMS, instance-id-scoped), `nycdot` (no auth, just forwarded). New providers register by adding an entry in `routers/ext_proxy.py::PROVIDERS`. OAuth tokens are cached in-process for `expires_in − 60s` and refreshed transparently.
+- **Per-extension secrets store** in `instance.json[extension_secrets][ext_id]`. Admin endpoints `GET/PATCH /api/admin/extensions/{ext_id}/secrets` upsert with masked reads and accept `null` / `""` to clear individual fields.
+- **`GET /api/users/me/extensions/{ext_id}/browser-config`** surfaces operator-stored, browser-safe extension config to authenticated users (filters out `*_secret` and `*_client_id` keys). Lets the iframe pre-populate browser-direct API keys from instance defaults when localStorage is empty, without granting the iframe access to the OAuth client_secret.
+- Companion package `concord-extensions/packages/worldview-map`: the legacy Cesium OSINT-globe extension ported to the new catalog format. Layers that need OAuth (flights/OpenSky, satellites/Sentinel) route through the new `/api/ext-proxy/`; browser-direct layers (Cesium tiles, AISStream maritime, TomTom traffic, Windy weather) read keys from per-user localStorage via an in-extension Settings overlay.
+
 ## [0.5.1] - 2026-04-24
 
 ### Fixed
