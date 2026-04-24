@@ -13,6 +13,8 @@ the ``login_as`` / ``logout`` helpers from ``conftest`` for auth.
 
 from __future__ import annotations
 
+import os
+
 import services.tuwunel_config as tuwunel_config
 from services.tuwunel_config import (
     FederationSettings,
@@ -66,14 +68,22 @@ async def test_list_servers_returns_decoded_allowlist(client, tmp_path, monkeypa
         )
     )
 
-    login_as("@test_user:test.local")
+    # Resolve the local instance hostname from the live server config
+    # instead of string-literalling "test.local". conftest seeds
+    # CONDUWUIT_SERVER_NAME via os.environ.setdefault, but any caller
+    # that pre-sets it (CI env, docker-compose .env, a dev shell) wins
+    # that race — hardcoding the fixture value turns environment drift
+    # into a test failure. Reading the env makes the test self-adjust.
+    local_server_name = os.environ["CONDUWUIT_SERVER_NAME"]
+
+    login_as(f"@test_user:{local_server_name}")
     try:
         resp = await client.get("/api/explore/servers")
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert isinstance(body, list), f"expected list, got {type(body).__name__}"
-        # 3 entries: local instance (test.local) + 2 allowlisted peers.
-        # The local instance is prepended by the endpoint as "This instance".
+        # 3 entries: local instance + 2 allowlisted peers. The local
+        # instance is prepended by the endpoint as "This instance".
         assert len(body) == 3, f"expected 3 entries, got {len(body)}: {body}"
 
         # Each entry must have the exact shape the frontend renders.
@@ -85,7 +95,7 @@ async def test_list_servers_returns_decoded_allowlist(client, tmp_path, monkeypa
             assert entry["domain"] == entry["name"]
 
         # First entry is always the local instance.
-        assert body[0]["domain"] == "test.local"
+        assert body[0]["domain"] == local_server_name
         assert body[0]["description"] == "This instance"
 
         # Remaining entries are the allowlisted peers (order preserved from TOML).
