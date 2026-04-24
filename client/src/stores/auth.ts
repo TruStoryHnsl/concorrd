@@ -88,13 +88,34 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   restoreSession: () => {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) {
-      useServerStore.getState().resetState();
-      set({ isLoading: false });
+      // Only flip isLoading→false on the FIRST restore. Subsequent
+      // calls (StrictMode double-mount, App effect re-fire) shouldn't
+      // re-trigger any side effects.
+      if (get().isLoading) {
+        useServerStore.getState().resetState();
+        set({ isLoading: false });
+      }
       return false;
     }
     try {
       const { accessToken, userId, deviceId }: StoredSession =
         JSON.parse(stored);
+      // Idempotent: if a client is already restored for this exact
+      // session, do nothing. The previous behaviour created a fresh
+      // MatrixClient on every call — visible in the console as
+      // "Adding default global override push rule .msc3786 ..."
+      // logged once per client instance. App.tsx's restoreSession
+      // useEffect was firing 2x in dev (StrictMode) and on prop
+      // changes, creating multiple clients per session.
+      const existing = get();
+      if (
+        existing.client &&
+        existing.accessToken === accessToken &&
+        existing.userId === userId
+      ) {
+        if (existing.isLoading) set({ isLoading: false });
+        return true;
+      }
       const client = createMatrixClient(accessToken, userId, deviceId);
       useServerStore.getState().resetState();
       useSourcesStore.getState().bindToUser(userId);
