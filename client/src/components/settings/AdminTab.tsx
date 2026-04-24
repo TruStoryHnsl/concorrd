@@ -14,10 +14,14 @@ import {
   applyFederationChanges,
   getServiceNodeConfig,
   updateServiceNodeConfig,
+  getAdminBans,
+  adminUnbanUser,
+  adminBanUser,
   type AdminStats,
   type AdminServer,
   type AdminUser,
   type AdminBugReport,
+  type AdminBan,
   type FederationStatus,
   type ServiceNodeConfig,
   type ServiceNodeRole,
@@ -30,6 +34,7 @@ type Section =
   | "service-node"
   | "servers"
   | "users"
+  | "bans"
   | "reports";
 
 export function AdminTab() {
@@ -49,6 +54,7 @@ export function AdminTab() {
             "service-node",
             "servers",
             "users",
+            "bans",
             "reports",
           ] as Section[]
         ).map((s) => (
@@ -76,6 +82,7 @@ export function AdminTab() {
       {section === "service-node" && <ServiceNodeSection token={accessToken} />}
       {section === "servers" && <ServersSection token={accessToken} />}
       {section === "users" && <UsersSection token={accessToken} />}
+      {section === "bans" && <BansSection token={accessToken} />}
       {section === "reports" && <ReportsSection token={accessToken} />}
     </div>
   );
@@ -1190,6 +1197,153 @@ export function ServiceNodeSection({ token }: { token: string | null }) {
         >
           {saving ? "Saving…" : "Save"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bans — instance-wide ban list with unban + manual ban controls
+// ---------------------------------------------------------------------------
+
+function BansSection({ token }: { token: string | null }) {
+  const addToast = useToastStore((s) => s.addToast);
+  const [bans, setBans] = useState<AdminBan[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [banUserId, setBanUserId] = useState("");
+  const [banning, setBanning] = useState(false);
+  const [unbanning, setUnbanning] = useState<string | null>(null);
+
+  const refresh = async () => {
+    if (!token) return;
+    setLoading(true);
+    try {
+      const result = await getAdminBans(token);
+      setBans(result);
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to load bans", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const handleUnban = async (userId: string) => {
+    if (!token) return;
+    setUnbanning(userId);
+    try {
+      await adminUnbanUser(userId, token);
+      setBans((prev) => prev.filter((b) => b.user_id !== userId));
+      addToast(`Unbanned ${userId}`, "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to unban", "error");
+    } finally {
+      setUnbanning(null);
+    }
+  };
+
+  const handleBan = async () => {
+    if (!token || !banUserId.trim()) return;
+    setBanning(true);
+    try {
+      await adminBanUser(banUserId.trim(), token);
+      addToast(`Banned ${banUserId.trim()}`, "success");
+      setBanUserId("");
+      await refresh();
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to ban user", "error");
+    } finally {
+      setBanning(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6" data-testid="bans-section">
+      {/* Manual ban */}
+      <div>
+        <h4 className="text-sm font-medium text-on-surface mb-2">Ban a user</h4>
+        <p className="text-xs text-on-surface-variant mb-3">
+          Enter a Matrix user ID (e.g. <code>@user:example.com</code>) to add an
+          instance-wide ban. The user will be blocked from all servers on this instance.
+        </p>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={banUserId}
+            onChange={(e) => setBanUserId(e.target.value)}
+            placeholder="@user:example.com"
+            className="flex-1 px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+            data-testid="ban-user-input"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handleBan();
+            }}
+          />
+          <button
+            type="button"
+            onClick={handleBan}
+            disabled={banning || !banUserId.trim()}
+            className="px-4 py-2 bg-error/10 hover:bg-error/15 text-error text-sm rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            data-testid="ban-user-button"
+          >
+            {banning ? "Banning…" : "Ban"}
+          </button>
+        </div>
+      </div>
+
+      {/* Ban list */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-sm font-medium text-on-surface">
+            Banned users ({bans.length})
+          </h4>
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={loading}
+            className="text-xs text-primary hover:underline disabled:opacity-40"
+          >
+            {loading ? "Loading…" : "Refresh"}
+          </button>
+        </div>
+
+        {bans.length === 0 && !loading && (
+          <p className="text-sm text-on-surface-variant">No bans on record.</p>
+        )}
+
+        {bans.length > 0 && (
+          <div className="space-y-2">
+            {bans.map((ban) => (
+              <div
+                key={ban.user_id}
+                className="flex items-center justify-between gap-3 px-3 py-2 bg-surface-container rounded-lg border border-outline-variant/15"
+                data-testid={`ban-row-${ban.user_id}`}
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-on-surface font-medium truncate">
+                    {ban.user_id}
+                  </p>
+                  <p className="text-xs text-on-surface-variant mt-0.5">
+                    Banned by {ban.banned_by} ·{" "}
+                    {new Date(ban.created_at).toLocaleDateString()}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleUnban(ban.user_id)}
+                  disabled={unbanning === ban.user_id}
+                  className="shrink-0 px-3 py-1.5 text-xs bg-surface-container-high hover:bg-surface-container-highest disabled:opacity-40 rounded transition-colors"
+                  data-testid={`unban-button-${ban.user_id}`}
+                >
+                  {unbanning === ban.user_id ? "…" : "Unban"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

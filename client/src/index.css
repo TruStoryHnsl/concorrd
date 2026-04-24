@@ -42,10 +42,11 @@
   --color-secondary-container: #143a40;
 
   /* ── Logo base colours ──
-   * The Concord brand mark (`<ConcordLogo />`) is an inline SVG with
-   * two fills driven by these variables. They are intentionally
-   * aliased to the current theme's primary + secondary so the logo
-   * reflects whichever palette is active.
+   * The Concord brand mark (`<ConcordLogo />` and the `#boot-splash`
+   * inline halves in index.html) is rendered as two CSS-mask layers
+   * tinted by these variables. They are intentionally aliased to
+   * the current theme's primary + secondary so the logo reflects
+   * whichever palette is active.
    *
    * A future theme picker will swap `--color-primary` /
    * `--color-secondary` (these aliases follow automatically), OR can

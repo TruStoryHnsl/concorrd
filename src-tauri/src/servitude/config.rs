@@ -45,7 +45,8 @@ pub enum Transport {
     DiscordBridge,
     /// Reticulum overlay transport (INS-037). Spawns `rnsd` as a child
     /// process and provides mesh-style peer discovery + encrypted channels
-    /// as an additive overlay alongside Matrix federation.
+    /// as an additive overlay alongside Matrix federation in the main
+    /// build. Feature-gated so default builds never pull it in.
     ///
     /// Available only when the `reticulum` Cargo feature is enabled.
     /// Non-critical: `rnsd` failures are recorded in
@@ -102,8 +103,8 @@ impl Default for ServitudeConfig {
 impl ServitudeConfig {
     /// Load and validate a config from a TOML file on disk.
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
-        let raw = std::fs::read_to_string(path.as_ref())
-            .map_err(|e| ConfigError::Io(e.to_string()))?;
+        let raw =
+            std::fs::read_to_string(path.as_ref()).map_err(|e| ConfigError::Io(e.to_string()))?;
         Self::from_toml_str(&raw)
     }
 
@@ -135,8 +136,8 @@ impl ServitudeConfig {
             return Ok(Self::default());
         };
 
-        let cfg: Self = serde_json::from_value(value)
-            .map_err(|e| ConfigError::Parse(e.to_string()))?;
+        let cfg: Self =
+            serde_json::from_value(value).map_err(|e| ConfigError::Parse(e.to_string()))?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -153,8 +154,7 @@ impl ServitudeConfig {
             .store(SETTINGS_STORE_FILE)
             .map_err(|e| ConfigError::Store(e.to_string()))?;
 
-        let value = serde_json::to_value(self)
-            .map_err(|e| ConfigError::Parse(e.to_string()))?;
+        let value = serde_json::to_value(self).map_err(|e| ConfigError::Parse(e.to_string()))?;
         store.set(SERVITUDE_STORE_KEY, value);
         store
             .save()
@@ -290,28 +290,38 @@ mod tests {
         // Every field intentionally set to a NON-default value so schema
         // drift (renamed/dropped fields) is caught by an assertion failure
         // rather than silently surviving because the default matched.
+        let enabled_transports = {
+            let mut transports = vec![
+                Transport::WireGuard,
+                Transport::Mesh,
+                Transport::Tunnel,
+                Transport::MatrixFederation,
+            ];
+            #[cfg(feature = "reticulum")]
+            transports.push(Transport::Reticulum);
+            transports
+        };
+
         let original = ServitudeConfig {
             display_name: "round-trip-fixture".to_string(),
             max_peers: 99,
             listen_port: 31_337,
             allow_privileged_port: true,
-            enabled_transports: vec![
-                Transport::WireGuard,
-                Transport::Mesh,
-                Transport::Tunnel,
-                Transport::MatrixFederation,
-            ],
+            enabled_transports,
         };
 
-        let json = serde_json::to_string(&original)
-            .expect("ServitudeConfig should serialize to JSON");
+        let json =
+            serde_json::to_string(&original).expect("ServitudeConfig should serialize to JSON");
         let decoded: ServitudeConfig = serde_json::from_str(&json)
             .expect("ServitudeConfig should deserialize from its own JSON");
 
         assert_eq!(decoded.display_name, original.display_name);
         assert_eq!(decoded.max_peers, original.max_peers);
         assert_eq!(decoded.listen_port, original.listen_port);
-        assert_eq!(decoded.allow_privileged_port, original.allow_privileged_port);
+        assert_eq!(
+            decoded.allow_privileged_port,
+            original.allow_privileged_port
+        );
         assert_eq!(decoded.enabled_transports, original.enabled_transports);
 
         // And the decoded config must still pass validation (catches
@@ -617,8 +627,8 @@ display_name = "neg-port"
 max_peers = 8
 listen_port = -1
 "#;
-        let err = ServitudeConfig::from_toml_str(raw)
-            .expect_err("negative port should fail validation");
+        let err =
+            ServitudeConfig::from_toml_str(raw).expect_err("negative port should fail validation");
         assert!(matches!(err, ConfigError::PortOutOfRange(-1)));
     }
 
@@ -633,8 +643,8 @@ display_name = "huge-peers"
 max_peers = 9223372036854775807
 listen_port = 8765
 "#;
-        let cfg = ServitudeConfig::from_toml_str(raw)
-            .expect("huge max_peers passes validation (bug)");
+        let cfg =
+            ServitudeConfig::from_toml_str(raw).expect("huge max_peers passes validation (bug)");
         assert_eq!(cfg.max_peers, i64::MAX);
     }
 }

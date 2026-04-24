@@ -1,5 +1,5 @@
 """
-Generate favicon assets from the Concord master logo.
+Generate favicon assets from the Concord master logo halves.
 
 Run from the concord project root:
     python3 branding/generate_favicons.py
@@ -11,17 +11,26 @@ Outputs to client/public/:
     favicon-48.png      — 48x48
     apple-touch-icon.png — 192x192
     favicon.ico         — multi-size 16/32/48 bundle
-    logo.png            — full-size source (for LoginForm <img> fallback)
+    logo.png            — full-size composited reference (default tint)
 
-The source at `branding/logo.png` is the clean, transparent master
-logo — already properly alpha-channelled and tight-cropped. This
-script just resizes it to each target size with an unsharp-mask pass
-on the very small variants so the glyph stays crisp at 16x16.
+The brand mark ships as TWO grayscale-alpha mask PNGs:
 
-Prior mesh-era versions of this script did a green-channel extraction
-to clean up a noisy mint-green source; that step is no longer needed
-and would mangle the current multi-colour glyph, so it was removed.
-The legacy cleanup helper lives in git history (pre-2026-04-10).
+    branding/logo-upper.png   — upper-right ring + node
+    branding/logo-lower.png   — lower-left  ring + node
+
+Both halves are 1024×1024 with binary alpha and pure-white luminance.
+The application UI tints them at runtime via CSS `mask-image` +
+`background-color` from theme variables. For OS-level icons (favicon,
+apple-touch-icon, manifest icons) we composite the two halves with a
+fixed default tint so the icon is always recognisable in places where
+the OS — not Concord — chooses the rendering colour.
+
+The default tint is the project's "bronze-teal" theme:
+    primary    #a5823f  (warm bronze)  → upper half
+    secondary  #408c96  (cool teal)    → lower half
+
+Edit the masks (or add a new pair) to change the brand glyph itself;
+edit the constants below to change the OS-icon tint.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -29,9 +38,45 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "branding" / "logo.png"
+UPPER_MASK = ROOT / "branding" / "logo-upper.png"
+LOWER_MASK = ROOT / "branding" / "logo-lower.png"
 PUBLIC = ROOT / "client" / "public"
-ASSETS = ROOT / "client" / "src" / "assets"
+
+# Default-theme tint applied at OS-icon generation time.
+# Tinting is per-half: upper = primary, lower = secondary.
+TINT_PRIMARY = (0xA5, 0x82, 0x3F, 0xFF)    # bronze
+TINT_SECONDARY = (0x40, 0x8C, 0x96, 0xFF)  # teal
+
+
+def tint_half(mask_path: Path, color: tuple[int, int, int, int]) -> Image.Image:
+    """Convert a grayscale-alpha mask to a solid-coloured RGBA layer.
+
+    The mask's alpha channel becomes the alpha channel of the output;
+    every visible pixel is painted with the supplied colour. Luminance
+    of the source mask is discarded — the file is treated purely as a
+    silhouette.
+    """
+    half = Image.open(mask_path)
+    if half.mode != "LA":
+        half = half.convert("LA")
+    alpha = half.split()[1]
+    layer = Image.new("RGBA", half.size, color)
+    layer.putalpha(alpha)
+    return layer
+
+
+def composite_master() -> Image.Image:
+    """Stack the two tinted halves into the canonical full-colour mark.
+
+    Lower painted first, upper on top — matches the React component's
+    z-order so the chain weave reads correctly at every size.
+    """
+    upper = tint_half(UPPER_MASK, TINT_PRIMARY)
+    lower = tint_half(LOWER_MASK, TINT_SECONDARY)
+    canvas = Image.new("RGBA", upper.size, (0, 0, 0, 0))
+    canvas = Image.alpha_composite(canvas, lower)
+    canvas = Image.alpha_composite(canvas, upper)
+    return canvas
 
 
 def tight_crop_square(img: Image.Image) -> Image.Image:
@@ -71,12 +116,16 @@ def scale_to(square: Image.Image, sz: int) -> Image.Image:
 
 def main() -> None:
     PUBLIC.mkdir(parents=True, exist_ok=True)
-    ASSETS.mkdir(parents=True, exist_ok=True)
 
-    src = Image.open(SRC).convert("RGBA")
-    print(f"source: {SRC} {src.size}")
+    if not UPPER_MASK.exists() or not LOWER_MASK.exists():
+        raise SystemExit(
+            f"missing logo masks; expected {UPPER_MASK} and {LOWER_MASK}"
+        )
 
-    square = tight_crop_square(src)
+    master = composite_master()
+    print(f"composited master: {master.size}")
+
+    square = tight_crop_square(master)
     print(f"squared transparent: {square.size}")
 
     sizes = {
@@ -97,10 +146,12 @@ def main() -> None:
     )
     print("  public/favicon.ico (16/32/48)")
 
-    # Full-size logo for the LoginForm welcome overlay <img>
-    src.save(PUBLIC / "logo.png", "PNG", optimize=True)
-    src.save(ASSETS / "concord-logo.png", "PNG", optimize=True)
-    print("  public/logo.png, src/assets/concord-logo.png")
+    # Full-size composited reference. Not consumed by the runtime UI
+    # (the React mark composites halves on the fly with theme colours),
+    # but kept for documentation, README screenshots, and any tooling
+    # that wants a one-file flattened render.
+    master.save(PUBLIC / "logo.png", "PNG", optimize=True)
+    print("  public/logo.png (default-tinted reference)")
 
 
 if __name__ == "__main__":

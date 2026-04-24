@@ -54,7 +54,7 @@ export interface ConcordSource {
   /** When this source was added (ISO timestamp). */
   addedAt: string;
   /** What kind of network this source represents. Defaults to "concord". */
-  platform?: "concord" | "matrix" | "discord-bot" | "discord-account";
+  platform?: "concord" | "matrix" | "discord-bot" | "discord-account" | "reticulum";
   /** Concord user who owns this persisted source. Null => instance-global primary source. */
   ownerUserId?: string | null;
 }

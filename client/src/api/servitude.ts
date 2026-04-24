@@ -44,7 +44,8 @@ export type ServitudeState =
 /**
  * Full status response from `servitude_status` (INS-024 Wave 4).
  * Contains the lifecycle state plus the degraded transports map from
- * Wave 3's partial-failure surface.
+ * Wave 3's partial-failure surface — any transport that started but
+ * then entered a non-critical failure state shows up here.
  */
 export interface ServitudeStatusResponse {
   state: ServitudeState;
@@ -61,6 +62,16 @@ export function isServitudeState(value: unknown): value is ServitudeState {
     value === "starting" ||
     value === "running" ||
     value === "stopping"
+  );
+}
+
+function isServitudeStatusResponse(value: unknown): value is ServitudeStatusResponse {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    isServitudeState(v.state) &&
+    typeof v.degraded_transports === "object" &&
+    v.degraded_transports !== null
   );
 }
 
@@ -93,12 +104,19 @@ export async function servitudeStop(): Promise<void> {
 }
 
 /**
- * Poll the current lifecycle state and degraded transports map.
+ * Poll the current lifecycle state and degraded transports.
  *
  * INS-024 Wave 4: the return shape is now a `ServitudeStatusResponse`
  * with `state` (lifecycle string) and `degraded_transports` (map of
- * transport name -> failure reason). Browser mode returns a default
- * "stopped" response with an empty degraded map.
+ * transport name → failure reason).
+ *
+ * Returns `{ state: "stopped", degraded_transports: {} }` in the browser
+ * build — the "no Tauri runtime" case is indistinguishable from the
+ * "handle not yet constructed" case on the Rust side.
+ *
+ * The Rust command may return either a plain lifecycle string (legacy,
+ * pre-Wave-3) or the full `{ state, degraded_transports }` object
+ * (Wave-3+). Both are handled for backward compatibility during rollout.
  */
 export async function servitudeStatus(): Promise<ServitudeStatusResponse> {
   if (!isTauri()) {
@@ -112,29 +130,13 @@ export async function servitudeStatus(): Promise<ServitudeStatusResponse> {
   } catch {
     throw new Error(`servitude_status returned non-JSON payload: ${raw}`);
   }
-
-  // Support both the new object format and the legacy bare-string format
-  // for backward compatibility during the Wave 4 rollout.
-  if (typeof parsed === "string" && isServitudeState(parsed)) {
+  // Wave-3+ response: full object with state + degraded_transports.
+  if (isServitudeStatusResponse(parsed)) {
+    return parsed;
+  }
+  // Legacy response: plain lifecycle string.
+  if (isServitudeState(parsed)) {
     return { state: parsed, degraded_transports: {} };
   }
-
-  if (
-    typeof parsed === "object" &&
-    parsed !== null &&
-    "state" in parsed
-  ) {
-    const obj = parsed as Record<string, unknown>;
-    const state = obj.state;
-    if (typeof state === "string" && isServitudeState(state)) {
-      const degraded =
-        typeof obj.degraded_transports === "object" &&
-        obj.degraded_transports !== null
-          ? (obj.degraded_transports as Record<string, string>)
-          : {};
-      return { state, degraded_transports: degraded };
-    }
-  }
-
   throw new Error(`servitude_status returned unknown payload: ${raw}`);
 }

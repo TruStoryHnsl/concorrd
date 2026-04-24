@@ -73,6 +73,7 @@ import {
   type MatrixSourceDraft,
 } from "../sources/matrixSourceAuth";
 import { useFormatStore } from "../../stores/format";
+import { useBootReadyStore } from "../../stores/bootReady";
 import { FormatPopover } from "../chat/FormatPopover";
 
 /** RulesGate — full-panel screen shown to members who haven't accepted the server rules yet. */
@@ -679,6 +680,22 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   const loadMembers = useServerStore((s) => s.loadMembers);
   const [serversLoaded, setServersLoaded] = useState(false);
+
+  // Tell the launch splash that the logged-in shell is ready to be
+  // shown to the user. Fires AFTER the initial server/conversation/
+  // catalog data has resolved, so the splash doesn't dismiss into
+  // a half-loaded ChatLayout where channel tiles and messages are
+  // still popping in. requestAnimationFrame defers the flag to
+  // after-paint so the next frame the user sees is the real UI,
+  // not an empty shell.
+  const markAppReady = useBootReadyStore((s) => s.markAppReady);
+  useEffect(() => {
+    if (!serversLoaded) return;
+    const id = requestAnimationFrame(() => markAppReady());
+    return () => cancelAnimationFrame(id);
+  }, [serversLoaded, markAppReady]);
+
+
   const discordVoiceProjectionHandled = useRef<string | null>(null);
   const startupRestoreHandled = useRef<string | null>(null);
   const origSetActiveChannel = useServerStore((s) => s.setActiveChannel);
@@ -2892,6 +2909,7 @@ function AddSourceModal({
     | "discord"
     | "discord-bot"
     | "discord-account"
+    | "reticulum"
     | "validating"
     | "error";
 
@@ -2907,6 +2925,10 @@ function AddSourceModal({
   const [matrixUsername, setMatrixUsername] = useState("");
   const [matrixPassword, setMatrixPassword] = useState("");
   const [matrixDraft, setMatrixDraft] = useState<MatrixSourceDraft | null>(null);
+
+  // Reticulum form state
+  const [reticulumDest, setReticulumDest] = useState("");
+  const [reticulumName, setReticulumName] = useState("");
 
   const addSource = useSourcesStore((s) => s.addSource);
   const updateSource = useSourcesStore((s) => s.updateSource);
@@ -3229,17 +3251,17 @@ function AddSourceModal({
 
               <button
                 type="button"
-                disabled
-                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/10 bg-surface-container/40 text-left opacity-60 cursor-not-allowed"
+                onClick={() => setScreen("reticulum")}
+                className="w-full flex items-center gap-4 p-4 rounded-xl border border-outline-variant/20 hover:border-green-700/40 hover:bg-surface-container-high transition-all text-left group"
               >
-                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
-                  <span className="material-symbols-outlined text-on-surface-variant">sensors</span>
+                <div className="w-10 h-10 rounded-xl bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                  <SourceBrandIcon brand="reticulum" size={24} className="text-green-500" />
                 </div>
                 <div className="flex-1">
                   <p className="text-sm font-medium text-on-surface">Reticulum</p>
-                  <p className="text-xs text-on-surface-variant">Preloaded release target</p>
+                  <p className="text-xs text-on-surface-variant">Connect via Reticulum destination hash</p>
                 </div>
-                <span className="text-[10px] uppercase tracking-wider text-on-surface-variant font-label">Soon</span>
+                <span className="material-symbols-outlined text-on-surface-variant/40 ml-auto group-hover:text-on-surface-variant">chevron_right</span>
               </button>
             </div>
           </>
@@ -3426,6 +3448,61 @@ function AddSourceModal({
             >
               Got it
             </button>
+          </>
+        )}
+
+        {/* ── Screen: reticulum ── */}
+        {screen === "reticulum" && (
+          <>
+            <Header title="Reticulum Network" onBack={back} />
+            <div className="space-y-4">
+              <p className="text-xs text-on-surface-variant">
+                Add a peer reachable via the Reticulum network. Enter the peer's destination hash
+                and an optional display name. Requires the Reticulum transport to be running
+                (enabled via the <code className="font-mono">reticulum</code> feature flag).
+              </p>
+              <div>
+                <label className="text-xs font-label text-on-surface-variant mb-1.5 block">Destination Hash</label>
+                <input
+                  type="text"
+                  value={reticulumDest}
+                  onChange={(e) => setReticulumDest(e.target.value)}
+                  placeholder="a1b2c3d4e5f6… (32-byte hex)"
+                  className="w-full px-3 py-2 bg-surface-container-highest rounded-lg text-sm text-on-surface border border-outline-variant/20 focus:border-green-700/50 focus:outline-none font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-label text-on-surface-variant mb-1.5 block">Display Name <span className="opacity-50">(optional)</span></label>
+                <input
+                  type="text"
+                  value={reticulumName}
+                  onChange={(e) => setReticulumName(e.target.value)}
+                  placeholder="My Reticulum peer"
+                  className="w-full px-3 py-2 bg-surface-container-highest rounded-lg text-sm text-on-surface border border-outline-variant/20 focus:border-green-700/50 focus:outline-none"
+                />
+              </div>
+              <button
+                onClick={() => {
+                  const dest = reticulumDest.trim();
+                  if (!dest) { setError("Enter a destination hash"); setScreen("error"); return; }
+                  addSource({
+                    host: dest,
+                    instanceName: reticulumName.trim() || undefined,
+                    inviteToken: "",
+                    apiBase: "",
+                    homeserverUrl: "",
+                    status: "connected",
+                    enabled: true,
+                    platform: "reticulum",
+                  });
+                  onSourceAdded();
+                }}
+                disabled={!reticulumDest.trim()}
+                className="w-full py-2.5 bg-green-700 text-white rounded-lg text-sm font-medium disabled:opacity-40 hover:bg-green-600 transition-colors"
+              >
+                Add Peer
+              </button>
+            </div>
           </>
         )}
 

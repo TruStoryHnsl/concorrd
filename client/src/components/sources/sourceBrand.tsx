@@ -1,16 +1,19 @@
 import { useId } from "react";
 import { ConcordLogo } from "../brand/ConcordLogo";
 
-export type SourceBrand = "concord" | "matrix" | "mozilla" | "discord";
+export type SourceBrand = "concord" | "matrix" | "mozilla" | "discord" | "reticulum";
 
 export function inferSourceBrand(input: {
-  platform?: "concord" | "matrix" | "discord-bot" | "discord-account";
+  platform?: "concord" | "matrix" | "discord-bot" | "discord-account" | "reticulum";
   host?: string;
   instanceName?: string;
   serverName?: string;
 }): SourceBrand {
   if (input.platform === "discord-bot" || input.platform === "discord-account") {
     return "discord";
+  }
+  if (input.platform === "reticulum") {
+    return "reticulum";
   }
   if (input.platform === "matrix") {
     const fields = [input.host, input.instanceName, input.serverName]
@@ -80,6 +83,33 @@ export function SourceBrandIcon({
           d="M6.5 16.9V7.1h1.95l1.95 3.2 1.95-3.2h1.9v9.8h-1.75v-6.7l-2.1 3.35-2.1-3.35v6.7H6.5Zm9.2 0V7.1h2.05q1.65 0 2.55.75.95.8.95 2.2 0 1.5-.95 2.3-.9.8-2.55.8h-.35v3.75H15.7Zm1.75-5.25h.35q.8 0 1.2-.35.45-.35.45-1.15 0-.7-.45-1.05-.4-.35-1.2-.35h-.35v2.9Z"
           fill={`url(#${mozillaGradientId})`}
         />
+      </svg>
+    );
+  }
+
+  if (brand === "reticulum") {
+    // Reticulum network icon: stylised radio-wave / mesh node symbol
+    return (
+      <svg
+        viewBox="0 0 24 24"
+        width={size}
+        height={size}
+        className={className}
+        aria-hidden="true"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {/* Centre node */}
+        <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+        {/* Inner arc pair */}
+        <path d="M9.17 9.17a4 4 0 0 0 0 5.66" />
+        <path d="M14.83 9.17a4 4 0 0 1 0 5.66" />
+        {/* Outer arc pair */}
+        <path d="M6.34 6.34a8 8 0 0 0 0 11.32" />
+        <path d="M17.66 6.34a8 8 0 0 1 0 11.32" />
       </svg>
     );
   }

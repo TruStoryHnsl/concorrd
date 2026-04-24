@@ -20,6 +20,7 @@ import { SubmitPage } from "./components/public/SubmitPage";
 import { ChatLayout } from "./components/layout/ChatLayout";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { LaunchAnimation } from "./components/LaunchAnimation";
+import { MarkReady } from "./components/MarkReady";
 import { ToastContainer } from "./components/ui/Toast";
 import { VoiceConnectionBar } from "./components/voice/VoiceConnectionBar";
 import { DirectInviteBanner } from "./components/DirectInviteBanner";
@@ -378,11 +379,15 @@ export default function App() {
   // render activity (auth restore, store subscriptions, StrictMode
   // double-mount) can't invalidate the splash's paint and interrupt
   // the animated WebP.
+  // Stabilize the onDone callback reference. Inline arrow functions
+  // create a new ref every render of App, which flips the dep array
+  // of LaunchAnimation's gate-check useEffect on every parent render.
+  // The gate inside short-circuits, but if anything in the dep chain
+  // ever causes a setState->re-render cycle, the unstable ref turns
+  // it into an infinite loop. Memoizing keeps the dep stable.
+  const handleLaunchDone = useCallback(() => setLaunchDone(true), []);
   const launchOverlay = !launchDone ? (
-    <LaunchAnimation
-      isLoading={isLoading}
-      onDone={() => setLaunchDone(true)}
-    />
+    <LaunchAnimation isLoading={isLoading} onDone={handleLaunchDone} />
   ) : null;
 
   // Public submit page — no auth required
@@ -392,6 +397,7 @@ export default function App() {
     return (
       <>
         <SubmitPage webhookId={webhookId} />
+        <MarkReady />
         {launchOverlay}
       </>
     );
@@ -400,6 +406,7 @@ export default function App() {
   // INS-050: Docker first-boot Host/Join picker.
   // Show while we're still checking, or when the picker is actively displayed.
   if (dockerBootState === "checking") {
+    // NOT a terminal screen — splash must stay up. No <MarkReady />.
     return (
       <>
         <div className="h-full w-full bg-surface mesh-background" aria-hidden="true" />
@@ -416,6 +423,7 @@ export default function App() {
           onHost={() => setDockerBootState("done")}
           onJoin={() => setDockerBootState("join")}
         />
+        <MarkReady />
         {launchOverlay}
       </>
     );
@@ -430,14 +438,15 @@ export default function App() {
             setServerConnected(true);
           }}
         />
+        <MarkReady />
         {launchOverlay}
       </>
     );
   }
 
   if (isLoading) {
-    // No inline spinner — the LaunchAnimation below handles the
-    // "we're booting" affordance uniformly across every platform.
+    // NOT a terminal screen — auth restore is still in flight.
+    // Splash must stay up. No <MarkReady />.
     return (
       <>
         <div className="h-full w-full bg-surface mesh-background" aria-hidden="true" />
@@ -450,6 +459,7 @@ export default function App() {
     return (
       <>
         <ServerPickerScreen onConnected={() => setServerConnected(true)} />
+        <MarkReady />
         {launchOverlay}
       </>
     );
@@ -459,11 +469,20 @@ export default function App() {
     return (
       <>
         <LoginForm />
+        <MarkReady />
         {launchOverlay}
       </>
     );
   }
 
+  // NOTE: <MarkReady /> intentionally NOT here. ChatLayout is the
+  // logged-in path; data loads cascade in (servers → channels →
+  // messages) AFTER the shell mounts. Dropping MarkReady at mount
+  // dismisses the splash while the user can still see channel tiles
+  // and messages popping into place. ChatLayout owns its own
+  // MarkReady call gated on its initial-data loaded signal — see
+  // the useEffect near the bottom of ChatLayout that watches
+  // `serversLoaded`.
   const shellContent = (
     <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-hidden">
       <div className="flex-1 min-h-0">

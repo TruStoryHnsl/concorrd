@@ -221,10 +221,22 @@ export function SourcesPanel({
   // Discord tiles may still exist in the sources store from legacy
   // flows (pre-PR4 admin bot mode); filtering keeps them out of the UI
   // without rewriting the store. A later cleanup can prune them entirely.
-  const sources = rawSources.filter((source) => {
-    const isDiscord = source.platform === "discord-bot" || source.platform === "discord-account";
-    return !isDiscord;
-  });
+  // Memoize the filter result. Without this, `.filter()` returns a new
+  // array on every render — and `sources` is a useEffect dep below
+  // (line ~262 setRailOrder effect). React compares deps with Object.is,
+  // so a new array reference re-runs the effect every render → setRailOrder
+  // returns yet another new reference → re-render → new `sources` ref →
+  // effect runs again → "Maximum update depth exceeded". Memoizing on
+  // `rawSources` makes the filter result stable across unrelated re-renders.
+  const sources = useMemo(
+    () =>
+      rawSources.filter((source) => {
+        const isDiscord =
+          source.platform === "discord-bot" || source.platform === "discord-account";
+        return !isDiscord;
+      }),
+    [rawSources],
+  );
 
   const isTouchDevice =
     typeof window !== "undefined" &&
@@ -256,6 +268,17 @@ export function SourcesPanel({
         sources.map((source) => source.id),
         current.length > 0 ? current : readStoredRailOrder(currentUserId),
       );
+      // Belt-and-suspenders: if the computed order matches the current
+      // order item-for-item, return the SAME reference so React skips
+      // the re-render entirely. The useMemo on `sources` above is the
+      // primary loop-break, but this guard makes the effect cheap even
+      // when `sources` legitimately changes (e.g. enable/disable toggle).
+      if (
+        next.length === current.length &&
+        next.every((id, i) => id === current[i])
+      ) {
+        return current;
+      }
       writeStoredRailOrder(currentUserId, next);
       return next;
     });
@@ -315,14 +338,27 @@ export function SourcesPanel({
         {/* Source list */}
         <div className="flex-1 min-h-0 overflow-y-auto">
           {sources.map((source) => {
+            // Outer container: <div role="button"> instead of <button>. HTML
+            // forbids interactive elements nested inside <button>, and the
+            // "more_vert" affordance below is a real <button>. Keyboard
+            // affordance preserved via role + tabIndex + Enter/Space handler.
             return (
-              <button
+              <div
                 key={source.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => {
                   onSourceSelect?.(source.id);
                   onSourceOpen?.(source.id);
                 }}
-                className={`w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-container-high transition-colors ${
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onSourceSelect?.(source.id);
+                    onSourceOpen?.(source.id);
+                  }
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-container-high transition-colors cursor-pointer ${
                   source.enabled ? "opacity-100" : "opacity-40"
                 }`}
               >
@@ -342,7 +378,7 @@ export function SourcesPanel({
                 >
                   <span className="material-symbols-outlined text-base">more_vert</span>
                 </button>
-              </button>
+              </div>
             );
           })}
         </div>

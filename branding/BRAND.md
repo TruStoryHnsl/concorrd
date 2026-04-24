@@ -2,43 +2,51 @@
 
 **Tagline:** Mesh Comms System
 
-![Concord logo](logo.png)
+![Concord logo](../client/public/logo.png)
 
-The image at `branding/logo.png` is the **definitive master logo** for
-Concord — a 1024×1024 RGBA image with full transparency. Two
-interlocking circles form a linked symbol representing paired peers
-and joined connections. The transparent layer is what iOS composites
-over its dark / light / tinted homescreen backgrounds, and what the
-web + native clients render through the `<ConcordLogo />` SVG
-component, tinted to the active theme.
+The Concord brand mark is **two interlocking rings** — a "linked
+peers" symbol with a small solid node dot offset toward the centre
+of each ring. Two nodes joined at peer level, no hierarchy.
+
+The artwork ships as **two grayscale-alpha mask PNGs**, one per
+ring. The application paints each half at runtime by combining the
+mask with a theme-driven background colour (CSS `mask-image` +
+`background-color`). Switching theme retints the logo without
+touching the asset.
 
 ## Files
 
 | Path                                           | Purpose                                    |
 |------------------------------------------------|--------------------------------------------|
-| `branding/logo.png`                            | **Active master.** 1024×1024 RGBA. Edit this to re-colour / re-theme. |
-| `branding/logo-interlocking-circles.png`       | Immutable copy of the master source, for reference. |
-| `branding/backup/icons-mesh-original/`         | Previous three-node mesh-glyph logo, archived during the 2026-04-10 migration from the mesh mark to the interlocking-circles mark. |
-| `branding/backup/src-tauri-icons-original/`    | Pre-migration Tauri icon set.              |
-| `branding/generate_favicons.py`                | Regenerates web favicons + assets from the master. |
-| `branding/generate_tauri_icons.py`             | Regenerates desktop + mobile Tauri icons from the master. |
-| `client/src/components/brand/ConcordLogo.tsx`  | Inline-SVG React component rendering the mark with CSS-variable fills. Use this in the UI instead of loading the PNG. |
+| `branding/logo-upper.png`                      | **Master mask, upper-right ring + node.** 1024×1024 LA, binary alpha. |
+| `branding/logo-lower.png`                      | **Master mask, lower-left ring + node.** 1024×1024 LA, binary alpha. |
+| `branding/generate_favicons.py`                | Regenerates web favicons + the composited reference `logo.png`. |
+| `branding/generate_tauri_icons.py`             | Regenerates desktop + mobile Tauri icons (composites the halves at the default tint). |
+| `client/public/logo-upper.png`                 | Runtime asset — used by `<ConcordLogo />` and the index.html splash via `mask-image`. |
+| `client/public/logo-lower.png`                 | Runtime asset — paired with `logo-upper.png`. |
+| `client/public/logo.png`                       | Composited reference at default-theme tint. Generated artefact, not an editable source. |
+| `client/src/components/brand/ConcordLogo.tsx`  | React component that renders the mark with two CSS-variable-tinted half overlays. |
 
 ## Rendering strategy
 
-The mark is drawn **twice**:
+The mark is drawn **two ways**:
 
-1. **Raster PNGs** (`branding/logo.png` + generated variants) are used
-   by the OS — window icons, app icons, Windows Store tiles, iOS
-   AppIconset, macOS `.icns`, favicon / apple-touch-icon.
-2. **Inline SVG** (`<ConcordLogo />`) is used in the app UI — login
-   welcome, server picker header, future theme preview swatches.
-   The SVG's two fills are driven by CSS custom properties
-   (`--color-logo-primary`, `--color-logo-secondary`, see
-   `client/src/index.css`), which default to the active theme's
-   primary + secondary. Change the theme → the logo retints
-   automatically. No PNG regeneration needed for in-app colour
-   changes; only OS-level icons need the Python scripts.
+1. **Mask-tinted halves** (in-app, theme-responsive). The React
+   `<ConcordLogo />` component and the pre-React `#boot-splash`
+   layer in `client/index.html` both use the same mechanism: two
+   absolutely-positioned divs, each with `mask-image` set to one
+   of the half PNGs and `background-color` set to a CSS custom
+   property (`--color-logo-primary` for the upper, `--color-logo-secondary`
+   for the lower). Theme switches retint the mark instantly with
+   no asset reload.
+
+2. **Default-tinted composites** (OS chrome). Favicons, the apple-touch
+   icon, Windows tile icons, the macOS .icns, and the iOS AppIconset
+   all live outside the in-app theme cascade, so we composite the
+   two halves with a fixed default tint at generation time. The
+   default tint is the **bronze + teal** palette — see the
+   constants `TINT_PRIMARY` and `TINT_SECONDARY` in
+   `branding/generate_favicons.py`.
 
 ## Regenerating after a master edit
 
@@ -49,32 +57,40 @@ python3 branding/generate_tauri_icons.py   # desktop + iOS icons
 
 iOS AppIcon assets are composited onto a solid white background at
 generation time because Apple forbids transparent iOS app icons.
-The master stays transparent so future re-themes can be done once
-at the source and propagated everywhere via the two scripts.
+The masks stay transparent so future re-themes can be done by
+editing the colour constants and re-running both scripts.
 
 ## Glyph
 
-Two interlocking circles — a "link" or "peering" symbol. The two
+Two interlocking rings — a "link" or "peering" symbol. The two
 nodes join without either being above the other: flat, peer-to-peer,
-no hierarchy. Each circle has a small solid inner dot offset toward
+no hierarchy. Each ring has a small solid inner dot offset toward
 the opposite side, suggesting the nodes making contact across the
 link.
 
-## Color palette (placeholders pending recolour pass)
+## In-app default tint (Bronze Teal)
 
-| Role       | Hex        | Name            | Use                                     |
-|------------|------------|-----------------|-----------------------------------------|
-| Primary    | `#08C838`  | Mesh Emerald    | Brand green, online state, send button  |
-| Highlight  | `#08B838`  | Mesh Leaf       | Hover, focus, typing indicator          |
-| Accent     | `#088838`  | Mesh Pine       | Secondary buttons, badges               |
-| Deep       | `#087838`  | Mesh Root       | Outlines, borders, muted text           |
-| Shadow     | `#085828`  | Mesh Soil       | Dark-mode background, deep shadow       |
+| Role                       | Hex        | Use                                     |
+|----------------------------|------------|-----------------------------------------|
+| `--color-logo-primary`     | `#a5823f`  | Upper-right ring + node                 |
+| `--color-logo-secondary`   | `#408c96`  | Lower-left  ring + node                 |
 
-## Usage
+These are **defaults**. The React component and CSS expose
+overrides (`--color-logo-primary` / `--color-logo-secondary` per-
+theme; `primaryColor` / `secondaryColor` per-instance) so theme
+swatches and previews can render the mark in alternate palettes.
 
-- Emerald is the **online / connected** color across the UI; never reuse it
-  for error or warning states.
-- Voice-active indicators pulse between Mesh Emerald and Mesh Leaf.
-- Do not mix with the softer orrapus mints in the same composition —
-  emerald and mint read as two different greens and make the palette
-  feel accidental.
+## Authoring new mask halves
+
+When producing a replacement asset:
+
+1. Render the mark as a **single-colour silhouette** on transparent
+   alpha. Luminance can be 100% white (the application discards it
+   anyway and uses only the alpha channel).
+2. Output **two files**: `logo-upper.png` (whatever appears on top of
+   the chain weave at the centre crossing) and `logo-lower.png`
+   (whatever passes underneath).
+3. Use a **square canvas** of at least 1024×1024 so the OS-icon
+   pipeline has enough resolution for retina displays.
+4. Drop both files into `branding/` then copy them to
+   `client/public/`. Re-run both generator scripts.

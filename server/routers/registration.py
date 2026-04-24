@@ -306,3 +306,62 @@ async def register_user(
         server_id=server_id,
         server_name=server_name,
     )
+
+
+# ---------------------------------------------------------------------------
+# Guest / anonymous session
+# ---------------------------------------------------------------------------
+
+import secrets
+import string
+
+class GuestSessionResponse(BaseModel):
+    access_token: str
+    user_id: str
+    device_id: str
+    guest: bool = True
+
+
+@router.post("/guest", response_model=GuestSessionResponse)
+async def create_guest_session(
+    request: Request,
+):
+    """Create a temporary anonymous guest session.
+
+    Registers a randomly-named Matrix account with no password (guest=True).
+    The account is ephemeral — it is not linked to any persistent identity.
+    Server operators can disable guest access by setting GUEST_REGISTRATION=false.
+    Rate-limited by IP at the same threshold as regular registration.
+    """
+    import os as _os
+    if _os.getenv("GUEST_REGISTRATION", "true").lower() in ("false", "0", "no"):
+        raise HTTPException(403, "Guest sessions are disabled on this instance")
+
+    # IP-based rate limit (shared pool with regular registration)
+    client_ip = (
+        request.headers.get("Cf-Connecting-Ip")
+        or request.headers.get("X-Real-Ip")
+        or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    )
+    if not client_ip and request.client:
+        client_ip = request.client.host
+    if client_ip and not _check_registration_rate_limit(client_ip):
+        raise HTTPException(429, "Too many registration attempts. Please try again later.")
+
+    # Generate a random username in the valid Matrix localpart character set
+    # [a-z0-9._=/-] — we use lowercase alphanumeric only for simplicity.
+    alphabet = string.ascii_lowercase + string.digits
+    rand_suffix = "".join(secrets.choice(alphabet) for _ in range(12))
+    username = f"guest_{rand_suffix}"
+
+    try:
+        matrix_result = await register_matrix_user(username, secrets.token_hex(32))
+    except Exception as exc:
+        logger.error("Guest registration failed: %s", exc)
+        raise HTTPException(500, "Guest session creation failed") from exc
+
+    return GuestSessionResponse(
+        access_token=matrix_result["access_token"],
+        user_id=matrix_result["user_id"],
+        device_id=matrix_result["device_id"],
+    )

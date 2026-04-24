@@ -267,7 +267,13 @@ async def test_register_happy_path_with_stubbed_matrix(client, db_session, monke
     """Stub `register_matrix_user` so the code path that depends on a
     real conduwuit returns a synthetic success. The test then asserts
     the response wires the Matrix identifiers back to the client.
+
+    OPEN_REGISTRATION is set to "true" so the invite gate is bypassed
+    — this test specifically validates the happy-path code path, not
+    invite enforcement (that is covered by the invite rejection tests above).
     """
+    monkeypatch.setenv("OPEN_REGISTRATION", "true")
+
     async def fake_register(username, password):
         return {
             "access_token": "fake_access_token_xyz",

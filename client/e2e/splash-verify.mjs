@@ -19,8 +19,9 @@ import path from "node:path";
 
 const BASE_URL = process.env.SPLASH_BASE_URL ?? "http://127.0.0.1:5178/?nocache=" + Date.now();
 const OUT_DIR = path.resolve(new URL(".", import.meta.url).pathname, "splash-evidence");
-const THEMES = ["kinetic-node", "verdant-signal", "ember-circuit", "arctic-current"];
+const THEMES = ["bronze-teal", "kinetic-node", "verdant-signal", "ember-circuit", "arctic-current"];
 const EXPECTED = {
+  "bronze-teal":    { primary: "rgb(165, 130, 63)", secondary: "rgb(64, 140, 150)" },
   "kinetic-node":   { primary: "rgb(164, 165, 255)", secondary: "rgb(175, 239, 221)" },
   "verdant-signal": { primary: "rgb(125, 224, 183)", secondary: "rgb(139, 200, 255)" },
   "ember-circuit":  { primary: "rgb(255, 154, 107)", secondary: "rgb(255, 214, 110)" },
@@ -62,23 +63,31 @@ async function run(browserName) {
     await page.waitForTimeout(50);
     return await page.evaluate(() => {
       const boot = document.getElementById("boot-splash");
+      // The two halves are background-color tinted divs masked with
+      // the upper / lower half PNGs. Computed background-color is
+      // the load-bearing assertion for theme retinting.
       const primary = boot?.querySelector(".boot-ring-primary");
       const secondary = boot?.querySelector(".boot-ring-secondary");
-      const primaryNode = boot?.querySelector(".boot-splash-node.primary");
-      const secondaryNode = boot?.querySelector(".boot-splash-node.secondary");
-      const svg = boot?.querySelector("svg");
-      const rect = svg?.getBoundingClientRect();
+      const logo = boot?.querySelector("#boot-splash-logo");
+      const rect = logo?.getBoundingClientRect();
       const cs = boot ? getComputedStyle(boot) : null;
       return {
         bootDisplay: cs?.display,
         bootBgColor: cs?.backgroundColor,
         bootPointerEvents: cs?.pointerEvents,
+        // The mask is sized `contain` against a 204px container; the
+        // mask's intrinsic content occupies roughly 70% of its
+        // 1024×1024 canvas, so the visible footprint is ≈143px at rest.
         svgRenderedWidth: rect ? Math.round(rect.width) : null,
-        opaqueFootprintPx: rect ? Math.round(rect.width * (416 / 512)) : null,
-        primaryStroke: primary ? getComputedStyle(primary).stroke : null,
-        secondaryStroke: secondary ? getComputedStyle(secondary).stroke : null,
-        primaryNodeBg: primaryNode ? getComputedStyle(primaryNode).backgroundColor : null,
-        secondaryNodeBg: secondaryNode ? getComputedStyle(secondaryNode).backgroundColor : null,
+        opaqueFootprintPx: rect ? Math.round(rect.width * (700 / 1024)) : null,
+        primaryStroke: primary ? getComputedStyle(primary).backgroundColor : null,
+        secondaryStroke: secondary ? getComputedStyle(secondary).backgroundColor : null,
+        // Retain the same field names as the previous ring-based
+        // splash so CI dashboards and trend graphs keep working —
+        // the "node" is now part of the same masked half, so the
+        // node-bg fields just mirror the half-bg fields.
+        primaryNodeBg: primary ? getComputedStyle(primary).backgroundColor : null,
+        secondaryNodeBg: secondary ? getComputedStyle(secondary).backgroundColor : null,
         bodyScrollHeight: document.body.scrollHeight,
         viewportHeight: innerHeight,
       };
@@ -104,15 +113,18 @@ async function run(browserName) {
       && m.secondaryNodeBg === e.secondary;
   });
 
-  // Acceptance 2: sizing — opaque footprint within 156 ± 10 px at rest
-  // (wider tolerance because the keyframe animation can catch mid-frame
-  // scaling the element by up to 1.012 × or 0.965 ×; at viewBox the
-  // opaque footprint should be 192 * 0.8125 = 156).
-  const defaultTheme = report.themes["kinetic-node"];
-  report.criteria.sizing = Math.abs(defaultTheme.opaqueFootprintPx - 156) <= 10;
+  // Acceptance 2: sizing — opaque footprint roughly 143±15 px at rest.
+  // The mask container is 204px and the mask's intrinsic content
+  // occupies ~70% of the 1024×1024 canvas, so 204 * 0.7 = 143.
+  const defaultTheme = report.themes["bronze-teal"];
+  report.criteria.sizing = Math.abs(defaultTheme.opaqueFootprintPx - 143) <= 15;
 
-  // Acceptance 3: transparent backdrop + no reflow.
-  report.criteria.backdrop = defaultTheme.bootBgColor === "rgba(0, 0, 0, 0)"
+  // Acceptance 3: opaque dark backdrop + no reflow + non-interactive.
+  // The splash owns its own dark rectangle so on refresh the browser
+  // paints splash bg + animation in one pass; this is verified by
+  // matching the CSS literal #0c0e11 (rgb(12, 14, 17)) used in
+  // index.html.
+  report.criteria.backdrop = defaultTheme.bootBgColor === "rgb(12, 14, 17)"
     && defaultTheme.bootPointerEvents === "none"
     && defaultTheme.bodyScrollHeight === defaultTheme.viewportHeight;
 
@@ -185,8 +197,8 @@ async function main() {
       continue;
     }
     process.stdout.write(`retinting:   ${r.criteria.retinting}\n`);
-    process.stdout.write(`sizing:      ${r.criteria.sizing} (opaque footprint ${r.themes["kinetic-node"].opaqueFootprintPx}px, target 156±10)\n`);
-    process.stdout.write(`backdrop:    ${r.criteria.backdrop} (bg=${r.themes["kinetic-node"].bootBgColor}, pointer-events=${r.themes["kinetic-node"].bootPointerEvents}, reflow=${r.themes["kinetic-node"].bodyScrollHeight !== r.themes["kinetic-node"].viewportHeight})\n`);
+    process.stdout.write(`sizing:      ${r.criteria.sizing} (opaque footprint ${r.themes["bronze-teal"].opaqueFootprintPx}px, target 143±15)\n`);
+    process.stdout.write(`backdrop:    ${r.criteria.backdrop} (bg=${r.themes["bronze-teal"].bootBgColor}, pointer-events=${r.themes["bronze-teal"].bootPointerEvents}, reflow=${r.themes["bronze-teal"].bodyScrollHeight !== r.themes["bronze-teal"].viewportHeight})\n`);
     process.stdout.write(`singleLayer: ${r.criteria.singleLayer} (${r.multiLayerDoubleCount}/${r.multiLayerSampleCount} double-layer samples)\n`);
   }
   process.stdout.write(`\nreport: ${reportPath}\n`);

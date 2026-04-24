@@ -1,28 +1,33 @@
 /**
- * Concord brand mark — vector version.
+ * Concord brand mark — mask-tinted raster halves.
  *
- * Two interlocking circles ("paired peers") rendered as an inline SVG
- * so the two colours are driven by CSS custom properties. This lets a
- * future theme picker recolour the logo to match the active palette
- * just by changing the two base colours — no PNG regeneration needed.
+ * The mark ships as TWO grayscale-alpha PNGs:
  *
- * The two fills default to:
+ *     /logo-upper.png  → upper-right ring + node (primary colour)
+ *     /logo-lower.png  → lower-left  ring + node (secondary colour)
  *
- *     --color-logo-primary   → the app's primary base colour
- *     --color-logo-secondary → the app's secondary base colour
+ * Each half is 1024×1024 with binary alpha (255 where the ring/node
+ * lives, 0 everywhere else). The luminance is solid white — the file
+ * is a *mask*, not coloured artwork. We render each half as a `<div>`
+ * with `mask-image` set to the PNG and `background-color` set to a
+ * theme-driven CSS variable. Switching theme retints the mark without
+ * touching the PNG bytes.
  *
- * Both variables are defined in `client/src/index.css` and default to
- * the current theme's primary/secondary so the logo tracks the palette
- * automatically. Consumers can also override per-instance via the
- * `primaryColor` / `secondaryColor` props — useful on theme preview
- * swatches that want to show the mark in a colour other than the
- * currently-active theme.
+ *   --color-logo-primary   → upper-half tint (defaults to the active
+ *                            theme's `--color-primary`)
+ *   --color-logo-secondary → lower-half tint (defaults to the active
+ *                            theme's `--color-secondary`)
  *
- * The geometry is hand-matched to the raster master at
- * `branding/logo.png`: two ring shapes that link together, each with a
- * small solid "node" dot offset toward the opposite side. The z-order
- * + mask trick produces the classic chain-link weave where the primary
- * ring crosses over the secondary at top and under it at bottom.
+ * Both variables are defined in `client/src/index.css` and follow the
+ * active theme automatically. Callers can override per-instance via
+ * the `primaryColor` / `secondaryColor` props — useful on theme
+ * preview swatches that want to show the mark in a colour other than
+ * the currently-active theme.
+ *
+ * Size semantics match the previous SVG implementation: the `size`
+ * prop is the rendered side length in pixels. The mask PNG already
+ * contains the design's intended padding — no further inset is
+ * applied at the React layer.
  */
 import type { CSSProperties } from "react";
 
@@ -34,14 +39,14 @@ export interface ConcordLogoProps {
    */
   size?: number | string;
   /**
-   * Override the primary fill. If omitted, reads from the CSS variable
-   * `--color-logo-primary` on the closest ancestor. Accepts any valid
-   * CSS colour (hex, rgb, oklch, var(...)).
+   * Override the primary fill (upper half). If omitted, reads from
+   * the CSS variable `--color-logo-primary` on the closest ancestor.
+   * Accepts any valid CSS colour (hex, rgb, oklch, var(...)).
    */
   primaryColor?: string;
   /**
-   * Override the secondary fill. Reads from `--color-logo-secondary`
-   * when omitted.
+   * Override the secondary fill (lower half). Reads from
+   * `--color-logo-secondary` when omitted.
    */
   secondaryColor?: string;
   /** Accessible label. Omitted / empty marks the mark as decorative. */
@@ -50,8 +55,45 @@ export interface ConcordLogoProps {
   className?: string;
   /** Additional inline styles (merged with size). */
   style?: CSSProperties;
-  /** Render the two solid node dots. Defaults to true. */
+  /**
+   * Retained for API compatibility with the previous SVG version.
+   * The new asset is a single composited mark per half — there is no
+   * separate "node dot" layer to suppress, so this prop is currently
+   * ignored. Kept in the signature so existing call sites compile.
+   */
   showNodes?: boolean;
+}
+
+/**
+ * Asset URLs — resolved by Vite's static asset pipeline at build time.
+ * Lives in `client/public/` so the path is stable across dev + build
+ * and does NOT get content-hashed (the splash in `index.html` and the
+ * favicon generator both reference the same paths).
+ */
+const UPPER_SRC = "/logo-upper.png";
+const LOWER_SRC = "/logo-lower.png";
+
+function maskStyle(src: string, color: string): CSSProperties {
+  // mask-image vs -webkit-mask-image: Safari + iOS WebKit still need
+  // the prefixed property; Chromium and Firefox accept the unprefixed
+  // form. Setting both is harmless on every engine and required on
+  // some. The mask-size:contain + mask-position:center trick keeps
+  // the mark centred when the container's aspect ratio differs
+  // slightly from 1:1 (rare; defensive).
+  return {
+    position: "absolute",
+    inset: 0,
+    backgroundColor: color,
+    WebkitMaskImage: `url("${src}")`,
+    maskImage: `url("${src}")`,
+    WebkitMaskRepeat: "no-repeat",
+    maskRepeat: "no-repeat",
+    WebkitMaskPosition: "center",
+    maskPosition: "center",
+    WebkitMaskSize: "contain",
+    maskSize: "contain",
+    pointerEvents: "none",
+  };
 }
 
 export function ConcordLogo({
@@ -61,7 +103,6 @@ export function ConcordLogo({
   title,
   className,
   style,
-  showNodes = true,
 }: ConcordLogoProps) {
   // CSS custom property fallback chain. When the caller passes an
   // explicit colour we use it; otherwise we resolve through the
@@ -73,75 +114,28 @@ export function ConcordLogo({
   const secondary =
     secondaryColor ?? "var(--color-logo-secondary, var(--color-secondary, currentColor))";
 
-  // ViewBox chosen to give the two rings breathing room without
-  // clipping the outermost stroke. 512×512 matches the raster master
-  // dimensions so design tweaks can be cross-referenced pixel-for-pixel.
+  const wrapperStyle: CSSProperties = {
+    position: "relative",
+    width: size,
+    height: size,
+    display: "inline-block",
+    flexShrink: 0,
+    ...style,
+  };
+
   return (
-    <svg
-      viewBox="0 0 512 512"
-      width={size}
-      height={size}
-      xmlns="http://www.w3.org/2000/svg"
+    <span
+      className={className}
+      style={wrapperStyle}
       role={title ? "img" : "presentation"}
       aria-label={title || undefined}
       aria-hidden={title ? undefined : true}
-      className={className}
-      style={style}
     >
-      {title ? <title>{title}</title> : null}
-
-      <defs>
-        {/* Mask for the primary (upper-right) ring: hides the
-            bottom-left region where the secondary ring crosses over
-            the primary. The "hide the lower-left, re-reveal the top
-            half" trick produces a diagonal band of occlusion exactly
-            where the chain-link weave needs it. */}
-        <mask id="concord-primary-mask">
-          <rect x="0" y="0" width="512" height="512" fill="white" />
-          <circle cx="192" cy="320" r="168" fill="black" />
-          <rect x="0" y="0" width="512" height="256" fill="white" />
-        </mask>
-
-        {/* Mask for the secondary (lower-left) ring: hides the
-            top-right region where the primary ring passes over. */}
-        <mask id="concord-secondary-mask">
-          <rect x="0" y="0" width="512" height="512" fill="white" />
-          <circle cx="320" cy="192" r="168" fill="black" />
-          <rect x="0" y="256" width="512" height="256" fill="white" />
-        </mask>
-      </defs>
-
-      {/* Primary (upper-right) ring */}
-      <g mask="url(#concord-primary-mask)">
-        <circle
-          cx="320"
-          cy="192"
-          r="120"
-          fill="none"
-          stroke={primary}
-          strokeWidth="48"
-        />
-      </g>
-      {showNodes ? (
-        // Primary inner dot — small solid node offset toward upper-left.
-        <circle cx="288" cy="172" r="28" fill={primary} />
-      ) : null}
-
-      {/* Secondary (lower-left) ring */}
-      <g mask="url(#concord-secondary-mask)">
-        <circle
-          cx="192"
-          cy="320"
-          r="120"
-          fill="none"
-          stroke={secondary}
-          strokeWidth="48"
-        />
-      </g>
-      {showNodes ? (
-        // Secondary inner dot — offset toward lower-right.
-        <circle cx="224" cy="340" r="28" fill={secondary} />
-      ) : null}
-    </svg>
+      {/* Lower half painted first so the upper half visually crosses
+          over it at the top of the chain weave — matches the master
+          render's z-order. */}
+      <span aria-hidden="true" style={maskStyle(LOWER_SRC, secondary)} />
+      <span aria-hidden="true" style={maskStyle(UPPER_SRC, primary)} />
+    </span>
   );
 }

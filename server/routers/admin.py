@@ -965,3 +965,82 @@ async def admin_update_service_node(
         raise HTTPException(400, f"invalid service_node config: {exc}") from exc
     logger.info("service_node config updated by %s", user_id)
     return _serialize_service_node(saved)
+
+
+# ---------------------------------------------------------------------------
+# Instance-wide ban management (admin only)
+# ---------------------------------------------------------------------------
+
+class AdminBanCreate(BaseModel):
+    user_id: str = Field(pattern=r"^@[a-zA-Z0-9._=\-/+]+:[a-zA-Z0-9.\-]+$")
+    reason: str | None = None
+
+
+@router.get("/api/admin/bans")
+async def admin_list_bans(
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all instance-wide bans (admin only)."""
+    from models import ServerBan
+    require_admin(user_id)
+    result = await db.execute(select(ServerBan).order_by(ServerBan.created_at.desc()))
+    bans = result.scalars().all()
+    return [
+        {
+            "user_id": b.user_id,
+            "banned_by": b.banned_by,
+            "created_at": b.created_at.isoformat() if hasattr(b.created_at, "isoformat") else str(b.created_at),
+            "reason": None,
+        }
+        for b in bans
+    ]
+
+
+@router.post("/api/admin/bans", status_code=201)
+async def admin_ban_user(
+    body: AdminBanCreate,
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add an instance-wide ban (admin only).
+
+    Inserts a ServerBan without a server_id so it applies globally.
+    Existing bans for the same user_id are left as-is (idempotent).
+    """
+    from models import ServerBan
+    from sqlalchemy import exists
+    require_admin(user_id)
+
+    # Idempotent — don't double-insert
+    already = await db.execute(
+        select(exists().where(ServerBan.user_id == body.user_id))
+    )
+    if already.scalar():
+        return {"status": "already_banned", "user_id": body.user_id}
+
+    ban = ServerBan(
+        server_id="",  # empty string = instance-wide sentinel
+        user_id=body.user_id,
+        banned_by=user_id,
+    )
+    db.add(ban)
+    await db.commit()
+    logger.info("admin %s banned %s", user_id, body.user_id)
+    return {"status": "banned", "user_id": body.user_id}
+
+
+@router.delete("/api/admin/bans/{target_user_id}", status_code=204)
+async def admin_unban_user(
+    target_user_id: str,
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove an instance-wide ban (admin only)."""
+    from models import ServerBan
+    require_admin(user_id)
+    await db.execute(
+        ServerBan.__table__.delete().where(ServerBan.user_id == target_user_id)
+    )
+    await db.commit()
+    logger.info("admin %s unbanned %s", user_id, target_user_id)

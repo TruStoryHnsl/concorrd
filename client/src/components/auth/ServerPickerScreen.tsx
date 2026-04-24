@@ -18,6 +18,7 @@ import {
   type ServitudeState,
 } from "../../api/servitude";
 import { GuestPairingScanner } from "../pairing/GuestPairingScanner";
+import { createGuestSession } from "../../api/concord";
 
 /**
  * First-launch server picker for native Concord builds (INS-027).
@@ -60,6 +61,12 @@ interface Props {
    * the hollow shell without committing to any source.
    */
   onSkip?: () => void;
+  /**
+   * Optional callback fired when the user successfully creates a guest
+   * session. The caller is responsible for storing the session credentials
+   * (access_token, user_id, device_id) and navigating away.
+   */
+  onGuestSession?: (session: { accessToken: string; userId: string; deviceId: string }) => void;
 }
 
 /**
@@ -161,7 +168,7 @@ function formatDiscoveryError(err: unknown): {
   return { message: String(err), recoverable: true };
 }
 
-export function ServerPickerScreen({ onConnected, onSkip }: Props) {
+export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Props) {
   const { isTauri, isMobile } = usePlatform();
   // Hosting is a desktop-only affordance, but the top-level menu is
   // available on every native shell so mobile users still land on the
@@ -178,8 +185,29 @@ export function ServerPickerScreen({ onConnected, onSkip }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   // INS-022: toggles the GuestPairingScanner modal.
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [guestLoading, setGuestLoading] = useState(false);
+  const [guestError, setGuestError] = useState<string | null>(null);
   const setHomeserver = useServerConfigStore((s) => s.setHomeserver);
   const ensurePrimarySource = useSourcesStore((s) => s.ensurePrimarySource);
+
+  const handleBrowseAsGuest = useCallback(async () => {
+    setGuestLoading(true);
+    setGuestError(null);
+    try {
+      const session = await createGuestSession();
+      if (onGuestSession) {
+        onGuestSession({
+          accessToken: session.access_token,
+          userId: session.user_id,
+          deviceId: session.device_id,
+        });
+      }
+    } catch (err) {
+      setGuestError(err instanceof Error ? err.message : "Guest session failed");
+    } finally {
+      setGuestLoading(false);
+    }
+  }, [onGuestSession]);
 
   // Cancellation token for the hosting poll loop. React state reads
   // inside closures capture at spawn time, so we can't gate on
@@ -738,6 +766,23 @@ export function ServerPickerScreen({ onConnected, onSkip }: Props) {
                 </div>
               </div>
             </button>
+
+            {onGuestSession && (
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  onClick={handleBrowseAsGuest}
+                  disabled={guestLoading}
+                  data-testid="server-picker-guest"
+                  className="w-full text-center text-xs text-primary/80 hover:text-primary pt-2 pb-0.5 transition-colors disabled:opacity-50"
+                >
+                  {guestLoading ? "Creating guest session…" : "Browse as guest — no account needed"}
+                </button>
+                {guestError && (
+                  <p className="text-xs text-error text-center">{guestError}</p>
+                )}
+              </div>
+            )}
 
             {onSkip && (
               <button

@@ -5,7 +5,14 @@ Run from the concord project root:
     python3 branding/generate_tauri_icons.py
 
 Reads:
-    branding/logo.png                                   — RGBA master (square)
+    branding/logo-upper.png    — grayscale-alpha mask, upper half
+    branding/logo-lower.png    — grayscale-alpha mask, lower half
+
+The two halves are composited at run time with the default-theme
+tint (bronze + teal — see `branding/generate_favicons.py` for the
+exact colour constants). OS-level icons live outside the in-app
+theming pipeline because the OS chooses where they paint, so we bake
+a single neutral-default colour scheme into the icon files.
 
 Writes (Tauri desktop, `bundle.icon` array + Linux/Windows artefacts):
     src-tauri/icons/32x32.png
@@ -21,18 +28,20 @@ Writes (iOS AppIconset — must be RGB, no alpha, per Apple):
     src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/*.png
 
 For iOS, the logo is composited onto a solid white background — Apple
-rejects AppIcon assets that contain transparency. The transparent
-master stays in `branding/logo.png` so operators can recolour or
-re-theme it without losing the layer. Re-run this script after any
-master edit to propagate the change through every platform target.
+rejects AppIcon assets that contain transparency. The masks stay
+transparent so future re-themes can be done by editing the colour
+constants in `generate_favicons.py` and re-running both scripts.
 """
 from __future__ import annotations
 import subprocess
 from pathlib import Path
 from PIL import Image
 
+# Reuse the half-tinting + compositing routine so the icon and the
+# favicon agree pixel-for-pixel about what the mark looks like.
+from generate_favicons import composite_master  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "branding" / "logo.png"
 TAURI_ICONS = ROOT / "src-tauri" / "icons"
 APPLE_ICONSET = (
     ROOT
@@ -102,7 +111,7 @@ def flatten_on_white(img: Image.Image) -> Image.Image:
     """Composite a transparent RGBA image onto an opaque white canvas.
 
     Apple rejects iOS AppIcon assets with alpha channels. We flatten
-    here (not at source) so the editable master stays transparent.
+    here (not at source) so the editable masters stay transparent.
     """
     bg = Image.new("RGBA", img.size, IOS_BG)
     bg.alpha_composite(img)
@@ -110,15 +119,13 @@ def flatten_on_white(img: Image.Image) -> Image.Image:
 
 
 def main() -> None:
-    if not SRC.exists():
-        raise SystemExit(f"missing master logo at {SRC}")
-    master = Image.open(SRC).convert("RGBA")
+    master = composite_master()
     if master.size[0] != master.size[1]:
         raise SystemExit(
-            f"master logo must be square, got {master.size}. "
-            f"Re-export with a square canvas and retry."
+            f"composited master must be square, got {master.size}. "
+            f"Re-export the half masks with a square canvas and retry."
         )
-    print(f"master: {SRC} {master.size}")
+    print(f"master (composited from halves): {master.size}")
 
     TAURI_ICONS.mkdir(parents=True, exist_ok=True)
 
