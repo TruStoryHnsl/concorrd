@@ -74,7 +74,6 @@ import {
 } from "../sources/matrixSourceAuth";
 import { useFormatStore } from "../../stores/format";
 import { useBootReadyStore } from "../../stores/bootReady";
-import { FormatPopover } from "../chat/FormatPopover";
 
 /** RulesGate — full-panel screen shown to members who haven't accepted the server rules yet. */
 function RulesGate({ rulesText, onAccept }: { rulesText: string; onAccept: () => void }) {
@@ -183,10 +182,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const dmConversation = useDMStore((s) => s.activeConversation)();
   const loadConversations = useDMStore((s) => s.loadConversations);
 
-  // Format state (move up so useEffect can reference setFormatPanelOpen)
-  const draftFormat = useFormatStore((s) => s.draftFormat);
-  const formatPanelOpen = useFormatStore((s) => s.formatPanelOpen);
-  const setDraftFormat = useFormatStore((s) => s.setDraftFormat);
+  // Format state — only the panel-close action is referenced here, to
+  // reset any open popover when the active room changes. The format
+  // BUTTON in the top bar was removed (non-functional placeholder),
+  // but MessageInput / MessageList / useResolvedFormat still consume
+  // draftFormat from the store, so the rest of the format pipeline
+  // stays intact.
   const setFormatPanelOpen = useFormatStore((s) => s.setFormatPanelOpen);
 
   // The active room — either a server channel or a DM room
@@ -458,10 +459,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const isAppChannel = activeChannel?.channel_type === "app";
   const showPlaceBanner = voiceConnected && voiceChannelType === "place" && !placeBannerDismissed;
   const isOwner = activeServer?.owner_id === userId;
-  const showFormatButton =
-    !dmActive &&
-    activeChannel !== null &&
-    (activeChannel?.channel_type === "text" || activeChannel?.channel_type === "place");
 
   // Rules gate state — tracks rules_text for the active server and whether
   // the current user has accepted it. Acceptance is persisted in localStorage
@@ -1262,27 +1259,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             )}
           </div>
         )}
-        {/* Top-bar right cluster: hosting status + wrench menu + account */}
+        {/* Top-bar right cluster: DMs + hosting status + wrench menu + account.
+            Format button removed — non-functional placeholder.
+            Logout removed — surface is in Settings → Profile only, so a
+            destructive action isn't a tap-target neighbour of routine
+            navigation. */}
         <div className="flex items-center gap-0.5 flex-shrink-0">
-          {showFormatButton && (
-            <div className="relative">
-              <TopBarIconButton
-                icon="stylus_note"
-                label="Format message"
-                onClick={() => setFormatPanelOpen(!formatPanelOpen)}
-                className={formatPanelOpen ? "bg-primary/20 border border-primary/40" : ""}
-              />
-              {formatPanelOpen && (
-                <div className="absolute right-0 top-full mt-1 z-50">
-                  <FormatPopover
-                    value={draftFormat}
-                    onChange={setDraftFormat}
-                    onClose={() => setFormatPanelOpen(false)}
-                  />
-                </div>
-              )}
-            </div>
-          )}
           {/* DMs moved here from the removed MobilePillRow (INS-044).
              Toggles between the active page-depth view and the DMs
              overlay; the active state is visually reflected. */}
@@ -1307,14 +1289,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
               openSettings("hosting");
               setMobileView("settings");
-            }}
-          />
-          <TopBarIconButton
-            icon="logout"
-            label="Logout"
-            onClick={() => {
-              logout();
-              if (typeof window !== "undefined") window.location.reload();
             }}
           />
           <TopBarMoreMenu
@@ -1726,26 +1700,9 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               talking to — sourced from the INS-027 serverConfig store
               on native builds, falls back to window.location.hostname
               on the web. */}
+          {/* Format button removed — non-functional placeholder.
+              Logout removed — lives in Settings → Profile only. */}
           <div className="flex items-center gap-0.5 flex-shrink-0">
-            {showFormatButton && (
-              <div className="relative">
-                <TopBarIconButton
-                  icon="stylus_note"
-                  label="Format message"
-                  onClick={() => setFormatPanelOpen(!formatPanelOpen)}
-                  className={formatPanelOpen ? "bg-primary/20 border border-primary/40" : ""}
-                />
-                {formatPanelOpen && (
-                  <div className="absolute right-0 top-full mt-1 z-50">
-                    <FormatPopover
-                      value={draftFormat}
-                      onChange={setDraftFormat}
-                      onClose={() => setFormatPanelOpen(false)}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
             <HostingStatusButton status={hostingStatus} onClick={() => openSettings("hosting")} />
             <TopBarMoreMenu
               voiceMicActive={voiceConnected && voiceMicGranted}
@@ -1760,19 +1717,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               icon={sidebarCollapsed ? "left_panel_open" : "left_panel_close"}
               label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
               onClick={() => setSidebarCollapsed((c) => !c)}
-            />
-            {/* Logout moved from the user banner to the top bar so a
-               destructive action isn't a one-pixel neighbour of the
-               profile button. Confirmation flow is the browser's
-               default: a full page reload after logout makes the state
-               transition obvious. */}
-            <TopBarIconButton
-              icon="logout"
-              label="Logout"
-              onClick={() => {
-                logout();
-                if (typeof window !== "undefined") window.location.reload();
-              }}
             />
           </div>
         </div>
