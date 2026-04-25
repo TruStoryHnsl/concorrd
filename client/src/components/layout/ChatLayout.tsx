@@ -175,6 +175,9 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const activeServerId = useServerStore((s) => s.activeServerId);
   const ensureDiscordGuild = useServerStore((s) => s.ensureDiscordGuild);
   const updateServer = useServerStore((s) => s.updateServer);
+  const deleteChannelStore = useServerStore((s) => s.deleteChannel);
+  const setActiveChannelId = (roomId: string) =>
+    useServerStore.setState({ activeChannelId: roomId });
 
   // DM state
   const dmActive = useDMStore((s) => s.dmActive);
@@ -614,56 +617,20 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const extensionCatalog = useExtensionStore((s) => s.catalog);
 
   // Extension / chat vertical split resize (desktop)
-  // extMediaPercent = percentage of container height used by the extension (top pane)
-  const EXT_MEDIA_MIN = 20;   // minimum 20% for extension
-  const EXT_MEDIA_MAX = 85;   // maximum 85% (leaves at least 15% for chat)
-  const EXT_MEDIA_DEFAULT = 65;
-  const [extMediaPercent, setExtMediaPercent] = useState(() => {
-    try {
-      const saved = localStorage.getItem("concord_extension_media_pct");
-      if (saved) return Math.max(EXT_MEDIA_MIN, Math.min(EXT_MEDIA_MAX, Number(saved)));
-    } catch {}
-    return EXT_MEDIA_DEFAULT;
-  });
-  const isExtDragging = useRef(false);
-  const extContainerRef = useRef<HTMLDivElement>(null);
+  // The legacy "extension on top, chat below" vertical split state
+  // (extMediaPercent + isExtDragging + extContainerRef) was removed
+  // in v0.7.2 when extensions moved to their own app channels — they
+  // render full-pane now, no chat strip below.
   const extensionBtnRef = useRef<HTMLButtonElement>(null);
 
   // Sidebar collapse when extension is active
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  const handleExtResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    isExtDragging.current = true;
-    const startY = e.clientY;
-    const startPct = extMediaPercent;
-    const container = extContainerRef.current;
-    const containerH = container ? container.offsetHeight : window.innerHeight;
-
-    const onMove = (ev: MouseEvent) => {
-      const deltaY = ev.clientY - startY;
-      const deltaPct = (deltaY / containerH) * 100;
-      const newPct = Math.max(EXT_MEDIA_MIN, Math.min(EXT_MEDIA_MAX, startPct + deltaPct));
-      setExtMediaPercent(newPct);
-    };
-
-    const onUp = () => {
-      isExtDragging.current = false;
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, [extMediaPercent]);
-
-  useEffect(() => {
-    try { localStorage.setItem("concord_extension_media_pct", String(extMediaPercent)); } catch {}
-  }, [extMediaPercent]);
+  // handleExtResizeStart was the drag handler for the extension/chat
+  // vertical split that used to live inside text channels. v0.7.2
+  // moved extensions to their own app channels (full-pane, no
+  // chat-below split), so the resize is no longer reachable. Removed
+  // along with the JSX that consumed it.
 
   // Reset place banner dismiss state when voice disconnects
   useEffect(() => {
@@ -703,7 +670,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const origSetActiveChannel = useServerStore((s) => s.setActiveChannel);
   const setActiveServer = useServerStore((s) => s.setActiveServer);
   const setActiveDM = useDMStore((s) => s.setActiveDM);
-  // const _addToast = useToastStore((s) => s.addToast); // TODO: unused, remove if not needed
+  const addToast = useToastStore((s) => s.addToast);
   const setDMActive = useDMStore((s) => s.setDMActive);
   const hasDiscordBridgeServers = useMemo(
     () => servers.some((server) => server.bridgeType === "discord"),
@@ -1732,36 +1699,15 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           />
         )}
 
-        {/* Extension vertical split (media top, chat bottom) or normal chat.
-            App channels bypass this — they ARE the extension and render full-screen. */}
-        {activeExtension && !dmActive && !isAppChannel ? (
-          <div ref={extContainerRef} className="flex-1 flex flex-col min-h-0 min-w-0">
-            {/* Extension / media pane (top) */}
-            <div className="min-h-0 overflow-hidden" style={{ height: `${extMediaPercent}%` }}>
-              <ExtensionEmbed
-                url={activeExtension.extensionUrl}
-                extensionName={activeExtension.extensionName}
-                hostUserId={activeExtension.hostUserId}
-                isHost={isExtensionHost}
-                onStop={stopExtension}
-                surfaces={activeExtension.surfaces}
-              />
-            </div>
-            {/* Horizontal resize handle (drag up/down) */}
-            <div
-              onMouseDown={handleExtResizeStart}
-              className="h-1.5 cursor-row-resize hover:bg-primary/30 active:bg-primary/50 transition-colors flex-shrink-0 flex items-center justify-center group"
-            >
-              <div className="w-12 h-0.5 rounded-full bg-outline-variant/40 group-hover:bg-primary/60 transition-colors" />
-            </div>
-            {/* Chat pane (bottom) */}
-            <div className="flex-1 flex flex-col min-h-0">
-              {renderChatContent()}
-            </div>
-          </div>
-        ) : (
-          renderChatContent()
-        )}
+        {/* v0.7.2: extensions no longer embed inside text channels.
+           They run as their own app channels (channel_type="app"),
+           created on demand from the Applications-section launcher
+           in ChannelSidebar (POST /servers/<id>/extensions/<id>/start)
+           and torn down via the in-pane Stop button (DELETE /channels/<id>).
+           The legacy "media top, chat bottom" split — backed by the
+           useExtension(activeRoomId) hook reading m.room.extension state
+           events — has been removed; text channels are pure chat now. */}
+        {renderChatContent()}
       </>
     );
   };
@@ -1852,20 +1798,61 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       );
     }
 
-    // App channel — renders the linked extension full-screen, no chat UI
+    // App channel — renders the linked extension full-screen, no chat UI.
+    // Stop button at the top deletes this app channel server-side
+    // (DELETE /servers/<id>/channels/<id> — any member can stop an
+    // app channel they or anyone else started, see servers.delete_channel
+    // docstring). On success we route the user back to the server's
+    // first text channel so they don't end up staring at a 404.
     if (activeChannelId && activeChannel && isAppChannel) {
       const appExt = activeChannel.extension_id
         ? extensionCatalog.find((e) => e.id === activeChannel.extension_id)
         : null;
+      const handleStopAppChannel = async () => {
+        if (!accessToken || !activeServerId || !activeChannel) return;
+        try {
+          await deleteChannelStore(activeServerId, activeChannel.id, accessToken);
+          // Hop back to the server's first non-app channel so we don't
+          // sit on a deleted-channel ID.
+          const survivor = servers
+            .find((s) => s.id === activeServerId)
+            ?.channels.find((c) => c.id !== activeChannel.id && c.channel_type !== "app");
+          if (survivor) setActiveChannelId(survivor.matrix_room_id);
+        } catch (err) {
+          addToast(
+            err instanceof Error ? err.message : "Failed to stop application",
+            "error",
+          );
+        }
+      };
       if (appExt) {
         return (
           <div className="flex-1 flex flex-col min-h-0">
+            <div className="h-10 flex items-center justify-between px-3 bg-surface-container-low border-b border-outline-variant/20 flex-shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="material-symbols-outlined text-base text-primary">extension</span>
+                <span className="text-sm font-headline font-semibold truncate text-on-surface">
+                  {appExt.name}
+                </span>
+                <span className="text-xs text-on-surface-variant font-label truncate">
+                  · running on {activeChannel.name}
+                </span>
+              </div>
+              <button
+                onClick={() => void handleStopAppChannel()}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-label text-error hover:bg-error/10 transition-colors flex-shrink-0"
+                title="Stop application and delete this channel"
+              >
+                <span className="material-symbols-outlined text-sm">stop_circle</span>
+                Stop
+              </button>
+            </div>
             <ExtensionEmbed
               url={appExt.url}
               extensionName={appExt.name}
               hostUserId={userId ?? ""}
               isHost={false}
-              onStop={() => {}}
+              onStop={handleStopAppChannel}
             />
           </div>
         );

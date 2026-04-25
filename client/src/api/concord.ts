@@ -180,6 +180,25 @@ export async function createServer(
   );
 }
 
+/**
+ * Spin up an app channel on ``serverId`` that mounts ``extensionId``.
+ * Server-side endpoint (``POST /api/servers/<id>/extensions/<id>/start``)
+ * handles channel name generation, Matrix room creation, and member
+ * fan-out invites. Returned channel is what the UI routes the user
+ * to immediately. Stop is the standard ``DELETE /channels/<id>``.
+ */
+export async function startServerExtension(
+  serverId: string,
+  extensionId: string,
+  accessToken: string,
+): Promise<Channel> {
+  return apiFetch(
+    `/servers/${serverId}/extensions/${encodeURIComponent(extensionId)}/start`,
+    { method: "POST", body: "{}" },
+    accessToken,
+  );
+}
+
 export async function createChannel(
   serverId: string,
   name: string,

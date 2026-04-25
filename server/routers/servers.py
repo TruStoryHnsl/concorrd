@@ -791,6 +791,118 @@ async def get_channel_matrix_members(
     }
 
 
+@router.post(
+    "/{server_id}/extensions/{extension_id}/start",
+    response_model=ChannelOut,
+    status_code=201,
+)
+async def start_extension(
+    server_id: str,
+    extension_id: str,
+    user_id: str = Depends(get_user_id),
+    access_token: str = Depends(get_access_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """Spin up an app channel that mounts ``extension_id`` on this server.
+
+    Replaces the deprecated "user creates an app channel by hand" flow.
+    The user clicks an extension launcher in the sidebar's Applications
+    section → this endpoint creates the channel + Matrix room, returns
+    the new channel record. The client routes the user there. When the
+    user clicks Stop in the extension panel, the channel is deleted via
+    the standard ``DELETE /channels/<id>`` endpoint (which now permits
+    any server member to remove app channels — see that handler's
+    docstring).
+
+    Channel name is the extension's display name from the installed
+    catalog. Collisions with existing channel names get a numeric
+    suffix (e.g. ``Worldview 2``) so multiple sessions of the same
+    extension can coexist on a single server.
+    """
+    member = await require_server_member(server_id, user_id, db)
+    server = await db.get(Server, server_id)
+    if not server:
+        raise HTTPException(404, "Server not found")
+
+    # Validate extension is installed.
+    from routers import extensions as _ext_mod
+    catalog = {ext.id: ext for ext in _ext_mod._load_catalog()}
+    if extension_id not in catalog:
+        raise HTTPException(
+            404,
+            f"Extension {extension_id!r} is not installed on this instance",
+        )
+    ext = catalog[extension_id]
+
+    # Generate a unique channel name from the extension display name.
+    # Existing channels on the server might already use the same base
+    # name (re-launching the same extension or a name collision); add a
+    # ``-N`` suffix until we find a free slot.
+    existing_names = {
+        c.name for c in (await db.execute(
+            select(Channel).where(Channel.server_id == server_id)
+        )).scalars().all()
+    }
+    base_name = ext.name or extension_id
+    # Sanitise to the channel name pattern (alnum / _ / - / space).
+    import re
+    safe_base = re.sub(r"[^A-Za-z0-9_\- ]", " ", base_name).strip() or extension_id
+    candidate = safe_base
+    suffix = 2
+    while candidate in existing_names:
+        candidate = f"{safe_base} {suffix}"
+        suffix += 1
+        if suffix > 100:
+            raise HTTPException(409, "Too many app channels for this extension on this server")
+    final_name = candidate
+
+    # Create matrix room + channel record.
+    result = await db.execute(
+        select(Channel).where(Channel.server_id == server_id).order_by(Channel.position.desc())
+    )
+    last = result.scalars().first()
+    position = (last.position + 1) if last else 0
+
+    room_id = await create_matrix_room(access_token, f"{server.name} - {final_name}")
+    channel = Channel(
+        server_id=server_id,
+        matrix_room_id=room_id,
+        name=final_name,
+        channel_type="app",
+        position=position,
+        extension_id=extension_id,
+        # All-access by default — restrict via PATCH /app-access if the
+        # extension shouldn't be reachable by everyone on the server.
+        app_access="all",
+    )
+    db.add(channel)
+    await db.commit()
+    await db.refresh(channel)
+
+    # Fan-out invites so other members see the new app channel
+    # immediately. Same best-effort pattern as create_channel.
+    members_result = await db.execute(
+        select(ServerMember.user_id).where(ServerMember.server_id == server_id)
+    )
+    member_ids = [uid for (uid,) in members_result.all() if uid != user_id]
+    if member_ids:
+        async def _invite(uid: str) -> None:
+            try:
+                await invite_to_room(access_token, room_id, uid)
+            except Exception as exc:
+                logger.info(
+                    "start_extension: invite of %s to %s failed (non-fatal): %s",
+                    uid, room_id, exc,
+                )
+        await asyncio.gather(*(_invite(uid) for uid in member_ids))
+
+    logger.info(
+        "start_extension: %s started %s (channel %s) on server %s",
+        user_id, extension_id, channel.id, server_id,
+    )
+    return channel
+
+
 @router.patch(
     "/{server_id}/channels/{channel_id}/app-access",
     response_model=ChannelOut,
@@ -824,8 +936,25 @@ async def delete_channel(
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a channel from a server. Owner only."""
-    await require_server_owner(server_id, user_id, db)
+    """Delete a channel from a server.
+
+    Text + voice channels: owner only — long-lived structure that
+    affects every member, gating to owners avoids accidental loss.
+
+    App channels: any member of the server. App channels are
+    extension lifecycle artifacts created by ``POST /extensions/<id>/start``
+    and torn down by closing the extension. They're cheap to recreate
+    and shouldn't require an owner round-trip just to clean one up
+    when whoever started it is done with it.
+    """
+    channel = await db.get(Channel, channel_id)
+    if not channel or channel.server_id != server_id:
+        raise HTTPException(404, "Channel not found")
+    if channel.channel_type == "app":
+        # Any server member can stop an app channel they (or anyone) started.
+        await require_server_member(server_id, user_id, db)
+    else:
+        await require_server_owner(server_id, user_id, db)
 
     channel = await db.get(Channel, channel_id)
     if not channel or channel.server_id != server_id:

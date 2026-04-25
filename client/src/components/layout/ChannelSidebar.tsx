@@ -1,6 +1,6 @@
 import { memo, useState, useMemo, type ReactNode } from "react";
 import { useExtensionStore } from "../../stores/extension";
-import { updateAppChannelAccess, type AppAccess } from "../../api/concord";
+import { startServerExtension, updateAppChannelAccess, type AppAccess } from "../../api/concord";
 import {
   DndContext,
   closestCenter,
@@ -121,6 +121,10 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
   const [appAccess, setAppAccess] = useState<AppAccess>("all");
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [confirmDeleteChannelId, setConfirmDeleteChannelId] = useState<number | null>(null);
+  // Tracks which launcher button is currently kicking off an app
+  // channel — disables the button + shows a hourglass while the
+  // POST /extensions/<id>/start round-trip is in flight.
+  const [launchingExtensionId, setLaunchingExtensionId] = useState<string | null>(null);
   const [renamingChannelId, setRenamingChannelId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [showAdminControls, setShowAdminControls] = useState(false);
@@ -190,14 +194,13 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
     }
   };
 
-  const handleUpdateAppAccess = async (channelId: number, access: AppAccess) => {
-    if (!accessToken) return;
-    try {
-      await updateAppChannelAccess(server.id, channelId, access, accessToken);
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to update app access");
-    }
-  };
+  // handleUpdateAppAccess was the toggle for "all" vs "admin_only"
+  // on a manually-created app channel. v0.7.2 made app channels
+  // ephemeral extension-lifecycle artifacts (no manual create, no
+  // long-lived access policy) — the toggle has no surface left to
+  // call it. The PATCH endpoint stays on the server for any future
+  // re-introduction or external-API caller, but the UI bind is gone.
+  void updateAppChannelAccess;
 
   const handleDeleteChannel = async (channelId: number) => {
     if (!accessToken) return;
@@ -208,6 +211,28 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
       addToast(err instanceof Error ? err.message : "Failed to delete channel");
     }
     setConfirmDeleteChannelId(null);
+  };
+
+  /**
+   * Click an Applications-launcher → POST /servers/<id>/extensions/<id>/start.
+   * The server creates the app channel + Matrix room + invites every
+   * member; we route the caller into the new room as soon as the
+   * response lands so they see the extension immediately.
+   */
+  const handleLaunchExtension = async (extensionId: string) => {
+    if (!accessToken) return;
+    setLaunchingExtensionId(extensionId);
+    try {
+      const channel = await startServerExtension(server.id, extensionId, accessToken);
+      handleChannelClick(channel.matrix_room_id);
+    } catch (err) {
+      addToast(
+        err instanceof Error ? err.message : "Failed to start application",
+        "error",
+      );
+    } finally {
+      setLaunchingExtensionId(null);
+    }
   };
 
   const startRenameChannel = (channelId: number, currentName: string) => {
@@ -502,14 +527,30 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
           </div>
         )}
 
-        {/* Applications section — app channels installed by the server admin */}
-        {(appChannels.length > 0 || (isOwner && showAdminControls)) && (
+        {/* Applications section.
+         *
+         * Two layers:
+         *   1. ACTIVE app channels — one row per running extension. Members
+         *      can Stop (deletes the channel) without owner permission.
+         *   2. LAUNCHERS — every installed extension. Click to start a
+         *      fresh app channel; the server creates + Matrix-room-mints
+         *      it via POST /servers/<id>/extensions/<id>/start. The user
+         *      doesn't manage app channels manually anymore.
+         *
+         * Always renders (not gated on appChannels.length) when at least
+         * one extension is installed — the launchers are the entry point.
+         */}
+        {(appChannels.length > 0 || extensionCatalog.length > 0) && (
           <div className="mb-3">
             <div className="flex items-center justify-between px-2 mb-1">
               <h3 className="text-[10px] font-label font-medium text-on-surface-variant uppercase tracking-widest">
                 Applications
               </h3>
             </div>
+
+            {/* Active app channels. Stop button here AND inside the
+                extension panel; sidebar copy is for "stop while looking
+                at a different channel" cases. */}
             {appChannels.map((ch) => {
               const ext = extensionCatalog.find((e) => e.id === ch.extension_id);
               const isActive = activeChannelId === ch.matrix_room_id;
@@ -527,43 +568,48 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
                       {ext?.icon ?? "extension"}
                     </span>
                     <span className="min-w-0 truncate flex-1">{ch.name}</span>
-                    {ch.app_access === "admin_only" && (
-                      <span className="material-symbols-outlined text-xs text-on-surface-variant/60 flex-shrink-0" title="Admin only">lock</span>
-                    )}
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0" title="Running" />
                   </button>
-                  {isOwner && showAdminControls && (
-                    <div className="flex items-center gap-0.5 flex-shrink-0">
-                      <button
-                        onClick={() => handleUpdateAppAccess(ch.id, ch.app_access === "admin_only" ? "all" : "admin_only")}
-                        className="text-xs px-0.5 text-outline opacity-0 group-hover:opacity-100 transition-all hover:text-primary"
-                        title={ch.app_access === "admin_only" ? "Access: Admin only (click to allow all)" : "Access: All members (click to restrict)"}
-                      >
-                        <span className="material-symbols-outlined text-sm">
-                          {ch.app_access === "admin_only" ? "lock" : "lock_open"}
-                        </span>
-                      </button>
-                      {confirmDeleteChannelId === ch.id ? (
-                        <button
-                          onClick={() => handleDeleteChannel(ch.id)}
-                          onMouseLeave={() => setConfirmDeleteChannelId(null)}
-                          className="text-error text-xs px-1 animate-pulse font-label"
-                        >
-                          ✕
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => setConfirmDeleteChannelId(ch.id)}
-                          className="text-xs px-0.5 text-outline opacity-0 group-hover:opacity-100 transition-all hover:text-error"
-                          title="Remove app"
-                        >
-                          <span className="material-symbols-outlined text-sm">delete</span>
-                        </button>
-                      )}
-                    </div>
-                  )}
+                  {/* Stop deletes the app channel. No confirm dialog —
+                     app channels are ephemeral by design and re-launch
+                     is one click on the launcher below. */}
+                  <button
+                    onClick={() => handleDeleteChannel(ch.id)}
+                    className="text-xs px-0.5 text-outline opacity-0 group-hover:opacity-100 transition-all hover:text-error flex-shrink-0"
+                    title="Stop application"
+                  >
+                    <span className="material-symbols-outlined text-sm">stop_circle</span>
+                  </button>
                 </div>
               );
             })}
+
+            {/* Launchers — one row per installed extension. Hidden if
+                an active app channel for the same extension already
+                exists, so we don't show a "Start" next to the running
+                one and confuse the user. */}
+            {extensionCatalog
+              .filter((ext) => !appChannels.some((ch) => ch.extension_id === ext.id))
+              .map((ext) => {
+                const launching = launchingExtensionId === ext.id;
+                return (
+                  <button
+                    key={`launcher-${ext.id}`}
+                    onClick={() => void handleLaunchExtension(ext.id)}
+                    disabled={launching}
+                    className="w-full text-left px-3 py-2 rounded-xl text-sm transition-all flex items-center gap-2 font-body text-on-surface-variant/70 hover:bg-surface-container-high hover:text-on-surface disabled:opacity-50"
+                    title={`Start ${ext.name}`}
+                  >
+                    <span className="material-symbols-outlined text-base flex-shrink-0">
+                      {ext.icon ?? "extension"}
+                    </span>
+                    <span className="min-w-0 truncate flex-1">{ext.name}</span>
+                    <span className="material-symbols-outlined text-sm text-on-surface-variant/50 flex-shrink-0">
+                      {launching ? "hourglass_empty" : "play_arrow"}
+                    </span>
+                  </button>
+                );
+              })}
           </div>
         )}
 
@@ -605,20 +651,15 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
                 >
                   ◈ Place
                 </button>
-                {/* App type only visible to server owners */}
-                {isOwner && (
-                  <button
-                    type="button"
-                    onClick={() => setChannelType("app")}
-                    className={`flex-1 py-1 rounded-lg text-xs font-label font-medium transition-colors ${
-                      channelType === "app"
-                        ? "bg-surface-container-highest text-on-surface"
-                        : "text-on-surface-variant hover:text-on-surface"
-                    }`}
-                  >
-                    App
-                  </button>
-                )}
+                {/* The "App" channel-type button used to live here so
+                   owners could mount an extension on a hand-made
+                   channel. v0.7.2 removed it: app channels are now
+                   strictly extension-lifecycle artifacts created via
+                   the Applications-section launchers above (POST
+                   /servers/<id>/extensions/<id>/start) and torn down
+                   when the user clicks Stop. The user explicitly asked
+                   "user should not be managing app channels — they
+                   should manage themselves." */}
               </div>
               {channelType === "app" ? (
                 <>

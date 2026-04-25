@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-04-25
+
+### Changed — extensions are channels, lifecycle managed (breaking)
+- **Extensions no longer embed inside text channels.** The legacy "media top, chat below" vertical split that mounted an extension inside a regular text channel is gone. The `useExtension(activeRoomId)` hook + the inline `<ExtensionEmbed>` wrapper that rendered above `renderChatContent()` were removed. Text channels are pure chat now.
+- **Extension lifecycle = app channel lifecycle.** Click an extension's launcher in the sidebar's Applications section → server creates a fresh app channel via the new `POST /api/servers/{server_id}/extensions/{extension_id}/start` endpoint (Matrix room minted, all members invited). Routing into the new channel happens immediately. Click Stop on the channel row in the sidebar OR in the extension panel's Stop button → channel deleted via the existing `DELETE /channels/<id>` (now permits any server member, not just owner, to delete app channels).
+- **Users no longer manage app channels manually.** The "App" channel-type button in the New Channel form is gone — the user said "user should not be managing app channels, they should manage themselves." App channels exist exactly as long as the extension is running.
+- ChannelSidebar's Applications section now renders **two layers**: active app channels (with running indicator + Stop button) and launchers for every installed extension that doesn't already have an active session.
+- App channels render full-pane (no chat strip below) with a top bar showing the extension name + a Stop button that deletes the channel and routes the user back to the server's first non-app channel.
+
 ## [0.7.1] - 2026-04-25
 
 ### Changed
