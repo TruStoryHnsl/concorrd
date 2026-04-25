@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-04-26
+
+### Fixed — unread badges actually decrement now (the rest of v0.7.4)
+- **`chatVisible` was lying on desktop.** v0.7.4 replaced the count source but missed the real bug: `useSendReadReceipt(activeRoomId, chatVisible)` in `ChatLayout` was gated on `mobileView === "chat"`, which on desktop is only true when a tab's pageView happens to be `"chat"` — false for any tab in its initial post-mount state, false right after switching tabs, false during overlay states. With `chatVisible=false`, every effect inside `useSendReadReceipt` early-returned and `markRoomRead` was never called. No receipt sent → `room.hasUserReadEvent` always returned false → the deterministic v0.7.4 scan correctly identified every message as unread → badges stuck. Empirical confirmation came from a one-shot diagnostic build that logged every gate value: `[unread] computeUnreadForRoom` ran cleanly but zero `markRoomRead` calls ever appeared. Fix: on desktop (`!platform.isMobile`) every panel is on screen at once, so `chatVisible` is true unless a settings overlay is open. Mobile still gates on `mobileView === "chat"`.
+
 ## [0.7.4] - 2026-04-26
 
 ### Fixed — unread counts are deterministic and decrement reliably
