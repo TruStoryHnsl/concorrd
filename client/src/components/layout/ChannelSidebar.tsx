@@ -1,6 +1,6 @@
 import { memo, useState, useMemo, type ReactNode } from "react";
 import { useExtensionStore } from "../../stores/extension";
-import { startServerExtension, updateAppChannelAccess, type AppAccess } from "../../api/concord";
+import { updateAppChannelAccess, type AppAccess } from "../../api/concord";
 import {
   DndContext,
   closestCenter,
@@ -77,6 +77,7 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
   const deleteChannelFn = useServerStore((s) => s.deleteChannel);
   const renameChannelFn = useServerStore((s) => s.renameChannel);
   const reorderChannelsFn = useServerStore((s) => s.reorderChannels);
+  const startServerExtensionFn = useServerStore((s) => s.startServerExtension);
   const userId = useAuthStore((s) => s.userId);
   const accessToken = useAuthStore((s) => s.accessToken);
   const addToast = useToastStore((s) => s.addToast);
@@ -218,12 +219,24 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
    * The server creates the app channel + Matrix room + invites every
    * member; we route the caller into the new room as soon as the
    * response lands so they see the extension immediately.
+   *
+   * Critical: we patch the new channel into the local server-store
+   * BEFORE navigating. Without that the activeChannel lookup in
+   * ChatLayout (``activeServer.channels.find(c => c.matrix_room_id ===
+   * activeChannelId)``) returns undefined, the render falls into the
+   * "bridged-room chat" branch instead of the app-channel branch, and
+   * the user sees the chat view for an empty room — the "click attempts
+   * to load and reverts" symptom from the live install. The reload
+   * lets channelType propagate so isAppChannel === true on first paint.
    */
   const handleLaunchExtension = async (extensionId: string) => {
     if (!accessToken) return;
     setLaunchingExtensionId(extensionId);
     try {
-      const channel = await startServerExtension(server.id, extensionId, accessToken);
+      // The store action (startServerExtension) does the API call AND
+      // the optimistic store patch in one step, so the next render
+      // sees isAppChannel=true on the new channel.
+      const channel = await startServerExtensionFn(server.id, extensionId, accessToken);
       handleChannelClick(channel.matrix_room_id);
     } catch (err) {
       addToast(

@@ -10,6 +10,7 @@ import {
   renameChannel as apiRenameChannel,
   leaveServer as apiLeaveServer,
   reorderChannels as apiReorderChannels,
+  startServerExtension as apiStartServerExtension,
   listMembers as apiListMembers,
   getDefaultServer,
   joinServer as apiJoinServer,
@@ -152,6 +153,15 @@ interface ServerState {
     channelType: string,
     accessToken: string,
     extras?: { extension_id?: string; app_access?: AppAccess },
+  ) => Promise<Channel>;
+  /** Spin up an extension as an app channel on this server. Server
+   *  mints the Matrix room + channel record; we patch the new channel
+   *  into the local store so isAppChannel resolves true on the
+   *  immediate render after navigation. */
+  startServerExtension: (
+    serverId: string,
+    extensionId: string,
+    accessToken: string,
   ) => Promise<Channel>;
   createInvite: (serverId: string, accessToken: string) => Promise<string>;
   deleteServer: (serverId: string, accessToken: string) => Promise<void>;
@@ -763,6 +773,26 @@ export const useServerStore = create<ServerState>((set, get) => ({
       accessToken,
       extras,
     );
+    set((s) => ({
+      servers: s.servers.map((srv) =>
+        srv.id === serverId
+          ? { ...srv, channels: [...srv.channels, channel] }
+          : srv,
+      ),
+    }));
+    return channel;
+  },
+
+  startServerExtension: async (serverId, extensionId, accessToken) => {
+    const channel = await apiStartServerExtension(serverId, extensionId, accessToken);
+    // Same optimistic-insert pattern as createChannel: patch the new
+    // channel into the server's channels array immediately so any
+    // ``activeServer.channels.find(c => c.matrix_room_id === id)`` lookup
+    // resolves on the very next render. Without this the click-launcher
+    // → navigate flow lands the user in the bridged-room fallback
+    // branch ("loading…" + empty chat) until loadServers eventually
+    // refetches — which looked exactly like "click attempts to load
+    // and reverts" on the live install.
     set((s) => ({
       servers: s.servers.map((srv) =>
         srv.id === serverId

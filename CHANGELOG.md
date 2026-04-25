@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-04-25
+
+### Fixed
+- **App-channel launch click "appears to load and reverts."** v0.7.2's `handleLaunchExtension` POST'd `/start`, then immediately navigated `activeChannelId` to the new room — but the new channel hadn't been patched into the server-store's `channels` array yet, so `activeServer.channels.find(...)` returned undefined, `activeChannel` was undefined, and ChatLayout fell into the bridged-room "loading…" branch instead of the app-channel render. The user perceived this as the click reverting. Fix: a new `useServerStore.startServerExtension` action that does the POST and the optimistic store insert in one step, mirroring the `createChannel` pattern. `isAppChannel` now resolves true on the very next render after the click.
+
 ## [0.7.2] - 2026-04-25
 
 ### Changed — extensions are channels, lifecycle managed (breaking)
