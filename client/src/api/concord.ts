@@ -1199,6 +1199,13 @@ export interface ExtensionCatalogResponse {
     extensions: CatalogExtension[];
   };
   installed_ids: string[];
+  /** Map of extension id → installed version. Compare against the
+   *  catalog entry's version to decide whether to offer "Update".
+   *  Empty string means a legacy install predating the version
+   *  field — treat as "unknown, update available". Optional for
+   *  back-compat with older server builds that didn't ship this
+   *  field; absent → no update UI. */
+  installed_versions?: Record<string, string>;
 }
 
 export async function adminGetExtensionCatalog(

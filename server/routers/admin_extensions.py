@@ -167,11 +167,23 @@ async def admin_get_catalog(user_id: str = Depends(get_user_id)) -> dict[str, An
     except ValueError as exc:
         raise HTTPException(502, f"Catalog is not valid JSON: {exc}") from exc
 
-    installed_ids = {e.get("id") for e in _read_registry() if e.get("id")}
+    registry = _read_registry()
+    installed_ids = {e.get("id") for e in registry if e.get("id")}
+    # Surface the installed version per-id so the UI can show "Update"
+    # when catalog.version != installed_versions[id]. Missing/unknown
+    # versions in the registry (legacy installs predating the version
+    # field) come through as empty strings, which the UI treats as
+    # "version unknown — offer to update unconditionally".
+    installed_versions = {
+        e.get("id"): e.get("version") or ""
+        for e in registry
+        if isinstance(e.get("id"), str)
+    }
     return {
         "catalog_url": url,
         "catalog": catalog,
         "installed_ids": sorted(i for i in installed_ids if isinstance(i, str)),
+        "installed_versions": installed_versions,
     }
 
 
