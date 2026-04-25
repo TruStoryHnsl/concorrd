@@ -115,6 +115,10 @@ interface ExtensionState {
   menuOpen: boolean;
 
   loadCatalog: (accessToken: string) => Promise<void>;
+  /** Force a fresh /api/extensions fetch even if the catalog has
+   *  already loaded. Use after install/uninstall so the Applications
+   *  sidebar surfaces the change without a page reload. */
+  reloadCatalog: (accessToken: string) => Promise<void>;
   setActiveExtension: (roomId: string, ext: ActiveExtension | null) => void;
   startExtension: (roomId: string, extensionId: string) => Promise<void>;
   stopExtension: (roomId: string) => Promise<void>;
@@ -268,6 +272,30 @@ export const useExtensionStore = create<ExtensionState>((set, get) => ({
       });
     } catch (err) {
       console.warn("[extensions] Failed to load catalog from server:", err);
+    }
+  },
+
+  reloadCatalog: async (accessToken) => {
+    // Force fetch — bypass the catalogLoaded guard. Backend
+    // /api/extensions reads from data/installed_extensions.json which
+    // the admin install/uninstall path mutates, but the in-memory
+    // server-side _catalog is also refreshed via init_catalog() inside
+    // admin_install_extension, so we can rely on the next /api/extensions
+    // call to return the new state.
+    try {
+      const exts: ServerExtension[] = await listExtensions(accessToken);
+      set({
+        catalog: exts.map((e) => ({
+          id: e.id,
+          name: e.name,
+          url: e.url,
+          icon: e.icon,
+          description: e.description,
+        })),
+        catalogLoaded: true,
+      });
+    } catch (err) {
+      console.warn("[extensions] Failed to reload catalog from server:", err);
     }
   },
 
