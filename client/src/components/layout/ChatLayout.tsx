@@ -595,12 +595,23 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     onBack: handleTvBack,
   });
 
-  // Gate read receipts on the user actually looking at chat. On desktop,
-  // mobileView stays "chat" unless the user opens a settings view (which
-  // swaps out the main content). On mobile, switching to channels/servers/
-  // dms/settings hides the chat panel entirely. In all those cases the
-  // user is not looking at new messages, so we must not mark them read.
-  const chatVisible = mobileView === "chat" && !settingsOpen && !serverSettingsId;
+  // Gate read receipts on the user actually looking at chat.
+  //
+  // On DESKTOP every panel is visible at once — sidebar + channel list +
+  // chat all on screen — so "is the chat panel visible" is just "are we
+  // not in a settings overlay". The previous `mobileView === "chat"`
+  // check was treating desktop like mobile and gating false whenever the
+  // active tab's pageView happened not to be "chat" (which is the
+  // initial-load state for newly added tabs). That bailed out of the
+  // receipt-sender entirely, so the badge count never decremented — the
+  // exact "always says the same thing" bug.
+  //
+  // On MOBILE only one panel is on screen at a time, so we still gate
+  // on `mobileView === "chat"`.
+  const chatVisible =
+    (!platform.isMobile || mobileView === "chat") &&
+    !settingsOpen &&
+    !serverSettingsId;
   useSendReadReceipt(activeRoomId, chatVisible);
 
   const memberCount = useMemo(() => {
