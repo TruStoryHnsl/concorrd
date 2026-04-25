@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAuthStore } from "../../stores/auth";
+import { useExtensionStore } from "../../stores/extension";
 import { useToastStore } from "../../stores/toast";
 import {
   getAdminStats,
@@ -509,7 +510,14 @@ function ExtensionsSection({ token }: { token: string | null }) {
     try {
       await adminInstallExtension(id, token);
       addToast(`Installed ${id}`, "success");
-      await refresh();
+      // Refresh THIS panel + the global extension store so the
+      // Applications sidebar surfaces the new extension without a
+      // page reload. The store has a `catalogLoaded` short-circuit on
+      // its lazy loader, so we have to call the explicit reload here.
+      await Promise.all([
+        refresh(),
+        useExtensionStore.getState().reloadCatalog(token),
+      ]);
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Install failed", "error");
     } finally {
@@ -523,7 +531,10 @@ function ExtensionsSection({ token }: { token: string | null }) {
     try {
       await adminUninstallExtension(id, token);
       addToast(`Uninstalled ${id}`, "success");
-      await refresh();
+      await Promise.all([
+        refresh(),
+        useExtensionStore.getState().reloadCatalog(token),
+      ]);
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Uninstall failed", "error");
     } finally {
