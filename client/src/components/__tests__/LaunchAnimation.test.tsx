@@ -79,7 +79,12 @@ describe("<LaunchAnimation />", () => {
 
   it("retires the boot-splash and fires onDone after both gates clear", async () => {
     const onDone = vi.fn();
-    render(<LaunchAnimation isLoading={false} onDone={onDone} />);
+    // minDurationMs={0} disables the perceptibility floor so the test
+    // can assert the readiness-only gate path. The floor is exercised
+    // in a separate dedicated test.
+    render(
+      <LaunchAnimation isLoading={false} onDone={onDone} minDurationMs={0} />,
+    );
     expect(
       document.getElementById("boot-splash")?.getAttribute("data-state"),
     ).toBe("visible");
@@ -103,7 +108,7 @@ describe("<LaunchAnimation />", () => {
   it("dismisses immediately when isLoading flips false after isAppReady is already true", async () => {
     const onDone = vi.fn();
     const { rerender } = render(
-      <LaunchAnimation isLoading={true} onDone={onDone} />,
+      <LaunchAnimation isLoading={true} onDone={onDone} minDurationMs={0} />,
     );
     act(() => {
       useBootReadyStore.getState().markAppReady();
@@ -117,11 +122,82 @@ describe("<LaunchAnimation />", () => {
     ).toBe("visible");
 
     // Flip to not loading — handoff fires immediately.
-    rerender(<LaunchAnimation isLoading={false} onDone={onDone} />);
+    rerender(
+      <LaunchAnimation isLoading={false} onDone={onDone} minDurationMs={0} />,
+    );
     expect(
       document.getElementById("boot-splash")?.getAttribute("data-state"),
     ).toBe("handoff");
 
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(420);
+    });
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds the splash for at least minDurationMs even when readiness passes immediately", async () => {
+    // Cached / warm-sync path: both gates flip true within a frame
+    // of mount. Without the floor the splash dismisses before paint,
+    // leaving an empty-dark gap that reads as "splash didn't show".
+    const onDone = vi.fn();
+    render(
+      <LaunchAnimation
+        isLoading={false}
+        onDone={onDone}
+        minDurationMs={1500}
+      />,
+    );
+    act(() => {
+      useBootReadyStore.getState().markAppReady();
+    });
+    // Readiness gates are satisfied at t=0, but the floor blocks handoff.
+    expect(
+      document.getElementById("boot-splash")?.getAttribute("data-state"),
+    ).toBe("visible");
+
+    // Floor partially elapsed — still visible.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1499);
+    });
+    expect(
+      document.getElementById("boot-splash")?.getAttribute("data-state"),
+    ).toBe("visible");
+    expect(onDone).not.toHaveBeenCalled();
+
+    // Floor crosses → handoff fires.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2);
+    });
+    expect(
+      document.getElementById("boot-splash")?.getAttribute("data-state"),
+    ).toBe("handoff");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(420);
+    });
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("safety ceiling overrides the minimum-display floor", async () => {
+    // If something hangs and readiness never arrives, the ceiling
+    // should still dismiss the splash even if minDurationMs is much
+    // higher. (In production minDurationMs < maxDurationMs, but we
+    // guarantee ceiling-wins regardless of relative sizes.)
+    const onDone = vi.fn();
+    render(
+      <LaunchAnimation
+        isLoading={true}
+        onDone={onDone}
+        maxDurationMs={500}
+        minDurationMs={5000}
+      />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(501);
+    });
+    expect(
+      document.getElementById("boot-splash")?.getAttribute("data-state"),
+    ).toBe("handoff");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(420);
     });
@@ -162,7 +238,7 @@ describe("<LaunchAnimation />", () => {
   it("does not fire onDone twice if isLoading flips back to true post-handoff", async () => {
     const onDone = vi.fn();
     const { rerender } = render(
-      <LaunchAnimation isLoading={false} onDone={onDone} />,
+      <LaunchAnimation isLoading={false} onDone={onDone} minDurationMs={0} />,
     );
     act(() => {
       useBootReadyStore.getState().markAppReady();
@@ -172,7 +248,9 @@ describe("<LaunchAnimation />", () => {
     });
     expect(onDone).toHaveBeenCalledTimes(1);
 
-    rerender(<LaunchAnimation isLoading={true} onDone={onDone} />);
+    rerender(
+      <LaunchAnimation isLoading={true} onDone={onDone} minDurationMs={0} />,
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000);
     });

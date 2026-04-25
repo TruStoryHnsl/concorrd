@@ -58,6 +58,18 @@ export interface LaunchAnimationProps {
    * this long. Default 30000ms.
    */
   maxDurationMs?: number;
+  /**
+   * Minimum splash visibility floor. Even when both readiness gates
+   * pass immediately (warm cache, fast local sync, returning user
+   * with everything pre-warm), the splash must paint for at least
+   * this long before handoff so the user actually perceives it
+   * instead of seeing a sub-100ms flash followed by an empty-dark
+   * gap before the chat shell paints. Default 1500ms — long enough
+   * to clear perceptual masking for a sudden visual change, short
+   * enough that a fast app still feels fast. Set to 0 in tests
+   * that want to assert the readiness-only gate.
+   */
+  minDurationMs?: number;
   /** Test seam for fake timers. */
   setTimeoutFn?: typeof window.setTimeout;
 }
@@ -69,13 +81,16 @@ export function LaunchAnimation({
   isLoading,
   onDone,
   maxDurationMs = 30_000,
+  minDurationMs = 1500,
   setTimeoutFn,
 }: LaunchAnimationProps) {
   const isAppReady = useBootReadyStore((s) => s.isAppReady);
   const [phase, setPhase] = useState<Phase>("showing");
   const [maxElapsed, setMaxElapsed] = useState(false);
+  const [minElapsed, setMinElapsed] = useState(minDurationMs <= 0);
   const fadeTimerRef = useRef<number | null>(null);
   const maxTimerRef = useRef<number | null>(null);
+  const minTimerRef = useRef<number | null>(null);
 
   // Mirror onDone into a ref so the gate effect's deps stay stable
   // across re-renders. Inline arrow functions in the parent
@@ -95,28 +110,45 @@ export function LaunchAnimation({
     return () => {
       if (fadeTimerRef.current !== null) window.clearTimeout(fadeTimerRef.current);
       if (maxTimerRef.current !== null) window.clearTimeout(maxTimerRef.current);
+      if (minTimerRef.current !== null) window.clearTimeout(minTimerRef.current);
     };
   }, []);
 
-  // Start the safety ceiling timer on mount.
+  // Start the safety ceiling AND the minimum-display floor on mount.
+  // Both run from the same t=0 so the floor is bounded by the ceiling
+  // — readiness can never block dismissal past `maxDurationMs`.
   useEffect(() => {
     const scheduler = setTimeoutFn ?? window.setTimeout;
     maxTimerRef.current = scheduler(
       () => setMaxElapsed(true),
       maxDurationMs,
     ) as unknown as number;
+    if (minDurationMs > 0) {
+      minTimerRef.current = scheduler(
+        () => setMinElapsed(true),
+        minDurationMs,
+      ) as unknown as number;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Handoff trigger — fires once, when both gates align (or the
-  // safety ceiling fires).
+  // Handoff trigger — fires once, when readiness has settled AND the
+  // minimum display floor has elapsed (or the safety ceiling fires).
+  // The floor exists because on cached/warm-sync paths the readiness
+  // gates can both pass within a frame or two of mount — splash
+  // would dismiss before the user perceives it, leaving an
+  // empty-dark gap before ChatLayout's first paint. The ceiling still
+  // wins over the floor: a hung app dismisses at maxDurationMs no
+  // matter what.
   useEffect(() => {
     if (phase !== "showing") return;
     if (fadeTimerRef.current !== null) return;
 
-    const allGatesPassed = !isLoading && isAppReady;
+    const readinessGatesPassed = !isLoading && isAppReady;
     const ceilingHit = maxElapsed;
-    if (!allGatesPassed && !ceilingHit) return;
+    const floorCleared = minElapsed;
+    const shouldHandoff = ceilingHit || (readinessGatesPassed && floorCleared);
+    if (!shouldHandoff) return;
 
     setPhase("fading");
     handoffBootSplash();
@@ -133,7 +165,7 @@ export function LaunchAnimation({
     // effect on every parent render via the same unstable-ref
     // problem the onDoneRef pattern above is meant to solve.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading, isAppReady, maxElapsed, phase]);
+  }, [isLoading, isAppReady, maxElapsed, minElapsed, phase]);
 
   return null;
 }
