@@ -336,6 +336,27 @@ async def admin_set_extension_secrets(
 # ---------------------------------------------------------------------------
 
 
+def _browser_safe_secrets(ext_id: str) -> dict[str, str]:
+    """Filter the extension's secret bucket down to keys the browser is
+    expected to handle directly. ``*_secret`` and ``*_client_id`` and
+    the Sentinel instance id stay server-side; everything else is the
+    operator's "give every user this default" — Cesium ion tokens,
+    AISStream keys, TomTom / Windy keys, etc.
+    """
+    raw = _ext_secrets(ext_id)
+    safe = {}
+    for k, v in raw.items():
+        kl = k.lower()
+        if "secret" in kl:
+            continue
+        if kl.endswith("_client_id"):
+            continue
+        if kl == "sentinel_instance_id":
+            continue
+        safe[k] = v
+    return safe
+
+
 @router.get("/api/users/me/extensions/{ext_id}/browser-config")
 async def user_extension_browser_config(
     ext_id: str,
@@ -344,25 +365,31 @@ async def user_extension_browser_config(
     """Return the set of safe-to-expose extension config values stored
     on the instance.
 
-    "Safe" here means: the key name doesn't include the substring
-    ``secret`` and doesn't end in ``_client_id`` for an OAuth flow we'd
-    handle server-side. Everything else is browser-direct (Cesium token,
-    AISStream key, TomTom key, Windy key) and the operator-stored
-    default lets users see the instance's defaults without going to
-    settings — they can still override per-user via localStorage.
+    Auth-gated variant. See ``/api/extensions/{ext_id}/public-config``
+    for the unauthenticated companion that the static iframe bundle
+    can hit synchronously without threading a token through ext SDK.
     """
-    raw = _ext_secrets(ext_id)
-    safe = {}
-    for k, v in raw.items():
-        kl = k.lower()
-        if "secret" in kl:
-            continue
-        # opensky_client_id / sentinel_client_id are server-side OAuth
-        # confidants — kept out of the browser even though the name
-        # alone wouldn't imply secrecy.
-        if kl.endswith("_client_id"):
-            continue
-        if kl == "sentinel_instance_id":
-            continue
-        safe[k] = v
-    return {"extension_id": ext_id, "config": safe}
+    return {"extension_id": ext_id, "config": _browser_safe_secrets(ext_id)}
+
+
+@router.get("/api/extensions/{ext_id}/public-config")
+async def extension_public_config(ext_id: str):
+    """Same payload as ``/users/me/extensions/{ext_id}/browser-config``
+    but unauthenticated. Designed for the extension iframe's bootstrap
+    bridge to fetch synchronously before any layer parses.
+
+    Why no auth: the keys returned here are inherently browser-exposed
+    — Cesium / AISStream / TomTom / Windy SDKs all run client-side and
+    embed the key in their network calls. Storing them server-side
+    saves every user from having to paste the same operator-issued
+    token, but doesn't change the trust boundary: anyone hitting this
+    endpoint with an installed extension's id gets the same key the
+    SDK would have read out of the request the iframe makes anyway.
+
+    The filter rejects ``*_secret`` / ``*_client_id`` / ``sentinel_instance_id``
+    keys identically to the authed variant, so OAuth confidants stay
+    server-side regardless of caller. Returns 200 with an empty config
+    when the extension isn't installed or has no operator keys set —
+    same shape, no info-leak distinction.
+    """
+    return {"extension_id": ext_id, "config": _browser_safe_secrets(ext_id)}

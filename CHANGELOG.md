@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-24
+
+### Added
+- **`GET /api/extensions/{ext_id}/public-config`** — unauthenticated companion to the auth-gated `/users/me/extensions/{id}/browser-config`. Returns the same browser-safe key set (filters out `*_secret` / `*_client_id` / `sentinel_instance_id`), so an extension's static iframe bridge can fetch operator-managed defaults synchronously at boot — no auth-token threading through the SDK. The trust boundary is unchanged: keys returned here are the same ones the SDKs (Cesium, AISStream, TomTom, Windy) would have read from the request the iframe makes anyway.
+
 ## [0.6.0] - 2026-04-24
 
 ### Added — extension upstream-API proxy
