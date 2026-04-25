@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import shutil
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -59,9 +60,29 @@ DEFAULT_CATALOG_URL = (
     "concord-extensions/main/catalog.json"
 )
 
+# Headers that bypass intermediate HTTP caches (raw.githubusercontent.com
+# is fronted by Fastly with a 5-minute TTL). Without these the install
+# pipeline can fetch a stale catalog after a version bump and ask for a
+# bundle_url that no longer exists, surfacing as "Could not download
+# bundle: 404" with the OLD version in the URL.
+_CATALOG_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, max-age=0",
+    "Pragma": "no-cache",
+}
+
 
 def _catalog_url() -> str:
     return os.getenv("CONCORD_EXTENSION_CATALOG_URL", DEFAULT_CATALOG_URL)
+
+
+def _catalog_fetch_url() -> str:
+    """Catalog URL with a per-request cache-buster query param. Combined
+    with `_CATALOG_NO_CACHE_HEADERS`, this guarantees the install path
+    never hits a cached catalog response — Fastly varies on URL, so the
+    nonce forces a fresh origin fetch."""
+    base = _catalog_url()
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}_t={int(time.time() * 1000)}"
 
 
 def _extensions_root() -> Path:
@@ -134,13 +155,14 @@ async def admin_get_catalog(user_id: str = Depends(get_user_id)) -> dict[str, An
     """
     require_admin(user_id)
     url = _catalog_url()
+    fetch_url = _catalog_fetch_url()
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url)
+            resp = await client.get(fetch_url, headers=_CATALOG_NO_CACHE_HEADERS)
             resp.raise_for_status()
             catalog = resp.json()
     except httpx.HTTPError as exc:
-        logger.warning("Catalog fetch failed from %s: %s", url, exc)
+        logger.warning("Catalog fetch failed from %s: %s", fetch_url, exc)
         raise HTTPException(502, f"Could not fetch catalog: {exc}") from exc
     except ValueError as exc:
         raise HTTPException(502, f"Catalog is not valid JSON: {exc}") from exc
@@ -174,11 +196,12 @@ async def admin_install_extension(
     require_admin(user_id)
     ext_id = _sanitize_id(body.extension_id)
 
-    # Look up bundle_url in the catalog.
-    url = _catalog_url()
+    # Look up bundle_url in the catalog. Cache-bust the fetch so a stale
+    # CDN response can't point install at a deleted bundle version.
+    fetch_url = _catalog_fetch_url()
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url)
+            resp = await client.get(fetch_url, headers=_CATALOG_NO_CACHE_HEADERS)
             resp.raise_for_status()
             catalog = resp.json()
     except (httpx.HTTPError, ValueError) as exc:
