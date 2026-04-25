@@ -78,11 +78,21 @@ class ServerCreate(BaseModel):
 
 class ChannelCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_\- ]+$")
-    channel_type: Literal["text", "voice"] = "text"
+    channel_type: Literal["text", "voice", "app"] = "text"
+    # For channel_type == "app": the installed extension to mount. The
+    # extension must already be present in installed_extensions.json on
+    # the data volume — the create handler verifies this before saving.
+    extension_id: str | None = None
+    # For channel_type == "app": "all" (default) or "admin_only".
+    app_access: Literal["all", "admin_only"] | None = None
 
 
 class ChannelUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_\- ]+$")
+
+
+class AppAccessUpdate(BaseModel):
+    app_access: Literal["all", "admin_only"]
 
 
 class ChannelReorder(BaseModel):
@@ -100,6 +110,8 @@ class ChannelOut(BaseModel):
     channel_type: str
     matrix_room_id: str
     position: int
+    extension_id: str | None = None
+    app_access: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -520,6 +532,27 @@ async def create_channel(
     last = result.scalars().first()
     position = (last.position + 1) if last else 0
 
+    # App-channel validation: must reference an installed extension and
+    # must declare an access mode. The extension catalog lives at
+    # ``<DATA_DIR>/installed_extensions.json`` — fall back to the
+    # bundled ``server/extensions.json`` for older installs that
+    # haven't run the install flow yet.
+    extension_id = None
+    app_access = None
+    if body.channel_type == "app":
+        if not body.extension_id:
+            raise HTTPException(400, "extension_id is required when channel_type=app")
+        # Validate the extension is actually installed.
+        from routers import extensions as _ext_mod
+        installed = {ext.id for ext in _ext_mod._load_catalog()}
+        if body.extension_id not in installed:
+            raise HTTPException(
+                400,
+                f"Extension {body.extension_id!r} is not installed on this instance",
+            )
+        extension_id = body.extension_id
+        app_access = body.app_access or "all"
+
     room_id = await create_matrix_room(access_token, f"{server.name} - {body.name}")
     channel = Channel(
         server_id=server_id,
@@ -527,6 +560,8 @@ async def create_channel(
         name=body.name,
         channel_type=body.channel_type,
         position=position,
+        extension_id=extension_id,
+        app_access=app_access,
     )
     db.add(channel)
     await db.commit()
@@ -754,6 +789,32 @@ async def get_channel_matrix_members(
         "homeserver_status": resp.status_code,
         "homeserver_body": resp.json() if resp.status_code == 200 else resp.text,
     }
+
+
+@router.patch(
+    "/{server_id}/channels/{channel_id}/app-access",
+    response_model=ChannelOut,
+)
+async def update_app_channel_access(
+    server_id: str,
+    channel_id: int,
+    body: AppAccessUpdate,
+    user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle who can open an app channel ("all" vs "admin_only"). Only
+    valid on app channels — text/voice channels return 400.
+    """
+    await require_server_owner(server_id, user_id, db)
+    channel = await db.get(Channel, channel_id)
+    if not channel or channel.server_id != server_id:
+        raise HTTPException(404, "Channel not found")
+    if channel.channel_type != "app":
+        raise HTTPException(400, "Not an app channel")
+    channel.app_access = body.app_access
+    await db.commit()
+    await db.refresh(channel)
+    return channel
 
 
 @router.delete("/{server_id}/channels/{channel_id}")

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-25
+
+### Added — app channels (extensions as channels under "Applications")
+- **`channel_type: "app"`** is now a first-class server-side channel kind. Previously only the client knew about it; the server's `ChannelCreate` Pydantic was `Literal["text", "voice"]` so attempting to persist an app channel 422'd. Extended to `Literal["text", "voice", "app"]` and the request body now accepts `extension_id` + `app_access` (`"all"` | `"admin_only"`).
+- `Channel` model gained `extension_id: str | None` and `app_access: str | None`. Both are `NULL` for text/voice channels. `extension_id` references the installed extension by id (no FK — the registry is the data-volume `installed_extensions.json`, not a DB table). `database._lightweight_migrations` adds the columns idempotently to existing DBs.
+- `POST /api/servers/{server_id}/channels` validates app channels: `extension_id` must reference an extension that's actually installed (otherwise 400). `app_access` defaults to `"all"` when omitted.
+- New `PATCH /api/servers/{server_id}/channels/{channel_id}/app-access` toggles access mode on existing app channels (owner only). Text/voice channels return 400.
+- `ChannelOut` now includes both `extension_id` and `app_access`. The client side already had this typing in place; this just unblocks the server end of the wire.
+- Worldview-map (and every other extension in the catalog) can now be added to a server as a channel under the "Applications" group, instead of being embedded inside an existing channel's right pane. Click the channel → the extension iframe takes the full chat-area pane.
+
 ## [0.6.1] - 2026-04-24
 
 ### Added

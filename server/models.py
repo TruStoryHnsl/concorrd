@@ -57,8 +57,17 @@ class Channel(Base):
     server_id: Mapped[str] = mapped_column(String, ForeignKey("servers.id"), nullable=False)
     matrix_room_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
-    channel_type: Mapped[str] = mapped_column(String, default="text")  # "text" or "voice"
+    channel_type: Mapped[str] = mapped_column(String, default="text")  # "text" | "voice" | "app"
     position: Mapped[int] = mapped_column(Integer, default=0)
+    # For channel_type == "app": which installed extension this channel
+    # mounts. NULL on text/voice. References installed_extensions.json
+    # by id rather than a foreign key — the registry is a data-volume
+    # JSON file, not a DB table, so the constraint can't be enforced
+    # at the schema level.
+    extension_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # "all" | "admin_only" — who can open the extension on this app
+    # channel. NULL on non-app channels.
+    app_access: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
     server: Mapped["Server"] = relationship(back_populates="channels")
 

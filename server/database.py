@@ -57,6 +57,10 @@ async def _lightweight_migrations():
         ("servers", "rules_text", "TEXT"),
         # INS-053: Per-server user channel creation flag (introduced 2026-04-17).
         ("servers", "allow_user_channel_creation", "BOOLEAN DEFAULT FALSE"),
+        # v0.7.0: app channels — extension-mounted channels under the
+        # "Applications" group in the channels list (introduced 2026-04-25).
+        ("channels", "extension_id", "TEXT"),
+        ("channels", "app_access", "TEXT"),
     ]
     async with engine.begin() as conn:
         for table, column, sql_type in migrations:
