@@ -29,9 +29,15 @@ function findLastUnreadContributingEvent(room: Room): MatrixEvent | null {
       return ev;
     }
   }
-  // Fallback: the raw tail, so a brand-new room with only state events
-  // still gets a receipt and doesn't sit forever on a stale anchor.
-  return timeline[timeline.length - 1] ?? null;
+  // No message-shaped event in the live timeline. Don't anchor a receipt
+  // on a state event — the homeserver doesn't treat state events as
+  // unread-contributing, so the receipt lands but the server-side
+  // notification count never decrements and the badge re-lights on the
+  // next sync push. Sparse-timeline rooms (lazy-load batched, freshly-
+  // synced app channels per v0.7.2) regularly hit this path. Returning
+  // null short-circuits markRoomRead → no spurious receipt; computeUnread
+  // already skips state events so the local count is 0 anyway.
+  return null;
 }
 
 /** Deterministic, client-side unread count for a single room. We don't
