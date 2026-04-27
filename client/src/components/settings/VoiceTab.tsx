@@ -28,6 +28,10 @@ export function VoiceTab() {
   const setInputNoiseGateEnabled = useSettingsStore((s) => s.setInputNoiseGateEnabled);
   const inputNoiseGateThresholdDb = useSettingsStore((s) => s.inputNoiseGateThresholdDb);
   const setInputNoiseGateThresholdDb = useSettingsStore((s) => s.setInputNoiseGateThresholdDb);
+  const voiceClarityEnabled = useSettingsStore((s) => s.voiceClarityEnabled);
+  const setVoiceClarityEnabled = useSettingsStore((s) => s.setVoiceClarityEnabled);
+  const voiceClarityStrength = useSettingsStore((s) => s.voiceClarityStrength);
+  const setVoiceClarityStrength = useSettingsStore((s) => s.setVoiceClarityStrength);
 
   const [inputDevices, setInputDevices] = useState<MediaDeviceInfo[]>([]);
   const [micLevel, setMicLevel] = useState(0);
@@ -274,6 +278,24 @@ export function VoiceTab() {
         <p className="text-xs text-on-surface-variant -mt-2">
           Louder thresholds block more speaker bleed. Quieter thresholds let more soft speech through.
         </p>
+
+        <Toggle
+          label="Voice Clarity"
+          description="Lifts vocal presence (~3 kHz), softens harsh sibilance (~7 kHz), expands the dynamic range of speech so quiet syllables stay audible without loud peaks blowing out"
+          checked={voiceClarityEnabled}
+          onChange={setVoiceClarityEnabled}
+        />
+        {voiceClarityEnabled && (
+          <Slider
+            label="Voice Clarity Strength"
+            value={voiceClarityStrength}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={setVoiceClarityStrength}
+            formatValue={(v) => `${Math.round(v * 100)}%`}
+          />
+        )}
       </div>
     </div>
   );

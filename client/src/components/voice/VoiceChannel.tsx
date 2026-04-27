@@ -4,6 +4,7 @@ import {
   useLocalParticipant,
   useConnectionState,
   useTracks,
+  useRoomContext,
   VideoTrack,
 } from "@livekit/components-react";
 import { Track, ConnectionState } from "livekit-client";
@@ -28,6 +29,8 @@ import {
   buildMicTrackConstraints,
   getVoiceInputProcessor,
 } from "../../voice/noiseGate";
+import { VoiceHealthWatchdog } from "../../voice/voiceHealthWatchdog";
+import { VoiceDiagnosticsPanel } from "./VoiceDiagnosticsPanel";
 
 interface VoiceChannelProps {
   roomId: string;
@@ -241,6 +244,7 @@ function VoiceRoomUI({
   const participants = useParticipants();
   const { localParticipant } = useLocalParticipant();
   const connectionState = useConnectionState();
+  const room = useRoomContext();
   const tracks = useTracks([Track.Source.Microphone]);
   const allCameraTracks = useTracks([Track.Source.Camera]);
   // Filter to only active (unmuted, subscribed) camera tracks — setCameraEnabled(false)
@@ -263,6 +267,8 @@ function VoiceRoomUI({
   const masterInputVolume = useSettingsStore((s) => s.masterInputVolume);
   const inputNoiseGateEnabled = useSettingsStore((s) => s.inputNoiseGateEnabled);
   const inputNoiseGateThresholdDb = useSettingsStore((s) => s.inputNoiseGateThresholdDb);
+  const voiceClarityEnabled = useSettingsStore((s) => s.voiceClarityEnabled);
+  const voiceClarityStrength = useSettingsStore((s) => s.voiceClarityStrength);
   const userVolumes = useSettingsStore((s) => s.userVolumes);
   const setUserVolume = useSettingsStore((s) => s.setUserVolume);
   const masterOutputVolume = useSettingsStore((s) => s.masterOutputVolume);
@@ -377,6 +383,8 @@ function VoiceRoomUI({
     autoGainControl,
     inputNoiseGateEnabled,
     inputNoiseGateThresholdDb,
+    voiceClarityEnabled,
+    voiceClarityStrength,
   } as const;
   const mutedSpeakingConstraints = useMemo(
     () => buildMicTrackConstraints(voiceInputSettings),
@@ -388,6 +396,8 @@ function VoiceRoomUI({
       autoGainControl,
       inputNoiseGateEnabled,
       inputNoiseGateThresholdDb,
+      voiceClarityEnabled,
+      voiceClarityStrength,
     ],
   );
 
@@ -427,7 +437,31 @@ function VoiceRoomUI({
     autoGainControl,
     inputNoiseGateEnabled,
     inputNoiseGateThresholdDb,
+    voiceClarityEnabled,
+    voiceClarityStrength,
   ]);
+
+  // Voice health watchdog (2026-04-26 incident response): detect remote
+  // tracks where the SFU stops delivering RTP while the publication
+  // remains "subscribed", and silently re-establish the subscription.
+  // Surfaces a brief toast only when the L1 restart fails and the
+  // watchdog has to force a full room reconnect.
+  useEffect(() => {
+    if (!room) return;
+    const watchdog = new VoiceHealthWatchdog({
+      room,
+      onAction: (action) => {
+        if (action.kind === "reconnect-room") {
+          addToast(
+            "Voice connection unstable — reconnecting…",
+            "info",
+          );
+        }
+      },
+    });
+    watchdog.start();
+    return () => watchdog.stop();
+  }, [room, addToast]);
 
   const [cameraLoading, setCameraLoading] = useState(false);
   const [quickSettingsOpen, setQuickSettingsOpen] = useState(false);
@@ -506,6 +540,9 @@ function VoiceRoomUI({
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
+      {/* Floating WebRTC stats overlay, gated by ``localStorage.concordVoiceDebug``.
+          Renders nothing in the common case. */}
+      <VoiceDiagnosticsPanel room={room ?? null} />
       {/* Desktop header — hidden on mobile (controls move to bottom) */}
       <div className="hidden md:block p-4 border-b border-outline-variant/15 flex-shrink-0">
         <div className="flex items-center justify-between">

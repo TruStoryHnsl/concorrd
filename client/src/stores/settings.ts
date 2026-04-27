@@ -36,6 +36,15 @@ interface SettingsState {
   autoGainControl: boolean;
   inputNoiseGateEnabled: boolean;
   inputNoiseGateThresholdDb: number;
+  // Voice clarity: presence-band EQ (notch mains hum, lift 3 kHz vocal
+  // presence, soften sibilance ~7 kHz) plus an upward compressor that
+  // expands the perceived dynamic range of speech (loud parts stay loud,
+  // quiet syllables become more audible). Per-user opt-in; default ON
+  // for shipped clarity gain. `voiceClarityStrength` scales the EQ
+  // boost/cut and compressor ratio jointly so a single slider controls
+  // intensity. 0 ≈ flat passthrough, 1 ≈ aggressive broadcast voice.
+  voiceClarityEnabled: boolean;
+  voiceClarityStrength: number;
 
   // Notifications
   notificationsEnabled: boolean;
@@ -82,6 +91,8 @@ interface SettingsState {
   setAutoGainControl: (v: boolean) => void;
   setInputNoiseGateEnabled: (v: boolean) => void;
   setInputNoiseGateThresholdDb: (db: number) => void;
+  setVoiceClarityEnabled: (v: boolean) => void;
+  setVoiceClarityStrength: (strength: number) => void;
   setNotificationsEnabled: (v: boolean) => void;
   setDefaultNotificationLevel: (level: "all" | "mentions" | "nothing") => void;
   setServerNotificationLevel: (serverId: string, level: "all" | "mentions" | "nothing" | "default") => void;
@@ -152,6 +163,8 @@ const defaults = {
   autoGainControl: true,
   inputNoiseGateEnabled: true,
   inputNoiseGateThresholdDb: INPUT_NOISE_GATE_DB_DEFAULT,
+  voiceClarityEnabled: true,
+  voiceClarityStrength: 0.5,
   notificationsEnabled: true,
   defaultNotificationLevel: "all" as const,
   serverNotifications: {} as Record<string, "all" | "mentions" | "nothing">,
@@ -204,6 +217,11 @@ export const useSettingsStore = create<SettingsState>()(
           Math.min(INPUT_NOISE_GATE_DB_MAX, Math.round(db)),
         );
         set({ inputNoiseGateThresholdDb: clamped });
+      },
+      setVoiceClarityEnabled: (v) => set({ voiceClarityEnabled: v }),
+      setVoiceClarityStrength: (strength) => {
+        if (!Number.isFinite(strength)) return;
+        set({ voiceClarityStrength: Math.max(0, Math.min(1, strength)) });
       },
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setDefaultNotificationLevel: (level) => set({ defaultNotificationLevel: level }),
