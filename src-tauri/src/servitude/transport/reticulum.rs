@@ -96,8 +96,7 @@ pub const RNSD_MANAGEMENT_PORT: u16 = 4965;
 /// Reticulum transport — spawns `rnsd` as a managed child process.
 ///
 /// Implements [`Transport`] so the servitude lifecycle (start/stop/health)
-/// manages the Reticulum daemon the same way it manages tuwunel and the
-/// Discord bridge.
+/// manages the Reticulum daemon the same way it manages tuwunel.
 #[derive(Debug)]
 pub struct ReticulumTransport {
     /// Data directory for `rnsd` config and key storage.
@@ -248,10 +247,9 @@ impl Transport for ReticulumTransport {
     }
 
     /// Reticulum is non-critical: if `rnsd` fails to start or crashes,
-    /// the servitude stays Running (Matrix federation and Discord bridge
-    /// continue to function) and the failure is recorded in
-    /// `ServitudeHandle::degraded`. This matches the `DiscordBridge`
-    /// policy — transport availability is best-effort.
+    /// the servitude stays Running (Matrix federation continues to
+    /// function) and the failure is recorded in
+    /// `ServitudeHandle::degraded`. Transport availability is best-effort.
     fn is_critical(&self) -> bool {
         false
     }

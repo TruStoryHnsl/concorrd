@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from httpx import AsyncClient
 
-from models import Channel, DiscordVoiceBridge, Server, ServerMember
+from models import Channel, Server, ServerMember
 from tests.conftest import login_as, logout
 
 
@@ -129,45 +129,6 @@ async def test_voice_token_endpoint_returns_turn_contract_for_members(
             "credential": None,
         },
     ]
-
-
-async def test_voice_token_repairs_stale_bridge_room_ids_before_minting(
-    client: AsyncClient,
-    db_session: Any,
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    from services import discord_voice_config as config_mod
-
-    cfg = tmp_path / "discord-voice-bridge"
-    monkeypatch.setattr(config_mod, "CONFIG_DIR", cfg)
-    monkeypatch.setattr(config_mod, "ROOMS_FILE", cfg / "rooms.json")
-
-    voice_channel = await _seed_voice_server(db_session)
-    bridge_row = DiscordVoiceBridge(
-        server_id=voice_channel.server_id,
-        channel_id=voice_channel.id,
-        matrix_room_id="!stale-voice:test.local",
-        discord_guild_id="123456789012345678",
-        discord_channel_id="234567890123456789",
-        enabled=True,
-        created_by="@owner:test.local",
-    )
-    db_session.add(bridge_row)
-    await db_session.commit()
-
-    monkeypatch.setenv("TURN_SECRET", "secret")
-    monkeypatch.setenv("TURN_HOST", "turn.example.com")
-    monkeypatch.setenv("TURN_TLS_ENABLED", "false")
-
-    login_as("@regular:test.local")
-    with patch("routers.voice.generate_token", return_value="lk-token") as mocked_generate:
-        resp = await client.post("/api/voice/token", json={"room_name": "!stale-voice:test.local"})
-    logout()
-
-    assert resp.status_code == 200, resp.text
-    mocked_generate.assert_called_once()
-    assert mocked_generate.call_args.kwargs["room_name"] == voice_channel.matrix_room_id
 
 
 def test_turn_stack_architecture_is_env_driven() -> None:

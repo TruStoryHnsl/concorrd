@@ -122,11 +122,9 @@ describe("[TESTER] FloatingVideoTiles — structural + dependency cross-checks",
     it("viewingVoiceChannel correctly requires server-id match AND channel-id match", () => {
       // This is the subtle one. A user who joined voice on server A
       // channel 1 and is now looking at server B channel 1 (same id by
-      // chance — Matrix room ids are globally unique but a shared
-      // channel id in a different server WOULD happen with Discord
-      // bridge synthetic ids) must still see the float. The
-      // composition must compare BOTH activeServerId and
-      // activeChannelId.
+      // chance — Matrix room ids are globally unique but synthetic ids
+      // could collide) must still see the float. The composition must
+      // compare BOTH activeServerId and activeChannelId.
       const viewingBlock = floatingVideoTilesSource.match(
         /const viewingVoiceChannel =\s*([\s\S]*?);/,
       );

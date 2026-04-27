@@ -41,8 +41,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/tuwunel/**/*",
-      "resources/discord_bridge/**/*"
+      "resources/tuwunel/**/*"
     ],
     "linux": {
       "deb": {

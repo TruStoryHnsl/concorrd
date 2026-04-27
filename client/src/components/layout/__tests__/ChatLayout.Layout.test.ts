@@ -38,11 +38,4 @@ describe("ChatLayout shell sizing contracts", () => {
   it("keeps the source rail offset from the server rail by the desktop gutter", () => {
     expect(chatLayoutSource).toContain('className="w-[41px] mr-[2px] flex-shrink-0"');
   });
-
-  it("does not probe Discord bridge admin endpoints unless bridge servers are present", () => {
-    expect(chatLayoutSource).toContain("const hasDiscordBridgeServers = useMemo(");
-    expect(chatLayoutSource).toContain('server.bridgeType === "discord"');
-    expect(chatLayoutSource).toContain("!hasDiscordBridgeServers");
-    expect(chatLayoutSource).toContain('message.includes("forbidden")');
-  });
 });

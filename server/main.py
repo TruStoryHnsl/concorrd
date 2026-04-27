@@ -18,8 +18,7 @@ logging.basicConfig(
 
 from database import async_session, init_db
 from errors import ConcordError, ErrorResponse
-from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_bridges, admin_discord_voice, admin_extensions, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms, service_node, user_discord_oauth, ext_proxy
-from services.discord_voice_config import write_voice_bridge_rooms
+from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_extensions, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms, service_node, ext_proxy
 
 
 logger = logging.getLogger("concord.main")
@@ -59,19 +58,6 @@ def _bootstrap_tuwunel_config() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _bootstrap_tuwunel_config()
-
-    # Ensure the Discord bridge appservice is registered with conduwuit
-    # before the first user request arrives. In the user-scoped model
-    # (see docs/bridges/user-scoped-bridge-redesign.md) there is no
-    # admin Enable button — bridge infrastructure is invisible and
-    # always-on. Best-effort: bootstrap never blocks startup.
-    try:
-        from services.bridge_bootstrap import bootstrap_bridge_registration
-        summary = await bootstrap_bridge_registration()
-        if summary.get("action") != "noop":
-            logger.info("bridge bootstrap: %s", summary)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("bridge bootstrap raised unexpectedly: %s", exc)
 
     await init_db()
 
@@ -148,41 +134,6 @@ async def lifespan(app: FastAPI):
                         duration_seconds INTEGER
                     )
                 """))
-
-            # Discord voice bridge mappings table
-            if not insp.has_table("discord_voice_bridges"):
-                connection.execute(text("""
-                    CREATE TABLE discord_voice_bridges (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        server_id VARCHAR NOT NULL REFERENCES servers(id),
-                        channel_id INTEGER NOT NULL REFERENCES channels(id),
-                        matrix_room_id VARCHAR NOT NULL UNIQUE,
-                        discord_guild_id VARCHAR NOT NULL,
-                        discord_channel_id VARCHAR NOT NULL,
-                        enabled BOOLEAN DEFAULT 1,
-                        created_by VARCHAR NOT NULL,
-                        created_at DATETIME
-                    )
-                """))
-
-            # Discord voice bridge: W4 video columns
-            voice_bridge_cols = {c["name"] for c in insp.get_columns("discord_voice_bridges")} if insp.has_table("discord_voice_bridges") else set()
-            if "video_enabled" not in voice_bridge_cols:
-                connection.execute(text(
-                    "ALTER TABLE discord_voice_bridges ADD COLUMN video_enabled BOOLEAN DEFAULT 0"
-                ))
-            if "projection_policy" not in voice_bridge_cols:
-                connection.execute(text(
-                    "ALTER TABLE discord_voice_bridges ADD COLUMN projection_policy VARCHAR DEFAULT 'screen_share_first'"
-                ))
-            if "quality_cap" not in voice_bridge_cols:
-                connection.execute(text(
-                    "ALTER TABLE discord_voice_bridges ADD COLUMN quality_cap VARCHAR DEFAULT 'auto'"
-                ))
-            if "audio_only_fallback" not in voice_bridge_cols:
-                connection.execute(text(
-                    "ALTER TABLE discord_voice_bridges ADD COLUMN audio_only_fallback BOOLEAN DEFAULT 1"
-                ))
 
             # Message counts table
             if not insp.has_table("message_counts"):
@@ -369,12 +320,6 @@ async def lifespan(app: FastAPI):
                 """))
 
         await conn.run_sync(_migrate)
-
-    # Rebuild the Discord voice sidecar config from the DB on every API
-    # startup so the runtime file cannot stay stale after a crash,
-    # manual DB edit, or a prior failed admin flow.
-    async with async_session() as db:
-        await write_voice_bridge_rooms(db)
 
     # Initialize bot user for webhook message delivery
     from services.bot import init_bot
@@ -702,9 +647,6 @@ app.include_router(voice.router)
 app.include_router(soundboard.router)
 app.include_router(webhooks.router)
 app.include_router(admin.router)
-app.include_router(admin_bridges.router)
-app.include_router(user_discord_oauth.router)
-app.include_router(admin_discord_voice.router)
 app.include_router(direct_invites.router)
 app.include_router(stats.router)
 app.include_router(totp.router)

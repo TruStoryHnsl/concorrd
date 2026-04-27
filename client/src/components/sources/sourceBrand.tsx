@@ -1,17 +1,14 @@
 import { useId } from "react";
 import { ConcordLogo } from "../brand/ConcordLogo";
 
-export type SourceBrand = "concord" | "matrix" | "mozilla" | "discord" | "reticulum";
+export type SourceBrand = "concord" | "matrix" | "mozilla" | "reticulum";
 
 export function inferSourceBrand(input: {
-  platform?: "concord" | "matrix" | "discord-bot" | "discord-account" | "reticulum";
+  platform?: "concord" | "matrix" | "reticulum";
   host?: string;
   instanceName?: string;
   serverName?: string;
 }): SourceBrand {
-  if (input.platform === "discord-bot" || input.platform === "discord-account") {
-    return "discord";
-  }
   if (input.platform === "reticulum") {
     return "reticulum";
   }
@@ -114,18 +111,5 @@ export function SourceBrandIcon({
     );
   }
 
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      className={className}
-      aria-hidden="true"
-    >
-      <path
-        d="M16.9 8.35c-1-.45-2.05-.75-3.15-.9l-.15.3c1.1.15 2.1.45 3 .9a.25.25 0 0 1 .1.35.25.25 0 0 1-.35.1 9.15 9.15 0 0 0-8.7 0 .25.25 0 1 1-.25-.45c.9-.45 1.9-.75 3-.9l-.15-.3c-1.1.15-2.15.45-3.15.9a.3.3 0 0 0-.15.15c-1.35 2.05-1.75 4.05-1.55 6.05a.28.28 0 0 0 .1.2 12.2 12.2 0 0 0 3.8 1.95.25.25 0 0 0 .3-.1l.75-1.2c-.45-.15-.9-.35-1.3-.55a.25.25 0 0 1 .25-.45c1.75.8 3.75.8 5.5 0a.25.25 0 0 1 .25.45c-.4.2-.85.4-1.3.55l.75 1.2a.25.25 0 0 0 .3.1 12.2 12.2 0 0 0 3.8-1.95.28.28 0 0 0 .1-.2c.2-2-.2-4-1.55-6.05a.3.3 0 0 0-.15-.15ZM9.7 13.35c-.75 0-1.35-.7-1.35-1.55s.6-1.55 1.35-1.55 1.35.7 1.35 1.55-.6 1.55-1.35 1.55Zm4.6 0c-.75 0-1.35-.7-1.35-1.55s.6-1.55 1.35-1.55 1.35.7 1.35 1.55-.6 1.55-1.35 1.55Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
+  return <ConcordLogo size={size} className={className} />;
 }

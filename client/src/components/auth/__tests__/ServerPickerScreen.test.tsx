@@ -416,26 +416,24 @@ describe("<ServerPickerScreen />", () => {
   });
 
   // ------------------------------------------------------------------
-  // Top-level menu (INS-027 follow-up: Matrix + Discord + Skip)
+  // Top-level menu (Join / Matrix / Host / Skip)
   //
-  // The picker shows its top-level "Join / Matrix / Discord / Host"
-  // menu only on platforms that can host (`isTauri && !isMobile`).
-  // On non-host platforms it skips the menu and renders the hostname
-  // input immediately, so these tests have to flip `isTauri: true`
-  // before rendering.
+  // The picker shows its top-level menu only on platforms that can host
+  // (`isTauri && !isMobile`). On non-host platforms it skips the menu
+  // and renders the hostname input immediately, so these tests flip
+  // `isTauri: true` before rendering.
   // ------------------------------------------------------------------
 
-  describe("desktop menu (Matrix / Discord / Skip)", () => {
+  describe("desktop menu (Matrix / Host / Skip)", () => {
     beforeEach(() => {
       mockPlatformFlags({ isTauri: true, isMobile: false });
     });
 
-    it("renders all four picker cards on cold launch", () => {
+    it("renders all picker cards on cold launch", () => {
       render(<ServerPickerScreen onConnected={vi.fn()} />);
       expect(screen.getByTestId("server-picker-menu")).toBeInTheDocument();
       expect(screen.getByTestId("server-picker-choose-join")).toBeInTheDocument();
       expect(screen.getByTestId("server-picker-choose-matrix")).toBeInTheDocument();
-      expect(screen.getByTestId("server-picker-choose-discord")).toBeInTheDocument();
       expect(screen.getByTestId("server-picker-choose-host")).toBeInTheDocument();
     });
 
@@ -473,17 +471,6 @@ describe("<ServerPickerScreen />", () => {
       expect(screen.getByTestId("server-picker-api-base")).toHaveTextContent(
         "https://matrix.org",
       );
-    });
-
-    it("Discord card lands on the bridge-required info screen", async () => {
-      const user = userEvent.setup();
-      render(<ServerPickerScreen onConnected={vi.fn()} />);
-
-      await user.click(screen.getByTestId("server-picker-choose-discord"));
-      expect(screen.getByTestId("server-picker-error")).toBeInTheDocument();
-      expect(
-        screen.getByText(/Discord support runs as a bridge/i),
-      ).toBeInTheDocument();
     });
   });
 });

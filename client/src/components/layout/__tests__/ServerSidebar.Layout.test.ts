@@ -33,11 +33,6 @@ describe("rail layout contracts", () => {
     expect(sourcesPanelSource).toContain("modifiers={[restrictToVerticalAxis]}");
   });
 
-  it("uses the Discord logo badge on Discord guild tiles", () => {
-    expect(serverSidebarSource).toContain('import { SourceBrandIcon } from "../sources/sourceBrand";');
-    expect(serverSidebarSource).toContain('<SourceBrandIcon brand="discord" size={9} className="text-white" />');
-  });
-
   it("keeps the source rail compact after the shell-size rollback", () => {
     expect(sourcesPanelSource).toContain("className={`group w-8 h-8");
     expect(sourcesPanelSource).toContain("className=\"w-8 h-8 rounded-xl");

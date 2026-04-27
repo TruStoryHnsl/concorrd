@@ -89,17 +89,12 @@ interface Props {
  *              picker starts the embedded servitude (bundled
  *              tuwunel Matrix homeserver) as a child process and
  *              connects to `http://localhost:<port>` once it's up.
- *   "discord" — the user wants to talk to Discord. There is no
- *              standalone Discord path: mautrix-discord is a
- *              bridge that needs a Matrix homeserver underneath,
- *              so this origin lands the user on an info screen
- *              that nudges them back into Join / Matrix / Host.
  *   "bridge" — escape hatch: connect to an externally-managed
  *              Docker Compose stack that the user has already
  *              started at `localhost:8080`. Full-fidelity Concord
  *              stack, but the user is responsible for starting it.
  */
-type ServerOrigin = "join" | "matrix" | "host" | "discord" | "bridge";
+type ServerOrigin = "join" | "matrix" | "host" | "bridge";
 
 /**
  * UI state machine for the first-launch flow.
@@ -369,22 +364,6 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
     setState({ phase: "input", origin: "matrix" });
   }, []);
 
-  // "Connect to Discord" is a placeholder that explains the bridge
-  // dependency. mautrix-discord runs on top of a Matrix homeserver, so
-  // there is no standalone Discord path — the user has to land on a
-  // Matrix or Concord source first and then enable the Discord bridge
-  // from Settings → Bridges → Discord. Surface that as an info screen
-  // instead of pretending to do something we can't do here.
-  const handleChooseDiscord = useCallback(() => {
-    setState({
-      phase: "error",
-      message:
-        "Discord support runs as a bridge on top of a Matrix homeserver. Connect to a Concord or Matrix source first, then enable the Discord bridge in Settings → Bridges → Discord.",
-      recoverable: true,
-      origin: "discord",
-    });
-  }, []);
-
   // "Host your own" → start the embedded servitude as a child
   // process and connect to it once it reports Running.
   //
@@ -642,7 +621,6 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
         return "Ready to connect.";
       case "error":
         if (state.origin === "bridge") return "Couldn't find a local stack.";
-        if (state.origin === "discord") return "Discord needs a bridge.";
         return "Couldn't reach that server.";
     }
   })();
@@ -717,27 +695,6 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
                   </div>
                   <div className="text-xs text-on-surface-variant">
                     Attach a vanilla Matrix homeserver as a source. Concord-specific features won't light up, but rooms work.
-                  </div>
-                </div>
-              </div>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleChooseDiscord}
-              data-testid="server-picker-choose-discord"
-              className="w-full p-5 bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 rounded-xl text-left transition-colors"
-            >
-              <div className="flex items-start gap-3">
-                <span className="material-symbols-outlined text-primary text-2xl shrink-0 mt-0.5">
-                  forum
-                </span>
-                <div>
-                  <div className="text-base font-medium text-on-surface mb-0.5">
-                    Connect to Discord
-                  </div>
-                  <div className="text-xs text-on-surface-variant">
-                    Bridge Discord servers into Concord. Requires a Matrix or Concord source first.
                   </div>
                 </div>
               </div>
@@ -1024,9 +981,7 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
               <p className="text-sm text-error font-medium">
                 {state.origin === "bridge"
                   ? "No local stack found"
-                  : state.origin === "discord"
-                    ? "Discord requires a bridge"
-                    : "Discovery failed"}
+                  : "Discovery failed"}
               </p>
               <p className="text-sm text-on-surface-variant mt-1 break-words">
                 {state.message}

@@ -40,7 +40,6 @@ import { Avatar } from "../ui/Avatar";
 import { ChannelSidebar, UserBar } from "./ChannelSidebar";
 import { DMSidebar } from "../dm/DMSidebar";
 import { ExploreModal } from "../server/ExploreModal";
-import { DiscordSourceBrowser } from "../sources/DiscordSourceBrowser";
 import { MessageList } from "../chat/MessageList";
 import { MessageInput } from "../chat/MessageInput";
 import { TypingIndicator } from "../chat/TypingIndicator";
@@ -51,10 +50,6 @@ import { SettingsPanel } from "../settings/SettingsModal";
 import { BugReportModal } from "../BugReportModal";
 import { StatsModal } from "../StatsModal";
 import { SourceBrandIcon, inferSourceBrand } from "../sources/sourceBrand";
-import {
-  discordBridgeHttpListGuilds,
-  discordVoiceBridgeHttpListRooms,
-} from "../../api/bridges";
 import {
   getMyStats,
   getRoomDiagnostics,
@@ -173,7 +168,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const activeChannelId = useServerStore((s) => s.activeChannelId);
   const servers = useServerStore((s) => s.servers);
   const activeServerId = useServerStore((s) => s.activeServerId);
-  const ensureDiscordGuild = useServerStore((s) => s.ensureDiscordGuild);
   const updateServer = useServerStore((s) => s.updateServer);
   const deleteChannelStore = useServerStore((s) => s.deleteChannel);
   const setActiveChannelId = (roomId: string) =>
@@ -356,10 +350,9 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     }
   }, []);
 
-  // INS-024 user-scoped bridge redesign: settings panel's Connections
-  // tab can request the Add-Source modal (e.g. "Connect another
-  // Concord instance"). Consume and open the modal whenever a pending
-  // request shows up.
+  // Settings panel's Connections tab can request the Add-Source modal
+  // (e.g. "Connect another Concord instance"). Consume and open the
+  // modal whenever a pending request shows up.
   const pendingAddSourceScreen = useSettingsStore((s) => s.pendingAddSourceScreen);
   const consumeAddSourceRequest = useSettingsStore((s) => s.consumeAddSourceRequest);
   useEffect(() => {
@@ -676,17 +669,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   }, [serversLoaded, markAppReady]);
 
 
-  const discordVoiceProjectionHandled = useRef<string | null>(null);
   const startupRestoreHandled = useRef<string | null>(null);
   const origSetActiveChannel = useServerStore((s) => s.setActiveChannel);
   const setActiveServer = useServerStore((s) => s.setActiveServer);
   const setActiveDM = useDMStore((s) => s.setActiveDM);
   const addToast = useToastStore((s) => s.addToast);
   const setDMActive = useDMStore((s) => s.setDMActive);
-  const hasDiscordBridgeServers = useMemo(
-    () => servers.some((server) => server.bridgeType === "discord"),
-    [servers],
-  );
 
   const loadCatalog = useExtensionStore((s) => s.loadCatalog);
 
@@ -738,80 +726,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       cancelled = true;
     };
   }, [accessToken, activeRoomId, messages.length, userId]);
-
-  useEffect(() => {
-    if (!accessToken || !serversLoaded || !userId || !hasDiscordBridgeServers) return;
-    if (discordVoiceProjectionHandled.current === userId) return;
-    discordVoiceProjectionHandled.current = userId;
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const [rooms, guilds] = await Promise.all([
-          discordVoiceBridgeHttpListRooms(accessToken),
-          discordBridgeHttpListGuilds(accessToken).catch(() => []),
-        ]);
-        if (cancelled) return;
-
-        const latestServers = useServerStore.getState().servers;
-        for (const guild of guilds) {
-          const iconUrl = guild.icon
-            ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png?size=128`
-            : null;
-          const server = latestServers.find(
-            (entry) => entry.bridgeType === "discord" && entry.discordGuildId === guild.id,
-          );
-          if (!server) continue;
-          if (iconUrl && server.icon_url !== iconUrl) {
-            updateServer(server.id, { icon_url: iconUrl });
-          }
-          if (server.name.startsWith("Guild ") && guild.name) {
-            updateServer(server.id, { name: guild.name });
-          }
-        }
-        for (const room of rooms) {
-          if (!room.enabled) continue;
-          const localChannel = latestServers
-            .flatMap((server) => server.channels)
-            .find(
-              (channel) =>
-                channel.id === room.channel_id ||
-                channel.matrix_room_id === room.matrix_room_id,
-            );
-          if (!localChannel) continue;
-          ensureDiscordGuild({
-            guildId: room.discord_guild_id,
-            guildName:
-              guilds.find((guild) => guild.id === room.discord_guild_id)?.name ??
-              `Guild ${room.discord_guild_id}`,
-            iconUrl: (() => {
-              const guild = guilds.find((entry) => entry.id === room.discord_guild_id);
-              return guild?.icon
-                ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png?size=128`
-                : null;
-            })(),
-            channel: {
-              id: localChannel.id,
-              roomId: room.matrix_room_id,
-              name: localChannel.name,
-              channelType: "voice",
-            },
-            preferBridgeServer: true,
-            activate: false,
-          });
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message.toLowerCase() : "";
-        if (!message.includes("forbidden") && !message.includes("403")) {
-          discordVoiceProjectionHandled.current = null;
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [accessToken, ensureDiscordGuild, hasDiscordBridgeServers, serversLoaded, updateServer, userId]);
 
   useEffect(() => {
     if (!serversLoaded || !userId) return;
@@ -1765,9 +1679,9 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       );
     }
 
-    // Bridged room (e.g. Discord portal) — active channel ID is set but
-    // the room isn't part of any loaded server/space yet. Render full chat
-    // so the user can see and send messages immediately after linking.
+    // Loose joined Matrix room — active channel ID is set but the room
+    // isn't part of any loaded server/space yet. Render full chat so the
+    // user can see and send messages immediately after linking.
     if (activeChannelId && !activeChannel) {
       const room = client?.getRoom(activeChannelId);
       const roomName = room?.name ?? activeChannelId;
@@ -1775,9 +1689,9 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       return (
         <div className="flex-1 flex flex-col min-h-0">
           {!roomReady && (
-            <div className="px-4 py-3 bg-[#5865F2]/10 border-b border-[#5865F2]/20 flex items-center gap-2 flex-shrink-0">
-              <span className="inline-block w-3 h-3 border-2 border-[#5865F2] border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm text-on-surface-variant">Loading bridged room…</span>
+            <div className="px-4 py-3 bg-primary/10 border-b border-primary/20 flex items-center gap-2 flex-shrink-0">
+              <span className="inline-block w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm text-on-surface-variant">Loading room…</span>
             </div>
           )}
           <MessageList
@@ -2079,15 +1993,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       {/* Source browser — opened by clicking a source tile */}
       {sourceBrowserSourceId && (() => {
         const source = sources.find((s) => s.id === sourceBrowserSourceId);
-        const platform = source?.platform ?? "concord";
-        if (platform === "discord-bot" || platform === "discord-account") {
-          return (
-            <DiscordSourceBrowser
-              onClose={() => setSourceBrowserSourceId(null)}
-            />
-          );
-        }
-        // Generic source browser for Concord/Matrix sources
         return (
           <SourceServerBrowser
             source={source}
@@ -2099,7 +2004,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   );
 }
 
-/* ── Source Server Browser (generic, non-Discord) ── */
+/* ── Source Server Browser ── */
 function SourceServerBrowser({
   source,
   onClose,
@@ -2136,7 +2041,6 @@ function SourceServerBrowser({
   const sourceServers = useMemo(
     () =>
       servers.filter((server) => {
-        if (server.bridgeType) return false;
         if (server.federated) return false;
         const roomId = server.channels?.[0]?.matrix_room_id ?? "";
         const roomHost = roomId.split(":")[1]?.toLowerCase() ?? "";
@@ -2296,13 +2200,7 @@ function SourceServerBrowser({
             <SourceBrandIcon
               brand={sourceBrand}
               size={20}
-              className={
-                sourceBrand === "discord"
-                  ? "text-[#5865F2]"
-                  : sourceBrand === "matrix"
-                    ? "text-on-surface"
-                    : undefined
-              }
+              className={sourceBrand === "matrix" ? "text-on-surface" : undefined}
             />
           </div>
           <h2 className="flex-1 text-lg font-headline font-semibold text-on-surface">{label}</h2>
@@ -2867,9 +2765,6 @@ function AddSourceModal({
     | "concord"
     | "matrix"
     | "matrix-auth"
-    | "discord"
-    | "discord-bot"
-    | "discord-account"
     | "reticulum"
     | "validating"
     | "error";
@@ -3064,43 +2959,6 @@ function AddSourceModal({
     }
   };
 
-  const handleCheckDiscordBridge = async () => {
-    setScreen("validating");
-    try {
-      if (!accessToken) throw new Error("Not logged in");
-      const { discordBridgeHttpStatus } = await import("../../api/bridges");
-      const status = await discordBridgeHttpStatus(accessToken);
-      if (!status.enabled) {
-        setError(
-          "The Discord bridge is not enabled. Go to Settings → Bridges to enable it first.",
-        );
-        setScreen("error");
-        return;
-      }
-      // Bridge is running — add/update the discord-bot source
-      const { useSourcesStore: sStore } = await import("../../stores/sources");
-      const existing = sStore
-        .getState()
-        .sources.find((s) => s.platform === "discord-bot");
-      if (!existing) {
-        sStore.getState().addSource({
-          host: "discord-bridge",
-          instanceName: "Discord (Bot Bridge)",
-          inviteToken: "",
-          apiBase: "",
-          homeserverUrl: "",
-          status: "connected",
-          enabled: true,
-          platform: "discord-bot",
-        });
-      }
-      onSourceAdded();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to check bridge status");
-      setScreen("error");
-    }
-  };
-
   const back = () => setScreen("pick");
 
   // Shared close button header
@@ -3185,33 +3043,6 @@ function AddSourceModal({
                 <div>
                   <p className="text-sm font-medium text-on-surface">Custom Matrix Homeserver</p>
                   <p className="text-xs text-on-surface-variant">Enter any Matrix domain manually</p>
-                </div>
-                <span className="material-symbols-outlined text-on-surface-variant/40 ml-auto group-hover:text-on-surface-variant">chevron_right</span>
-              </button>
-
-              {/* Discord entry — routes to Settings → Connections, which
-                 is where the user-scoped bridge redesign put the actual
-                 Connect/Disconnect controls. Keeping a Discord tile here
-                 anyway because operators asked for parity with the other
-                 sources in the Add Source modal — having to know that
-                 Discord lives under a different surface was non-obvious
-                 and a known UX complaint. See
-                 docs/bridges/user-scoped-bridge-redesign.md for why the
-                 actual login flow can't live in this modal. */}
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  openSettings("connections");
-                }}
-                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-[#5865F2]/40 hover:bg-surface-container-high transition-all text-left group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
-                  <SourceBrandIcon brand="discord" size={24} />
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-on-surface">Discord</p>
-                  <p className="text-xs text-on-surface-variant">Connect your Discord account — manages in Connections</p>
                 </div>
                 <span className="material-symbols-outlined text-on-surface-variant/40 ml-auto group-hover:text-on-surface-variant">chevron_right</span>
               </button>
@@ -3369,67 +3200,6 @@ function AddSourceModal({
                 </p>
               )}
             </div>
-          </>
-        )}
-
-        {/* ── Screen: discord (sub-picker) ── */}
-        {screen === "discord" && (
-          <>
-            <Header title="Connect Discord" onBack={back} />
-            <div className="space-y-3">
-              {/* Bot bridge */}
-              <button
-                onClick={handleCheckDiscordBridge}
-                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-[#5865F2]/40 hover:bg-surface-container-high transition-all text-left group"
-              >
-                <div className="w-10 h-10 rounded-xl bg-[#5865F2]/15 flex items-center justify-center flex-shrink-0">
-                  <span className="material-symbols-outlined text-[#5865F2] text-xl">videogame_asset</span>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-on-surface">Bot Bridge</p>
-                  <p className="text-xs text-on-surface-variant">Bridge Discord servers via the server-side bot</p>
-                </div>
-                <span className="material-symbols-outlined text-on-surface-variant/40 ml-auto group-hover:text-on-surface-variant">chevron_right</span>
-              </button>
-
-              {/* Account login */}
-              <button
-                onClick={() => setScreen("discord-account")}
-                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-[#5865F2]/40 hover:bg-surface-container-high transition-all text-left group"
-              >
-                <div className="w-10 h-10 rounded-xl bg-[#5865F2]/15 flex items-center justify-center flex-shrink-0">
-                  <span className="material-symbols-outlined text-[#5865F2] text-xl">person_play</span>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-on-surface">Account Login</p>
-                  <p className="text-xs text-on-surface-variant">Connect your personal Discord account via QR</p>
-                </div>
-                <span className="material-symbols-outlined text-on-surface-variant/40 ml-auto group-hover:text-on-surface-variant">chevron_right</span>
-              </button>
-            </div>
-          </>
-        )}
-
-        {/* ── Screen: discord-account ── */}
-        {screen === "discord-account" && (
-          <>
-            <Header title="Discord Account Login" onBack={() => setScreen("discord")} />
-            <div className="space-y-3 text-xs text-on-surface-variant">
-              <p>Connect your personal Discord account through the bridge bot. Messages will appear under your name, not the bot's.</p>
-              <ol className="list-decimal list-inside space-y-2">
-                <li>Open any Concord room and send a DM to <code className="bg-surface-container-highest px-1 py-0.5 rounded text-on-surface">@discordbot</code> with the message <strong>login</strong></li>
-                <li>The bot will reply with a QR code</li>
-                <li>In Discord on your phone: Settings → Advanced → Scan Login QR Code</li>
-                <li>Scan the code — you're connected</li>
-              </ol>
-              <p className="text-on-surface-variant/60 italic">Your Discord token flows directly to the bridge. Concord never stores it.</p>
-            </div>
-            <button
-              onClick={onClose}
-              className="w-full mt-6 py-2.5 bg-surface-container-high text-on-surface rounded-lg text-sm font-medium hover:bg-surface-container-highest transition-colors"
-            >
-              Got it
-            </button>
           </>
         )}
 

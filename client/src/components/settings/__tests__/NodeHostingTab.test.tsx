@@ -146,7 +146,7 @@ describe("<NodeHostingTab />", () => {
     mockedStatus.mockResolvedValue({
       state: "running",
       degraded_transports: {
-        discord_bridge: "binary not found: mautrix-discord",
+        reticulum: "rnsd not found on PATH",
       },
     });
 
@@ -158,8 +158,8 @@ describe("<NodeHostingTab />", () => {
       ).toBeInTheDocument();
     });
 
-    expect(screen.getByText(/discord_bridge/)).toBeInTheDocument();
-    expect(screen.getByText(/binary not found/)).toBeInTheDocument();
+    expect(screen.getByText(/reticulum/)).toBeInTheDocument();
+    expect(screen.getByText(/rnsd not found/)).toBeInTheDocument();
 
     // Status should still show Running because degraded transports
     // don't prevent the servitude from operating.

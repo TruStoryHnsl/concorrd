@@ -27,13 +27,10 @@ const EMPTY_MEMBERS: never[] = [];
 
 // Pure helper — compute server settings tabs for a given server/member context
 function buildServerTabs(
-  server: { id: string; owner_id: string; bridgeType?: string; federated?: boolean; visibility?: string },
+  server: { id: string; owner_id: string; federated?: boolean; visibility?: string },
   members: { user_id: string; role: string }[],
   userId: string | null,
 ): TabDef[] {
-  if (server.bridgeType === "discord") {
-    return [{ key: "server-bridge", label: "Discord", icon: "hub", group: "server" }];
-  }
   if (server.federated) {
     return [{ key: "server-federation", label: "Federation", icon: "language", group: "server" }];
   }
@@ -130,11 +127,6 @@ export function SettingsPanel() {
       // INS-022: Node tab is visible on mobile Tauri too — the embedded
       // servitude module runs on mobile (foreground-active; backgrounded
       // pauses are handled by the app-level lifecycle hook).
-      //
-      // The admin-gated "Bridges" tab was removed in the user-scoped
-      // bridge redesign (PR4). Per-user Discord lives under the
-      // "Connections" tab (above); bridge infrastructure bootstraps
-      // itself on concord-api startup — nothing left to admin.
       tabs.push({ key: "node", label: "Node", icon: "dns", group: "user" });
     }
     tabs.push({ key: "hosting", label: "Hosting", icon: "dns", group: "user" });

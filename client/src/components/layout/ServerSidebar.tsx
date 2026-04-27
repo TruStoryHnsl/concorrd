@@ -28,7 +28,6 @@ import {
 } from "../../hooks/useUnreadCounts";
 import { useVoiceParticipants } from "../../hooks/useVoiceParticipants";
 import { NewServerModal } from "../server/NewServerModal";
-import { splitDiscordVoiceBridgeParticipants } from "../voice/discordVoiceBridge";
 import { Avatar } from "../ui/Avatar";
 import { SourceBrandIcon } from "../sources/sourceBrand";
 
@@ -197,29 +196,11 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   }, [allSources]);
 
   const localServers = useMemo(
-    () => {
-      return servers.filter((s) => {
-        if (s.federated) return false;
-        if (s.bridgeType === "discord") {
-          return enabledPlatforms.has("discord-bot") || enabledPlatforms.has("discord-account");
-        }
-        // Native Concord servers
-        return enabledPlatforms.has("concord");
-      });
-    },
+    () => servers.filter((s) => !s.federated && enabledPlatforms.has("concord")),
     [servers, enabledPlatforms],
   );
   const federatedServers = useMemo(
-    () => {
-      return servers.filter((s) => {
-        if (!s.federated) return false;
-        if (s.bridgeType === "discord") {
-          return enabledPlatforms.has("discord-bot") || enabledPlatforms.has("discord-account");
-        }
-        // Matrix federated servers
-        return enabledPlatforms.has("matrix");
-      });
-    },
+    () => servers.filter((s) => s.federated && enabledPlatforms.has("matrix")),
     [servers, enabledPlatforms],
   );
 
@@ -261,10 +242,8 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
   // search filter — federated homeservers are their own Sources,
   // added by the user through the Sources `+` tile, and do not
   // surface as sidebar tiles on their own. The only non-Concord
-  // tiles remaining are local-domain bridge spaces (e.g. Discord
-  // guilds), which `hydrateFederatedRooms` still produces because
-  // they live on the same homeserver as the active source and
-  // belong to it by construction.
+  // tiles remaining are federated rooms surfaced by
+  // `hydrateFederatedRooms`.
   //
   // The stack order (oldest adjacent to Explore, newest at the top
   // of the federated section) is preserved for the live entries
@@ -302,7 +281,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
         .filter((channel) => channel.channel_type === "voice")
         .some((channel) => {
           const participants = voiceParticipants.get(channel.matrix_room_id) ?? [];
-          return splitDiscordVoiceBridgeParticipants(participants).visibleParticipants.length > 0;
+          return participants.length > 0;
         });
       map.set(server.id, active);
     }
@@ -490,7 +469,6 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
       server.channels.some((channel) => (unreadCounts.get(channel.matrix_room_id) ?? 0) > 0);
     const hasHighlight = hasHighlightByServer.get(server.id) ?? false;
     const isFromConcordFederation = concordFederatedIds.has(server.id);
-    const isDiscordBridge = server.bridgeType === "discord";
     const isDisconnected = !syncing;
     const voiceActive = voiceActiveByServer.get(server.id) ?? false;
     const statusDot = isDisconnected
@@ -508,21 +486,17 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
           title={
             isDisconnected
               ? `${server.name} (disconnected)`
-              : isDiscordBridge
-                ? `${server.name} — Discord bridge`
-                : isFromConcordFederation
-                  ? `${server.name} — another Concord instance`
-                  : server.name
+              : isFromConcordFederation
+                ? `${server.name} — another Concord instance`
+                : server.name
           }
           className={`btn-press w-full flex items-center gap-3 px-3 py-1.5 rounded-xl transition-all ${
             isDisconnected ? "opacity-50 grayscale" : ""
           } ${
             isActive
-              ? isDiscordBridge
-                ? "bg-[#5865F2]/10 text-[#5865F2]"
-                : isFromConcordFederation
-                  ? "bg-secondary/10 text-secondary"
-                  : "bg-primary/10 text-primary"
+              ? isFromConcordFederation
+                ? "bg-secondary/10 text-secondary"
+                : "bg-primary/10 text-primary"
               : "text-on-surface hover:bg-surface-container-high"
           }`}
         >
@@ -533,15 +507,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
               fromConcordFederation={isFromConcordFederation}
               size="mobile"
             />
-            {isDiscordBridge && (
-              <div
-                className="absolute -top-1 -left-1 w-4 h-4 bg-[#5865F2] rounded-full border-2 border-surface-container-low flex items-center justify-center"
-                aria-label="Discord bridge"
-              >
-                <SourceBrandIcon brand="discord" size={9} className="text-white" />
-              </div>
-            )}
-            {isFromConcordFederation && !isDiscordBridge && (
+            {isFromConcordFederation && (
               <div
                 className="absolute -top-1 -left-1 w-4 h-4 bg-secondary rounded-full border-2 border-surface-container-low flex items-center justify-center"
                 aria-label="Another Concord instance (federated)"
@@ -566,12 +532,7 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
             )}
           </div>
           <span className="truncate font-body font-medium">{server.name}</span>
-          {isDiscordBridge && (
-            <span className="text-[10px] uppercase tracking-wider text-[#5865F2]/80 font-label ml-1">
-              discord
-            </span>
-          )}
-          {isFromConcordFederation && !isDiscordBridge && (
+          {isFromConcordFederation && (
             <span className="text-[10px] uppercase tracking-wider text-secondary/80 font-label ml-1">
               concord federated
             </span>
@@ -622,7 +583,6 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
     );
     const hasHighlight = hasHighlightByServer.get(server.id) ?? false;
     const isFromConcordFederation = concordFederatedIds.has(server.id);
-    const isDiscordBridge = server.bridgeType === "discord";
     const isDisconnected = !syncing;
     const voiceActive = voiceActiveByServer.get(server.id) ?? false;
     const statusDot = isDisconnected
@@ -645,21 +605,15 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
             title={
               isDisconnected
                 ? `${server.name} — disconnected`
-                : isDiscordBridge
-                  ? `${server.name} — Discord`
-                  : server.name
+                : server.name
             }
             aria-label={server.name}
             className={`btn-press w-12 h-12 flex items-center justify-center text-sm font-headline font-bold transition-all ${
               isActive
-                ? isDiscordBridge
-                  ? "bg-[#5865F2] text-white rounded-xl shadow-[0_0_12px_rgba(88,101,242,0.4)]"
-                  : isFromConcordFederation
-                    ? "bg-secondary text-on-secondary rounded-xl shadow-[0_0_12px_rgba(120,220,180,0.35)]"
-                    : "primary-glow text-on-primary rounded-xl"
-                : isDiscordBridge
-                  ? "bg-[#5865F2]/20 text-[#5865F2] rounded-2xl hover:rounded-xl hover:bg-[#5865F2]/35 ring-1 ring-[#5865F2]/40"
-                  : isFromConcordFederation
+                ? isFromConcordFederation
+                  ? "bg-secondary text-on-secondary rounded-xl shadow-[0_0_12px_rgba(120,220,180,0.35)]"
+                  : "primary-glow text-on-primary rounded-xl"
+                : isFromConcordFederation
                   ? "bg-secondary/15 text-secondary rounded-2xl hover:rounded-xl hover:bg-secondary/25 ring-1 ring-secondary/40"
                   : "bg-surface-container-high text-on-surface-variant rounded-2xl hover:rounded-xl hover:bg-surface-container-highest hover:text-on-surface"
             }`}
@@ -671,18 +625,12 @@ export const ServerSidebar = memo(function ServerSidebar({ mobile, onServerSelec
               size="desktop"
             />
           </button>
-          {(isDiscordBridge || isFromConcordFederation) && (
+          {isFromConcordFederation && (
             <div
-              className={`absolute -top-0.5 -left-0.5 w-4 h-4 rounded-full border-2 border-surface flex items-center justify-center ${
-                isDiscordBridge ? "bg-[#5865F2]" : "bg-secondary"
-              }`}
+              className="absolute -top-0.5 -left-0.5 w-4 h-4 rounded-full border-2 border-surface flex items-center justify-center bg-secondary"
               aria-hidden="true"
             >
-              {isDiscordBridge ? (
-                <SourceBrandIcon brand="discord" size={9} className="text-white" />
-              ) : (
-                <span className="font-headline font-bold text-on-secondary" style={{ fontSize: "8px", lineHeight: 1 }}>C</span>
-              )}
+              <span className="font-headline font-bold text-on-secondary" style={{ fontSize: "8px", lineHeight: 1 }}>C</span>
             </div>
           )}
           {statusDot === "red" && (
@@ -939,25 +887,19 @@ function ServerGlyph({
     name: string;
     abbreviation: string | null;
     icon_url: string | null;
-    bridgeType?: "discord";
   };
   active: boolean;
   fromConcordFederation: boolean;
   size: "mobile" | "desktop";
 }) {
-  const isDiscordBridge = server.bridgeType === "discord";
   const dimension = size === "mobile" ? "w-10 h-10" : "w-12 h-12";
   const fallbackClass = active
-    ? isDiscordBridge
-      ? "bg-[#5865F2] text-white"
-      : fromConcordFederation
-        ? "bg-secondary text-on-secondary"
-        : "primary-glow text-on-primary"
-    : isDiscordBridge
-      ? "bg-[#5865F2]/12 text-[#5865F2] ring-1 ring-[#5865F2]/30"
-      : fromConcordFederation
-        ? "bg-secondary/15 text-secondary ring-1 ring-secondary/40"
-        : "bg-surface-container-highest text-on-surface-variant";
+    ? fromConcordFederation
+      ? "bg-secondary text-on-secondary"
+      : "primary-glow text-on-primary"
+    : fromConcordFederation
+      ? "bg-secondary/15 text-secondary ring-1 ring-secondary/40"
+      : "bg-surface-container-highest text-on-surface-variant";
 
   if (server.icon_url) {
     return (

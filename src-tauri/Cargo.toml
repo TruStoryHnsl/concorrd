@@ -49,7 +49,7 @@ rand = "0.8"
 hex = "0.4"
 # Token redaction in log output (commercial-scope security requirement).
 regex = "1"
-# HTTP client for runtime binary download (mautrix-discord auto-fetch).
+# HTTP client for runtime binary downloads.
 reqwest = { version = "0.12", features = ["rustls-tls", "stream", "json"], default-features = false }
 # Async file IO for streaming downloads to disk.
 futures-util = "0.3"
@@ -112,13 +112,6 @@ nix = { version = "0.29", features = ["signal", "process"] }
 #   objc2-foundation = "0.2"
 #   objc2-multipeer-connectivity = "0.2"
 # keeping them commented out here until a concrete caller exists.
-
-[features]
-# Reticulum overlay transport (INS-037). OFF by default.
-# When enabled, adds ReticulumTransport to TransportRuntime and exposes
-# TransportVariant::Reticulum in the config. Requires `rnsd` binary at
-# runtime (bundled or on PATH). Has no effect on other transports or tests.
-reticulum = []
 
 [dev-dependencies]
 # Servitude tests use only std + serde + toml; no extra deps required.

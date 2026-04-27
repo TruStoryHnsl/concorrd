@@ -42,7 +42,7 @@ describe("useVoiceStore session persistence", () => {
       token: "lk-token",
       livekitUrl: "wss://livekit.example.concordchat.net/livekit/",
       iceServers: [],
-      serverId: "federated:discord_689673845279293457",
+      serverId: "server-test-1",
       serverName: "Concord Testers",
       channelId: "!0HioYNQoSymZ0kG1pO:example.concordchat.net",
       channelName: "voice-ops",
@@ -53,7 +53,7 @@ describe("useVoiceStore session persistence", () => {
     });
 
     expect(getPendingVoiceSession()).toEqual({
-      serverId: "federated:discord_689673845279293457",
+      serverId: "server-test-1",
       serverName: "Concord Testers",
       channelId: "!0HioYNQoSymZ0kG1pO:example.concordchat.net",
       channelName: "voice-ops",

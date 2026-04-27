@@ -231,66 +231,6 @@ describe("useServerStore.leaveOrphanRooms", () => {
   });
 });
 
-describe("useServerStore.ensureDiscordGuild", () => {
-  beforeEach(() => {
-    useServerStore.setState({
-      servers: [],
-      activeServerId: null,
-      activeChannelId: null,
-      members: {},
-    });
-  });
-
-  it("repairs stale bridged channel metadata in place", () => {
-    useServerStore.setState({
-      servers: [
-        {
-          id: "federated:discord_123",
-          name: "Guild 123",
-          icon_url: null,
-          owner_id: "@owner:example.org",
-          visibility: "public",
-          abbreviation: null,
-          media_uploads_enabled: false,
-          bridgeType: "discord",
-          discordGuildId: "123",
-          channels: [
-            {
-              id: 1,
-              name: "voice-ops",
-              channel_type: "text",
-              matrix_room_id: "!voice:example.org",
-              position: 0,
-            },
-          ],
-        },
-      ],
-      activeServerId: null,
-      activeChannelId: null,
-      members: {},
-    });
-
-    const serverId = useServerStore.getState().ensureDiscordGuild({
-      guildId: "123",
-      guildName: "CTP Playtime",
-      channel: {
-        roomId: "!voice:example.org",
-        name: "General",
-        channelType: "voice",
-      },
-      activate: false,
-    });
-
-    const server = useServerStore.getState().servers.find((entry) => entry.id === serverId);
-    expect(server?.name).toBe("CTP Playtime");
-    expect(server?.channels[0]).toMatchObject({
-      name: "General",
-      channel_type: "voice",
-      matrix_room_id: "!voice:example.org",
-    });
-  });
-});
-
 describe("useServerStore.loadServers", () => {
   beforeEach(() => {
     vi.mocked(listServers).mockReset();

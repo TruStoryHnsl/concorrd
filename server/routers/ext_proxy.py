@@ -3,9 +3,9 @@ OAuth client_secret (OpenSky, Sentinel Hub) or just benefit from
 keeping the API key off the browser (NYC DOT cameras).
 
 Why this exists: extensions ship as static iframes mounted at
-``/ext/<id>/`` — they can't carry secrets. Anything past Discord-style
-delegation (where the user grants the third-party access on their own
-behalf) needs a server middleman if the upstream provider expects an
+``/ext/<id>/`` — they can't carry secrets. Anything past user-level
+OAuth delegation (where the user grants the third-party access on their
+own behalf) needs a server middleman if the upstream provider expects an
 operator-issued client_secret. Worldview-map has three such layers:
 flights (OpenSky), satellite imagery (Sentinel Hub), and NYC DOT.
 

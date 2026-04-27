@@ -42,11 +42,6 @@ function pickPreferredChannel(server: Server | null | undefined): Channel | null
   );
 }
 
-function discordGuildIdFromAlias(alias: string | null | undefined): string | null {
-  const match = alias?.match(/^#_discord_(\d+)_\d+:/);
-  return match?.[1] ?? null;
-}
-
 /**
  * Minimal shape of a matrix-js-sdk MatrixClient that
  * `hydrateFederatedRooms` depends on. We don't import the full
@@ -186,19 +181,6 @@ interface ServerState {
   setActiveChannel: (matrixRoomId: string) => void;
   loadMembers: (serverId: string, accessToken: string) => Promise<void>;
   updateServer: (serverId: string, updates: Partial<Server>) => void;
-  /**
-   * Ensure a synthetic Discord guild server exists in the store and
-   * navigate to it + the given channel. If the guild server already
-   * exists, the channel is added if missing. Returns the server ID.
-   */
-  ensureDiscordGuild: (guild: {
-    guildId: string;
-    guildName: string;
-    iconUrl?: string | null;
-    channel: { roomId: string; name: string; channelType?: string; id?: number };
-    preferBridgeServer?: boolean;
-    activate?: boolean;
-  }) => string;
 
   activeServer: () => Server | undefined;
   activeChannel: () => Channel | undefined;
@@ -224,17 +206,6 @@ export const useServerStore = create<ServerState>((set, get) => ({
     const concordServers = servers.filter(
       (s) => !s.id.startsWith(FEDERATED_SERVER_ID_PREFIX),
     );
-    const existingDiscordGuilds = new Map<
-      string,
-      { name: string; iconUrl: string | null }
-    >();
-    for (const server of servers) {
-      if (!server.discordGuildId) continue;
-      existingDiscordGuilds.set(server.discordGuildId, {
-        name: server.name,
-        iconUrl: server.icon_url,
-      });
-    }
 
     // Build the set of matrix_room_ids already owned by a Concord server
     // so we don't double-render them as loose rooms.
@@ -281,17 +252,9 @@ export const useServerStore = create<ServerState>((set, get) => ({
       if (managed.has(room.roomId)) continue;
       if (room.getDMInviter?.()) continue;
       if (localDomain && room.roomId.endsWith(`:${localDomain}`)) {
-        // Local-domain rooms are normally filtered out (they're either
-        // Concord-managed or orphans from deleted servers). BUT bridge-
-        // created rooms (Discord guilds via mautrix-discord) also live
-        // on the local domain — they're Matrix rooms created by the
-        // bridge process on the embedded homeserver. Detect them by
-        // checking for space membership: bridge guilds are spaces, and
-        // bridge channels declare a space parent.
-        const isSpace = room.getType?.() === "m.space";
-        const hasSpaceParent =
-          (room.currentState?.getStateEvents("m.space.parent") ?? []).length > 0;
-        if (!isSpace && !hasSpaceParent) continue;
+        // Local-domain rooms are filtered out — they're either
+        // Concord-managed or orphans from deleted servers.
+        continue;
       }
       joinedFederated.push(room);
     }
@@ -456,107 +419,14 @@ export const useServerStore = create<ServerState>((set, get) => ({
     const synthetic: Server[] = [];
     const placedRoomIds = new Set<string>();
 
-    // --- Pass 3a: LOCAL-DOMAIN space-based grouping only -------------
-    //
-    // Only synthesise tiles for spaces whose parent roomId lives on
-    // the LOCAL homeserver (`:${localDomain}`). The only code path
-    // that currently creates local-domain spaces is the Discord
-    // bridge — mautrix-discord builds one `m.space` per guild on the
-    // embedded homeserver, with each guild channel as a child room.
-    // Those spaces are tied to the active source's own bridge
-    // infrastructure, so they belong to the source and are allowed
-    // to render as tiles.
-    //
-    // Any space whose parent is on a DIFFERENT homeserver (another
-    // Matrix instance, another Concord instance, etc.) is skipped — it
-    // would be a federated space, and federated entities do not
-    // surface as server tiles under the 2026-04-11 architecture
-    // rule.
-    for (const [parentId, childIds] of parentIdToChildren) {
-      // Hard gate: local homeserver only.
-      if (!localDomain || !parentId.endsWith(`:${localDomain}`)) continue;
-
-      // Skip bridge organizational spaces ("Discord", "Direct Messages")
-      // that are top-level containers, not actual guild channels.
-      const spaceName = parentIdToName.get(parentId) ?? "";
-      if (spaceName === "Discord" || spaceName === "Direct Messages") continue;
-
-      // Dedupe child ids while preserving insertion order —
-      // m.space.child + m.space.parent walks can both point at the
-      // same room, and we only want to render it once per space.
-      const seen = new Set<string>();
-      const orderedChildIds = childIds.filter((id) => {
-        if (seen.has(id)) return false;
-        seen.add(id);
-        return true;
-      });
-
-      const channels: Channel[] = [];
-      let discordGuildId: string | null = null;
-      let position = 0;
-      for (const childId of orderedChildIds) {
-        const childRoom = roomById.get(childId);
-        if (!childRoom) continue; // user isn't joined to this child
-        // Children must also live on the local domain to be counted
-        // as channels of this bridge tile. Bridge guild channels
-        // always share the homeserver with their parent space, so
-        // this filter is a no-op for valid bridge data but prevents
-        // a cross-homeserver m.space.child pointer from sneaking
-        // federated state back into the rail.
-        if (!childId.endsWith(`:${localDomain}`)) continue;
-        const channelName = childRoom.name || childId;
-        discordGuildId ??= discordGuildIdFromAlias(childRoom.getCanonicalAlias?.());
-        channels.push({
-          // id=0 + unique position is a sentinel for synthetic channels.
-          // No UI code keys off `Channel.id` for federated entries;
-          // identity lives in `matrix_room_id`.
-          id: 0,
-          name: channelName,
-          channel_type: "text",
-          matrix_room_id: childId,
-          position,
-        });
-        placedRoomIds.add(childId);
-        position++;
-      }
-      // Skip empty parents — container with no joined children.
-      if (channels.length === 0) continue;
-
-      // Name resolution: prefer the joined-space's own name, fall
-      // back to stripping the local suffix off the parent id. We
-      // never fall back to the raw hostname here because that'd
-      // leak the local homeserver's hostname as a visible label —
-      // and the hostname for a Tauri native build could be something
-      // like `localhost:8765` which makes no sense as a user-facing
-      // tile name.
-      const joinedSpaceName = parentIdToName.get(parentId);
-      const name = joinedSpaceName ?? "Bridge";
-
-      // Detect Discord bridge: local-domain spaces are bridge-created
-      // (Concord itself doesn't use Matrix spaces — it uses the API).
-      // Currently Discord is the only bridge, so local-domain space =
-      // Discord guild. Refine this if more bridges are added.
-      const isLocalSpace =
-        localDomain && parentId.endsWith(`:${localDomain}`);
-
-      synthetic.push({
-        id: `${FEDERATED_SERVER_ID_PREFIX}${parentId}`,
-        name: discordGuildId
-          ? existingDiscordGuilds.get(discordGuildId)?.name ?? name
-          : name,
-        icon_url: discordGuildId
-          ? existingDiscordGuilds.get(discordGuildId)?.iconUrl ?? null
-          : null,
-        owner_id: userId,
-        visibility: "public",
-        abbreviation: isLocalSpace ? "D" : name.charAt(0).toUpperCase() || "#",
-        media_uploads_enabled: false,
-        channels,
-        federated: true,
-        ...(isLocalSpace && { bridgeType: "discord" as const }),
-        ...(discordGuildId && { discordGuildId }),
-      });
-    }
+    // Pass 3a removed: local-domain space tiles were only produced by
+    // the now-removed bridge layer. Federated spaces on other
+    // homeservers are treated the same as any other federated room:
+    // not rendered as a tile under the 2026-04-11 architecture rule.
+    void parentIdToChildren;
+    void parentIdToName;
+    void roomById;
+    void placedRoomIds;
 
     // NOTE (2026-04-11 restructure): the previous "Pass 3b" collapsed
     // every loose federated room into a synthetic tile grouped by its
@@ -579,53 +449,6 @@ export const useServerStore = create<ServerState>((set, get) => ({
     // a future Matrix-as-Source flow, but they are no longer
     // promoted to the rail.
     //
-    // Pass 3a (space-based grouping) is also tightened: we now only
-    // synthesise tiles for spaces whose roomId lives on the LOCAL
-    // homeserver domain. The only code path that currently produces
-    // local-domain spaces is the Discord bridge (mautrix-discord
-    // creates an `m.space` per guild on the embedded homeserver,
-    // with channel rooms as its children). Federated spaces on
-    // other homeservers are treated the same as any other federated
-    // room now: not rendered as a tile.
-
-    const discordVoiceOverlays = servers
-      .filter((s) => s.bridgeType === "discord" && s.discordGuildId)
-      .flatMap((s) =>
-        s.channels
-          .filter((channel) => channel.channel_type === "voice")
-          .map((channel) => ({ guildId: s.discordGuildId!, channel })),
-      );
-
-    for (const overlay of discordVoiceOverlays) {
-      let target = synthetic.find(
-        (server) =>
-          server.bridgeType === "discord" &&
-          server.discordGuildId === overlay.guildId,
-      );
-      if (!target) {
-        target = {
-          id: `${FEDERATED_SERVER_ID_PREFIX}discord_${overlay.guildId}`,
-          name: existingDiscordGuilds.get(overlay.guildId)?.name ?? `Guild ${overlay.guildId}`,
-          icon_url: existingDiscordGuilds.get(overlay.guildId)?.iconUrl ?? null,
-          owner_id: userId,
-          visibility: "public",
-          abbreviation: "D",
-          media_uploads_enabled: false,
-          channels: [],
-          federated: true,
-          bridgeType: "discord" as const,
-          discordGuildId: overlay.guildId,
-        };
-        synthetic.push(target);
-      }
-      if (!target.channels.some((channel) => channel.matrix_room_id === overlay.channel.matrix_room_id)) {
-        target.channels.push({
-          ...overlay.channel,
-          position: target.channels.length,
-        });
-      }
-    }
-
     set({ servers: [...concordServers, ...synthetic] });
   },
 
@@ -658,13 +481,6 @@ export const useServerStore = create<ServerState>((set, get) => ({
       // AND lives on the LOCAL homeserver. Federated rooms live on
       // other homeservers and must NOT be leaved by this pass.
       if (!room.roomId.endsWith(`:${localDomain}`)) continue;
-      // Bridge rooms (spaces and their children) live on the local
-      // domain but must NOT be cleaned up — they're managed by the
-      // bridge, not Concord. Skip them.
-      const isSpace = room.getType?.() === "m.space";
-      const hasSpaceParent =
-        (room.currentState?.getStateEvents("m.space.parent") ?? []).length > 0;
-      if (isSpace || hasSpaceParent) continue;
       toLeave.push(room.roomId);
     }
 
@@ -809,7 +625,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
   },
 
   deleteServer: async (serverId, accessToken) => {
-    // Synthetic servers (Discord guilds, federated) have no API record —
+    // Synthetic federated servers have no API record —
     // just remove from client state without hitting the API.
     const isSynthetic = serverId.startsWith(FEDERATED_SERVER_ID_PREFIX);
     if (!isSynthetic) {
@@ -945,159 +761,6 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   setActiveChannel: (matrixRoomId) => {
     set({ activeChannelId: matrixRoomId });
-  },
-
-  ensureDiscordGuild: ({ guildId, guildName, iconUrl, channel, preferBridgeServer, activate = true }) => {
-    const { servers } = get();
-    const channelType = (channel.channelType ?? "text") as Channel['channel_type'];
-    const channelId = channel.id ?? 0;
-
-    // Prefer any existing server that already contains this channel —
-    // hydrateFederatedRooms uses Matrix space IDs (federated:!room:domain)
-    // while the legacy path uses federated:discord_<guildId>. Searching
-    // by channel roomId lets us find the hydration entry regardless of
-    // which ID scheme it was created with, preventing duplicate tiles.
-    const hostServer = servers.find((s) =>
-      (!preferBridgeServer || s.bridgeType === "discord") &&
-      s.channels.some((c) => c.matrix_room_id === channel.roomId),
-    );
-
-    if (hostServer) {
-      const existingChannel = hostServer.channels.find(
-        (entry) => entry.matrix_room_id === channel.roomId,
-      );
-      // Update name if we now have a real guild name and the tile still
-      // shows the fallback "Guild <snowflake>" label.
-      const betterName =
-        guildName &&
-        !guildName.startsWith("Guild ") &&
-        hostServer.name.startsWith("Guild ");
-      const betterIcon = iconUrl && hostServer.icon_url !== iconUrl;
-      const betterChannelName =
-        existingChannel &&
-        channel.name &&
-        existingChannel.name !== channel.name;
-      const betterChannelType =
-        existingChannel &&
-        existingChannel.channel_type !== channelType;
-      if (betterName || betterIcon || betterChannelName || betterChannelType) {
-        set({
-          servers: servers.map((s) =>
-            s.id === hostServer.id
-              ? {
-                  ...s,
-                  ...(betterName ? { name: guildName } : {}),
-                  ...(betterIcon ? { icon_url: iconUrl } : {}),
-                  channels: s.channels.map((entry) =>
-                    entry.matrix_room_id === channel.roomId
-                      ? {
-                          ...entry,
-                          ...(betterChannelName ? { name: channel.name } : {}),
-                          ...(betterChannelType ? { channel_type: channelType } : {}),
-                        }
-                      : entry,
-                  ),
-                }
-              : s,
-          ),
-        });
-      }
-      if (activate) set({ activeServerId: hostServer.id, activeChannelId: channel.roomId });
-      return hostServer.id;
-    }
-
-    // No existing server has this channel yet. Check for a
-    // discord_<guildId> placeholder created in a prior call.
-    const serverId = `${FEDERATED_SERVER_ID_PREFIX}discord_${guildId}`;
-    const existing =
-      servers.find((s) => s.bridgeType === "discord" && s.discordGuildId === guildId) ??
-      servers.find((s) => s.id === serverId);
-
-    if (existing) {
-      const existingChannel = existing.channels.find(
-        (c) => c.matrix_room_id === channel.roomId,
-      );
-      const hasChannel = Boolean(existingChannel);
-      const betterName =
-        guildName &&
-        !guildName.startsWith("Guild ") &&
-        existing.name.startsWith("Guild ");
-      const betterIcon = iconUrl && existing.icon_url !== iconUrl;
-      const betterChannelName =
-        existingChannel &&
-        channel.name &&
-        existingChannel.name !== channel.name;
-      const betterChannelType =
-        existingChannel &&
-        existingChannel.channel_type !== channelType;
-      if (!hasChannel || betterName || betterIcon || betterChannelName || betterChannelType) {
-        set({
-          servers: servers.map((s) =>
-            s.id === existing.id
-              ? {
-                  ...s,
-                  ...(betterName ? { name: guildName } : {}),
-                  ...(betterIcon ? { icon_url: iconUrl } : {}),
-                  discordGuildId: guildId,
-                  channels: hasChannel
-                    ? s.channels.map((entry) =>
-                        entry.matrix_room_id === channel.roomId
-                          ? {
-                              ...entry,
-                              ...(betterChannelName ? { name: channel.name } : {}),
-                              ...(betterChannelType ? { channel_type: channelType } : {}),
-                            }
-                          : entry,
-                      )
-                    : [
-                        ...s.channels,
-                        {
-                          id: channelId,
-                          name: channel.name,
-                          channel_type: channelType,
-                          matrix_room_id: channel.roomId,
-                          position: s.channels.length,
-                        },
-                      ],
-                }
-              : s,
-          ),
-        });
-      }
-    } else {
-      // Create a temporary placeholder. hydrateFederatedRooms will replace
-      // it with a proper space-based entry once Matrix sync catches up.
-      const userId = servers[0]?.owner_id ?? "";
-      set({
-        servers: [
-          ...servers,
-          {
-            id: serverId,
-            name: guildName,
-            icon_url: iconUrl ?? null,
-            owner_id: userId,
-            visibility: "public",
-            abbreviation: null,
-            media_uploads_enabled: false,
-            channels: [
-              {
-                id: channelId,
-                name: channel.name,
-                channel_type: channelType,
-                matrix_room_id: channel.roomId,
-                position: 0,
-              },
-            ],
-            bridgeType: "discord" as const,
-            discordGuildId: guildId,
-          },
-        ],
-      });
-    }
-
-    const targetServerId = existing?.id ?? serverId;
-    if (activate) set({ activeServerId: targetServerId, activeChannelId: channel.roomId });
-    return targetServerId;
   },
 
   activeServer: () => {

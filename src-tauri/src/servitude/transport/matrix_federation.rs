@@ -91,11 +91,8 @@ pub struct MatrixFederationTransport {
     /// Child process handle. `Some` while running, `None` while stopped.
     child: Option<Child>,
     /// Paths to Application Service registration YAML files that
-    /// tuwunel should load on startup. Populated by the cross-transport
-    /// pre-pass in `ServitudeHandle::start` when a bridge transport
-    /// (e.g. `DiscordBridge`) is enabled alongside this transport.
-    /// Passed to tuwunel via the `CONDUWUIT_APPSERVICES` env var as a
-    /// JSON array of absolute paths.
+    /// tuwunel should load on startup. Passed to tuwunel via the
+    /// `CONDUWUIT_APPSERVICES` env var as a JSON array of absolute paths.
     appservice_registrations: Vec<PathBuf>,
 }
 
@@ -482,12 +479,7 @@ mod tests {
     /// Serializes tests that mutate process env vars (`BIN_OVERRIDE_ENV`,
     /// `PATH`, `XDG_DATA_HOME`). Cargo's default test runner uses
     /// multiple threads within a single process, so concurrent
-    /// env-mutation tests race without this guard. Introduced
-    /// alongside INS-024 Wave 3 when the added discord_bridge test
-    /// suite made the pre-existing race-condition flake reproducible
-    /// on orrion. The mutex is local to this module; the
-    /// discord_bridge test module has its own identically-named
-    /// guard.
+    /// env-mutation tests race without this guard.
     static ENV_GUARD: Mutex<()> = Mutex::new(());
 
     fn config_on_port(port: i64) -> ServitudeConfig {

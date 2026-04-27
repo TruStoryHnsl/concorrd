@@ -129,9 +129,6 @@ export function ServerSettingsContent({
 
   return (
     <>
-      {activeTab === "bridge" && (
-        <BridgeServerTab serverId={serverId} />
-      )}
       {activeTab === "federation" && (
         <FederatedServerTab serverId={serverId} />
       )}
@@ -157,41 +154,6 @@ export function ServerSettingsContent({
         <ModerationTab serverId={serverId} accessToken={accessToken} />
       )}
     </>
-  );
-}
-
-function BridgeServerTab({ serverId }: { serverId: string }) {
-  const server = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
-  if (!server) return null;
-
-  const voiceChannels = server.channels.filter((channel) => channel.channel_type === "voice");
-  const textChannels = server.channels.filter((channel) => channel.channel_type !== "voice");
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-xl font-semibold text-on-surface">Discord Bridge</h3>
-        <p className="text-sm text-on-surface-variant mt-1">
-          This server is a Discord-backed projection. Discord owns the room catalog and Concord reflects it here.
-        </p>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <InfoCard label="Guild" value={server.name} />
-        <InfoCard label="Guild ID" value={server.discordGuildId ?? "Unknown"} mono />
-        <InfoCard label="Text Rooms" value={`${textChannels.length}`} />
-        <InfoCard label="Voice Rooms" value={`${voiceChannels.length}`} />
-      </div>
-
-      <section className="space-y-2">
-        <h4 className="text-sm font-semibold text-on-surface">Behavior</h4>
-        <ul className="space-y-1 text-sm text-on-surface-variant">
-          <li>Messages, members, and channel structure come from the Discord bridge.</li>
-          <li>Permissions and join failures usually have to be resolved in Discord, not here.</li>
-          <li>Voice links attach Concord voice transport to the Discord voice room you mapped.</li>
-        </ul>
-      </section>
-    </div>
   );
 }
 
@@ -221,7 +183,7 @@ function FederatedServerTab({ serverId }: { serverId: string }) {
         <h4 className="text-sm font-semibold text-on-surface">Behavior</h4>
         <ul className="space-y-1 text-sm text-on-surface-variant">
           <li>Joining depends on that homeserver's join rules, federation policy, and your Matrix account.</li>
-          <li>Use Explore to browse public rooms and inspect join errors before assuming the bridge is broken.</li>
+          <li>Use Explore to browse public rooms and inspect join errors.</li>
           <li>There is no local delete or membership management surface for federated wrappers.</li>
         </ul>
       </section>

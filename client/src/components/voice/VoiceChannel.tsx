@@ -22,9 +22,6 @@ import { Avatar } from "../ui/Avatar";
 import { PinDialog } from "../moderation/PinDialog";
 import { VoteKickBanner } from "../moderation/VoteKickBanner";
 import { BanOverlay } from "../moderation/BanOverlay";
-import {
-  splitDiscordVoiceBridgeParticipants,
-} from "./discordVoiceBridge";
 import { joinVoiceSession } from "./joinVoiceSession";
 import {
   buildLiveKitAudioCaptureOptions,
@@ -36,30 +33,6 @@ interface VoiceChannelProps {
   roomId: string;
   channelName: string;
   serverId: string;
-}
-
-function DiscordVoiceBridgeStatusBadge({
-  connected,
-  compact = false,
-}: {
-  connected: boolean;
-  compact?: boolean;
-}) {
-  return (
-    <span
-      className={`inline-flex items-center justify-center rounded-full border ${
-        compact ? "h-6 w-6" : "h-7 w-7"
-      } ${
-        connected
-          ? "border-emerald-400/40 bg-emerald-500/12 text-emerald-300"
-          : "border-outline-variant/25 bg-surface-container-high text-on-surface-variant"
-      }`}
-      title={connected ? "Discord voice bridge connected" : "Discord voice bridge idle"}
-      aria-label={connected ? "Discord voice bridge connected" : "Discord voice bridge idle"}
-    >
-      <span className="material-symbols-outlined text-sm">link</span>
-    </span>
-  );
 }
 
 export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProps) {
@@ -100,10 +73,7 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
     const interval = setInterval(fetchParticipants, 5000);
     return () => clearInterval(interval);
   }, [accessToken, roomId, voiceConnected, voiceChannelId]);
-  const {
-    bridgeConnected: previewBridgeConnected,
-    visibleParticipants: visiblePreviewParticipants,
-  } = splitDiscordVoiceBridgeParticipants(previewParticipants);
+  const visiblePreviewParticipants = previewParticipants;
 
   const handleJoin = useCallback(async () => {
     if (!accessToken) return;
@@ -157,7 +127,6 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
   // Show join screen if not connected to THIS channel
   if (!voiceConnected || voiceChannelId !== roomId) {
     const needsPin = isLocked && !pinVerified;
-    const discordBridgeExpected = activeServer?.bridgeType === "discord";
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4">
         <p className="text-on-surface-variant flex items-center gap-2">
@@ -168,9 +137,6 @@ export function VoiceChannel({ roomId, channelName, serverId }: VoiceChannelProp
           )}
           Voice Channel: #{channelName}
         </p>
-        {discordBridgeExpected && (
-          <DiscordVoiceBridgeStatusBadge connected={previewBridgeConnected} />
-        )}
 
         {/* Participant preview */}
         {visiblePreviewParticipants.length > 0 && (
@@ -305,10 +271,7 @@ function VoiceRoomUI({
   const accessToken = useAuthStore((s) => s.accessToken);
   const addToast = useToastStore((s) => s.addToast);
   const activeServer = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
-  const {
-    bridgeConnected: discordBridgeConnected,
-    visibleParticipants,
-  } = splitDiscordVoiceBridgeParticipants(participants);
+  const visibleParticipants = participants;
 
   // Vote kick state
   const [activeVotes, setActiveVotes] = useState<{ id: number; channel_id: string; target_user_id: string; initiated_by: string; yes_count: number; no_count: number; total_eligible: number }[]>([]);
@@ -550,9 +513,6 @@ function VoiceRoomUI({
           <div className="flex items-center gap-3">
             <ConnectionIndicator state={connectionState} />
             <span className="text-on-surface-variant text-sm">#{channelName}</span>
-            {activeServer?.bridgeType === "discord" && (
-              <DiscordVoiceBridgeStatusBadge connected={discordBridgeConnected} />
-            )}
           </div>
           <div className="flex items-center gap-2">
             <button onClick={toggleMic} className={`btn-press px-3 py-1.5 text-sm rounded-md transition-colors ${isMicEnabled ? "bg-surface-container hover:bg-surface-container-highest text-on-surface" : "bg-error/20 hover:bg-error-container/30 text-error"}`}>
@@ -591,9 +551,6 @@ function VoiceRoomUI({
       <div className="md:hidden px-3 py-2 border-b border-outline-variant/15 flex-shrink-0 flex items-center gap-2">
         <ConnectionIndicator state={connectionState} />
         <span className="text-on-surface-variant text-sm font-medium flex-1 truncate">#{channelName}</span>
-        {activeServer?.bridgeType === "discord" && (
-          <DiscordVoiceBridgeStatusBadge connected={discordBridgeConnected} compact />
-        )}
         {(micError || cameraError || screenShareError) && (
           <span className="text-error text-[10px] truncate max-w-[30%]">{micError || cameraError || screenShareError}</span>
         )}

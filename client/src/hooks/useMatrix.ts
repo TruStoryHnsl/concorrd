@@ -237,23 +237,12 @@ export function useMatrixSync() {
         .join(",");
       if (sig === prevIdsSig) return;
       prevIdsSig = sig;
-      // Dynamic imports so this file doesn't pull the whole
+      // Dynamic import so this file doesn't pull the whole
       // server store into every consumer of useMatrixSync.
-      Promise.all([
-        import("../stores/server"),
-        import("../stores/sources"),
-      ])
-        .then(([{ useServerStore }, { useSourcesStore }]) => {
+      import("../stores/server")
+        .then(({ useServerStore }) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           useServerStore.getState().hydrateFederatedRooms(client as any);
-
-          // Sync Discord bridge source: if hydration produced any
-          // servers with bridgeType="discord", surface a Discord
-          // source in the sources panel.
-          const hasDiscordBridge = useServerStore
-            .getState()
-            .servers.some((s) => s.bridgeType === "discord");
-          useSourcesStore.getState().syncDiscordBridge(hasDiscordBridge);
         })
         .catch((err) => {
           console.warn("federated hydration failed:", err);

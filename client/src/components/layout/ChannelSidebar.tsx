@@ -27,9 +27,6 @@ import { useUnreadCounts } from "../../hooks/useUnreadCounts";
 import { useVoiceParticipants } from "../../hooks/useVoiceParticipants";
 import { usePlatform } from "../../hooks/usePlatform";
 import { InviteModal } from "../server/InviteModal";
-import {
-  splitDiscordVoiceBridgeParticipants,
-} from "../voice/discordVoiceBridge";
 
 interface ChannelSidebarProps {
   mobile?: boolean;
@@ -38,35 +35,6 @@ interface ChannelSidebarProps {
 }
 
 const CHANNEL_ADMIN_TOGGLE_ICON = "edit";
-
-function DiscordVoiceBridgeIndicator({
-  connected,
-  compact = false,
-}: {
-  connected: boolean;
-  compact?: boolean;
-}) {
-  return (
-    <span
-      className={`inline-flex items-center justify-center rounded-full border ${
-        connected
-          ? "border-emerald-400/40 bg-emerald-500/12 text-emerald-300"
-          : "border-outline-variant/30 bg-surface-container-high text-on-surface-variant/70"
-      } ${compact ? "w-5 h-5" : "px-2 py-0.5 gap-1"}`}
-      title={connected ? "Discord voice bridge connected" : "Discord voice bridge idle"}
-      aria-label={connected ? "Discord voice bridge connected" : "Discord voice bridge idle"}
-    >
-      <span className="material-symbols-outlined" style={{ fontSize: compact ? "12px" : "14px" }}>
-        link
-      </span>
-      {!compact && (
-        <span className="text-[10px] font-label uppercase tracking-wider">
-          Bridge
-        </span>
-      )}
-    </span>
-  );
-}
 
 export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, onChannelSelect, onServerTitleClick }: ChannelSidebarProps) {
   const servers = useServerStore((s) => s.servers);
@@ -90,19 +58,6 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
   const { isTV } = usePlatform();
 
   const unreadCounts = useUnreadCounts();
-
-  // Detect Discord-bridged rooms by checking their canonical alias.
-  // mautrix-discord gives bridged rooms aliases like #_discord_<guild>_<ch>:<server>.
-  const client = useAuthStore((s) => s.client);
-  const discordRoomIds = useMemo(() => {
-    if (!client) return new Set<string>();
-    return new Set(
-      client
-        .getRooms()
-        .filter((room) => (room.getCanonicalAlias() ?? "").includes("_discord_"))
-        .map((room) => room.roomId),
-    );
-  }, [client]);
 
   const server = servers.find((s) => s.id === activeServerId);
   const voiceRoomIds = useMemo(
@@ -312,16 +267,13 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
     const roomParticipants = isVoice
       ? voiceParticipants.get(ch.matrix_room_id) ?? []
       : [];
-    const { bridgeConnected, visibleParticipants } = splitDiscordVoiceBridgeParticipants(
-      roomParticipants,
-    );
     // Voice channels signal "something is happening in here" via
     // participant count, not Matrix unread count. Any participant
     // (including the current user) counts — leaving the channel and
     // seeing the dot reminds you that you're still connected in the
     // other room. For text channels, activity is just unread > 0.
     const voiceParticipantCount = isVoice
-      ? visibleParticipants.length
+      ? roomParticipants.length
       : 0;
     const hasActivity = unread > 0 || voiceParticipantCount > 0;
     return (
@@ -348,13 +300,7 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
         onSetConfirmDelete={(v) => setConfirmDeleteChannelId(v ? ch.id : null)}
         onDelete={() => handleDeleteChannel(ch.id)}
         isTV={isTV}
-        isDiscordBridged={discordRoomIds.has(ch.matrix_room_id)}
       >
-        {isVoice && server.bridgeType === "discord" && (
-          <div className="px-3 pb-1.5">
-            <DiscordVoiceBridgeIndicator connected={bridgeConnected} />
-          </div>
-        )}
         {extras}
       </SortableChannelRow>
     );
@@ -498,19 +444,16 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
                 strategy={verticalListSortingStrategy}
               >
                 {voiceChannels.map((ch) =>
-                  renderChannelItem(ch, true, (() => {
-                    const { visibleParticipants } = splitDiscordVoiceBridgeParticipants(
-                      voiceParticipants.get(ch.matrix_room_id) ?? [],
-                    );
-                    return visibleParticipants.map((p) => (
+                  renderChannelItem(ch, true,
+                    (voiceParticipants.get(ch.matrix_room_id) ?? []).map((p) => (
                       <div key={p.identity} className="flex items-center gap-1.5 pl-8 py-0.5">
                         <Avatar userId={p.identity} size="sm" />
                         <span className="text-xs text-on-surface-variant truncate font-body">
                           {p.name || p.identity.split(":")[0].replace("@", "")}
                         </span>
                       </div>
-                    ));
-                  })())
+                    )),
+                  )
                 )}
               </SortableContext>
             </DndContext>
@@ -794,7 +737,6 @@ interface SortableChannelRowProps {
   // attributes so the row is picked up by `useDpadNav({ group: "tv-main" })`
   // and styled by the 10-foot rules in `client/src/styles/tv.css`.
   isTV?: boolean;
-  isDiscordBridged?: boolean;
   children?: ReactNode;
 }
 
@@ -820,7 +762,6 @@ function SortableChannelRow({
   onSetConfirmDelete,
   onDelete,
   isTV = false,
-  isDiscordBridged = false,
   children,
 }: SortableChannelRowProps) {
   const {
@@ -884,9 +825,7 @@ function SortableChannelRow({
           className={`flex-1 min-w-0 text-left px-3 py-2 rounded-xl text-sm transition-all flex items-center gap-2 font-body ${
             isTV ? "tv-channel-item " : ""
           }${
-            isActive && isDiscordBridged
-              ? "bg-[#5865F2]/20 text-[#5865F2]"
-              : isActive
+            isActive
               ? "bg-surface-container-highest text-on-surface"
               : unread > 0
                 ? "text-on-surface hover:bg-surface-container-high"

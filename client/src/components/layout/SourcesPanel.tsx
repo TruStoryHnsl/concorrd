@@ -58,7 +58,7 @@ function writeStoredRailOrder(userId: string | null, order: string[]): void {
 function normalizeRailOrder(sourceIds: string[], stored: string[] | null): string[] {
   // Replay stored order. When the + tile is encountered, inject any NEW
   // sources (not previously in stored) immediately BEFORE it so that
-  // freshly-added Concord/Matrix/Discord sources always default to being
+  // freshly-added Concord/Matrix sources always default to being
   // above the + tile rather than below it.
   const next: string[] = [];
   const seen = new Set<string>();
@@ -98,16 +98,6 @@ function sourceTile(source: ConcordSource): {
   const brand = inferSourceBrand(source);
   const bg = "bg-surface-container-high ring-1 ring-outline-variant/15";
   switch (brand) {
-    case "discord":
-      return {
-        brand,
-        bg,
-        icon: <SourceBrandIcon brand={brand} size={28} className="text-[#5865F2]" />,
-        label:
-          source.platform === "discord-account"
-            ? `Discord Account — ${label}`
-            : `Discord Bridge — ${label}`,
-      };
     case "mozilla":
       return {
         brand,
@@ -210,33 +200,7 @@ export function SourcesPanel({
   const toggleSource = useSourcesStore((s) => s.toggleSource);
   const setSourceOrder = useSourcesStore((s) => s.setSourceOrder);
 
-  // Hide Discord source tiles entirely. In the user-scoped bridge
-  // redesign, Discord is a personal "Connection" (managed under
-  // Settings → Connections), not a "Source". Bridged Discord guilds
-  // surface as regular Matrix rooms under the user's own homeserver
-  // session, so a standalone Discord tile offers no extra navigation —
-  // only the potential to mislead (tile present, but auth may not have
-  // completed, so clicking it lands the user in an empty browser).
-  //
-  // Discord tiles may still exist in the sources store from legacy
-  // flows (pre-PR4 admin bot mode); filtering keeps them out of the UI
-  // without rewriting the store. A later cleanup can prune them entirely.
-  // Memoize the filter result. Without this, `.filter()` returns a new
-  // array on every render — and `sources` is a useEffect dep below
-  // (line ~262 setRailOrder effect). React compares deps with Object.is,
-  // so a new array reference re-runs the effect every render → setRailOrder
-  // returns yet another new reference → re-render → new `sources` ref →
-  // effect runs again → "Maximum update depth exceeded". Memoizing on
-  // `rawSources` makes the filter result stable across unrelated re-renders.
-  const sources = useMemo(
-    () =>
-      rawSources.filter((source) => {
-        const isDiscord =
-          source.platform === "discord-bot" || source.platform === "discord-account";
-        return !isDiscord;
-      }),
-    [rawSources],
-  );
+  const sources = rawSources;
 
   const isTouchDevice =
     typeof window !== "undefined" &&

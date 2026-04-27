@@ -174,18 +174,6 @@ describe("<ExploreModal />", () => {
           addedAt: new Date().toISOString(),
           platform: "matrix",
         },
-        {
-          id: "src_discord",
-          host: "discord-bridge",
-          instanceName: "Discord (Bot Bridge)",
-          inviteToken: "",
-          apiBase: "",
-          homeserverUrl: "",
-          status: "connected",
-          enabled: true,
-          addedAt: new Date().toISOString(),
-          platform: "discord-bot",
-        },
       ],
     });
 
@@ -197,7 +185,6 @@ describe("<ExploreModal />", () => {
       ).toBeInTheDocument();
     });
     expect(screen.queryByText("Matrix Example")).not.toBeInTheDocument();
-    expect(screen.queryByText("Discord (Bot Bridge)")).not.toBeInTheDocument();
   });
 });
 

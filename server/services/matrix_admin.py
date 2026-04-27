@@ -115,10 +115,10 @@ async def create_dm_room(
 
     Matrix's ``POST /createRoom`` with ``is_direct: true`` is NOT idempotent:
     every call spawns a fresh room, and whether the invited user ends up
-    joined depends on invite-acceptance timing. When flows like the
-    Discord login trigger call this on every user action, they end up
-    with a growing pile of orphan DM rooms — and the commands they send
-    into the "new" DM land in a room the bot never joined.
+    joined depends on invite-acceptance timing. Flows that call this on
+    every user action end up with a growing pile of orphan DM rooms — and
+    the commands they send into the "new" DM land in a room the bot never
+    joined.
 
     When ``user_id`` is provided we consult the caller's ``m.direct``
     account data for an existing DM with ``invite_user_id``, validate

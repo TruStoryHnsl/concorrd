@@ -55,7 +55,7 @@ interface SettingsState {
 
   // UI (not persisted)
   settingsOpen: boolean;
-  settingsTab: "audio" | "voice" | "notifications" | "profile" | "connections" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation";
+  settingsTab: "audio" | "voice" | "notifications" | "profile" | "connections" | "appearance" | "node" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-federation";
   serverSettingsId: string | null;
 
   // Actions
@@ -95,14 +95,13 @@ interface SettingsState {
    */
   setChatFontSize: (px: number) => void;
   setThemePreset: (preset: ThemePreset) => void;
-  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "connections" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
+  openSettings: (tab?: "audio" | "voice" | "notifications" | "profile" | "connections" | "appearance" | "node" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-federation") => void;
   closeSettings: () => void;
-  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "connections" | "appearance" | "node" | "bridges" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-bridge" | "server-federation") => void;
+  setSettingsTab: (tab: "audio" | "voice" | "notifications" | "profile" | "connections" | "appearance" | "node" | "hosting" | "about" | "admin" | "server-general" | "server-members" | "server-invite" | "server-bans" | "server-whitelist" | "server-webhooks" | "server-moderation" | "server-federation") => void;
   /**
-   * INS-024 user-scoped bridge redesign: cross-component hand-off for the
-   * "Add Source" modal. Set the screen to pre-open (e.g. "discord",
-   * "matrix", "concord"), and ChatLayout's effect hook opens the modal
-   * at that screen. Cleared immediately after consumption.
+   * Cross-component hand-off for the "Add Source" modal. Set the screen
+   * to pre-open (e.g. "matrix", "concord"), and ChatLayout's effect hook
+   * opens the modal at that screen. Cleared immediately after consumption.
    */
   pendingAddSourceScreen: string | null;
   requestAddSource: (screen?: string) => void;
@@ -264,12 +263,7 @@ export const useSettingsStore = create<SettingsState>()(
       },
       openServerSettings: (serverId) => {
         const server = useServerStore.getState().servers.find((entry) => entry.id === serverId);
-        const settingsTab =
-          server?.bridgeType === "discord"
-            ? "server-bridge"
-            : server?.federated
-              ? "server-federation"
-              : "server-general";
+        const settingsTab = server?.federated ? "server-federation" : "server-general";
         set({ serverSettingsId: serverId, settingsOpen: true, settingsTab });
       },
       closeServerSettings: () => set({ serverSettingsId: null }),

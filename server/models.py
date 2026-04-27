@@ -202,31 +202,6 @@ class VoiceSession(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
-class DiscordVoiceBridge(Base):
-    __tablename__ = "discord_voice_bridges"
-    __table_args__ = (
-        UniqueConstraint("matrix_room_id", name="uq_discord_voice_bridge_matrix_room"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    server_id: Mapped[str] = mapped_column(String, ForeignKey("servers.id"), nullable=False)
-    channel_id: Mapped[int] = mapped_column(Integer, ForeignKey("channels.id"), nullable=False)
-    matrix_room_id: Mapped[str] = mapped_column(String, nullable=False)
-    discord_guild_id: Mapped[str] = mapped_column(String, nullable=False)
-    discord_channel_id: Mapped[str] = mapped_column(String, nullable=False)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    # W4: video bridge expansion fields
-    video_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    projection_policy: Mapped[str] = mapped_column(String, default="screen_share_first")
-    quality_cap: Mapped[str] = mapped_column(String, default="auto")
-    audio_only_fallback: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_by: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-    server: Mapped["Server"] = relationship()
-    channel: Mapped["Channel"] = relationship()
-
-
 class MessageCount(Base):
     __tablename__ = "message_counts"
     __table_args__ = (
@@ -401,66 +376,3 @@ class PlaceLedgerHeader(Base):
     )
 
 
-class UserDiscordOAuth(Base):
-    """Per-user Discord OAuth2 state.
-
-    One row per Concord user who has completed the "Sign in with Discord"
-    flow. Stores the OAuth access / refresh tokens so we can hit Discord's
-    REST API on the caller's behalf (for guilds list, profile, etc).
-
-    Privacy note: tokens are stored in plaintext in the SQLite DB on the
-    instance data volume, same trust boundary as the rest of user data.
-    A future PR can move them behind an instance-keyed KDF once we have a
-    persistent secret to derive with. Calling this out so no one assumes
-    they're encrypted-at-rest today.
-
-    Why the Discord user id is indexed: prevents two Concord accounts from
-    claiming the same Discord identity at the same time. The OAuth flow
-    enforces this on upsert by swapping the row to the new Concord user
-    rather than silently dropping the collision.
-    """
-
-    __tablename__ = "user_discord_oauth"
-
-    # Matrix MXID — the Concord user this token belongs to.
-    user_id: Mapped[str] = mapped_column(String, primary_key=True)
-    # Discord snowflake of the linked account.
-    discord_user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    discord_username: Mapped[str] = mapped_column(String, nullable=False)
-    discord_global_name: Mapped[str | None] = mapped_column(String, nullable=True)
-    discord_avatar: Mapped[str | None] = mapped_column(String, nullable=True)
-    access_token: Mapped[str] = mapped_column(String, nullable=False)
-    refresh_token: Mapped[str | None] = mapped_column(String, nullable=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    scope: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
-    )
-
-
-class DiscordOAuthState(Base):
-    """Short-lived CSRF-guarding state tokens for the Discord OAuth flow.
-
-    Each row represents a pending authorization: it ties a random ``state``
-    parameter (sent to Discord in /oauth/authorize) back to the Concord
-    user who initiated the flow. When Discord redirects to our callback,
-    we look up the state, verify it's unexpired, and delete it.
-
-    Rows older than 10 minutes are considered expired and ignored; a
-    periodic cleanup could sweep them but the table stays tiny so it's
-    not essential.
-    """
-
-    __tablename__ = "discord_oauth_state"
-
-    state: Mapped[str] = mapped_column(String, primary_key=True)
-    user_id: Mapped[str] = mapped_column(String, nullable=False)
-    # Where to send the user after a successful callback. Bounded by a
-    # same-origin check in the callback handler to prevent open-redirect.
-    return_to: Mapped[str] = mapped_column(String, nullable=False, default="/")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
-    )

@@ -31,7 +31,6 @@ use thiserror::Error;
 
 use crate::servitude::config::{ServitudeConfig, Transport as TransportVariant};
 
-pub mod discord_bridge;
 pub mod matrix_federation;
 #[cfg(feature = "reticulum")]
 pub mod reticulum;
@@ -90,7 +89,7 @@ pub trait Transport: Send + Sync {
     /// operation. Critical transports (e.g. `MatrixFederation`) take
     /// down the whole handle if they fail to start — the lifecycle
     /// rolls back to `Stopped` and the caller gets a hard error.
-    /// Non-critical transports (e.g. `DiscordBridge`) are allowed to
+    /// Non-critical transports are allowed to
     /// fail without stopping the rest of the servitude — the failure
     /// is recorded in `ServitudeHandle::degraded` and surfaced to the
     /// UI via `degraded_transports()`.
@@ -126,13 +125,6 @@ pub trait Transport: Send + Sync {
 pub enum TransportRuntime {
     /// Embedded tuwunel Matrix homeserver as a child process.
     MatrixFederation(matrix_federation::MatrixFederationTransport),
-    /// Sandboxed mautrix-discord bridge (INS-024 Wave 3). Runs
-    /// mautrix-discord as a child process wrapped in `bubblewrap`
-    /// with a whitelist-only bind mount set. Non-critical: a failure
-    /// to start or a crash is recorded in
-    /// `ServitudeHandle::degraded`, and the rest of the servitude
-    /// keeps running.
-    DiscordBridge(discord_bridge::DiscordBridgeTransport),
     /// Placeholder for WireGuard tunnel — returns `NotImplemented`
     /// until the wire-up lands in a later wave.
     WireGuard,
@@ -156,8 +148,7 @@ pub enum TransportRuntime {
     /// No-op runtime that reports `is_critical() = false`. Exists
     /// alongside [`Self::Noop`] so unit tests can exercise the
     /// partial-failure rollback path (non-critical transport fails
-    /// → lifecycle stays Running with a `degraded` entry) without
-    /// needing a real `DiscordBridgeTransport` binary.
+    /// → lifecycle stays Running with a `degraded` entry).
     #[doc(hidden)]
     NoopNonCritical,
     /// No-op runtime that always FAILS to start with
@@ -181,9 +172,6 @@ impl TransportRuntime {
         match variant {
             TransportVariant::MatrixFederation => TransportRuntime::MatrixFederation(
                 matrix_federation::MatrixFederationTransport::from_config(config),
-            ),
-            TransportVariant::DiscordBridge => TransportRuntime::DiscordBridge(
-                discord_bridge::DiscordBridgeTransport::from_config(config),
             ),
             TransportVariant::WireGuard => TransportRuntime::WireGuard,
             TransportVariant::Mesh => TransportRuntime::Mesh,
@@ -213,7 +201,6 @@ impl TransportRuntime {
     pub fn name(&self) -> &'static str {
         match self {
             TransportRuntime::MatrixFederation(_) => "matrix_federation",
-            TransportRuntime::DiscordBridge(_) => "discord_bridge",
             TransportRuntime::WireGuard => "wireguard",
             TransportRuntime::Mesh => "mesh",
             TransportRuntime::Tunnel => "tunnel",
@@ -234,7 +221,6 @@ impl TransportRuntime {
     pub fn is_critical(&self) -> bool {
         match self {
             TransportRuntime::MatrixFederation(t) => t.is_critical(),
-            TransportRuntime::DiscordBridge(t) => t.is_critical(),
             // Placeholders default to critical so any future
             // stub-driven misconfiguration fails loudly instead of
             // silently degrading.
@@ -260,7 +246,6 @@ impl TransportRuntime {
     pub async fn start(&mut self) -> Result<(), TransportError> {
         match self {
             TransportRuntime::MatrixFederation(t) => t.start().await,
-            TransportRuntime::DiscordBridge(t) => t.start().await,
             TransportRuntime::WireGuard => {
                 Err(TransportError::NotImplemented("wireguard"))
             }
@@ -284,18 +269,6 @@ impl TransportRuntime {
     pub async fn stop(&mut self) -> Result<(), TransportError> {
         match self {
             TransportRuntime::MatrixFederation(t) => t.stop().await,
-            TransportRuntime::DiscordBridge(t) => {
-                // Stopping a non-running DiscordBridge is a noop —
-                // the partial-failure rollback path may call `stop`
-                // on transports that never started, and we don't
-                // want to propagate `NotRunning` as a teardown
-                // error in that case.
-                match t.stop().await {
-                    Ok(()) => Ok(()),
-                    Err(TransportError::NotRunning) => Ok(()),
-                    Err(e) => Err(e),
-                }
-            }
             TransportRuntime::WireGuard
             | TransportRuntime::Mesh
             | TransportRuntime::Tunnel
@@ -315,7 +288,6 @@ impl TransportRuntime {
     pub async fn is_healthy(&self) -> bool {
         match self {
             TransportRuntime::MatrixFederation(t) => t.is_healthy().await,
-            TransportRuntime::DiscordBridge(t) => t.is_healthy().await,
             TransportRuntime::WireGuard
             | TransportRuntime::Mesh
             | TransportRuntime::Tunnel => false,

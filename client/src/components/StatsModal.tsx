@@ -123,11 +123,7 @@ export function StatsModal({ onClose, serverId }: { onClose: () => void; serverI
       server.owner_id === userId
         ? "Owner"
         : members.find((member) => member.user_id === userId)?.role ?? "Member";
-    const serverKind = server.bridgeType === "discord"
-      ? "Discord bridge"
-      : server.federated
-        ? "Federated"
-        : "Concord";
+    const serverKind = server.federated ? "Federated" : "Concord";
 
     return (
       <div

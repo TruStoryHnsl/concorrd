@@ -54,7 +54,7 @@ export interface ConcordSource {
   /** When this source was added (ISO timestamp). */
   addedAt: string;
   /** What kind of network this source represents. Defaults to "concord". */
-  platform?: "concord" | "matrix" | "discord-bot" | "discord-account" | "reticulum";
+  platform?: "concord" | "matrix" | "reticulum";
   /** Concord user who owns this persisted source. Null => instance-global primary source. */
   ownerUserId?: string | null;
 }
@@ -112,8 +112,6 @@ export interface SourcesState {
   connectedSources: () => ConcordSource[];
   /** Toggle a source's visibility in the server column. */
   toggleSource: (id: string) => void;
-  /** Sync Discord bridge source state from Matrix room scan. */
-  syncDiscordBridge: (bridgeRunning: boolean) => void;
   /** One-time migration from active session (native first launch). */
   migrateFromSession: () => void;
   /**
@@ -229,11 +227,6 @@ export const useSourcesStore = create<SourcesState>()(
             s.id === id ? { ...s, enabled: !s.enabled } : s,
           ),
         }));
-      },
-
-      syncDiscordBridge: (_bridgeRunning) => {
-        // Stub — Discord bridge source management is handled by
-        // the migration flow. This satisfies calls from useMatrix.ts.
       },
 
       ensurePrimarySource: (config) => {

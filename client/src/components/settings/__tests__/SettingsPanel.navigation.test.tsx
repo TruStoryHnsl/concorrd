@@ -54,25 +54,25 @@ describe("<SettingsPanel /> navigation", () => {
     useServerStore.setState({
       servers: [
         {
-          id: "discord-1",
-          name: "Discord Guild",
+          id: "fed-1",
+          name: "Federated Server",
           icon_url: null,
           owner_id: "@alice:example.concordchat.net",
           visibility: "private",
-          abbreviation: "DG",
+          abbreviation: "FS",
           media_uploads_enabled: true,
           channels: [],
-          bridgeType: "discord",
+          federated: true,
         },
       ],
       members: {
-        "discord-1": [],
+        "fed-1": [],
       },
     });
     useSettingsStore.setState({
       settingsOpen: true,
-      settingsTab: "server-bridge",
-      serverSettingsId: "discord-1",
+      settingsTab: "server-federation",
+      serverSettingsId: "fed-1",
     });
   });
 
@@ -80,7 +80,7 @@ describe("<SettingsPanel /> navigation", () => {
     const user = userEvent.setup();
     render(<SettingsPanel />);
 
-    expect(screen.getByText("Server Tab: bridge")).toBeInTheDocument();
+    expect(screen.getByText("Server Tab: federation")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Profile/i }));
 
@@ -88,7 +88,7 @@ describe("<SettingsPanel /> navigation", () => {
     expect(useSettingsStore.getState().settingsTab).toBe("profile");
     // serverSettingsId is intentionally kept when navigating between tabs so the
     // admin server section stays highlighted in the sidebar; it only clears on close.
-    expect(useSettingsStore.getState().serverSettingsId).toBe("discord-1");
+    expect(useSettingsStore.getState().serverSettingsId).toBe("fed-1");
   });
 
   it("clears server context when settings are closed", () => {
