@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useAuthStore } from "../../stores/auth";
 import { useExtensionStore } from "../../stores/extension";
 import { useToastStore } from "../../stores/toast";

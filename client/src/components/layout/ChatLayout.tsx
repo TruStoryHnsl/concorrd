@@ -168,7 +168,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const activeChannelId = useServerStore((s) => s.activeChannelId);
   const servers = useServerStore((s) => s.servers);
   const activeServerId = useServerStore((s) => s.activeServerId);
-  const updateServer = useServerStore((s) => s.updateServer);
   const deleteChannelStore = useServerStore((s) => s.deleteChannel);
   const setActiveChannelId = (roomId: string) =>
     useServerStore.setState({ activeChannelId: roomId });
@@ -2789,8 +2788,6 @@ function AddSourceModal({
   const addSource = useSourcesStore((s) => s.addSource);
   const updateSource = useSourcesStore((s) => s.updateSource);
   const sources = useSourcesStore((s) => s.sources);
-  const accessToken = useAuthStore((s) => s.accessToken);
-  const openSettings = useSettingsStore((s) => s.openSettings);
   const resumeHandled = useRef(false);
 
   useEffect(() => {

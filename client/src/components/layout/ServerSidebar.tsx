@@ -29,7 +29,6 @@ import {
 import { useVoiceParticipants } from "../../hooks/useVoiceParticipants";
 import { NewServerModal } from "../server/NewServerModal";
 import { Avatar } from "../ui/Avatar";
-import { SourceBrandIcon } from "../sources/sourceBrand";
 
 /**
  * INS-002B: Server-list drag reorder.

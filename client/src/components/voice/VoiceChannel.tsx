@@ -270,7 +270,6 @@ function VoiceRoomUI({
   const toggleUserMuted = useSettingsStore((s) => s.toggleUserMuted);
   const accessToken = useAuthStore((s) => s.accessToken);
   const addToast = useToastStore((s) => s.addToast);
-  const activeServer = useServerStore((s) => s.servers.find((sv) => sv.id === serverId));
   const visibleParticipants = participants;
 
   // Vote kick state
