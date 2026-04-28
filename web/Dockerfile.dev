@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM node:25-alpine
 WORKDIR /app
 
 # Deps are NOT baked into the image. Instead, the container startup compares

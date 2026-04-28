@@ -1,5 +1,5 @@
 # Stage 1: Build React client
-FROM node:22-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /app
 COPY client/package.json client/package-lock.json ./
 RUN npm ci
