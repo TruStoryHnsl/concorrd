@@ -41,7 +41,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/tuwunel/**/*"
+      "resources/tuwunel/**/*",
+      "resources/discord_bridge/**/*"
     ],
     "linux": {
       "deb": {
@@ -60,6 +61,9 @@
       },
       "wix": {
         "language": ["en-US"]
+      },
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
       }
     },
     "iOS": {
