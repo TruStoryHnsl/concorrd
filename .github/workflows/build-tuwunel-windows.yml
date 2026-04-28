@@ -1,0 +1,211 @@
+# Build tuwunel.exe (Windows).
+#
+# Why this exists
+# ---------------
+# Concord embeds the tuwunel Matrix homeserver as a child process spawned
+# by the Tauri shell. Upstream tuwunel (matrix-construct/tuwunel) ships
+# Linux-only release artifacts — every published release asset is
+# `*-linux-gnu-tuwunel.{deb,rpm,zst}`. There is no Windows .exe in the
+# upstream releases. To ship the native Windows MSI with a working
+# embedded homeserver, we must build tuwunel.exe ourselves on a real
+# Windows host. This workflow IS that host.
+#
+# Output
+# ------
+# A GitHub Release on this repo (TruStoryHnsl/concord) tagged
+# `tuwunel-windows-v<version>` carrying a single asset: `tuwunel.exe`,
+# built from the upstream tag matching `<version>`. The main Concord
+# Windows build workflow (.github/workflows/windows-build.yml) downloads
+# this asset before invoking `cargo tauri build` so the bundler picks
+# it up via tauri.conf.json's `bundle.resources` glob.
+#
+# Triggers
+# --------
+# - workflow_dispatch — manual run with `tuwunel_version` input. The
+#   default tracks scripts/build_linux_native.sh's TUWUNEL_VERSION pin.
+# - push:tags:tuwunel-windows-* — release-cut driven. Pushing a tag of
+#   the form `tuwunel-windows-vX.Y.Z` builds against upstream `vX.Y.Z`
+#   and publishes the asset under that exact tag.
+#
+# Injection safety (per
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/):
+# every value used in `run:` blocks is routed through `env:` first.
+# `github.event.inputs.tuwunel_version` and `github.ref_name` are the
+# only user-supplied fields; both come from a dispatch input or a tag
+# name (only push-triggered for tags matching `tuwunel-windows-*`),
+# never from PR titles, commit messages, or comment bodies.
+
+name: Build tuwunel.exe (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tuwunel_version:
+        description: "tuwunel upstream tag to build (e.g. v1.5.1, v1.6.0)"
+        required: true
+        default: "v1.5.1"
+      publish_release:
+        description: "Publish tuwunel.exe as a GitHub release asset"
+        required: false
+        default: "true"
+  push:
+    tags: ["tuwunel-windows-*"]
+
+concurrency:
+  group: build-tuwunel-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: cargo build --release --bin tuwunel (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Resolve tuwunel version
+        id: resolve
+        shell: bash
+        # Route ALL user input through env: per injection-safety guide.
+        env:
+          DISPATCH_INPUT_VERSION: ${{ github.event.inputs.tuwunel_version }}
+          GITHUB_REF_VAL: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${DISPATCH_INPUT_VERSION:-}" ]]; then
+            v="$DISPATCH_INPUT_VERSION"
+          elif [[ "${GITHUB_REF_VAL}" == refs/tags/tuwunel-windows-* ]]; then
+            v="${GITHUB_REF_VAL#refs/tags/tuwunel-windows-}"
+          else
+            v="v1.5.1"
+          fi
+          # Whitelist the version string: only allow [A-Za-z0-9._-] so
+          # a malicious tag name can't become a shell metacharacter when
+          # passed to checkout's `ref:`.
+          if ! [[ "$v" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "Refusing to build with version string '$v' — does not match [A-Za-z0-9._-]+"
+            exit 1
+          fi
+          echo "Resolved tuwunel version: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout tuwunel source
+        uses: actions/checkout@v4
+        with:
+          repository: matrix-construct/tuwunel
+          ref: ${{ steps.resolve.outputs.version }}
+          fetch-depth: 0
+
+      - name: Install Rust toolchain (stable, msvc target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry + git index
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-tuwunel-${{ runner.os }}-${{ steps.resolve.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-tuwunel-${{ runner.os }}-${{ steps.resolve.outputs.version }}-
+            cargo-tuwunel-${{ runner.os }}-
+
+      - name: Cache cargo target/
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: cargo-target-tuwunel-${{ runner.os }}-${{ steps.resolve.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-target-tuwunel-${{ runner.os }}-${{ steps.resolve.outputs.version }}-
+
+      - name: Print toolchain + tuwunel layout (debug)
+        shell: bash
+        run: |
+          rustc --version
+          cargo --version
+          echo "--- top-level files ---"
+          ls -la
+          echo "--- bin targets in Cargo.toml ---"
+          grep -A2 '\[\[bin\]\]' Cargo.toml || echo "(no [[bin]] in root Cargo.toml; tuwunel may use a workspace member)"
+
+      - name: Build tuwunel (release, msvc)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Try the named bin first; fall back to a full workspace
+          # build if upstream restructured the package.
+          if cargo build --release --bin tuwunel --target x86_64-pc-windows-msvc 2>build.log; then
+            echo "Built --bin tuwunel cleanly."
+          else
+            echo "Bin-target build failed; retrying as workspace build."
+            cat build.log || true
+            cargo build --release --target x86_64-pc-windows-msvc
+          fi
+
+      - name: Locate tuwunel.exe
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          for candidate in \
+            "target/x86_64-pc-windows-msvc/release/tuwunel.exe" \
+            "target/release/tuwunel.exe"; do
+            if [[ -f "$candidate" ]]; then
+              echo "Found: $candidate"
+              echo "exe_path=$candidate" >> "$GITHUB_OUTPUT"
+              size=$(stat -c%s "$candidate" 2>/dev/null || stat -f%z "$candidate")
+              echo "size_bytes=$size" >> "$GITHUB_OUTPUT"
+              echo "tuwunel.exe size: $size bytes"
+              exit 0
+            fi
+          done
+          echo "tuwunel.exe NOT FOUND at standard paths. Dumping target/ tree:"
+          find target -maxdepth 5 -type f -name 'tuwunel*' 2>/dev/null || true
+          exit 1
+
+      - name: Sanity-check tuwunel.exe (size + PE magic)
+        shell: pwsh
+        env:
+          EXE_PATH: ${{ steps.locate.outputs.exe_path }}
+        run: |
+          $exe = $env:EXE_PATH
+          $info = Get-Item $exe
+          if ($info.Length -lt 5MB) {
+            throw "tuwunel.exe is suspiciously small: $($info.Length) bytes (expected >5MB)"
+          }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)[0..1]
+          if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+            throw "tuwunel.exe is missing the MZ magic — not a Windows PE binary"
+          }
+          Write-Host "OK: $exe ($($info.Length) bytes), MZ magic present"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuwunel-windows-${{ steps.resolve.outputs.version }}
+          path: ${{ steps.locate.outputs.exe_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release asset
+        if: |
+          github.event_name == 'push' ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.publish_release == 'true')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tuwunel-windows-${{ steps.resolve.outputs.version }}
+          name: tuwunel.exe (Windows ${{ steps.resolve.outputs.version }})
+          body: |
+            Windows build of upstream `matrix-construct/tuwunel` at the
+            resolved tag. Used by Concord's Windows MSI / NSIS bundle
+            (see `.github/workflows/windows-build.yml` "Stage bundled
+            tuwunel.exe" step).
+
+            Source-of-truth tuwunel releases:
+            https://github.com/matrix-construct/tuwunel/releases.
+          files: ${{ steps.locate.outputs.exe_path }}
+          fail_on_unmatched_files: true
+          token: ${{ secrets.GITHUB_TOKEN }}
