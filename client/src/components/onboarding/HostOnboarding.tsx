@@ -104,90 +104,22 @@ async function pollUntilRunning(
 }
 
 /**
- * Register the owner account against the freshly-spawned local
- * tuwunel using the Matrix `m.login.registration_token` UIA flow.
+ * Owner-registration response shape returned by the Rust-side
+ * `servitude_register_owner` Tauri command. Wave 3 sprint W3-05
+ * moved the per-backend registration mechanic out of the frontend:
  *
- * The flow per Matrix spec (client-server v1.10) is:
- *   1. POST /_matrix/client/v3/register with {username, password}
- *      and no auth — server replies 401 with the flows array.
- *   2. POST again with auth: { type: 'm.login.registration_token',
- *      token: <secret>, session: <from-401> } and the same body.
- *   3. Server replies 200 with {access_token, user_id, device_id}.
+ *   * Linux/macOS (tuwunel): backend drives the
+ *     `m.login.registration_token` UIA dance.
+ *   * Windows (dendrite): backend shells out to bundled
+ *     `create-account.exe -admin` then `/login`.
  *
- * Tuwunel-specific note (verified empirically against
- * matrix-construct/tuwunel @ v1.5.1+ docs 2026-04-27): the
- * `m.login.registration_token` flow is canonical Matrix; tuwunel's
- * registration_token config maps directly to it.
+ * The frontend NEVER touches the per-backend protocol anymore —
+ * just calls servitude_register_owner once and reads this shape.
  */
-async function registerOwner(
-  homeserverUrl: string,
-  username: string,
-  password: string,
-  token: string,
-): Promise<{ access_token: string; user_id: string; device_id: string }> {
-  const url = `${homeserverUrl.replace(/\/$/, "")}/_matrix/client/v3/register`;
-  const initialBody = { username, password };
-
-  // Step 1: probe for the UIA flow + session id.
-  const probe = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(initialBody),
-  });
-  if (probe.ok) {
-    // Some homeservers will succeed without UIA when the token is empty.
-    // Defensive: still parse the success body.
-    return (await probe.json()) as never;
-  }
-  if (probe.status !== 401) {
-    const text = await probe.text();
-    throw new Error(
-      `register probe expected 401 (UIA challenge), got ${probe.status}: ${text}`,
-    );
-  }
-  const challenge = (await probe.json()) as {
-    session?: string;
-    flows?: Array<{ stages: string[] }>;
-  };
-  if (!challenge.session) {
-    throw new Error(
-      "register UIA challenge missing session id — cannot continue",
-    );
-  }
-  const supportsToken = (challenge.flows ?? []).some((f) =>
-    (f.stages ?? []).includes("m.login.registration_token"),
-  );
-  if (!supportsToken) {
-    throw new Error(
-      "homeserver does not advertise m.login.registration_token flow — " +
-        "verify CONDUWUIT_REGISTRATION_TOKEN was set at servitude start",
-    );
-  }
-
-  // Step 2: complete UIA with the token.
-  const final = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      ...initialBody,
-      auth: {
-        type: "m.login.registration_token",
-        token,
-        session: challenge.session,
-      },
-    }),
-  });
-  if (!final.ok) {
-    const text = await final.text();
-    throw new Error(
-      `register final POST failed ${final.status}: ${text}`,
-    );
-  }
-  return (await final.json()) as {
-    access_token: string;
-    user_id: string;
-    device_id: string;
-  };
+interface RegisterOwnerResponse {
+  user_id: string;
+  access_token: string;
+  device_id: string;
 }
 
 /**
@@ -246,22 +178,23 @@ export function HostOnboarding({
       });
     });
 
-    setSpinnerStatus({ phase: "fetching_token" });
-    const token = await invoke<string>("servitude_get_registration_token");
-    debugLog("got registration_token (length)", token.length);
-
-    // The MVP-stage embedded tuwunel binds 127.0.0.1:<configured port>.
-    // We use the standard tuwunel default port. If the user's
-    // ServitudeConfig overrides this, they're on a non-default path
-    // and outside the W2 sprint scope.
+    // The embedded homeserver binds 127.0.0.1:<configured port>. The
+    // default port is 8448 for tuwunel-on-Linux/macOS and dendrite-
+    // on-Windows alike (matched in ServitudeConfig::default).
     const homeserverUrl = "http://127.0.0.1:8448";
 
     setSpinnerStatus({ phase: "registering_owner" });
-    const session = await registerOwner(
-      homeserverUrl,
-      account.username,
-      account.password,
-      token,
+    // Wave 3 sprint W3-07: the frontend NEVER drives the per-backend
+    // registration protocol anymore. servitude_register_owner picks
+    // the right path internally (tuwunel UIA on Linux/macOS, dendrite
+    // create-account CLI on Windows) and returns the same response
+    // shape on every platform.
+    const session = await invoke<RegisterOwnerResponse>(
+      "servitude_register_owner",
+      {
+        username: account.username,
+        password: account.password,
+      },
     );
     debugLog("registered owner", session.user_id);
 
@@ -269,8 +202,8 @@ export function HostOnboarding({
     noteAdminElevation(session.user_id);
 
     setSpinnerStatus({ phase: "logging_in" });
-    // Owner is already logged in via the register response — no
-    // separate /login round-trip needed.
+    // Owner is already logged in via the register response — the
+    // backend handled /login internally.
 
     setSpinnerStatus({ phase: "persisting" });
     const id = useSourcesStore.getState().addSource({

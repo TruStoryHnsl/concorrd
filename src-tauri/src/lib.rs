@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 pub mod servitude;
 
 use servitude::{LifecycleState, ServitudeConfig, ServitudeHandle};
+use servitude::transport::dendrite_federation::RegisterOwnerResponse;
 
 /// Tauri-managed state wrapping the optional embedded servitude handle.
 ///
@@ -159,6 +160,45 @@ async fn servitude_get_registration_token(
     }
 }
 
+/// Drive owner registration through whichever embedded homeserver
+/// backend is active for this platform. Wave 3 sprint W3-05.
+///
+/// Linux/macOS (tuwunel): performs the
+/// `m.login.registration_token` UIA dance using the per-instance
+/// registration_token, then `/login` to obtain an access token.
+///
+/// Windows (dendrite): shells out to bundled `create-account.exe`
+/// `-admin` to register + elevate, then `/login` to obtain an
+/// access token. (Dendrite does NOT support the registration_token
+/// UIA flow — see `dendrite_federation.rs` module-doc for the
+/// rationale.)
+///
+/// The frontend's HostOnboarding flow calls this exactly once during
+/// the spinner step. On success, the returned tuple drives the
+/// useSourcesStore.markOwner() flow that records the owner badge.
+#[tauri::command]
+async fn servitude_register_owner(
+    state: tauri::State<'_, ServitudeState>,
+    username: String,
+    password: String,
+) -> Result<RegisterOwnerResponse, String> {
+    if username.is_empty() {
+        return Err("username must not be empty".to_string());
+    }
+    if password.is_empty() {
+        return Err("password must not be empty".to_string());
+    }
+
+    let guard = state.0.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| "servitude has not been started".to_string())?;
+    handle
+        .register_owner(&username, &password)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK GPU compositing is unreliable on many Linux setups
@@ -307,6 +347,7 @@ pub fn run() {
             servitude_stop,
             servitude_status,
             servitude_get_registration_token,
+            servitude_register_owner,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

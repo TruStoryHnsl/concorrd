@@ -1,0 +1,237 @@
+# Build dendrite.exe + create-account.exe + generate-keys.exe (Windows).
+#
+# Why this exists
+# ---------------
+# Concord's Windows build embeds a Matrix homeserver as a child process.
+# Linux + macOS use tuwunel (matrix-construct/tuwunel). Windows hit two
+# walls trying to use tuwunel:
+#   1. jemalloc-sys autotools `configure` fails on windows-latest.
+#   2. Tuwunel's source itself is Linux-only (nix crate, libc::major/minor,
+#      Metadata::dev() unguarded) — patching it ourselves is multi-day fork
+#      maintenance.
+# So Windows uses dendrite (matrix-org/dendrite, Go, single-binary,
+# cross-compiles cleanly via GOOS=windows GOARCH=amd64). This workflow
+# produces the three Windows .exe files Concord embeds:
+#   - dendrite.exe       (the homeserver itself)
+#   - create-account.exe (CLI tool to register the owner-admin)
+#   - generate-keys.exe  (CLI tool to materialize matrix_key.pem on first boot)
+#
+# Output
+# ------
+# A GitHub Release on this repo (TruStoryHnsl/concord) tagged
+# `dendrite-windows-vX.Y.Z` carrying all three .exe assets. The main
+# Concord Windows build workflow (.github/workflows/windows-build.yml)
+# downloads them via `gh release download` before invoking
+# `cargo tauri build` so the bundler picks them up via tauri.conf.json's
+# `bundle.resources: ["resources/dendrite/**/*"]` glob.
+#
+# Triggers
+# --------
+# - workflow_dispatch — manual run with `dendrite_version` input. The
+#   default tracks DENDRITE_VERSION pinned in windows-build.yml.
+# - push:tags:dendrite-windows-* — release-cut driven. Pushing a tag of
+#   the form `dendrite-windows-vX.Y.Z` builds against upstream `vX.Y.Z`
+#   and publishes the assets under that exact tag.
+#
+# Cross-compilation, not native
+# -----------------------------
+# Unlike build-tuwunel-windows.yml which had to run on windows-latest
+# (Rust + RocksDB + jemalloc native deps), dendrite is pure Go and
+# cross-compiles cleanly from Linux via `GOOS=windows GOARCH=amd64`. So
+# this workflow runs on ubuntu-latest — faster, cheaper runner minutes,
+# fewer Windows-specific environmental quirks.
+#
+# Injection safety (per
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/):
+# every value used in `run:` blocks is routed through `env:` first.
+# `github.event.inputs.dendrite_version` and `github.ref` are the only
+# user-supplied fields; both come from a dispatch input or a tag name
+# (push-triggered only for tags matching `dendrite-windows-*`), never
+# from PR titles, commit messages, or comment bodies.
+
+name: Build dendrite.exe (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dendrite_version:
+        description: "dendrite upstream tag to build (e.g. v0.13.8)"
+        required: true
+        default: "v0.13.8"
+      publish_release:
+        description: "Publish .exe files as a GitHub release asset"
+        required: false
+        default: "true"
+  push:
+    tags: ["dendrite-windows-*"]
+
+concurrency:
+  group: build-dendrite-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: go build dendrite (cross-compile from ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Resolve dendrite version
+        id: resolve
+        shell: bash
+        # Route ALL user input through env: per injection-safety guide.
+        env:
+          DISPATCH_INPUT_VERSION: ${{ github.event.inputs.dendrite_version }}
+          GITHUB_REF_VAL: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${DISPATCH_INPUT_VERSION:-}" ]]; then
+            v="$DISPATCH_INPUT_VERSION"
+          elif [[ "${GITHUB_REF_VAL}" == refs/tags/dendrite-windows-* ]]; then
+            v="${GITHUB_REF_VAL#refs/tags/dendrite-windows-}"
+          else
+            v="v0.13.8"
+          fi
+          # Whitelist the version string: only allow [A-Za-z0-9._-] so
+          # a malicious tag name can't become a shell metacharacter when
+          # passed to checkout's `ref:`.
+          if ! [[ "$v" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "Refusing to build with version string '$v' — does not match [A-Za-z0-9._-]+"
+            exit 1
+          fi
+          echo "Resolved dendrite version: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout dendrite source
+        uses: actions/checkout@v4
+        with:
+          repository: matrix-org/dendrite
+          ref: ${{ steps.resolve.outputs.version }}
+          fetch-depth: 0
+
+      - name: Set up Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          # Dendrite v0.13.x requires Go 1.21+. Pin a recent stable
+          # release; setup-go resolves the latest patch automatically.
+          go-version: "1.22"
+
+      - name: Cache Go module download
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-dendrite-${{ runner.os }}-${{ steps.resolve.outputs.version }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-dendrite-${{ runner.os }}-${{ steps.resolve.outputs.version }}-
+            go-dendrite-${{ runner.os }}-
+
+      - name: Print toolchain + dendrite layout (debug)
+        shell: bash
+        run: |
+          go version
+          echo "--- top-level files ---"
+          ls -la
+          echo "--- cmd/ targets ---"
+          ls -la cmd/ || true
+          echo "--- relevant cmd subdirs ---"
+          ls -la cmd/dendrite cmd/create-account cmd/generate-keys 2>/dev/null || true
+
+      - name: Build dendrite.exe + create-account.exe + generate-keys.exe (cross GOOS=windows)
+        shell: bash
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          # CGO_ENABLED=0 — dendrite's default build is pure-Go for the
+          # core binaries; explicitly disabling CGO avoids accidentally
+          # pulling in a native dep on a future minor release.
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # -ldflags="-s -w" strips debug + symbol tables to keep the
+          # bundled installer size down. Concord's Windows installer
+          # already embeds the WebView2 offlineInstaller (~90MB), the
+          # mautrix-discord bridge (~18MB), and tuwunel.exe is no longer
+          # part of Windows — every megabyte we save on dendrite means
+          # a smaller .exe end-users download.
+          for binary in dendrite create-account generate-keys; do
+            echo "Building cmd/$binary -> out/${binary}.exe"
+            go build \
+              -ldflags="-s -w" \
+              -trimpath \
+              -o "out/${binary}.exe" \
+              "./cmd/${binary}"
+          done
+          ls -la out/
+
+      - name: Sanity-check .exe outputs (size + PE MZ magic)
+        shell: bash
+        env:
+          OUT_DIR: out
+        run: |
+          set -euo pipefail
+          for binary in dendrite create-account generate-keys; do
+            exe="${OUT_DIR}/${binary}.exe"
+            if [[ ! -f "$exe" ]]; then
+              echo "FAIL: $exe is missing"
+              exit 1
+            fi
+            size=$(stat -c%s "$exe")
+            echo "$exe size: $size bytes"
+            # dendrite.exe is the big one (~30-40MB); create-account /
+            # generate-keys are smaller (~10-15MB each). Set a generous
+            # floor so a future stripped build doesn't trip this. The
+            # MZ magic check below is the load-bearing one.
+            if [[ "$size" -lt 1048576 ]]; then
+              echo "FAIL: $exe is suspiciously small ($size bytes)"
+              exit 1
+            fi
+            # PE binaries start with 'MZ' (0x4D 0x5A).
+            magic=$(head -c2 "$exe" | xxd -p)
+            if [[ "$magic" != "4d5a" ]]; then
+              echo "FAIL: $exe missing MZ PE magic (got '$magic')"
+              exit 1
+            fi
+            echo "OK: $exe (size=$size, MZ magic present)"
+          done
+
+      - name: Upload artifact (combined)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dendrite-windows-${{ steps.resolve.outputs.version }}
+          path: out/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release asset
+        if: |
+          github.event_name == 'push' ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.publish_release == 'true')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dendrite-windows-${{ steps.resolve.outputs.version }}
+          name: dendrite Windows build (${{ steps.resolve.outputs.version }})
+          body: |
+            Cross-compiled Windows build of upstream
+            `matrix-org/dendrite` at the resolved tag.
+
+            Used by Concord's Windows MSI / NSIS bundle (see
+            `.github/workflows/windows-build.yml` "Stage bundled
+            dendrite" step).
+
+            Assets:
+              - dendrite.exe       — the homeserver
+              - create-account.exe — CLI for registering the owner-admin
+              - generate-keys.exe  — CLI for materializing matrix_key.pem
+
+            Source-of-truth dendrite releases:
+            https://github.com/matrix-org/dendrite/releases.
+          files: |
+            out/dendrite.exe
+            out/create-account.exe
+            out/generate-keys.exe
+          fail_on_unmatched_files: true
+          token: ${{ secrets.GITHUB_TOKEN }}

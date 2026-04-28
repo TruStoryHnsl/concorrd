@@ -41,7 +41,9 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/tuwunel/**/*"
+      "resources/tuwunel/**/*",
+      "resources/dendrite/**/*",
+      "resources/discord_bridge/**/*"
     ],
     "linux": {
       "deb": {
@@ -53,6 +55,9 @@
       "frameworks": []
     },
     "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      },
       "nsis": {
         "displayLanguageSelector": false,
         "languages": ["English"],

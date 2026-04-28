@@ -76,17 +76,19 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
 
-    # Pinned tuwunel version. Tracks the Linux pin in
-    # scripts/build_linux_native.sh (TUWUNEL_VERSION at line ~29). When
-    # that pin moves, bump this string AND ensure a corresponding
-    # `tuwunel-windows-v<ver>` release exists (built by the
-    # build-tuwunel-windows.yml workflow). Until that release exists,
-    # the "Stage bundled tuwunel.exe" step warn-skips and the produced
-    # MSI ships without an embedded homeserver. servitude_start will
-    # surface BinaryNotFound at runtime but the rest of the client
-    # still loads — acceptable for first-pass smoke tests.
+    # Pinned dendrite version. Windows uses dendrite (matrix-org/dendrite),
+    # not tuwunel. The Linux/macOS native builds keep tuwunel — the per-OS
+    # backend selection happens in src-tauri/src/servitude/transport/mod.rs
+    # via cfg(target_os = "windows") arms. When this pin moves, bump the
+    # string AND ensure a corresponding `dendrite-windows-v<ver>` release
+    # exists on this repo (built by the build-dendrite-windows.yml
+    # workflow). Until that release exists, the "Stage bundled dendrite"
+    # step warn-skips and the produced MSI ships without an embedded
+    # homeserver. servitude_start will surface BinaryNotFound at runtime
+    # but the rest of the client still loads — acceptable for first-pass
+    # smoke tests.
     env:
-      TUWUNEL_VERSION: "v1.5.1"
+      DENDRITE_VERSION: "v0.13.8"
 
     steps:
       - name: Check out repository
@@ -140,39 +142,49 @@ jobs:
         working-directory: client
         run: npm run build
 
-      - name: Stage bundled tuwunel.exe
-        # Downloads tuwunel.exe from the latest tuwunel-windows-v<ver>
-        # release on this repo (built by build-tuwunel-windows.yml) and
-        # stages it at src-tauri/resources/tuwunel/tuwunel.exe so
-        # tauri.conf.json's `bundle.resources` glob picks it up. If no
-        # such release exists yet (first run before the W2-01 release
-        # ships), this step warn-skips so the build still produces a
-        # functional-but-degraded MSI for smoke testing.
+      - name: Stage bundled dendrite
+        # Downloads dendrite.exe + create-account.exe + generate-keys.exe
+        # from the latest dendrite-windows-v<ver> release on this repo
+        # (built by build-dendrite-windows.yml) and stages them at
+        # src-tauri/resources/dendrite/ so tauri.conf.json's
+        # `bundle.resources: ["resources/dendrite/**/*"]` glob picks them
+        # up. If no such release exists yet (first run before the W3-01
+        # release ships), this step warn-skips so the build still
+        # produces a functional-but-degraded MSI for smoke testing.
+        # Tuwunel is no longer staged on Windows — Linux/macOS keep
+        # tuwunel via their native build scripts.
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          TUWUNEL_VERSION: ${{ env.TUWUNEL_VERSION }}
+          DENDRITE_VERSION: ${{ env.DENDRITE_VERSION }}
         run: |
-          $tag = "tuwunel-windows-$env:TUWUNEL_VERSION"
-          $dest = "src-tauri/resources/tuwunel"
+          $tag = "dendrite-windows-$env:DENDRITE_VERSION"
+          $dest = "src-tauri/resources/dendrite"
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          Write-Host "Attempting: gh release download $tag tuwunel.exe → $dest"
+          $patterns = @("dendrite.exe", "create-account.exe", "generate-keys.exe")
           $downloaded = $false
+          $fileResults = @{}
           try {
-            gh release download $tag --pattern tuwunel.exe --dir $dest --repo $env:GH_REPO
-            $exe = Join-Path $dest "tuwunel.exe"
-            if (-not (Test-Path $exe)) {
-              throw "gh release download exited 0 but $exe is not present"
+            foreach ($pattern in $patterns) {
+              Write-Host "Attempting: gh release download $tag --pattern $pattern -> $dest"
+              gh release download $tag --pattern $pattern --dir $dest --repo $env:GH_REPO
+              $exe = Join-Path $dest $pattern
+              if (-not (Test-Path $exe)) {
+                throw "gh release download exited 0 but $exe is not present"
+              }
+              $size = (Get-Item $exe).Length
+              # 1MB floor: even stripped Go binaries are >5MB; below 1MB
+              # implies a corrupted download or stub.
+              if ($size -lt 1MB) {
+                throw "$pattern is suspiciously small ($size bytes); rejecting"
+              }
+              Write-Host "Staged $exe (size: $size bytes)"
+              $fileResults[$pattern] = $size
             }
-            $size = (Get-Item $exe).Length
-            if ($size -lt 5MB) {
-              throw "tuwunel.exe is suspiciously small ($size bytes); rejecting"
-            }
-            Write-Host "Staged $exe (size: $size bytes)"
             $downloaded = $true
           } catch {
-            Write-Warning "tuwunel.exe NOT staged for $tag — building MSI without bundled homeserver. servitude_start will surface BinaryNotFound at runtime. Detail: $_"
+            Write-Warning "dendrite assets NOT staged for $tag — building MSI without bundled homeserver. servitude_start will surface BinaryNotFound at runtime. Detail: $_"
             # gh release download leaves $LASTEXITCODE non-zero on its
             # native side; pwsh propagates that as the script's exit
             # code at end-of-script, killing the whole job. We've
@@ -183,9 +195,12 @@ jobs:
           # Echo to summary so a reviewer skimming the run page can see
           # the binding state at a glance.
           if ($downloaded) {
-            "tuwunel.exe: STAGED ($tag)" >> $env:GITHUB_STEP_SUMMARY
+            "dendrite assets: STAGED ($tag)" >> $env:GITHUB_STEP_SUMMARY
+            foreach ($k in $fileResults.Keys) {
+              "  - ${k}: $($fileResults[$k]) bytes" >> $env:GITHUB_STEP_SUMMARY
+            }
           } else {
-            "tuwunel.exe: NOT STAGED — bundle will run without embedded homeserver" >> $env:GITHUB_STEP_SUMMARY
+            "dendrite assets: NOT STAGED — bundle will run without embedded homeserver" >> $env:GITHUB_STEP_SUMMARY
           }
 
       - name: Tauri build (MSI + NSIS, no debug)

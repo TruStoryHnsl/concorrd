@@ -175,6 +175,42 @@ impl ServitudeHandle {
         None
     }
 
+    /// Drive owner-account registration against the active embedded
+    /// homeserver. Wave 3 sprint W3-05.
+    ///
+    /// Selects the right protocol per backend (tuwunel UIA dance vs
+    /// dendrite create-account CLI) and returns the resulting
+    /// (user_id, access_token, device_id) tuple via the shared
+    /// [`crate::servitude::transport::dendrite_federation::RegisterOwnerResponse`].
+    /// Errors out if no MatrixFederation transport is enabled OR if
+    /// none of the runtimes can drive the registration.
+    pub async fn register_owner(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<
+        crate::servitude::transport::dendrite_federation::RegisterOwnerResponse,
+        ServitudeError,
+    > {
+        for runtime in &self.transports {
+            // Skip non-Matrix runtimes; only one runtime can drive
+            // owner registration.
+            match runtime {
+                TransportRuntime::MatrixFederation(_)
+                | TransportRuntime::DendriteFederation(_) => {
+                    return runtime
+                        .register_owner(username, password)
+                        .await
+                        .map_err(ServitudeError::Transport);
+                }
+                _ => continue,
+            }
+        }
+        Err(ServitudeError::Transport(TransportError::NotImplemented(
+            "no MatrixFederation transport configured for register_owner",
+        )))
+    }
+
     /// Drive the state machine `Stopped -> Starting -> Running`, bringing
     /// up each enabled transport in config order.
     ///
