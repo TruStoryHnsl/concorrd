@@ -154,6 +154,27 @@ impl ServitudeHandle {
         &self.degraded
     }
 
+    /// The embedded tuwunel's per-instance registration token, if a
+    /// MatrixFederation transport is enabled AND `start()` has run
+    /// successfully. The Host onboarding flow (W2-06) reads this via
+    /// `servitude_get_registration_token` to drive the
+    /// `m.login.registration_token` UI-Authentication flow when
+    /// creating the owner account on a freshly-spawned local
+    /// homeserver.
+    ///
+    /// Returns `None` if no MatrixFederation transport is enabled
+    /// in the config, OR if the token has not been materialized yet
+    /// (the homeserver was never started, or start failed before
+    /// reaching the token-ensure step).
+    pub fn registration_token(&self) -> Option<&str> {
+        for runtime in &self.transports {
+            if let Some(t) = runtime.registration_token() {
+                return Some(t);
+            }
+        }
+        None
+    }
+
     /// Drive the state machine `Stopped -> Starting -> Running`, bringing
     /// up each enabled transport in config order.
     ///

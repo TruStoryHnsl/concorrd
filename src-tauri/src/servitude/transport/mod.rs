@@ -196,6 +196,18 @@ impl TransportRuntime {
         }
     }
 
+    /// The current registration token of the embedded tuwunel, if this
+    /// runtime variant carries one and it has been materialized by a
+    /// successful `start()`. The Host onboarding flow on the frontend
+    /// reads this to drive the `m.login.registration_token` UIA flow
+    /// when creating the owner account.
+    pub fn registration_token(&self) -> Option<&str> {
+        match self {
+            TransportRuntime::MatrixFederation(t) => t.registration_token(),
+            _ => None,
+        }
+    }
+
     /// Human-readable name for logs — matches
     /// [`Transport::name`] on the active variant.
     pub fn name(&self) -> &'static str {

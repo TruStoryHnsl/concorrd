@@ -100,6 +100,112 @@ pub const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 /// 10 seconds is generous without being painful.
 pub const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Filename inside the data dir where the per-instance registration
+/// token is persisted. Mode 0600 on Unix; default ACL on Windows
+/// (only the owner user has full access by default in %APPDATA%).
+pub const REGISTRATION_TOKEN_FILENAME: &str = "registration_token";
+
+/// Length of the random ASCII registration token. 32 characters of
+/// `[A-Za-z0-9]` carries roughly 190 bits of entropy — overkill for
+/// a per-instance shared secret that gates account creation against
+/// localhost, but cheap to produce and forces the token into the
+/// "obviously-secret" length category visually.
+pub const REGISTRATION_TOKEN_LEN: usize = 32;
+
+/// Generate, persist, and return the embedded tuwunel's registration
+/// token. The token is a random 32-char `[A-Za-z0-9]` string written
+/// to `<data_dir>/registration_token`. If the file already exists and
+/// is non-empty, its contents are returned verbatim — making this
+/// function idempotent across servitude restarts so existing
+/// in-flight invites stay valid.
+///
+/// Per the W2 sprint design (CRITICAL DESIGN DECISIONS #11): the
+/// embedded tuwunel runs with `allow_registration=true` AND
+/// `registration_token=<this>` so registration is OPEN structurally
+/// but requires possession of the token (the Matrix
+/// `m.login.registration_token` UI-Authentication flow). The Host
+/// onboarding flow on the frontend reads this token via the
+/// `servitude_get_registration_token` Tauri command, uses it to
+/// register the owner account on first boot, then keeps it on hand
+/// so the owner can issue invite links to subsequent users.
+///
+/// **Empirical basis** (verified against
+/// https://matrix-construct.github.io/tuwunel/configuration/examples.html
+/// on 2026-04-27):
+///
+/// > `registration_token` — A static registration token that new users
+/// > will have to provide when creating an account.
+/// >
+/// > `allow_registration` — Enables registration. If set to false, no
+/// > users can register on this server.
+///
+/// Tuwunel inherits Conduwuit's env-var prefix; `TUWUNEL_*` and
+/// `CONDUWUIT_*` are both accepted. We use `CONDUWUIT_*` to match the
+/// existing keys in this file.
+pub fn ensure_registration_token(data_dir: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    use std::io::Write;
+    let token_path = data_dir.join(REGISTRATION_TOKEN_FILENAME);
+
+    // Idempotent: if the file already exists with a non-empty value,
+    // return it. This means a tuwunel restart picks up the same
+    // token, and any registration token the user has already shared
+    // with friends keeps working.
+    if let Ok(mut f) = std::fs::File::open(&token_path) {
+        let mut s = String::new();
+        f.read_to_string(&mut s)?;
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+        // Fall through: empty file means we never finished writing.
+    }
+
+    let token = generate_registration_token();
+
+    // Write atomically: write to <name>.tmp then rename, so a crash
+    // mid-write doesn't leave a partial file that the idempotent
+    // read above would mistake for a real token.
+    let tmp = token_path.with_extension("tmp");
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(token.as_bytes())?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, &token_path)?;
+
+    // Best-effort 0600 on Unix. Failure here is non-fatal — the
+    // file lands somewhere only the user account has read access
+    // to anyway (XDG_DATA_HOME is per-user; %APPDATA% likewise).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            &token_path,
+            std::fs::Permissions::from_mode(0o600),
+        );
+    }
+
+    Ok(token)
+}
+
+/// Generate a random `[A-Za-z0-9]` token of REGISTRATION_TOKEN_LEN
+/// characters. Pulled out of `ensure_registration_token` so unit tests
+/// can characterise the entropy pool without round-tripping through
+/// disk I/O.
+pub fn generate_registration_token() -> String {
+    use rand::Rng;
+    const ALPHABET: &[u8] =
+        b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut rng = rand::thread_rng();
+    (0..REGISTRATION_TOKEN_LEN)
+        .map(|_| {
+            let idx = rng.gen_range(0..ALPHABET.len());
+            ALPHABET[idx] as char
+        })
+        .collect()
+}
+
 /// Embedded-tuwunel transport. Owns the child process handle while
 /// running; the field is `None` in the stopped state.
 #[derive(Debug)]
@@ -117,6 +223,14 @@ pub struct MatrixFederationTransport {
     /// tuwunel should load on startup. Passed to tuwunel via the
     /// `CONDUWUIT_APPSERVICES` env var as a JSON array of absolute paths.
     appservice_registrations: Vec<PathBuf>,
+    /// Per-instance registration token. Lazily populated on `start()`
+    /// from `<data_dir>/registration_token` (created if missing).
+    /// `None` until first start completes; once populated, stays
+    /// populated for the lifetime of the transport handle so the
+    /// frontend can read it after a successful start via
+    /// `servitude_get_registration_token`. See W2-11 in the W2 sprint
+    /// design.
+    registration_token: Option<String>,
 }
 
 impl MatrixFederationTransport {
@@ -134,7 +248,16 @@ impl MatrixFederationTransport {
             data_dir: None,
             child: None,
             appservice_registrations: Vec::new(),
+            registration_token: None,
         }
+    }
+
+    /// The current per-instance registration token. `None` until
+    /// `start()` runs successfully and populates it. The Host
+    /// onboarding flow reads this via `servitude_get_registration_token`
+    /// to drive the owner-account creation step.
+    pub fn registration_token(&self) -> Option<&str> {
+        self.registration_token.as_deref()
     }
 
     /// Locate the bundled tuwunel binary on disk. Returns the first hit
@@ -283,7 +406,7 @@ impl MatrixFederationTransport {
     /// federation disabled by default).
     fn env_vars(&self, data_dir: &Path) -> Vec<(String, String)> {
         let db_path = data_dir.join("database");
-        let envs = vec![
+        let mut envs = vec![
             ("CONDUWUIT_SERVER_NAME".to_string(), self.server_name.clone()),
             (
                 "CONDUWUIT_DATABASE_PATH".to_string(),
@@ -301,15 +424,32 @@ impl MatrixFederationTransport {
                 "CONDUWUIT_MAX_REQUEST_SIZE".to_string(),
                 "20000000".to_string(),
             ),
-            // Safety defaults — registration closed, federation
-            // disabled at the env layer until the user opts in via
-            // settings. Hot-swap of these lives in
-            // `server/services/tuwunel_config.py` on the Docker
-            // deploy; embedded mode relies on a restart.
-            (
-                "CONDUWUIT_ALLOW_REGISTRATION".to_string(),
-                "false".to_string(),
-            ),
+            // Registration: token-gated by default. When a registration
+            // token is present (the normal case after `start()` runs),
+            // tuwunel must have `allow_registration = true` AND
+            // `registration_token = <secret>` so the owner / invitees
+            // register via the Matrix `m.login.registration_token`
+            // UI-Authentication flow. Without the token they cannot
+            // create accounts. When the token is absent (degenerate
+            // case — pre-W2-11 build, or a transport instance that
+            // never had `ensure_registration_token` run on it), we
+            // fall back to the historical `allow_registration = false`
+            // hard-close so a freshly-spawned tuwunel never accepts
+            // self-service signups by accident.
+            //
+            // Empirical basis (verified 2026-04-27 against
+            // https://matrix-construct.github.io/tuwunel/configuration/examples.html):
+            //   allow_registration: bool  → toggles signup at all.
+            //   registration_token: str   → token required during signup.
+            //   yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse
+            //                            → only relevant if you want
+            //                              OPEN signup with no token,
+            //                              which we never do.
+            //
+            // CONDUWUIT_* env-var prefix is preserved for tuwunel
+            // backwards-compat (per upstream README: "anything else
+            // named conduwuit is still recognized, including
+            // environment variables").
             (
                 "CONDUWUIT_ALLOW_PRESENCE".to_string(),
                 "true".to_string(),
@@ -317,6 +457,25 @@ impl MatrixFederationTransport {
             ("CONDUWUIT_LOG".to_string(), "info".to_string()),
             ("CONDUWUIT_TRUSTED_SERVERS".to_string(), "[]".to_string()),
         ];
+
+        match &self.registration_token {
+            Some(token) => {
+                envs.push((
+                    "CONDUWUIT_ALLOW_REGISTRATION".to_string(),
+                    "true".to_string(),
+                ));
+                envs.push((
+                    "CONDUWUIT_REGISTRATION_TOKEN".to_string(),
+                    token.clone(),
+                ));
+            }
+            None => {
+                envs.push((
+                    "CONDUWUIT_ALLOW_REGISTRATION".to_string(),
+                    "false".to_string(),
+                ));
+            }
+        }
 
         // INS-024 Wave 5: appservice registrations are handled by
         // register_appservices() which runs after tuwunel is reachable,
@@ -435,6 +594,30 @@ impl Transport for MatrixFederationTransport {
                 data_dir, e
             ))
         })?;
+
+        // Read or generate the per-instance registration token. Stored
+        // on `self` so the frontend can pull it back via
+        // `servitude_get_registration_token` after start. See W2-11.
+        // Wrap the blocking File I/O in spawn_blocking so we don't
+        // stall the tokio runtime on a slow disk.
+        let data_dir_for_token = data_dir.clone();
+        let token = tokio::task::spawn_blocking(move || {
+            ensure_registration_token(&data_dir_for_token)
+        })
+        .await
+        .map_err(|e| {
+            TransportError::StartFailed(format!(
+                "registration_token task panicked: {}",
+                e
+            ))
+        })?
+        .map_err(|e| {
+            TransportError::StartFailed(format!(
+                "failed to materialize registration_token: {}",
+                e
+            ))
+        })?;
+        self.registration_token = Some(token);
 
         let envs = self.env_vars(&data_dir);
 
@@ -951,5 +1134,152 @@ mod tests {
         let p = PathBuf::from("/test/registration.yaml");
         t.add_appservice_registration(p.clone());
         assert_eq!(t.appservice_registrations(), &[p]);
+    }
+
+    // W2-11 — registration token plumbing.
+
+    /// generate_registration_token returns a 32-char `[A-Za-z0-9]`
+    /// string. The exact length is part of the API contract — the
+    /// frontend's Host onboarding flow uses this length as a basic
+    /// "did we get a real token?" sanity check.
+    #[test]
+    fn test_generate_registration_token_shape() {
+        let token = generate_registration_token();
+        assert_eq!(
+            token.len(),
+            REGISTRATION_TOKEN_LEN,
+            "token length mismatch (expected {}, got {})",
+            REGISTRATION_TOKEN_LEN,
+            token.len()
+        );
+        assert!(
+            token.chars().all(|c| c.is_ascii_alphanumeric()),
+            "token must be ASCII alphanumeric, got: {:?}",
+            token
+        );
+    }
+
+    /// Two consecutive calls produce different values (entropy
+    /// sanity check). Probability of collision at 32 alnum chars is
+    /// 1 / 62^32 — about 1 in 2.2 × 10^57. If this test ever fails,
+    /// the RNG is broken.
+    #[test]
+    fn test_generate_registration_token_is_random() {
+        let a = generate_registration_token();
+        let b = generate_registration_token();
+        assert_ne!(a, b, "two RNG draws produced the same token");
+    }
+
+    /// First call to `ensure_registration_token` creates the file with
+    /// the generated token; second call round-trips the SAME token
+    /// (idempotency contract — restarts of tuwunel must preserve any
+    /// invitation tokens already shared with friends).
+    #[test]
+    fn test_ensure_registration_token_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!(
+            "concord-token-test-{}-{}",
+            std::process::id(),
+            uuid_like()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let first = ensure_registration_token(&dir).expect("first call must succeed");
+        assert_eq!(first.len(), REGISTRATION_TOKEN_LEN);
+
+        // The file must now exist and contain exactly the token.
+        let token_path = dir.join(REGISTRATION_TOKEN_FILENAME);
+        let on_disk = std::fs::read_to_string(&token_path).unwrap();
+        assert_eq!(on_disk.trim(), first);
+
+        let second =
+            ensure_registration_token(&dir).expect("second call must succeed");
+        assert_eq!(
+            first, second,
+            "ensure_registration_token must return the SAME token on a re-call"
+        );
+
+        // 0600 on Unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode =
+                std::fs::metadata(&token_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o600,
+                "registration_token file must be 0600 on unix, got {:o}",
+                mode
+            );
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Helper: produce a per-test pseudo-uuid so concurrent test
+    /// processes don't collide on the same tempdir name.
+    fn uuid_like() -> String {
+        use std::time::SystemTime;
+        format!(
+            "{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )
+    }
+
+    /// `env_vars()` flips registration on with the live token when
+    /// one is loaded. This is the runtime-correct shape — tuwunel
+    /// must see `allow_registration=true` AND
+    /// `registration_token=<secret>` together for token-gated signup
+    /// to work.
+    #[test]
+    fn test_env_vars_emits_registration_token_when_loaded() {
+        let mut t = MatrixFederationTransport::from_config(&config_on_port(8765));
+        // Simulate a successful start that loaded the token.
+        t.registration_token = Some("test-token-abcdef0123456789".to_string());
+
+        let envs = t.env_vars(std::path::Path::new("/tmp"));
+        let by_key: std::collections::HashMap<&str, &str> = envs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        assert_eq!(
+            by_key.get("CONDUWUIT_ALLOW_REGISTRATION"),
+            Some(&"true"),
+            "with a token loaded, allow_registration must be true"
+        );
+        assert_eq!(
+            by_key.get("CONDUWUIT_REGISTRATION_TOKEN"),
+            Some(&"test-token-abcdef0123456789"),
+            "registration_token env var must mirror the loaded token"
+        );
+    }
+
+    /// Defensive default: if `registration_token` is None on the
+    /// transport (e.g. start hasn't run yet, or this branch is
+    /// exercised by a future test), the env vars must keep the
+    /// historical hard-close so a freshly-spawned tuwunel never
+    /// accepts open signups.
+    #[test]
+    fn test_env_vars_falls_back_to_closed_when_no_token() {
+        let t = MatrixFederationTransport::from_config(&config_on_port(8765));
+        assert!(t.registration_token().is_none());
+        let envs = t.env_vars(std::path::Path::new("/tmp"));
+        let by_key: std::collections::HashMap<&str, &str> = envs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        assert_eq!(
+            by_key.get("CONDUWUIT_ALLOW_REGISTRATION"),
+            Some(&"false"),
+            "without a token, allow_registration must be false"
+        );
+        assert!(
+            !by_key.contains_key("CONDUWUIT_REGISTRATION_TOKEN"),
+            "no CONDUWUIT_REGISTRATION_TOKEN should be emitted when token is None"
+        );
     }
 }

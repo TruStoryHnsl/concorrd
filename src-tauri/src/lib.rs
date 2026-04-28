@@ -123,6 +123,42 @@ async fn servitude_status(state: tauri::State<'_, ServitudeState>) -> Result<Str
     serde_json::to_string(&response).map_err(|e| e.to_string())
 }
 
+/// Return the embedded tuwunel's per-instance registration token.
+///
+/// W2-11. The Host onboarding flow reads this AFTER `servitude_start`
+/// has resolved Running. The token gates the
+/// `m.login.registration_token` UI-Authentication flow used to create
+/// the owner account on a freshly-spawned local homeserver, AND any
+/// invitation tokens the owner shares with later members.
+///
+/// Returns Err when:
+///   * servitude has never been started (no handle), OR
+///   * the handle exists but a MatrixFederation transport hasn't
+///     been started yet (token not materialized).
+///
+/// The token is regenerated only when the on-disk file at
+/// `<data_dir>/registration_token` is missing or empty — see
+/// `ensure_registration_token` for the exact semantics. Calls to this
+/// command after a successful start are idempotent: the SAME token is
+/// returned every time.
+#[tauri::command]
+async fn servitude_get_registration_token(
+    state: tauri::State<'_, ServitudeState>,
+) -> Result<String, String> {
+    let guard = state.0.lock().await;
+    match guard.as_ref() {
+        Some(handle) => match handle.registration_token() {
+            Some(t) => Ok(t.to_string()),
+            None => Err(
+                "servitude is not running, or the matrix-federation transport \
+                 has not yet materialized its registration token"
+                    .to_string(),
+            ),
+        },
+        None => Err("servitude has not been started".to_string()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK GPU compositing is unreliable on many Linux setups
@@ -270,6 +306,7 @@ pub fn run() {
             servitude_start,
             servitude_stop,
             servitude_status,
+            servitude_get_registration_token,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
