@@ -134,42 +134,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Tuwunel's default Cargo features include `jemalloc`,
-          # `jemalloc_conf`, `io_uring`, and `systemd` — all of which
-          # fail to compile under MSVC on Windows. The `jevmalloc-sys`
-          # crate uses an autotools `configure` script that probes for
-          # a Unix-style C compiler and dies on `windows-latest`
-          # (`configure: error: C compiler cannot create executables`).
-          # `io_uring` is a Linux kernel API and `systemd` is a Linux
-          # init-system bridge — neither has a Windows analogue.
-          #
-          # Drop --no-default-features and re-enable only the cross-
-          # platform features Concord needs from tuwunel:
-          #   media_thumbnail        — image transcoding for
-          #                            attachments
-          #   release_max_log_level  — strip Trace/Debug logs from
-          #                            release builds
-          #   url_preview            — link unfurling for messages
-          #   zstd_compression       — RocksDB column compression
-          #
-          # The Windows MSVC build uses the system allocator instead
-          # of jemalloc — slightly slower under heavy multi-threaded
-          # allocation pressure but a non-issue at single-user
-          # self-host scale, which is the only Windows deployment
-          # mode Concord supports today.
-          WIN_FEATURES="media_thumbnail,release_max_log_level,url_preview,zstd_compression"
-          echo "Building tuwunel with Windows feature set: $WIN_FEATURES"
-          if cargo build --release --bin tuwunel \
-              --target x86_64-pc-windows-msvc \
-              --no-default-features \
-              --features "$WIN_FEATURES" 2>build.log; then
+          # Try the named bin first; fall back to a full workspace
+          # build if upstream restructured the package.
+          if cargo build --release --bin tuwunel --target x86_64-pc-windows-msvc 2>build.log; then
             echo "Built --bin tuwunel cleanly."
           else
             echo "Bin-target build failed; retrying as workspace build."
             cat build.log || true
-            cargo build --release --target x86_64-pc-windows-msvc \
-              --no-default-features \
-              --features "$WIN_FEATURES"
+            cargo build --release --target x86_64-pc-windows-msvc
           fi
 
       - name: Locate tuwunel.exe
