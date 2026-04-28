@@ -69,6 +69,12 @@ concurrency:
   group: build-dendrite-windows-${{ github.ref }}
   cancel-in-progress: false
 
+# Default GITHUB_TOKEN permissions are read-only on repos with the
+# "Workflow permissions" hardening turned on. Releasing requires
+# explicit `contents: write`.
+permissions:
+  contents: write
+
 jobs:
   build:
     name: go build dendrite (cross-compile from ubuntu-latest)
