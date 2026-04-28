@@ -60,6 +60,9 @@
       },
       "wix": {
         "language": ["en-US"]
+      },
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
       }
     },
     "iOS": {
