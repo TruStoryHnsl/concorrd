@@ -28,7 +28,7 @@ tauri-plugin-store = "2"
 tauri-plugin-stronghold = { version = "2", features = ["kdf"] }
 # Servitude embedded module dependencies
 toml = "0.8"
-thiserror = "1.0"
+thiserror = "2.0"
 # Async runtime + child process management for the embedded transport.
 # `process` — spawn/await tuwunel as a child.
 # `net` — TCP health probe against the tuwunel listen port.
