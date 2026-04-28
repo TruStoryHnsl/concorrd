@@ -173,6 +173,12 @@ jobs:
             $downloaded = $true
           } catch {
             Write-Warning "tuwunel.exe NOT staged for $tag — building MSI without bundled homeserver. servitude_start will surface BinaryNotFound at runtime. Detail: $_"
+            # gh release download leaves $LASTEXITCODE non-zero on its
+            # native side; pwsh propagates that as the script's exit
+            # code at end-of-script, killing the whole job. We've
+            # intentionally swallowed that error here, so reset
+            # $LASTEXITCODE so subsequent steps see a clean slate.
+            $global:LASTEXITCODE = 0
           }
           # Echo to summary so a reviewer skimming the run page can see
           # the binding state at a glance.
