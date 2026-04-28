@@ -201,10 +201,18 @@
     <title>Concord</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300..800&family=Space+Grotesk:wght@300..700&display=swap" onload="this.rel='stylesheet'" />
-    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300..800&family=Space+Grotesk:wght@300..700&display=swap" /></noscript>
-    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" onload="this.rel='stylesheet'" />
-    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" /></noscript>
+    <!--
+      Plain <link rel="stylesheet">, NOT the preload-then-swap trick.
+      The Tauri v2 CSP (default-src 'self') blocks inline event-handler
+      attributes (onload="this.rel='stylesheet'"), so the preload was
+      fetched but never promoted to a stylesheet — leaving Material
+      Symbols ligatures rendering as raw text ("volume_up", "settings",
+      "person_add", "tune", "play_arrow") on the Windows native build.
+      Empirically observed on corr@win11 / 2026-04-27 from a
+      CI-built MSI; see INS-060.
+    -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300..800&family=Space+Grotesk:wght@300..700&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" />
   </head>
   <body>
     <div id="boot-splash" data-state="visible" aria-hidden="true">
