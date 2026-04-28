@@ -16,6 +16,8 @@ import { showBootSplash } from "./bootSplash";
 import { LoginForm } from "./components/auth/LoginForm";
 import { ServerPickerScreen } from "./components/auth/ServerPickerScreen";
 import { DockerFirstBootScreen } from "./components/auth/DockerFirstBootScreen";
+import { Welcome } from "./components/Welcome";
+import { useSourcesStore } from "./stores/sources";
 import { SubmitPage } from "./components/public/SubmitPage";
 import { ChatLayout } from "./components/layout/ChatLayout";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -456,6 +458,23 @@ export default function App() {
   }
 
   if (!serverConnected) {
+    // W2-05 / INS-058: native first launch with no sources → Welcome.
+    // Existing-source path (e.g. user previously connected on a fresh
+    // install) falls through to the legacy ServerPickerScreen so the
+    // already-locked-in W-04 test plus existing INS-027 flow keep
+    // working. The Welcome → onboarding flows route back through
+    // `setServerConnected(true)` once a source is persisted.
+    const hasAnySource =
+      isTauri && useSourcesStore.getState().sources.length > 0;
+    if (isTauri && !hasAnySource) {
+      return (
+        <>
+          <Welcome onConnected={() => setServerConnected(true)} />
+          <MarkReady />
+          {launchOverlay}
+        </>
+      );
+    }
     return (
       <>
         <ServerPickerScreen onConnected={() => setServerConnected(true)} />
