@@ -127,4 +127,37 @@ describe("sources store", () => {
       "src_concord",
     ]);
   });
+
+  // W2-09 — Owner badge data model. The Host onboarding flow (W2-06)
+  // calls markOwner(id, true) after servitude_start + owner registration
+  // + admin elevation. The Sources rail tile (W2-10) keys its owner
+  // badge on this flag; "Server Settings" gates on it.
+  it("markOwner flips isOwner on the matching source only", () => {
+    expect(
+      useSourcesStore.getState().sources.find((s) => s.id === "src_concord")?.isOwner,
+    ).toBeFalsy();
+
+    useSourcesStore.getState().markOwner("src_concord", true);
+
+    expect(
+      useSourcesStore.getState().sources.find((s) => s.id === "src_concord")?.isOwner,
+    ).toBe(true);
+    // Other sources stay untouched.
+    expect(
+      useSourcesStore.getState().sources.find((s) => s.id === "src_matrix")?.isOwner,
+    ).toBeFalsy();
+
+    useSourcesStore.getState().markOwner("src_concord", false);
+    expect(
+      useSourcesStore.getState().sources.find((s) => s.id === "src_concord")?.isOwner,
+    ).toBe(false);
+  });
+
+  it("markOwner is a no-op for an unknown id", () => {
+    const before = useSourcesStore.getState().sources.map((s) => ({ ...s }));
+    useSourcesStore.getState().markOwner("src_does_not_exist", true);
+    const after = useSourcesStore.getState().sources;
+    expect(after.length).toBe(before.length);
+    after.forEach((s, i) => expect(s.isOwner).toBe(before[i].isOwner));
+  });
 });

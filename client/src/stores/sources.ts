@@ -57,6 +57,19 @@ export interface ConcordSource {
   platform?: "concord" | "matrix" | "reticulum";
   /** Concord user who owns this persisted source. Null => instance-global primary source. */
   ownerUserId?: string | null;
+  /**
+   * True when this source represents a Concord instance that the
+   * current user OWNS — i.e. the embedded servitude module on this
+   * device created the homeserver and the current Matrix user is
+   * its admin. Drives the owner badge in the Sources rail tile and
+   * gates the "Server Settings" affordance. Distinct from
+   * `ownerUserId`, which scopes the persisted source to a Concord
+   * user (multi-account isolation); `isOwner` is about the homeserver
+   * itself. Defaults to false on every existing entry; only set true
+   * by the Host onboarding flow (W2-06) when servitude_start
+   * succeeds and the owner account is registered + elevated.
+   */
+  isOwner?: boolean;
 }
 
 export function getSourceHomeserverHost(source: Pick<ConcordSource, "homeserverUrl">): string | null {
@@ -112,6 +125,14 @@ export interface SourcesState {
   connectedSources: () => ConcordSource[];
   /** Toggle a source's visibility in the server column. */
   toggleSource: (id: string) => void;
+  /**
+   * Set the `isOwner` flag on a source. Called by the Host
+   * onboarding flow (W2-06) after servitude_start + owner account
+   * registration + admin elevation succeed. The Sources rail tile
+   * uses this to render the owner badge; "Server Settings" is gated
+   * on it.
+   */
+  markOwner: (id: string, isOwner: boolean) => void;
   /** One-time migration from active session (native first launch). */
   migrateFromSession: () => void;
   /**
@@ -229,6 +250,14 @@ export const useSourcesStore = create<SourcesState>()(
         }));
       },
 
+      markOwner: (id, isOwner) => {
+        set((state) => ({
+          sources: state.sources.map((s) =>
+            s.id === id ? { ...s, isOwner } : s,
+          ),
+        }));
+      },
+
       ensurePrimarySource: (config) => {
         const hostLc = config.host.toLowerCase();
         const existing = get().sources.find(
@@ -342,7 +371,7 @@ export const useSourcesStore = create<SourcesState>()(
         sources: state.sources,
         boundUserId: state.boundUserId,
       }),
-      version: 4,
+      version: 5,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as { sources?: ConcordSource[]; boundUserId?: string | null };
         if (version === 0 && state.sources) {
@@ -374,6 +403,15 @@ export const useSourcesStore = create<SourcesState>()(
             ownerUserId: isPrimarySource(s) ? null : s.ownerUserId ?? undefined,
           }));
           state.boundUserId = state.boundUserId ?? null;
+        }
+        if (version < 5 && state.sources) {
+          // v4 → v5 (W2-09): add `isOwner` field. Default false for
+          // every existing entry — only the Host onboarding flow
+          // (W2-06) sets it true on a freshly-created local source.
+          state.sources = state.sources.map((s) => ({
+            ...s,
+            isOwner: s.isOwner ?? false,
+          }));
         }
         return state as SourcesState;
       },
