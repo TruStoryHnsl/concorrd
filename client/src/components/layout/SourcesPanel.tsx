@@ -155,14 +155,24 @@ function SortableSourceTile({
           event.stopPropagation();
           onSourceOpen?.(source.id);
         }}
-        title={label}
-        className={`group w-8 h-8 flex items-center justify-center transition-all duration-150 ${bg} ${
+        title={source.isOwner ? `${label} (owner)` : label}
+        className={`group relative w-8 h-8 flex items-center justify-center transition-all duration-150 ${bg} ${
           source.enabled
             ? "rounded-xl shadow-lg scale-100 text-on-surface"
             : "rounded-lg hover:rounded-xl scale-95 hover:scale-100 opacity-45 hover:opacity-80 grayscale"
         }`}
       >
         {icon}
+        {source.isOwner ? (
+          <span
+            data-testid={`source-owner-badge-${source.id}`}
+            className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-amber-400 ring-2 ring-surface flex items-center justify-center text-[8px] font-bold text-surface"
+            title="You own this server"
+            aria-label="Owner"
+          >
+            ★
+          </span>
+        ) : null}
       </button>
     </div>
   );

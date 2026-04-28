@@ -34,7 +34,10 @@ describe("rail layout contracts", () => {
   });
 
   it("keeps the source rail compact after the shell-size rollback", () => {
-    expect(sourcesPanelSource).toContain("className={`group w-8 h-8");
+    // W2-10 inserted `relative` after `group` so the absolutely-
+    // positioned owner badge has a positioning context. The compact
+    // 8x8 contract still holds; assert structurally.
+    expect(sourcesPanelSource).toMatch(/className=\{`group(?: relative)? w-8 h-8/);
     expect(sourcesPanelSource).toContain("className=\"w-8 h-8 rounded-xl");
     expect(sourcesPanelSource).toContain("size={28}");
   });
