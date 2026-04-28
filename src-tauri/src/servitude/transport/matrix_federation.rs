@@ -54,13 +54,36 @@ use super::{Transport, TransportError};
 /// Concord installer.
 pub const BIN_OVERRIDE_ENV: &str = "TUWUNEL_BIN";
 
-/// Relative path inside the Tauri resources directory where the Linux
-/// build script drops the bundled tuwunel binary.
+/// Relative path inside the Tauri resources directory where the build
+/// scripts drop the bundled tuwunel binary. The Windows variant carries
+/// the `.exe` suffix so the MSI/NSIS bundler picks up a Windows PE32+
+/// binary; non-Windows platforms use the bare name. Both Linux/macOS
+/// builds (`scripts/build_linux_native.sh`, `scripts/build_macos_native.sh`)
+/// and the Windows CI workflow (`.github/workflows/windows-build.yml`)
+/// stage at this exact path so `tauri.conf.json`'s
+/// `bundle.resources: ["resources/tuwunel/**/*"]` glob includes the
+/// correct file.
+#[cfg(windows)]
+pub const BUNDLED_RESOURCE_REL: &str = "resources/tuwunel/tuwunel.exe";
+#[cfg(not(windows))]
 pub const BUNDLED_RESOURCE_REL: &str = "resources/tuwunel/tuwunel";
 
 /// Sibling-binary fallback path — some bundlers extract the binary
-/// directly next to the main executable.
+/// directly next to the main executable. Same `.exe` rules apply.
+#[cfg(windows)]
+pub const SIBLING_BIN_REL: &str = "tuwunel.exe";
+#[cfg(not(windows))]
 pub const SIBLING_BIN_REL: &str = "tuwunel";
+
+/// Bare name used for the `which`-style `PATH` lookup. The Rust
+/// stdlib's `Path::is_file()` resolves Windows PE binaries by full
+/// name only; PATHEXT-style implicit `.exe` resolution is a shell
+/// behavior, not a syscall behavior. So we match the on-disk filename
+/// directly per platform.
+#[cfg(windows)]
+pub const PATH_LOOKUP_NAME: &str = "tuwunel.exe";
+#[cfg(not(windows))]
+pub const PATH_LOOKUP_NAME: &str = "tuwunel";
 
 /// How long to wait for the child process to become healthy after
 /// spawn before giving up and marking the start as failed.
@@ -146,7 +169,11 @@ impl MatrixFederationTransport {
 
         // 4. PATH lookup fallback. Keep this last because in production
         // we want the bundled copy, not whatever the user has globally.
-        if let Some(path_hit) = which_in_path("tuwunel") {
+        // Windows requires the `.exe` suffix in `PATH_LOOKUP_NAME`
+        // because `is_file()` matches the on-disk filename verbatim;
+        // PATHEXT-style implicit `.exe` is a shell behavior, not a
+        // syscall behavior.
+        if let Some(path_hit) = which_in_path(PATH_LOOKUP_NAME) {
             return Ok(path_hit);
         }
 
@@ -666,6 +693,72 @@ mod tests {
             Some(p) => unsafe { std::env::set_var("XDG_DATA_HOME", p) },
             None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
         }
+    }
+
+    /// Cross-platform binary-name constants must reflect the host
+    /// platform's executable suffix conventions. Without this, the
+    /// MSI/NSIS build embeds `tuwunel.exe` but the runtime resolver
+    /// looks for `tuwunel` (no suffix) and surfaces BinaryNotFound at
+    /// startup. See W2-03 in the W2 sprint plan.
+    #[cfg(not(windows))]
+    #[test]
+    fn test_bundled_resource_rel_has_no_exe_suffix_on_unix() {
+        assert!(
+            BUNDLED_RESOURCE_REL.ends_with("tuwunel"),
+            "Unix builds expect bare 'tuwunel' name, got: {}",
+            BUNDLED_RESOURCE_REL
+        );
+        assert!(
+            !BUNDLED_RESOURCE_REL.ends_with(".exe"),
+            "Unix builds must NOT carry the .exe suffix, got: {}",
+            BUNDLED_RESOURCE_REL
+        );
+        assert_eq!(SIBLING_BIN_REL, "tuwunel");
+        assert_eq!(PATH_LOOKUP_NAME, "tuwunel");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_bundled_resource_rel_has_exe_suffix_on_windows() {
+        assert!(
+            BUNDLED_RESOURCE_REL.ends_with("tuwunel.exe"),
+            "Windows builds require the .exe suffix, got: {}",
+            BUNDLED_RESOURCE_REL
+        );
+        assert_eq!(SIBLING_BIN_REL, "tuwunel.exe");
+        assert_eq!(PATH_LOOKUP_NAME, "tuwunel.exe");
+    }
+
+    /// Empirical resolve_binary() exercise: stage a fake bundled binary
+    /// in a tempdir, set BIN_OVERRIDE_ENV to point at it, and assert
+    /// the resolver returns that exact path. Cross-platform — uses the
+    /// platform-correct BUNDLED_RESOURCE_REL so the test passes on
+    /// both Linux CI and the Windows-build CI job.
+    #[test]
+    fn test_resolve_binary_finds_bundled_via_override() {
+        let _g = ENV_GUARD.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "concord-resolve-test-{}",
+            std::process::id()
+        ));
+        let bundled_path = tmp.join(BUNDLED_RESOURCE_REL);
+        if let Some(parent) = bundled_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&bundled_path, b"fake-binary").unwrap();
+
+        unsafe {
+            std::env::set_var(BIN_OVERRIDE_ENV, &bundled_path);
+        }
+        let resolved = MatrixFederationTransport::resolve_binary()
+            .expect("override pointing at staged bundled path must resolve");
+        assert_eq!(resolved, bundled_path);
+
+        // Cleanup
+        unsafe {
+            std::env::remove_var(BIN_OVERRIDE_ENV);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]
