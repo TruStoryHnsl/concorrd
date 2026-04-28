@@ -199,6 +199,33 @@ async fn servitude_register_owner(
         .map_err(|e| e.to_string())
 }
 
+/// Diagnostic logger for INS-065 — appends to
+/// `<app_local_data>/diag.log` so the renderer can surface
+/// errors and lifecycle markers that aren't visible because the
+/// boot splash + Welcome screen aren't painting on Windows.
+/// Removable once the bug is closed.
+#[tauri::command]
+async fn log_diagnostic(app: tauri::AppHandle, msg: String) -> Result<(), String> {
+    use std::io::Write;
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("no app_local_data_dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("diag.log");
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    writeln!(f, "{ts} {msg}").map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK GPU compositing is unreliable on many Linux setups
@@ -348,6 +375,7 @@ pub fn run() {
             servitude_status,
             servitude_get_registration_token,
             servitude_register_owner,
+            log_diagnostic,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

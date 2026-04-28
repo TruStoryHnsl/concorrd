@@ -26,6 +26,34 @@ if (isNative) {
   document.documentElement.classList.add("tauri");
 }
 
+// INS-065 instrumentation. The Concord window opens on Windows native
+// builds but neither the boot splash nor the Welcome screen paints —
+// no console output reaches us because we can't run devtools on the
+// bundled build. Wire the renderer's error/lifecycle markers into a
+// Tauri command that appends them to a file we can scp back. Removable
+// once INS-065 is closed.
+if (isNative && typeof window !== "undefined") {
+  type LogFn = (msg: string) => void;
+  const log: LogFn = (msg) => {
+    try {
+      const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args: unknown) => Promise<unknown> } };
+      void w.__TAURI_INTERNALS__?.invoke?.("log_diagnostic", { msg });
+    } catch {
+      // diagnostic must never throw
+    }
+  };
+  log(`BOOT main.tsx parsed; ua=${navigator.userAgent.slice(0, 120)}`);
+  window.addEventListener("error", (e) => {
+    log(`ERROR ${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`);
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const reason = (e.reason && (e.reason.stack || String(e.reason))) || "unknown";
+    log(`UNHANDLED_REJECTION ${String(reason).slice(0, 500)}`);
+  });
+  // Lift the diag function so App.tsx can mark mount lifecycle.
+  (window as unknown as { __concordDiag?: LogFn }).__concordDiag = log;
+}
+
 // Initialize server URL before rendering (resolves immediately in web mode,
 // loads from Tauri store in desktop mode)
 initServerUrl().then(() => {
@@ -65,9 +93,23 @@ initServerUrl().then(() => {
     }
   }, 0);
 
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <App />
-    </StrictMode>,
-  );
+  const diag = (window as unknown as { __concordDiag?: (m: string) => void }).__concordDiag;
+  diag?.("BOOT initServerUrl resolved, calling createRoot");
+  const rootEl = document.getElementById("root");
+  if (!rootEl) {
+    diag?.("ERROR #root element missing from DOM");
+    throw new Error("#root missing");
+  }
+  diag?.(`BOOT #root present; rootEl.children=${rootEl.children.length}`);
+  try {
+    createRoot(rootEl).render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    diag?.("BOOT createRoot.render returned synchronously");
+  } catch (e) {
+    diag?.(`ERROR createRoot.render threw: ${(e as Error)?.message || e}`);
+    throw e;
+  }
 });
