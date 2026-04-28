@@ -268,6 +268,18 @@ pub fn run() {
             // Ensure settings store exists
             let _ = app.handle().store("settings.json");
 
+            // INS-065: force-open devtools at launch on Windows so we can
+            // inspect Network/Console for the missing Welcome render.
+            // Compiled in via the `devtools` Cargo feature on the tauri
+            // crate (also active in release builds, gated only by this
+            // explicit call). Removable once INS-065 is closed.
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
+            }
+
             // INS-020: Set the native WKWebView + UIView background color to
             // match Concord's dark surface (#0c0e11) so the home indicator
             // safe area doesn't show as gray. The web content stops at the
