@@ -157,27 +157,77 @@ impl MatrixFederationTransport {
     }
 
     /// Resolve the data directory used for the embedded tuwunel's
-    /// database and log files. On Linux this honours
-    /// `XDG_DATA_HOME`, falling back to `$HOME/.local/share`.
-    /// Other Unix platforms use `$HOME/.local/share`. Windows is not
-    /// supported from this MVP — the Linux-first goal in Wave 2 pins
-    /// this explicitly.
+    /// database and log files. Per-platform layout:
+    ///
+    /// | Platform | Path |
+    /// |----------|------|
+    /// | Linux    | `$XDG_DATA_HOME/concord/tuwunel/` (fallback `$HOME/.local/share/concord/tuwunel/`) |
+    /// | macOS    | `~/Library/Application Support/concord/tuwunel/` |
+    /// | Windows  | `%APPDATA%\concord\tuwunel\` (Roaming, via `dirs::data_dir()`) |
+    ///
+    /// The Linux branch keeps explicit XDG handling rather than just
+    /// using `dirs::data_dir()` because XDG_DATA_HOME overrides need
+    /// to win even when `dirs` would prefer ~/.local/share — that's
+    /// what test fixtures (and our own `XDG_DATA_HOME` test override
+    /// below) depend on. macOS/Windows have well-defined OS-level
+    /// answers and `dirs::data_dir()` returns them.
     pub fn resolve_data_dir() -> Result<PathBuf, TransportError> {
+        // XDG_DATA_HOME wins on every platform that sets it. This
+        // intentionally runs before the Windows branch — a developer
+        // running tests on Windows with XDG_DATA_HOME set (e.g.
+        // because they're using Git Bash or WSL) gets the path they
+        // configured, not Roaming AppData.
         if let Ok(xdg) = env::var("XDG_DATA_HOME") {
             if !xdg.is_empty() {
                 return Ok(PathBuf::from(xdg).join("concord").join("tuwunel"));
             }
         }
-        if let Ok(home) = env::var("HOME") {
-            return Ok(PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("concord")
-                .join("tuwunel"));
+
+        // Windows: %APPDATA% (Roaming). `dirs::data_dir()` resolves
+        // to FOLDERID_RoamingAppData, which is what Tauri itself uses
+        // for tauri-plugin-store paths under com.concord.chat.
+        // `tauri-plugin-store` writes to
+        //   %APPDATA%\com.concord.chat\
+        // and we put tuwunel data under
+        //   %APPDATA%\concord\tuwunel\
+        // — deliberately a SEPARATE root so an uninstall that wipes
+        // the app's plugin-store data doesn't blow away the user's
+        // tuwunel database.
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(data) = dirs::data_dir() {
+                return Ok(data.join("concord").join("tuwunel"));
+            }
+            return Err(TransportError::StartFailed(
+                "cannot resolve %APPDATA% on Windows (dirs::data_dir() returned None)"
+                    .to_string(),
+            ));
         }
-        Err(TransportError::StartFailed(
-            "cannot resolve data directory: neither XDG_DATA_HOME nor HOME set".to_string(),
-        ))
+
+        // Unix-likes (Linux + macOS) fall back to $HOME-based
+        // resolution. macOS gets ~/Library/Application Support via
+        // the dirs::data_dir() path; we keep the explicit HOME
+        // resolution as a Linux-specific fallback.
+        #[cfg(not(target_os = "windows"))]
+        {
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(data) = dirs::data_dir() {
+                    return Ok(data.join("concord").join("tuwunel"));
+                }
+            }
+
+            if let Ok(home) = env::var("HOME") {
+                return Ok(PathBuf::from(home)
+                    .join(".local")
+                    .join("share")
+                    .join("concord")
+                    .join("tuwunel"));
+            }
+            Err(TransportError::StartFailed(
+                "cannot resolve data directory: neither XDG_DATA_HOME nor HOME set".to_string(),
+            ))
+        }
     }
 
     /// Register an Application Service registration YAML file that
@@ -287,9 +337,27 @@ impl MatrixFederationTransport {
 
     #[cfg(not(unix))]
     fn send_sigterm(&self) -> Result<(), TransportError> {
-        // Windows / non-Unix fallback — no SIGTERM equivalent.
-        // Callers escalate straight to Child::kill.
-        Ok(())
+        // Windows / non-Unix fallback — there is no graceful-stop
+        // equivalent for std/tokio process Children on Windows.
+        // `Child::kill` maps to TerminateProcess, which is the
+        // moral equivalent of SIGKILL — the child gets no chance
+        // to flush state.
+        //
+        // RocksDB consequence: the embedded tuwunel's RocksDB has
+        // its own write-ahead log / atomic-rename machinery that
+        // makes uncrashed termination *survivable*, but a hard
+        // kill mid-write can still leave the WAL needing recovery
+        // on next boot (slower startup; rare but real). This is
+        // documented in docs/native-apps/windows-paths.md.
+        //
+        // We deliberately return an Err here (not Ok) so the
+        // caller's "Phase 1: SIGTERM + graceful wait" branch is
+        // skipped entirely — that wait is a 10-second no-op on
+        // Windows and just delays uninstall / app-exit.
+        Err(TransportError::StopFailed(
+            "SIGTERM not supported on this platform; caller must escalate to Child::kill"
+                .to_string(),
+        ))
     }
 
     /// Build the `--execute` argument for tuwunel that registers all
