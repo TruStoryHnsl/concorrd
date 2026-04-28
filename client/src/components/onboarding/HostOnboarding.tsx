@@ -284,7 +284,6 @@ export function HostOnboarding({
       deviceId: session.device_id,
       status: "connected",
       enabled: true,
-      addedAt: new Date().toISOString(),
       platform: "concord",
       ownerUserId: session.user_id,
       isOwner: true,
