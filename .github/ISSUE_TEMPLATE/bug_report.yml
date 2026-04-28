@@ -1,0 +1,86 @@
+name: Bug report
+description: Something in concord is broken or behaving wrong.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. The more concrete you can be, the faster this gets fixed.
+        Skip fields that don't apply.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences. What is broken?
+      placeholder: "Voice channel disconnects 30s after joining when TURN relay is enabled."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you think would happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include error messages verbatim.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Numbered steps. Include account roles (admin / regular user) where it matters.
+      placeholder: |
+        1. Log in as admin
+        2. Navigate to Server Settings → Federation
+        3. Add `evil.example.com` to the blocklist
+        4. Click Save
+        5. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: concord version
+      description: From `VERSION` file or admin panel. Include "main" + commit SHA if running unreleased.
+      placeholder: "0.7.5"
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where you saw it
+      multiple: true
+      options:
+        - Web (browser)
+        - Tauri desktop app
+        - iOS native
+        - Android native
+        - Admin panel
+        - Server logs (no UI)
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS + browser + Docker version + anything relevant. Skip what doesn't apply.
+      placeholder: "Linux, Firefox 124, Docker 26, hosted on a 4-core VM"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        `docker compose logs -f concord-api` and `docker compose logs -f conduwuit` are usually the right ones.
+        Wrap long output in <details>. Redact secrets.
+      render: shell
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots are fine if they help, but text > image.

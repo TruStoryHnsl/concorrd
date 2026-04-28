@@ -1,0 +1,61 @@
+name: Feature request
+description: Suggest a capability or improvement.
+title: "[feat]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        concord is opinionated. Self-hosted, Discord-shaped, Matrix-backed. Feature requests that fit that posture get prioritized.
+        Things that broaden scope (multi-tenant SaaS, alternate protocols, etc.) are likely to be deferred.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that concord makes hard or impossible right now?
+      placeholder: "I want to invite a friend who refuses to install anything besides their browser, but the email-invite flow assumes they'll register an account first."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What should happen instead? Sketches, mockups, behavior descriptions all welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried, other tools that solve this, etc. Helps avoid re-inventing.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Who is this for?
+      options:
+        - Just me / my deployment
+        - Would-like-to-share — useful to other concord operators
+        - Commercial-fit — would matter to paid native-app users / commercial deployments
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      multiple: true
+      options:
+        - Web client
+        - Desktop (Tauri)
+        - iOS / Android native
+        - Admin panel
+        - Server / API
+        - Federation / homeserver
+        - Voice / LiveKit
+        - Soundboard
+        - Servitude (host-from-app)
+        - concord-beta mesh track
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
