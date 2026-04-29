@@ -891,6 +891,22 @@ impl Transport for DendriteFederationTransport {
             ))
         })?;
 
+        // Pre-create the subdirs the YAML config references. Dendrite
+        // does NOT create these on-demand — it tries to open files
+        // inside them and fails with "The system cannot find the path
+        // specified" on Windows (empirically observed 2026-04-28).
+        // Creating logs/ jetstream/ media_store/ ahead of spawn
+        // matches what dendrite expects to find.
+        for sub in &["logs", "jetstream", "media_store"] {
+            let p = data_dir.join(sub);
+            tokio::fs::create_dir_all(&p).await.map_err(|e| {
+                TransportError::StartFailed(format!(
+                    "failed to create dendrite subdir {:?}: {}",
+                    p, e
+                ))
+            })?;
+        }
+
         // Materialize signing key (idempotent).
         self.ensure_signing_key(&data_dir).await?;
 
