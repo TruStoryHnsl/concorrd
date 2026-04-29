@@ -41,7 +41,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/tuwunel/**/*"
+      "resources/tuwunel/**/*",
+      "resources/dendrite/**/*"
     ],
     "linux": {
       "deb": {
@@ -53,6 +54,9 @@
       "frameworks": []
     },
     "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      },
       "nsis": {
         "displayLanguageSelector": false,
         "languages": ["English"],
