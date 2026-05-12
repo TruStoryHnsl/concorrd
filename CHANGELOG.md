@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-05-12
+
+### Fixed — macos-intel cross-compile blocked on tuwunel's pinned toolchain
+- **`.github/workflows/release.yml`** — `rustup target add "${RUST_TARGET}"` now runs inside the tuwunel macOS build step before `cargo build`. tuwunel pins its own toolchain via `rust-toolchain.toml` (Rust 1.94.0); the target added by `dtolnay/rust-toolchain@stable` at the top of the job only lives on stable, not on the pinned toolchain that cargo switches to inside the tuwunel checkout. v0.7.8's macos-intel job failed `E0463 "can't find crate for core"` for exactly that reason. Adding the target on the pinned toolchain inside the tuwunel build step fixes it. macos-arm64 already builds because its target matches the host so no cross-arch lib is needed.
+
 ## [0.7.8] - 2026-05-12
 
 ### Fixed — macos-intel release job no longer blocked on GitHub runner queue

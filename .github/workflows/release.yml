@@ -294,6 +294,16 @@ jobs:
           git clone --depth 1 --branch "${TUWUNEL_VERSION}" \
             https://github.com/matrix-construct/tuwunel.git "${src}"
           cd "${src}"
+          # tuwunel pins its own toolchain via `rust-toolchain.toml`
+          # (currently Rust 1.94.0). The toolchain installed by
+          # dtolnay/rust-toolchain@stable in this job has the
+          # matrix target, but the rustup-installed pinned toolchain
+          # tuwunel switches to inside its source tree does NOT —
+          # building cross-arch (macos-14 arm64 host → x86_64-apple-
+          # darwin target) failed with E0463 "can't find crate for
+          # core" because the pinned toolchain had no x86_64 std lib.
+          # Adding the target on the pinned toolchain here fixes it.
+          rustup target add "${RUST_TARGET}"
           cargo build --release \
             --bin tuwunel \
             --target "${RUST_TARGET}" \
