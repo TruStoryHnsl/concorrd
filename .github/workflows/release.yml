@@ -138,7 +138,15 @@ jobs:
           - platform: macos-intel
             release_suffix: macos-intel
             release_title_suffix: "macOS (Intel)"
-            os: macos-13
+            # Was `macos-13` (Intel host). GitHub's macos-13 hosted runner
+            # queue is severely rationed — both v0.7.7 attempts hit the 24h
+            # queue-cancel and never started. macos-14 is Apple Silicon and
+            # provisions in minutes; the Rust toolchain installed below adds
+            # the `x86_64-apple-darwin` target so cargo cross-compiles to
+            # Intel from arm64 host. Apple's bundled clang/Xcode ships the
+            # x86_64 SDK, so C deps (jemalloc + co. inside tuwunel) compile
+            # cleanly. The .dmg packaging tools work on either host.
+            os: macos-14
             rust_target: x86_64-apple-darwin
             tauri_args: "--target x86_64-apple-darwin --bundles dmg"
             stage_homeserver: macos

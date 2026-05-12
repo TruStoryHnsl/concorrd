@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-05-12
+
+### Fixed — macos-intel release job no longer blocked on GitHub runner queue
+- **`.github/workflows/release.yml`** — moved the `macos-intel` matrix entry from `macos-13` (Intel host) to `macos-14` (Apple Silicon host) and cross-compiles to `x86_64-apple-darwin` from there. GitHub's `macos-13` hosted runner queue is heavily rationed and v0.7.7 hit the 24-hour queue auto-cancel twice without ever starting the job. `macos-14` provisions in minutes; cargo's Rust toolchain plus Apple's bundled Xcode/clang carries the x86_64 SDK, so the Intel binary builds from the arm64 host with no other workflow changes. Other three platform jobs and the publish path are unchanged.
+
 ## [0.7.7] - 2026-05-05
 
 ### Fixed — release pipeline can actually publish per-platform releases
