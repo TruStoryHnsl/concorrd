@@ -551,17 +551,21 @@ export default function App() {
             }
             video={false}
             options={{
-              // webAudioMix=true makes LiveKit set up an AudioContext at
-              // room level, so later ``track.setAudioContext(ctx)`` (which
-              // fires AFTER createLocalTracks in 26604 of the esm bundle)
-              // has something to hand the track. It does NOT help the
-              // createLocalTracks → setProcessor path that bit us in the
-              // three-toast pileup — see buildLiveKitAudioCaptureOptions
-              // for why we don't attach the processor via capture defaults
-              // at all. Keeping webAudioMix on is still useful for the
-              // per-track audioContext pipeline once attachments land, and
-              // makes setSinkId-style output device switching work.
-              webAudioMix: true,
+              // Do NOT set ``webAudioMix: true``. It was added in v0.2.4 on
+              // a wrong premise (it is NOT required for the local-mic
+              // processor — ``Room.acquireAudioContext`` always creates a
+              // room AudioContext, and both ``LocalParticipant.createTracks``
+              // and ``publishOrRepublishTrack`` call
+              // ``LocalAudioTrack.setAudioContext`` unconditionally). Its
+              // actual effect is to also propagate the room AudioContext to
+              // every REMOTE audio track — which then hits
+              // ``RemoteAudioTrack.attach``'s ``connectWebAudio`` branch and
+              // pipes the remote stream through ``ctx.destination`` in
+              // PARALLEL with our ``CustomAudioRenderer`` Tier 2 cloned-
+              // track chain. Two simultaneous outputs of the same track
+              // create comb-filter coloration that users perceive as a
+              // tinny / "two streams overlapping" sound. Leave it off and
+              // let CustomAudioRenderer be the sole remote-playback path.
               audioCaptureDefaults: {
                 ...buildLiveKitAudioCaptureOptions({
                   masterInputVolume,
