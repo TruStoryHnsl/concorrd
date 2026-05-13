@@ -215,6 +215,30 @@ Optional services:
 | `/livekit/*` | LiveKit `:7880` | WebSocket signaling (path-stripped) |
 | `/downloads/*` | Caddy `file_server` | Forced `Content-Disposition: attachment` for desktop installers |
 
+## Installation
+
+Five distribution channels — one Docker stack for the server, four native installers for end users. All artifacts live on the [GitHub releases page](https://github.com/TruStoryHnsl/concord/releases/latest). The native installers are unsigned (project-owner policy: free distribution path only), so first-launch warnings from SmartScreen / Gatekeeper are expected and harmless.
+
+### Docker / self-hosted server
+
+The fastest path is the prebuilt stack archive published with each release as `concord-docker-stack-v0.X.Y.zip`. Unzip it, copy `.env.example` to `.env`, edit the two required values (`CONDUWUIT_SERVER_NAME` and `SITE_ADDRESS`), and run `docker compose up -d`. The compose file pulls prebuilt container images from `ghcr.io/trustoryhnsl/concord-web:<version>` and `ghcr.io/trustoryhnsl/concord-concord-api:<version>` (both tagged `latest` too), so a vanilla operator never has to build from source. For full configuration options including TURN, federation, and SMTP, see [Quickstart](#quickstart) above.
+
+### Windows native
+
+Download `Concord_<version>_x64-setup.exe` from the latest [Windows release](https://github.com/TruStoryHnsl/concord/releases?q=windows) and run it — the NSIS installer registers Concord under "Add or Remove Programs". If Windows reports "Concord is already installed" but the Start-menu entry has vanished, run `Uninstall Concord.exe` from the install directory (default `%LOCALAPPDATA%\Programs\Concord\`) to clean state, then re-run the installer. The app self-updates via Settings → About → "Check for updates" once installed.
+
+### macOS (Apple Silicon)
+
+Download `Concord_<version>_aarch64.dmg` from the latest [macOS Apple Silicon release](https://github.com/TruStoryHnsl/concord/releases?q=macos-arm64), open it, and drag `Concord.app` to `/Applications`. First launch will be blocked by Gatekeeper — right-click the app, choose Open, and confirm at the warning dialog. To uninstall: run `/Applications/Concord.app/Contents/Resources/uninstall.sh` (a small helper bundled with the app) to remove the app and scrub `~/Library/Application Support/concord/` and `~/Library/Preferences/com.concord.app.plist`.
+
+### macOS (Intel)
+
+Same flow as Apple Silicon — download the Intel-specific `Concord_<version>_x64.dmg` from the latest [macOS Intel release](https://github.com/TruStoryHnsl/concord/releases?q=macos-intel) and drag to `/Applications`. The embedded homeserver (`tuwunel`) is a separate x86_64 build, so do not install the arm64 .dmg on Intel hardware (it will refuse to launch). Uninstall is the same `uninstall.sh` helper inside `Concord.app/Contents/Resources/`.
+
+### Linux
+
+Download `concord_<version>_amd64.AppImage` from the latest [Linux release](https://github.com/TruStoryHnsl/concord/releases?q=linux), make it executable (`chmod +x concord_*_amd64.AppImage`), and run it directly. No system installation is performed; the AppImage is self-contained. To uninstall, delete the AppImage and scrub `~/.local/share/concord/` and `~/.config/concord/` to remove the embedded homeserver database and any cached credentials.
+
 ## Features
 
 - Text chat with rooms, threads, DMs, typing indicators, read receipts, media uploads
