@@ -9,6 +9,7 @@ import { useServerConfigStore } from "./stores/serverConfig";
 import { isDesktopMode, getHomeserverUrl } from "./api/serverUrl";
 import { usePlatform } from "./hooks/usePlatform";
 import { useServitudeLifecycle } from "./hooks/useServitudeLifecycle";
+import { runStartupCheck as runUpdaterStartupCheck } from "./lib/updater";
 import { computeInitialServerConnected } from "./serverPickerGate";
 import { redeemInvite, getInstanceInfo } from "./api/concord";
 import { getVoiceToken } from "./api/livekit";
@@ -50,6 +51,15 @@ export default function App() {
   // relay. No-op outside Tauri. The hook attaches its own event
   // listeners and tears them down on unmount.
   useServitudeLifecycle();
+
+  // In-app updater: native builds poll the GitHub releases listing on
+  // launch (6h debounce via localStorage) and prompt if a newer per-
+  // platform release is available. No-op outside Tauri. Manual
+  // re-check lives in Settings → About → "Check for updates".
+  useEffect(() => {
+    runUpdaterStartupCheck();
+  }, []);
+
   const [serverConnected, setServerConnected] = useState(() =>
     computeInitialServerConnected({
       isNative: isTauri,

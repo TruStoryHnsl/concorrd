@@ -1,19 +1,23 @@
-# Per-platform desktop release pipeline.
+# Per-platform desktop + docker release pipeline.
 #
 # When a SemVer tag (vX.Y.Z) is pushed, fans out parallel builds
-# across Windows / macOS x86_64 / macOS aarch64 / Linux. Each
-# platform job creates its OWN GitHub Release with a suffix tag
-# (vX.Y.Z-windows, vX.Y.Z-macos-intel, vX.Y.Z-macos-arm64,
-# vX.Y.Z-linux) pointing at the parent commit, and attaches
-# EXACTLY ONE installer asset:
+# across Windows / macOS x86_64 / macOS aarch64 / Linux / Docker.
+# Each platform job creates its OWN GitHub Release with a suffix
+# tag (vX.Y.Z-windows, vX.Y.Z-macos-intel, vX.Y.Z-macos-arm64,
+# vX.Y.Z-linux, vX.Y.Z-docker) pointing at the parent commit, and
+# attaches one primary installer asset:
 #   - windows      -> Concord_<ver>_x64-setup.exe (NSIS)
 #   - macos-intel  -> Concord_<ver>_x64.dmg
 #   - macos-arm64  -> Concord_<ver>_aarch64.dmg
 #   - linux        -> concord_<ver>_amd64.AppImage
+#   - docker       -> concord-docker-stack-v<ver>.zip
 #
-# No sidecar files (.sig, .json, latest.yml, checksums, source
-# archives, debug symbols). Anything required to run the installer
-# must be bundled inside the installer itself.
+# Native platform releases ALSO attach a single `updater-manifest.json`
+# sidecar (one per release) — the in-app updater
+# (client/src/lib/updater.ts) reads it to learn the installer URL and
+# release notes. The docker release does not need a manifest because
+# Docker hosts pull from GHCR (ghcr.io/<owner>/concord-{web,concord-api})
+# rather than running an in-app updater.
 #
 # Internal build-dep tags (dendrite-windows-*, tuwunel-windows-*)
 # do NOT match v*.*.* and never trigger this workflow. The parent
@@ -52,6 +56,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -288,39 +293,42 @@ jobs:
           ls -la "${dest}/"
           file "${dest}/tuwunel"
 
-      - name: Set cross-compile C/linker env (matrix.cross_compile only)
-        if: matrix.cross_compile
-        shell: bash
-        run: |
-          # Persist env vars for every subsequent step in this job.
-          # `cargo build --target x86_64-apple-darwin` cross-compiles Rust
-          # crates correctly on its own, but C deps invoked via cc-rs
-          # (jemalloc-sys, aws-lc-sys, ring, lz4-sys, bzip2-sys, zstd-sys,
-          # bzip2-sys) pick up the host arch by default and emit arm64
-          # object files when run on macos-14. The link step then rejects
-          # them with "found architecture 'arm64', required architecture
-          # 'x86_64'". Setting target-specific cc-rs vars + a generic CC/
-          # CFLAGS forces -arch x86_64 across both cc-rs and autoconf-style
-          # ./configure invocations (jemalloc uses configure).
-          {
-            echo "CC=clang"
-            echo "CXX=clang++"
-            echo "CFLAGS=-arch x86_64 -mmacosx-version-min=11.0"
-            echo "CXXFLAGS=-arch x86_64 -mmacosx-version-min=11.0"
-            echo "LDFLAGS=-arch x86_64"
-            echo "CC_x86_64_apple_darwin=clang"
-            echo "CFLAGS_x86_64_apple_darwin=-arch x86_64 -mmacosx-version-min=11.0"
-            echo "CXX_x86_64_apple_darwin=clang++"
-            echo "CXXFLAGS_x86_64_apple_darwin=-arch x86_64 -mmacosx-version-min=11.0"
-            echo "CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=clang"
-            echo "CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS=-Clink-arg=-arch -Clink-arg=x86_64"
-          } >> "$GITHUB_ENV"
+      # NOTE on cross-compile env strategy (v0.7.12+):
+      #
+      # The previous iteration wrote CFLAGS / CC / linker env vars to
+      # $GITHUB_ENV — meaning they applied to EVERY subsequent step in
+      # the job. That broke v0.7.11's macos-intel build because
+      # `cargo install tauri-cli` (a host-arch install) inherited the
+      # x86_64 CFLAGS and emitted x86_64 lzma-sys object files while the
+      # final link still targeted the arm64 host toolchain. End result:
+      # 1438 arch-mismatch link errors.
+      #
+      # Fix: scope the cross-compile env to ONLY the two steps that
+      # actually cross-compile (Stage tuwunel + Tauri build). Steps that
+      # build host-arch tooling (cargo install tauri-cli, npm build)
+      # run with the runner's native env so they target arm64 cleanly.
+      # See the inline `env:` blocks on those two steps below.
 
       - name: Stage tuwunel (macOS, build from source)
         if: matrix.stage_homeserver == 'macos'
         env:
           TUWUNEL_VERSION: ${{ env.TUWUNEL_VERSION }}
           RUST_TARGET: ${{ matrix.rust_target }}
+          # Cross-compile env — only set for the matrix.cross_compile case
+          # (macos-intel target on macos-14 arm64 host). For macos-arm64
+          # the matrix.cross_compile flag is false and these vars resolve
+          # to empty strings, leaving the native build untouched.
+          CC: ${{ matrix.cross_compile && 'clang' || '' }}
+          CXX: ${{ matrix.cross_compile && 'clang++' || '' }}
+          CFLAGS: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CXXFLAGS: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          LDFLAGS: ${{ matrix.cross_compile && '-arch x86_64' || '' }}
+          CC_x86_64_apple_darwin: ${{ matrix.cross_compile && 'clang' || '' }}
+          CFLAGS_x86_64_apple_darwin: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CXX_x86_64_apple_darwin: ${{ matrix.cross_compile && 'clang++' || '' }}
+          CXXFLAGS_x86_64_apple_darwin: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER: ${{ matrix.cross_compile && 'clang' || '' }}
+          CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS: ${{ matrix.cross_compile && '-Clink-arg=-arch -Clink-arg=x86_64' || '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -385,6 +393,11 @@ jobs:
 
       - name: Build React client
         working-directory: client
+        env:
+          # Vite injects this into the bundle at build time so the in-app
+          # updater knows what version is running. See
+          # client/src/lib/updater.ts ::getCurrentVersion.
+          VITE_CONCORD_VERSION: ${{ env.VERSION }}
         run: |
           npm ci --no-audit --no-fund
           npm run build
@@ -397,6 +410,28 @@ jobs:
         shell: bash
         env:
           TAURI_ARGS: ${{ matrix.tauri_args }}
+          # Vite reads VITE_CONCORD_VERSION at build time (see
+          # client/src/lib/updater.ts). The Tauri build already shells
+          # into the client subtree via the beforeBuildCommand in
+          # tauri.conf.json, so exporting it on this step propagates.
+          VITE_CONCORD_VERSION: ${{ env.VERSION }}
+          # Cross-compile env (matrix.cross_compile only — empty
+          # otherwise). Mirrors the tuwunel step above. Tauri delegates
+          # to `cargo build` for the Rust side, so cc-rs and the C
+          # toolchain pick up the same x86_64 force-flags here that they
+          # did during tuwunel's compile, and the resulting bundle is a
+          # uniform x86_64 binary.
+          CC: ${{ matrix.cross_compile && 'clang' || '' }}
+          CXX: ${{ matrix.cross_compile && 'clang++' || '' }}
+          CFLAGS: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CXXFLAGS: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          LDFLAGS: ${{ matrix.cross_compile && '-arch x86_64' || '' }}
+          CC_x86_64_apple_darwin: ${{ matrix.cross_compile && 'clang' || '' }}
+          CFLAGS_x86_64_apple_darwin: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CXX_x86_64_apple_darwin: ${{ matrix.cross_compile && 'clang++' || '' }}
+          CXXFLAGS_x86_64_apple_darwin: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER: ${{ matrix.cross_compile && 'clang' || '' }}
+          CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS: ${{ matrix.cross_compile && '-Clink-arg=-arch -Clink-arg=x86_64' || '' }}
         run: |
           set -euo pipefail
           # shellcheck disable=SC2086
@@ -480,8 +515,181 @@ jobs:
           echo "Uploading single installer: ${INSTALLER_PATH}"
           gh release upload "${platform_tag}" "${INSTALLER_PATH}" --repo "${GH_REPO}"
 
-          # Verify exactly one asset attached. `gh release view` instead of
-          # `gh api` for the same path-conversion reason as above.
+          # Updater manifest sidecar. The native in-app updater
+          # (client/src/lib/updater.ts) reads this to learn the
+          # installer URL + version. We synthesize it here so the
+          # client never has to fetch the entire release body — and
+          # so the manifest format stays a server-side contract.
+          installer_name="$(basename "${INSTALLER_PATH}")"
+          installer_url="https://github.com/${GH_REPO}/releases/download/${platform_tag}/${installer_name}"
+          manifest_path="$(mktemp -d)/updater-manifest.json"
+          # Notes are passed via env to avoid bash-escaping shenanigans
+          # when the changelog contains backticks / quotes.
+          NOTES="${NOTES}" python3 - "${VERSION}" "${platform_tag}" "${installer_url}" "${installer_name}" "${RELEASE_SUFFIX}" "${manifest_path}" <<'PY'
+          import json, os, sys
+          version, tag, url, name, suffix, out = sys.argv[1:]
+          json.dump({
+            "version": version,
+            "tag": tag,
+            "installerUrl": url,
+            "installerName": name,
+            "platform": suffix,
+            "notes": os.environ.get("NOTES", ""),
+          }, open(out, "w"), indent=2)
+          PY
+          echo "Uploading updater manifest: ${manifest_path}"
+          gh release upload "${platform_tag}" "${manifest_path}" --repo "${GH_REPO}"
+
+          # Verify the expected asset count: 1 installer + 1 manifest.
+          # `gh release view` instead of `gh api` for the same MSYS
+          # path-conversion reason as above.
+          asset_count="$(gh release view "${platform_tag}" --repo "${GH_REPO}" --json assets --jq '.assets | length')"
+          if [[ "${asset_count}" != "2" ]]; then
+            echo "Release ${platform_tag} has ${asset_count} assets; expected 2 (installer + updater-manifest.json)."
+            exit 1
+          fi
+          echo "Release ${platform_tag} published with 1 installer + 1 manifest."
+
+  docker:
+    name: build docker (concord-web, concord-api) + stack archive
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+    steps:
+      - name: Check out repository at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Both images go to GHCR under the org (lowercased) namespace. The
+      # owner string from GitHub is mixed-case ("TruStoryHnsl") and GHCR
+      # rejects uppercase characters in image paths, so we normalize.
+      - name: Resolve GHCR namespace
+        id: ns
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "owner_lc=${owner_lc}" >> "${GITHUB_OUTPUT}"
+          echo "Using GHCR namespace ghcr.io/${owner_lc}"
+
+      - name: Build + push concord-web
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: web/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-web:${{ env.VERSION }}
+            ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-web:latest
+
+      - name: Build + push concord-api
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          push: true
+          tags: |
+            ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-concord-api:${{ env.VERSION }}
+            ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-concord-api:latest
+
+      # Assemble the operator-facing stack archive. Operators unzip this,
+      # edit .env, and run `docker compose up -d`. We include only the
+      # files an operator actually needs at deploy time — not the full
+      # source tree.
+      - name: Stage stack archive
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$(mktemp -d)/concord-docker-stack-v${VERSION}"
+          mkdir -p "${stage}"
+          cp docker-compose.yml "${stage}/"
+          cp .env.example "${stage}/.env.example"
+          if [[ -d config ]]; then
+            cp -R config "${stage}/config"
+          fi
+          if [[ -f install.sh ]]; then
+            cp install.sh "${stage}/install.sh"
+          fi
+          # README describing the archive contents.
+          cat > "${stage}/README.md" <<EOF
+          # Concord docker stack v${VERSION}
+
+          Prebuilt-image deployment of Concord. The compose file references
+          \`ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-web:${VERSION}\` and
+          \`ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-concord-api:${VERSION}\`
+          plus the upstream tuwunel + LiveKit + coturn images.
+
+          ## Quickstart
+
+              cp .env.example .env
+              \$EDITOR .env  # set CONDUWUIT_SERVER_NAME and SITE_ADDRESS
+              docker compose up -d
+
+          See the upstream README at
+          https://github.com/${GITHUB_REPOSITORY} for full configuration.
+          EOF
+          out="${GITHUB_WORKSPACE}/concord-docker-stack-v${VERSION}.zip"
+          (cd "$(dirname "${stage}")" && zip -r "${out}" "$(basename "${stage}")")
+          echo "archive=${out}" >> "${GITHUB_OUTPUT}"
+          ls -la "${out}"
+
+      - name: Create -docker release with stack archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PARENT_TAG: ${{ env.TAG }}
+          COMMIT_SHA: ${{ env.COMMIT_SHA }}
+          ARCHIVE: ${{ steps.stage.outputs.archive }}
+          NOTES: ${{ needs.prepare.outputs.notes }}
+          GHCR_NS: ${{ steps.ns.outputs.owner_lc }}
+          VERSION: ${{ env.VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          platform_tag="${PARENT_TAG}-docker"
+          title="Concord ${PARENT_TAG} - Docker (self-hosted server)"
+
+          # Augment notes with GHCR pull commands so the release page is
+          # self-documenting for operators landing here from search.
+          body_file="$(mktemp)"
+          {
+            printf '%s\n\n' "${NOTES}"
+            printf '## Container images\n\n'
+            printf '    docker pull ghcr.io/%s/concord-web:%s\n' "${GHCR_NS}" "${VERSION}"
+            printf '    docker pull ghcr.io/%s/concord-concord-api:%s\n\n' "${GHCR_NS}" "${VERSION}"
+            printf 'Or use `:latest` to follow the rolling release channel.\n\n'
+            printf '## Stack archive\n\n'
+            printf 'Unzip `concord-docker-stack-v%s.zip`, copy `.env.example` to `.env`, set `CONDUWUIT_SERVER_NAME` and `SITE_ADDRESS`, and run `docker compose up -d`.\n' "${VERSION}"
+          } > "${body_file}"
+
+          if gh release view "${platform_tag}" --repo "${GH_REPO}" --json id --jq .id >/dev/null 2>&1; then
+            echo "Existing release ${platform_tag} found; deleting it for a clean re-publish."
+            gh release delete "${platform_tag}" --repo "${GH_REPO}" --yes
+          fi
+
+          gh release create "${platform_tag}" \
+            --repo "${GH_REPO}" \
+            --title "${title}" \
+            --notes-file "${body_file}" \
+            --target "${COMMIT_SHA}"
+
+          gh release upload "${platform_tag}" "${ARCHIVE}" --repo "${GH_REPO}"
+
           asset_count="$(gh release view "${platform_tag}" --repo "${GH_REPO}" --json assets --jq '.assets | length')"
           if [[ "${asset_count}" != "1" ]]; then
             echo "Release ${platform_tag} has ${asset_count} assets; expected 1."
