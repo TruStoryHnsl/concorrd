@@ -268,15 +268,24 @@ pub fn run() {
             // Ensure settings store exists
             let _ = app.handle().store("settings.json");
 
-            // INS-065: force-open devtools at launch on Windows so we can
-            // inspect Network/Console for the missing Welcome render.
-            // Compiled in via the `devtools` Cargo feature on the tauri
-            // crate (also active in release builds, gated only by this
-            // explicit call). Removable once INS-065 is closed.
-            #[cfg(target_os = "windows")]
+            // Devtools auto-open is gated on the `devtools` Cargo feature
+            // (off by default — see `Cargo.toml`). Release builds never link
+            // `tauri/devtools` so `open_devtools()` is not even compiled in.
+            // Local dev that wants the inspector at launch: run with
+            // `cargo tauri dev --features devtools` AND set the
+            // `CONCORD_AUTO_DEVTOOLS=1` env var (so dev runs that just need
+            // a hot-reload don't get an inspector window in their face).
+            //
+            // Historical: INS-065 force-opened devtools on Windows release
+            // builds to diagnose a missing-Welcome render. That hack shipped
+            // to end users (Issue 2 in the P0 sprint that produced this
+            // commit). Don't reintroduce.
+            #[cfg(feature = "devtools")]
             {
-                if let Some(window) = app.get_webview_window("main") {
-                    window.open_devtools();
+                if std::env::var("CONCORD_AUTO_DEVTOOLS").ok().as_deref() == Some("1") {
+                    if let Some(window) = app.get_webview_window("main") {
+                        window.open_devtools();
+                    }
                 }
             }
 

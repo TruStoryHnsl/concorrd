@@ -42,7 +42,8 @@
     ],
     "resources": [
       "resources/tuwunel/**/*",
-      "resources/dendrite/**/*"
+      "resources/dendrite/**/*",
+      "installer/macos-uninstall.sh"
     ],
     "linux": {
       "deb": {
@@ -60,13 +61,12 @@
       "nsis": {
         "displayLanguageSelector": false,
         "languages": ["English"],
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "compression": "lzma",
+        "installerHooks": "installer/nsis-hooks.nsh"
       },
       "wix": {
         "language": ["en-US"]
-      },
-      "webviewInstallMode": {
-        "type": "offlineInstaller"
       }
     },
     "iOS": {
