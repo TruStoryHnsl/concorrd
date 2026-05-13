@@ -606,6 +606,36 @@ jobs:
             ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-concord-api:${{ env.VERSION }}
             ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-concord-api:latest
 
+      # GHCR creates packages with `visibility: private` on first push even
+      # when the source repo is public — packages and repos are separate
+      # permission domains and GitHub picks the safe default. Without this
+      # step, every new image needs a manual UI toggle before operators can
+      # `docker pull` it. Workflow-token has `packages: write` granted above,
+      # which is enough to PATCH the visibility. `|| true` keeps this
+      # best-effort — if visibility is already public OR the token lacks the
+      # needed user-scope, we don't fail the release.
+      - name: Force GHCR images public
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER_TYPE: ${{ github.repository_owner_type }}
+          OWNER_LC: ${{ steps.ns.outputs.owner_lc }}
+        run: |
+          set -uo pipefail
+          if [[ "${OWNER_TYPE}" == "Organization" ]]; then
+            base="/orgs/${OWNER_LC}/packages/container"
+          else
+            base="/users/${OWNER_LC}/packages/container"
+          fi
+          for pkg in concord-web concord-concord-api; do
+            echo "Making ${pkg} public via ${base}/${pkg}"
+            if gh api -X PATCH "${base}/${pkg}" -f visibility=public 2>&1; then
+              echo "  -> visibility set to public"
+            else
+              echo "  -> visibility flip failed (likely token lacks user-package admin; flip via UI once: https://github.com/users/${OWNER_LC}/packages/container/${pkg}/settings)"
+            fi
+          done
+
       # Assemble the operator-facing stack archive. Operators unzip this,
       # edit .env, and run `docker compose up -d`. We include only the
       # files an operator actually needs at deploy time — not the full
