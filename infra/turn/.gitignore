@@ -1,0 +1,11 @@
+# Live, secret-bearing files. Operators populate these on the host
+# from the .example template (turnserver.conf) and from Let's Encrypt
+# (certs/, letsencrypt/) — they never live in version control.
+turnserver.conf
+certs/
+letsencrypt/
+
+# Local backups left by previous deploys.
+*.bak
+*.bak-*
+*.bak.*
