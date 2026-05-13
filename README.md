@@ -239,7 +239,6 @@ What's NOT supported:
 
 - **[concord-beta](https://github.com/TruStoryHnsl/concord-beta)** — experimental fork: native peer-to-peer mesh chat (Tauri + Rust + libp2p), Reticulum discovery, WireGuard P2P video. Independent codebase, same product vision. Treat current concord as production and concord-beta as research.
 - **[concord-extensions](https://github.com/TruStoryHnsl/concord-extensions)** — extension scaffolding (e.g. `worldview`) that runs against the concord client.
-- **[orrtellite](https://github.com/TruStoryHnsl/orrtellite)** — self-hosted Headscale + WireGuard mesh. Used as the connectivity substrate for the experimental beta track and for cross-machine homelab traffic.
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full release history and [PLAN.md](./PLAN.md) for the master development map.
 

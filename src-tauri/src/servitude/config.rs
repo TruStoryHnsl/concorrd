@@ -28,7 +28,7 @@ pub const SETTINGS_STORE_FILE: &str = "settings.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Transport {
-    /// WireGuard tunnels (orrtellite/headscale style). Stable backbone.
+    /// WireGuard tunnels (Headscale / Tailscale-style mesh). Stable backbone.
     WireGuard,
     /// Local-radio mesh (BLE / WiFi Direct / WiFi AP) for offline reach.
     Mesh,

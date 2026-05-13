@@ -13,7 +13,7 @@
 #   3. PE32+ header — confirms it's actually a Windows binary, not a
 #      Linux artifact accidentally renamed.
 #   4. SHA-256 — printed for downstream cross-checks (CI artifact log
-#      vs whatever `corr@win11.local` ends up running).
+#      vs whatever the Windows test rig ends up running).
 #   5. For MSI: cabextract / msitools is used if available to peek at
 #      the install table and confirm the productname is "Concord".
 #   6. For NSIS .exe: we look for the NSIS magic ("Nullsoft.NSIS")

@@ -62,8 +62,11 @@ ext/*
 # Claude Code local config
 .claude/
 
-# Orrchestrator workflow state (develop_feature MCP tool)
+# Workflow / tooling state (develop_feature MCP tool)
 .orrch/
+
+# Codex IDE backup snapshots
+.codex-backups/
 
 # Playwright MCP artifacts
 .playwright-mcp/
@@ -91,8 +94,6 @@ PROVENANCE_REPORT.md
 .stfolder
 .bugfix-ledger.md
 .bugfix-analysis.md
-mempalace.yaml
-.mempalace-aliases
 entities.json
 
 # Splash render pipeline outputs (Blender exports + comparison frames)

@@ -24,7 +24,7 @@
  *   - jsdom render in this test on Linux host: PASS (when this test
  *     ships green).
  *   - Real-Windows-machine empirical confirmation: PENDING. Blocked
- *     on W2-13's CI artifact + corr@win11.local interactive session
+ *     on W2-13's CI artifact + a Windows test-rig interactive session
  *     screenshot. The screenshot at first launch should show the
  *     "Welcome to Concord" headline and both CTAs.
  */

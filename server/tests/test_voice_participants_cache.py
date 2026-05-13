@@ -2,13 +2,13 @@
 
 Why this exists
 ---------------
-On 2026-05-09 the sslh TLS demuxer in front of concorrd.com wedged after
-25 days of uptime: 124 ESTAB sockets sat with unread TLS ClientHellos
-while the main loop had stopped consuming them. Empirical contributor
-to the chronic background load: ``/api/voice/participants`` was emitting
-one LiveKit ``ListParticipants`` RPC per room per client poll, with no
+A production sslh TLS demuxer was observed to wedge after extended
+uptime: many ESTAB sockets sat with unread TLS ClientHellos while the
+main loop had stopped consuming them. An empirical contributor to the
+chronic background load was ``/api/voice/participants`` emitting one
+LiveKit ``ListParticipants`` RPC per room per client poll, with no
 caching and no single-flight. M users × N rooms × every 10 s produced
-bursts visible in livekit-1 logs (hundreds of calls per second).
+bursts visible in livekit logs (hundreds of calls per second).
 
 These tests pin the cache + single-flight behavior that prevents that:
 

@@ -7,8 +7,8 @@
 //!   * [`matrix_federation::MatrixFederationTransport`] — spawns a bundled
 //!     tuwunel Matrix homeserver as a child process. This is the first
 //!     real transport and lands in INS-022 Wave 2.
-//!   * `WireGuard` — orrtellite-style tunnel that gives the node a
-//!     publicly-reachable IP. Not yet implemented.
+//!   * `WireGuard` — Headscale/Tailscale-style mesh tunnel that gives
+//!     the node a publicly-reachable IP. Not yet implemented.
 //!   * `Mesh` — libp2p over BLE/WiFi Direct/WiFi AP. Lives in the
 //!     `concord_beta` repo, not here.
 //!   * `Tunnel` — HTTP/QUIC tunnel through cooperating relays. Not yet

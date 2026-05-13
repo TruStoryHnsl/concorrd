@@ -5,7 +5,8 @@
 // by `cargo tauri android init`, which can only run on a host with the
 // Android SDK + NDK installed.
 //
-// On orrion (the designated Android build host) the one-time init flow is:
+// On the designated Android build host (Linux x86_64 with the Android
+// SDK + NDK installed), the one-time init flow is:
 //
 //   1. Install Android Studio or just the SDK + NDK
 //   2. Set environment:

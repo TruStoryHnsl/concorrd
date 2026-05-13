@@ -418,7 +418,7 @@ export async function discoverHomeserver(
   // ---------------------------------------------------------------
   // If the Concord well-known is absent (vanilla Matrix homeserver),
   // fall back to `https://<host>/api`. This keeps the helper
-  // backwards-compatible with the existing orrgate deployment where
+  // backwards-compatible with the standard deployment topology where
   // Caddy routes `/api/*` to the Concord container.
   let apiBase: string;
   let livekitUrl: string | undefined;

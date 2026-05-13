@@ -8,7 +8,7 @@
 
 ## 1. Source of Truth
 
-File audited: `/home/corr/projects/concord/src-tauri/src/servitude/transport/mod.rs`
+File audited: `src-tauri/src/servitude/transport/mod.rs`
 
 Note: The `beta/` directory referenced in the PLAN.md does not exist as a separate directory in this repository. The Transport abstraction lives in `src-tauri/src/servitude/transport/` as part of the main Tauri app. This audit covers that implementation.
 

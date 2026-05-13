@@ -169,12 +169,12 @@ the next section.
 
 ---
 
-## Audience 3 — Triaging on a real Windows test rig (`corr@win11.local`)
+## Audience 3 — Triaging on a real Windows test rig
 
-The verification harness is `scripts/verify_windows_bundle.sh`. Setup
-of the test rig is documented in
-[`windows-test-machine.md`](windows-test-machine.md). Once the
-machine is reachable and key auth is in place:
+The verification harness is `scripts/verify_windows_bundle.sh`. Set
+`WIN_TEST_HOST` (or pass it as the first argument to the script) to the
+SSH alias of your Windows test rig. Once the machine is reachable and
+key auth is in place:
 
 ```bash
 # Probe reachability
@@ -185,7 +185,7 @@ bash scripts/verify_windows_bundle.sh \
     src-tauri/target/release/bundle/msi/Concord_0.1.0_x64_en-US.msi
 ```
 
-The screenshot lands in `./artifacts/win11-launch-<utcts>.png`. The
+The screenshot lands in `./artifacts/windows-launch-<utcts>.png`. The
 expected first-launch screen is the Server Picker — anything else
 (blank webview, chat shell, error dialog) is a bug.
 

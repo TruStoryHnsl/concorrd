@@ -70,7 +70,7 @@
       }
     },
     "iOS": {
-      "developmentTeam": "827D323V6Z",
+      "developmentTeam": "YOUR_TEAM_ID",
       "minimumSystemVersion": "15.0",
       "frameworks": []
     },

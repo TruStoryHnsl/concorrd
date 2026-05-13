@@ -11,10 +11,8 @@ EXTENSIONS_DIR = DATA_DIR / "extensions"
 
 # INS-051: canonical default domain root. Operators who do not supply
 # a custom domain advertise their instance at ``<slug>.concordchat.net``
-# automatically. The previous placeholder ``concorrd.com`` was corr's
-# personal instance hostname; ``concordchat.net`` is the generic
-# distribution domain. Override with CONCORD_DEFAULT_DOMAIN_ROOT for
-# alternate forks.
+# automatically. Override with CONCORD_DEFAULT_DOMAIN_ROOT for alternate
+# forks.
 CONCORD_DEFAULT_DOMAIN_ROOT = (
     os.getenv("CONCORD_DEFAULT_DOMAIN_ROOT", "concordchat.net").strip().lstrip(".")
     or "concordchat.net"

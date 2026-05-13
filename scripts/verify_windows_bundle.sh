@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # verify_windows_bundle.sh — Install + smoke-launch a Concord Windows bundle
-# on the test machine `corr@win11.local` over SSH and report observed state.
+# on a Windows test rig over SSH and report observed state.
+#
+# Configure the SSH target via the WIN_TEST_HOST env var (or override
+# REMOTE_HOST directly). Example: WIN_TEST_HOST="user@win11.local".
 #
 # Why this script exists
 # ----------------------
@@ -12,18 +15,18 @@
 # pass/fail signal.
 #
 # What it does (in order)
-#   1. Probes SSH reachability + key-only auth to corr@win11.local.
+#   1. Probes SSH reachability + key-only auth to $REMOTE_HOST.
 #      ANY password prompt or auth failure is a HARD STOP — the script
 #      must NEVER silently pass on a missing key. The blocker surfaces
 #      to the user explicitly.
-#   2. Copies the bundle (.msi or NSIS .exe) to win11 via scp.
+#   2. Copies the bundle (.msi or NSIS .exe) to the Windows host via scp.
 #   3. Runs a silent install over PowerShell + msiexec /qn (or NSIS /S).
 #   4. Waits for Concord.exe to appear under
 #      C:\Program Files\Concord\ or %LOCALAPPDATA%\Programs\Concord\
 #      (NSIS currentUser installs land in LOCALAPPDATA).
 #   5. Launches Concord.exe in the background, waits ~8 seconds.
 #   6. Captures a screenshot of the primary monitor via PowerShell.
-#   7. SCPs the screenshot back to ./artifacts/win11-launch-<ts>.png.
+#   7. SCPs the screenshot back to ./artifacts/windows-launch-<ts>.png.
 #   8. Tears down: kills Concord.exe and uninstalls.
 #
 # This script is the verification harness; it does NOT build. Pair with
@@ -40,13 +43,17 @@
 #   1  arg error
 #   2  SSH unreachable / not key-auth (BLOCKER — surfaces to the user)
 #   3  bundle missing or unreadable
-#   4  install failed on win11
+#   4  install failed on the Windows host
 #   5  launch did not produce a Concord.exe process
 #   6  screenshot capture failed
 set -euo pipefail
 
-REMOTE_HOST="${REMOTE_HOST:-corr@win11.local}"
-REMOTE_TMP='C:\Users\corr\AppData\Local\Temp\concord-verify'
+REMOTE_HOST="${REMOTE_HOST:-${WIN_TEST_HOST:-}}"
+if [[ -z "$REMOTE_HOST" ]]; then
+    printf 'error: set WIN_TEST_HOST (or REMOTE_HOST) to the SSH alias of your Windows test rig.\n' >&2
+    exit 1
+fi
+REMOTE_TMP='%LOCALAPPDATA%\Temp\concord-verify'
 ARTIFACT_DIR="${ARTIFACT_DIR:-$(pwd)/artifacts}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
@@ -108,8 +115,8 @@ Required setup on ${REMOTE_HOST}:
         New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server' \\
             -Enabled True -Direction Inbound -Protocol TCP \\
             -Action Allow -LocalPort 22
-  3. From this Linux host, copy your public key to win11:
-        ssh-copy-id corr@win11.local
+  3. From this Linux host, copy your public key to the Windows host:
+        ssh-copy-id ${REMOTE_HOST}
      (or paste ~/.ssh/id_*.pub into C:\\Users\\corr\\.ssh\\authorized_keys
       manually — note: for *admin* users, Windows OpenSSH reads from
       C:\\ProgramData\\ssh\\administrators_authorized_keys instead of the
@@ -239,7 +246,7 @@ if ! ssh -o BatchMode=yes "$REMOTE_HOST" "powershell -NoProfile -Command \"$LAUN
     die "launch / screenshot failed" 5
 fi
 
-LOCAL_SCREEN="${ARTIFACT_DIR}/win11-launch-${TIMESTAMP}.png"
+LOCAL_SCREEN="${ARTIFACT_DIR}/windows-launch-${TIMESTAMP}.png"
 log "Pulling screenshot to ${LOCAL_SCREEN}"
 scp -o BatchMode=yes "${REMOTE_HOST}:${SCREEN_PATH//\\//}" "$LOCAL_SCREEN" || die "screenshot pull failed" 6
 
