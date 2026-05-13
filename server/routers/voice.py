@@ -1,6 +1,8 @@
+import asyncio
 import hmac
 import logging
 import os
+import time
 from typing import Optional
 
 import httpx
@@ -404,6 +406,72 @@ class VoiceParticipant(BaseModel):
     name: str
 
 
+# TTL cache + single-flight for LiveKit's ListParticipants.
+#
+# Background: the client's ``useVoiceParticipants`` hook polls this
+# endpoint every 10 s per voice-room set. With M concurrent users and
+# N rooms each, the un-cached endpoint emits up to M×N
+# RoomService.ListParticipants RPCs to LiveKit every 10 s. Empirically
+# that produced bursts of hundreds of LiveKit calls per second
+# (visible in livekit-1 logs) and contributed to the chronic
+# background load that, combined with sslh's missing TCP keepalive,
+# led to the 2026-05-09 wedge of the TLS demuxer on :443.
+#
+# This cache collapses concurrent in-flight lookups for the same room
+# into one upstream call (single-flight via ``_participants_inflight``)
+# and serves repeat lookups within ``_PARTICIPANTS_TTL`` seconds from
+# memory. Module-level state is per-worker, which is acceptable: a
+# small worker count means a 5 s TTL still reduces total LiveKit RPC
+# volume by ~M× across users hitting the same worker.
+_PARTICIPANTS_TTL_S = 5.0
+_participants_cache: dict[str, tuple[float, list[dict]]] = {}
+_participants_inflight: dict[str, asyncio.Task[list[dict]]] = {}
+
+
+async def _fetch_room_participants_cached(room_id: str) -> list[dict]:
+    now = time.monotonic()
+    cached = _participants_cache.get(room_id)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+
+    existing = _participants_inflight.get(room_id)
+    if existing is not None and not existing.done():
+        return await existing
+
+    async def _do_fetch() -> list[dict]:
+        try:
+            lk_url = LIVEKIT_URL.replace("ws://", "http://").replace(
+                "wss://", "https://"
+            )
+            lk_client = livekit_api.LiveKitAPI(
+                lk_url, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
+            )
+            try:
+                resp = await lk_client.room.list_participants(
+                    livekit_api.ListParticipantsRequest(room=room_id)
+                )
+                data: list[dict] = [
+                    {"identity": p.identity, "name": p.name}
+                    for p in resp.participants
+                ]
+            finally:
+                await lk_client.aclose()
+            _participants_cache[room_id] = (
+                time.monotonic() + _PARTICIPANTS_TTL_S,
+                data,
+            )
+            return data
+        except Exception:
+            # Don't cache failures — let the next caller retry promptly.
+            return []
+        finally:
+            _participants_inflight.pop(room_id, None)
+
+    task = asyncio.create_task(_do_fetch())
+    _participants_inflight[room_id] = task
+    return await task
+
+
 @router.get("/participants")
 async def get_voice_participants(
     rooms: str = Query(
@@ -445,24 +513,11 @@ async def get_voice_participants(
         return {}
     room_ids = list(accessible_rooms)
 
-    # Convert ws:// → http:// for LiveKit REST API
-    lk_url = LIVEKIT_URL.replace("ws://", "http://").replace("wss://", "https://")
-    lk_client = livekit_api.LiveKitAPI(lk_url, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-
-    result: dict[str, list[dict]] = {}
-    try:
-        for room_id in room_ids:
-            try:
-                resp = await lk_client.room.list_participants(
-                    livekit_api.ListParticipantsRequest(room=room_id)
-                )
-                result[room_id] = [
-                    {"identity": p.identity, "name": p.name}
-                    for p in resp.participants
-                ]
-            except Exception:
-                result[room_id] = []
-    finally:
-        await lk_client.aclose()
-
-    return result
+    # Concurrent cache-or-fetch per room. Single-flight inside
+    # ``_fetch_room_participants_cached`` ensures concurrent requests
+    # for the same room share one upstream LiveKit RPC.
+    fetched = await asyncio.gather(
+        *(_fetch_room_participants_cached(room_id) for room_id in room_ids),
+        return_exceptions=False,
+    )
+    return dict(zip(room_ids, fetched))
