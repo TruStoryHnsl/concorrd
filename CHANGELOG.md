@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-05-12
+
+### Fixed — macos-intel cross-compile: C deps now emit x86_64 object files
+- **`.github/workflows/release.yml`** — added a `cross_compile` matrix flag (set on `macos-intel`) plus a step that writes cross-compile C/linker env vars to `$GITHUB_ENV` before the tuwunel and Tauri build steps. Without these, `cargo --target x86_64-apple-darwin` cross-compiled the Rust crates correctly but C deps invoked via `cc-rs` (jemalloc-sys, aws-lc-sys, ring, lz4-sys, bzip2-sys, zstd-sys) picked up the host arm64 arch and emitted host-arch object files; the link step then rejected 1438 of them with `found architecture 'arm64', required architecture 'x86_64'`. The env vars set are: `CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS` (for autoconf-style ./configure builds — jemalloc uses configure), and the cc-rs target-specific variants `CC_x86_64_apple_darwin`, `CFLAGS_x86_64_apple_darwin`, etc. (for cc-rs target-side cross-builds), plus `CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER` + `RUSTFLAGS` so rustc invokes clang with `-arch x86_64` at link time. macos-arm64 is unaffected (`cross_compile` flag not set; native build).
+
 ## [0.7.9] - 2026-05-12
 
 ### Fixed — macos-intel cross-compile blocked on tuwunel's pinned toolchain

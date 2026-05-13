@@ -141,16 +141,22 @@ jobs:
             # Was `macos-13` (Intel host). GitHub's macos-13 hosted runner
             # queue is severely rationed — both v0.7.7 attempts hit the 24h
             # queue-cancel and never started. macos-14 is Apple Silicon and
-            # provisions in minutes; the Rust toolchain installed below adds
-            # the `x86_64-apple-darwin` target so cargo cross-compiles to
-            # Intel from arm64 host. Apple's bundled clang/Xcode ships the
-            # x86_64 SDK, so C deps (jemalloc + co. inside tuwunel) compile
-            # cleanly. The .dmg packaging tools work on either host.
+            # provisions in minutes; we cross-compile to x86_64. Apple's
+            # Xcode/clang on macos-14 carries the x86_64 SDK, and the
+            # `cross_compile: true` flag below triggers a step that exports
+            # the cc-rs + linker env vars (CC_x86_64_apple_darwin, CFLAGS,
+            # CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER, etc.) so tuwunel's
+            # C deps (jemalloc-sys, aws-lc-sys, ring, lz4-sys, bzip2-sys)
+            # emit x86_64 object files instead of the host arm64. Without
+            # those env vars, v0.7.9 link-failed on 1438 arch-mismatch
+            # objects (the Rust crates cross-compiled fine; the C deps
+            # alone defaulted to host arch).
             os: macos-14
             rust_target: x86_64-apple-darwin
             tauri_args: "--target x86_64-apple-darwin --bundles dmg"
             stage_homeserver: macos
             installer_glob: "dmg/*.dmg"
+            cross_compile: true
           - platform: macos-arm64
             release_suffix: macos-arm64
             release_title_suffix: "macOS (Apple Silicon)"
@@ -281,6 +287,34 @@ jobs:
           chmod +x "${dest}/tuwunel"
           ls -la "${dest}/"
           file "${dest}/tuwunel"
+
+      - name: Set cross-compile C/linker env (matrix.cross_compile only)
+        if: matrix.cross_compile
+        shell: bash
+        run: |
+          # Persist env vars for every subsequent step in this job.
+          # `cargo build --target x86_64-apple-darwin` cross-compiles Rust
+          # crates correctly on its own, but C deps invoked via cc-rs
+          # (jemalloc-sys, aws-lc-sys, ring, lz4-sys, bzip2-sys, zstd-sys,
+          # bzip2-sys) pick up the host arch by default and emit arm64
+          # object files when run on macos-14. The link step then rejects
+          # them with "found architecture 'arm64', required architecture
+          # 'x86_64'". Setting target-specific cc-rs vars + a generic CC/
+          # CFLAGS forces -arch x86_64 across both cc-rs and autoconf-style
+          # ./configure invocations (jemalloc uses configure).
+          {
+            echo "CC=clang"
+            echo "CXX=clang++"
+            echo "CFLAGS=-arch x86_64 -mmacosx-version-min=10.12"
+            echo "CXXFLAGS=-arch x86_64 -mmacosx-version-min=10.12"
+            echo "LDFLAGS=-arch x86_64"
+            echo "CC_x86_64_apple_darwin=clang"
+            echo "CFLAGS_x86_64_apple_darwin=-arch x86_64 -mmacosx-version-min=10.12"
+            echo "CXX_x86_64_apple_darwin=clang++"
+            echo "CXXFLAGS_x86_64_apple_darwin=-arch x86_64 -mmacosx-version-min=10.12"
+            echo "CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=clang"
+            echo "CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS=-Clink-arg=-arch -Clink-arg=x86_64"
+          } >> "$GITHUB_ENV"
 
       - name: Stage tuwunel (macOS, build from source)
         if: matrix.stage_homeserver == 'macos'
