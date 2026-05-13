@@ -142,6 +142,29 @@ Building it yourself on Windows: see [`docs/native-apps/windows-install.md`](doc
 
 > Note: cross-compiling Windows installers from Linux is currently blocked by libsodium-sys-stable's POSIX-only build deps in the iota_stronghold tree. Use the Windows CI workflow or a real Windows host. `scripts/build_windows_wsl.sh` exits with a clear diagnostic if you try.
 
+#### Uninstalling Concord
+
+**Windows.** Open **Settings → Apps → Installed apps**, find **Concord**, and click **Uninstall**. The NSIS uninstaller removes:
+
+- The install dir (`%LOCALAPPDATA%\Programs\Concord\`).
+- The HKCU uninstall registry entry.
+- Per-user config under `%APPDATA%\com.concord.chat\` (settings, auth tokens, webkit cache).
+- Any legacy `%APPDATA%\Concord\` folder from pre-1.0 builds.
+
+The embedded chat database under `%APPDATA%\concord\tuwunel\` is **preserved** so a future reinstall picks up where you left off. To wipe chat history too, delete that folder manually after uninstall.
+
+Reinstalling over an existing version: the installer prompts to close any running Concord, then clears the install dir before extracting the new build. Older versions that hit "Concord already installed / uninstall fails" can run the new installer directly — it self-repairs.
+
+**macOS.** Drag `/Applications/Concord.app` to the Trash, then run the bundled uninstall helper from Terminal to clean per-user state:
+
+```bash
+/Applications/Concord.app/Contents/Resources/uninstall.sh
+```
+
+(Run it BEFORE dragging the .app to Trash, or unzip the .dmg again to recover the script.) The helper removes the .app bundle, `~/Library/Application Support/Concord`, `~/Library/Caches/com.concord.chat`, `~/Library/Logs/Concord`, `~/Library/Preferences/com.concord.chat.plist`, and the macOS launch-services cache for `com.concord.chat`.
+
+**Linux** (`.deb`/`.rpm`/AppImage). `.deb` and `.rpm` are managed by your package manager — `sudo apt remove concord` or `sudo dnf remove concord` cleans the install plus the postrm-script-managed cache. AppImage users delete the `.AppImage` file plus `~/.local/share/concord/` and `~/.config/concord/`.
+
 Day-to-day:
 
 ```bash
