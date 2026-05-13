@@ -137,3 +137,7 @@ format-panel-open.yml
 # rewritten every time the admin UI updates federation settings or bridges.
 # The committed template contains federation defaults only — never tokens.
 config/tuwunel.toml
+
+# Local mempalace tooling — personal memory-system config, never in the public repo.
+/mempalace.yaml
+/.mempalace-aliases

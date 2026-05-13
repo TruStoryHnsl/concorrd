@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-05-13
+
+### Fixed — macos-intel cross-compile: bump min-macOS 10.12 → 11.0
+- **`.github/workflows/release.yml`** — `-mmacosx-version-min` in the macos-intel cross-compile env bumped from `10.12` to `11.0`. The `10.12` floor caused `rust-librocksdb-sys` (one of tuwunel's deps) to fail compilation: rocksdb's aligned `new`/`delete` operators are only available from macOS 10.13, and the C++ stdlib code rocksdb pulls in needs even newer than that. `11.0` matches the existing `tauri.conf.json` `macOS.minimumSystemVersion: "11.0"` — the desktop app already declared itself Big Sur-only, so compiling against an older SDK was pointlessly more permissive than the runtime target.
+
 ## [0.7.10] - 2026-05-12
 
 ### Fixed — macos-intel cross-compile: C deps now emit x86_64 object files
