@@ -2,8 +2,11 @@
 
 Operator runbooks for deploying Concord. Start with the target that matches your environment.
 
+> **Before you deploy:** read [`host-allowlist.md`](./host-allowlist.md). Concord runs only on `orr1on` (production) and `orrion` (development). `install.sh` will refuse to run on `orrgate` and warn on any other host.
+
 | Guide | Target | When to use |
 |-------|--------|-------------|
+| [host-allowlist.md](./host-allowlist.md) | All deploys | Pre-flight — which hosts may run concord, which may not, and why. |
 | [github_bug_report_token.md](./github_bug_report_token.md) | GitHub PAT rotation | You set up `GITHUB_BUG_REPORT_TOKEN` and need to rotate the credential or audit its scope. |
 
 New environments should land their own `.md` file in this directory and link into the table above.

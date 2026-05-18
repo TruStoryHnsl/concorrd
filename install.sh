@@ -123,6 +123,44 @@ detect_public_ip() {
 
 banner
 
+# ── Host allowlist ───────────────────────────────────────────────────────
+# Concord deploys ONLY on hosts in the allowlist. Forbidden hosts get a
+# loud refusal. See docs/deployment/host-allowlist.md for the policy and
+# the 2026-05-17 incident that motivated it.
+_CONCORD_ALLOWED_HOSTS=("orr1on" "orrion")
+_CONCORD_FORBIDDEN_HOSTS=("orrgate")
+
+_concord_hostname_lc="$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]' | awk -F. '{print $1}')"
+
+# Forbidden check first (explicit refusal beats allowlist miss).
+for _h in "${_CONCORD_FORBIDDEN_HOSTS[@]}"; do
+  if [[ "$_concord_hostname_lc" == "$_h" ]]; then
+    if [[ "${CONCORD_HOST_ALLOWLIST_BYPASS:-}" == "i-know-what-im-doing" ]]; then
+      warn "Host '$_concord_hostname_lc' is on the FORBIDDEN list — bypass env set, continuing anyway."
+    else
+      error "Concord must NEVER be deployed on '$_concord_hostname_lc'."
+      echo "  See docs/deployment/host-allowlist.md for the reason."
+      echo "  Production deploys belong on orr1on; dev runs on orrion."
+      echo "  If this is a deliberate recovery exercise, re-run with:"
+      echo "    CONCORD_HOST_ALLOWLIST_BYPASS=i-know-what-im-doing ./install.sh"
+      exit 1
+    fi
+  fi
+done
+
+# Allowlist check — warn (not fail) so install can still run on new hosts
+# that someone is deliberately bringing up, but make the deviation visible.
+_concord_host_allowed=0
+for _h in "${_CONCORD_ALLOWED_HOSTS[@]}"; do
+  [[ "$_concord_hostname_lc" == "$_h" ]] && _concord_host_allowed=1 && break
+done
+if [[ "$_concord_host_allowed" -eq 1 ]]; then
+  info "Host: $_concord_hostname_lc (allowlist OK)"
+else
+  warn "Host '$_concord_hostname_lc' is not on the concord allowlist (orr1on, orrion)."
+  warn "Continuing, but add the hostname to docs/deployment/host-allowlist.md if this is intentional."
+fi
+
 echo -e "${BOLD}── Checking prerequisites ──${NC}"
 
 if ! command -v curl &>/dev/null; then
