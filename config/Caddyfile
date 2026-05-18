@@ -20,6 +20,20 @@
         max_size 20MB
     }
 
+    # Matrix login — rate-limited via concord-api (2026-05-18 pentest F1).
+    # Tuwunel has no per-IP login throttle, and the catch-all /_matrix/*
+    # block below would otherwise let a hostile page mount an unbounded
+    # online dictionary attack from any visitor's browser. concord-api
+    # applies the same sliding-window deque-per-IP limiter that protects
+    # /api/register (server/routers/matrix_proxy.py) and proxies onward
+    # to tuwunel. Order matters: this handle must come BEFORE /_matrix/*.
+    handle /_matrix/client/*/login {
+        reverse_proxy concord-api:8000 {
+            header_up X-Forwarded-Proto {http.request.scheme}
+            flush_interval -1
+        }
+    }
+
     # Matrix Client-Server API (streaming, no buffering)
     handle /_matrix/* {
         reverse_proxy conduwuit:6167 {

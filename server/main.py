@@ -18,7 +18,7 @@ logging.basicConfig(
 
 from database import async_session, init_db
 from errors import ConcordError, ErrorResponse
-from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_extensions, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms, service_node, ext_proxy, auth_recovery
+from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_extensions, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms, service_node, ext_proxy, auth_recovery, matrix_proxy
 
 
 logger = logging.getLogger("concord.main")
@@ -702,6 +702,7 @@ app.include_router(ext_proxy.router)
 app.include_router(ext_proxy.admin_router)
 app.include_router(rooms.router)
 app.include_router(service_node.router)
+app.include_router(matrix_proxy.router)
 app.include_router(auth_recovery.router)
 
 

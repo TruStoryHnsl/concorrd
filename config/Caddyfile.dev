@@ -17,6 +17,15 @@
         max_size 20MB
     }
 
+    # Matrix login — rate-limited via concord-api (2026-05-18 pentest F1).
+    # Order matters: more specific path must come BEFORE the catch-all.
+    handle /_matrix/client/*/login {
+        reverse_proxy concord-api:8000 {
+            header_up X-Forwarded-Proto {http.request.scheme}
+            flush_interval -1
+        }
+    }
+
     # Matrix Client-Server API
     handle /_matrix/* {
         reverse_proxy conduwuit:6167 {
