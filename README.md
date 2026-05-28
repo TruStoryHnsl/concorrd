@@ -8,7 +8,7 @@ A small-community chat platform that looks and feels like Discord but runs on in
 
 The same compiled React bundle ships as a web app and as a Tauri 2 desktop app. Native iOS/Android packages are in progress with full feature parity (no capability deltas between web and native).
 
-A separate experimental fork — [concord-beta](https://github.com/TruStoryHnsl/concord-beta) — is exploring native peer-to-peer mesh chat (Tauri + Rust + libp2p, Reticulum discovery, WireGuard tunnels for video). It shares the product vision but is a fundamentally different transport architecture and an independent codebase.
+Native peer-to-peer connectivity (Tauri + Rust + libp2p, Reticulum discovery, WireGuard tunnels for video) is being built directly into the main build — see the P2P-first native architecture roadmap in [PLAN.md](./PLAN.md) and [docs/architecture/p2p-design.md](docs/architecture/p2p-design.md). Desktop builds can host via a domain (like the docker deployment) **or** connect peer-to-peer with other Concord instances; mobile builds connect peer-to-peer or join an existing domain-accessible instance.
 
 ## Why
 
@@ -16,7 +16,7 @@ Discord is great until you remember someone else owns the kill switch. Concord i
 
 Most of the existing Matrix clients are excellent at being Matrix clients and bad at feeling like Discord. Most "self-hosted Discord" forks are great at feeling like Discord and bad at being open. Concord is a wrapper layer — a Discord-shaped server/invite/soundboard model on top of Matrix — so you get the federation and end-to-end story for free, and the UX still feels like the thing your friends already know how to use.
 
-Beyond chat, the longer-term direction is for concord to be the swiss-army knife for self-hosted comms — a single client that talks Matrix, federates with other concord instances, bridges in legacy networks where it's worth it, and (via concord-beta's mesh track) eventually carries traffic over Reticulum + WireGuard when there's no homeserver in the loop at all. Concord is infrastructure, not a service. Users should have privacy from the admin too.
+Beyond chat, the longer-term direction is for concord to be the swiss-army knife for self-hosted comms — a single client that talks Matrix, federates with other concord instances, bridges in legacy networks where it's worth it, and (via the main build's P2P mesh roadmap) eventually carries traffic over Reticulum + WireGuard when there's no homeserver in the loop at all. Concord is infrastructure, not a service. Users should have privacy from the admin too.
 
 Posture: personal-scale tool first, scaling later. Single-user and small-community deployments today; commercial polish (native apps, donation-based monetization, App Store distribution) is the path forward — but every functional capability stays free in the browser-accessible web UI.
 
@@ -273,7 +273,7 @@ What's stable today:
 What's in progress:
 - Native mobile apps (iOS/Android, Tauri 2, full feature parity, donation-based monetization).
 - Embedded servitude module — host a concord server from inside the desktop/mobile app, no docker required for end users.
-- Universal sources panel — Matrix federation, other concord instances, and (via concord-beta) Reticulum mesh, all surfaced as first-class sources in the same UI.
+- Universal sources panel — Matrix federation, other concord instances, and Reticulum mesh (P2P, in progress), all surfaced as first-class sources in the same UI.
 - Game center — chat-integrated games (jackbox-style party games, card games, story games, tabletop emulator–style integration).
 - Mobile UI refresh — swipe-only navigation, dockable pill menu, hardware-state status bar, edge-tap shortcuts.
 
@@ -284,7 +284,6 @@ What's NOT supported:
 
 ## Related projects
 
-- **[concord-beta](https://github.com/TruStoryHnsl/concord-beta)** — experimental fork: native peer-to-peer mesh chat (Tauri + Rust + libp2p), Reticulum discovery, WireGuard P2P video. Independent codebase, same product vision. Treat current concord as production and concord-beta as research.
 - **[concord-extensions](https://github.com/TruStoryHnsl/concord-extensions)** — extension scaffolding (e.g. `worldview`) that runs against the concord client.
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full release history and [PLAN.md](./PLAN.md) for the master development map.

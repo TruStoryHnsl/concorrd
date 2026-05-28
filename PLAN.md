@@ -143,7 +143,7 @@ All must pass on real physical devices (iPhone, iPad, desktop) before distributi
 
 ## Architecture
 
-> **2026-05-27**: the previously-separate `concord_beta/` libp2p mesh track is being absorbed back into the main repo as the **native build's primary transport**. One codebase serves two deployment profiles — Docker (web-first) and native (P2P-first) — by varying which services start at boot, not by maintaining two codebases. See [`docs/architecture/p2p-design.md`](docs/architecture/p2p-design.md) for the full architectural spec.
+> **2026-05-27**: the previously-separate libp2p mesh track (its repo since renamed `conquered` and re-scoped) is being absorbed back into the main repo as the **native build's primary transport**. One codebase serves two deployment profiles — Docker (web-first) and native (P2P-first) — by varying which services start at boot, not by maintaining two codebases. See [`docs/architecture/p2p-design.md`](docs/architecture/p2p-design.md) for the full architectural spec.
 
 ### Profile 1: Docker / server build (web-first, current production)
 - Tuwunel (Matrix homeserver), concord-api (FastAPI), React client, LiveKit SFU, Caddy, coturn (TURN relay), bundled sslh on 443 (web + TURN-TLS muxed by SNI)
@@ -162,8 +162,8 @@ All must pass on real physical devices (iPhone, iPad, desktop) before distributi
 - Peer pairing: QR code / `concord://` deeplink for first contact, Matrix-room peer card exchange, silent Kad DHT lookup for re-discovery (project runs 3–5 bootstrap nodes, ~$5/mo total, metadata-only bandwidth — Phase 4 / 5).
 - Federation: pluggable payload layer over libp2p streams. Matrix federation is priority-1 handler (embedded conduwuit federates over libp2p instead of HTTPS). ActivityPub is priority-2 (interop with Mastodon / Mozilla.social). Adding a new federated protocol is a new handler module, not a transport change. (Phase 6)
 - Voice: raw WebRTC peer connections over libp2p WebRTC transport for ≤8-participant rooms (full mesh, no SFU). >8 participants OR any web-only participant in the call → fall back to LiveKit on a docker-profile instance. (Phase 8)
-- Lessons salvaged from the prior `concord_beta` repo's libp2p prototype (str0m WebRTC, audio pipeline, identity, security audit scaffolding) inform Phases 2–8 without inheriting half-finished pieces; the absorbed work is rebuilt against this codebase's standards.
-- The previous `concord_beta` separate repo is retired as a separate target; its useful artifacts move into the main repo as Phases 2–9 land.
+- Lessons salvaged from the prior `conquered` repo (formerly `concord_beta`) libp2p prototype (str0m WebRTC, audio pipeline, identity, security audit scaffolding) inform Phases 2–8 without inheriting half-finished pieces; the absorbed work is rebuilt against this codebase's standards.
+- The `conquered` repo (formerly `concord_beta`) is retired as a separate native-build target and re-scoped; its useful artifacts move into the main repo as Phases 2–9 land.
 
 ### Profile 3: Browser client (P2P-first when paired, web-compat when not)
 - React client integrates js-libp2p with WebRTC transport (Phase 9). Browser tabs become first-class peers.

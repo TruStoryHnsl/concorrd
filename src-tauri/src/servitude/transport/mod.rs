@@ -9,8 +9,9 @@
 //!     real transport and lands in INS-022 Wave 2.
 //!   * `WireGuard` — Headscale/Tailscale-style mesh tunnel that gives
 //!     the node a publicly-reachable IP. Not yet implemented.
-//!   * `Mesh` — libp2p over BLE/WiFi Direct/WiFi AP. Lives in the
-//!     `concord_beta` repo, not here.
+//!   * `Mesh` — libp2p over BLE/WiFi Direct/WiFi AP. Not yet implemented;
+//!     lands in the P2P-first roadmap (PLAN.md Phase 3 — libp2p integration
+//!     in this module). Salvage prototype lives in the `conquered` repo.
 //!   * `Tunnel` — HTTP/QUIC tunnel through cooperating relays. Not yet
 //!     implemented.
 //!
@@ -149,7 +150,8 @@ pub enum TransportRuntime {
     /// Placeholder for WireGuard tunnel — returns `NotImplemented`
     /// until the wire-up lands in a later wave.
     WireGuard,
-    /// Placeholder for local-radio mesh (lives in `concord_beta`).
+    /// Placeholder for local-radio mesh — libp2p integration is planned
+    /// in PLAN.md Phase 3 (salvage prototype in the `conquered` repo).
     Mesh,
     /// Placeholder for HTTP/QUIC tunnel — returns `NotImplemented`
     /// until the wire-up lands.

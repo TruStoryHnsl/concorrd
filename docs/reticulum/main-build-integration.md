@@ -2,7 +2,7 @@
 
 **Status:** Architecture decided  
 **Date:** 2026-04-14  
-**Scope:** How Reticulum integrates into the main Concord build (not concord-beta).
+**Scope:** How Reticulum integrates into the main Concord build.
 
 ---
 
@@ -121,7 +121,7 @@ ServitudeHandle
 ### 4.2 What Reticulum is NOT responsible for (in Wave 1)
 
 - Replacing Matrix for messaging (Reticulum is an overlay/transport, not a messaging protocol).
-- Coordinating peer discovery for non-Matrix protocols (that is the concord-beta track).
+- Coordinating peer discovery for non-Matrix protocols (covered by the broader P2P design — see [docs/architecture/p2p-design.md](../architecture/p2p-design.md)).
 - Mobile-specific interface management (deferred to Wave 2+).
 
 ---
