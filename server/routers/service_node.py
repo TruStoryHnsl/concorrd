@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from routers.admin import require_admin
-from routers.servers import get_user_id
+from dependencies import get_user_id
 from services.service_node_config import (
     ALLOWED_ROLES,
     MAX_BANDWIDTH_MBPS,

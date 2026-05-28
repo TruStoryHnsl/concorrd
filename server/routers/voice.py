@@ -16,7 +16,7 @@ from database import get_db
 from dependencies import require_server_member
 from errors import ConcordError
 from models import Channel, ServerMember
-from routers.servers import get_user_id
+from dependencies import get_user_id
 from services.livekit_tokens import generate_token, LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
 
 logger = logging.getLogger(__name__)
@@ -65,12 +65,71 @@ def _turn_secret() -> str:
     return os.getenv("TURN_SECRET", "").strip()
 
 
+def _is_rfc1918(host: str) -> bool:
+    """True if `host` is a literal RFC1918 / loopback / link-local IPv4
+    address. Such addresses are NEVER valid as a TURN_HOST advertised
+    to off-LAN clients — the browser cannot route to them.
+
+    Returns False for DNS names, IPv6, and public IPv4 addresses
+    (validation of public reachability happens at runtime via the
+    voice subsystem health check, not statically here).
+    """
+    try:
+        import ipaddress
+
+        addr = ipaddress.ip_address(host)
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+    except ValueError:
+        return False
+
+
 def _turn_domain() -> str:
-    return os.getenv("TURN_DOMAIN", "localhost").strip() or "localhost"
+    """Realm for TURN auth. Derived from INSTANCE_DOMAIN unless
+    explicitly overridden via the TURN_DOMAIN env var.
+    """
+    explicit = os.getenv("TURN_DOMAIN", "").strip()
+    if explicit and not _is_rfc1918(explicit):
+        return explicit
+    from config import INSTANCE_DOMAIN
+
+    return INSTANCE_DOMAIN or "localhost"
 
 
 def _turn_host() -> str:
-    return os.getenv("TURN_HOST", "").strip() or _turn_domain()
+    """Public hostname clients use to reach coturn.
+
+    Resolution order:
+    1. ``TURN_HOST`` env var IF it's a DNS name or public IP (operator
+       opted into a specific hostname).
+    2. ``turn.{INSTANCE_DOMAIN}`` derived from the canonical public URL.
+    3. The bare ``INSTANCE_DOMAIN`` if no subdomain pattern is wanted.
+
+    An RFC1918 / loopback ``TURN_HOST`` is IGNORED with a logged
+    warning — that value would have been advertised verbatim to every
+    browser as an ICE relay URL, which off-LAN browsers cannot route
+    to. Refusing it here prevents the silent-broken-voice failure mode
+    that has historically broken self-hosters' deployments without any
+    visible symptom in the API.
+    """
+    explicit = os.getenv("TURN_HOST", "").strip()
+    if explicit:
+        if _is_rfc1918(explicit):
+            logger.warning(
+                "Ignoring TURN_HOST=%s (private/loopback IPv4 address); "
+                "deriving from INSTANCE_DOMAIN instead. A LAN address as "
+                "TURN_HOST would be advertised to off-LAN clients as their "
+                "ICE relay URL — they can't route to it. Set TURN_HOST to a "
+                "public hostname (e.g. turn.<your-domain>) or unset it and "
+                "rely on PUBLIC_BASE_URL.",
+                explicit,
+            )
+        else:
+            return explicit
+    from config import INSTANCE_DOMAIN
+
+    if INSTANCE_DOMAIN:
+        return f"turn.{INSTANCE_DOMAIN}"
+    return _turn_domain()
 
 
 def _turn_port() -> int:
@@ -213,7 +272,28 @@ async def get_voice_token(
     The room_name should be the matrix_room_id of the voice channel.
     The user_id from the auth header is used as the participant identity.
     Verifies the user is a member of the server that owns this room.
+
+    Returns 503 if the voice subsystem is known-unhealthy — issuing ICE
+    servers a client cannot reach was the silent-broken-voice failure
+    mode this architecture explicitly eliminates. The /api/hosting/status
+    endpoint carries the same diagnostic payload.
     """
+    from services.voice_health import current_status
+
+    health = current_status()
+    # Allow the never-probed initial-boot window through; only block on
+    # a probe that explicitly says we're broken. Otherwise a clean
+    # startup would 503 every voice-join until the first probe lands.
+    if health.last_checked_at and not health.healthy:
+        raise ConcordError(
+            error_code="VOICE_SUBSYSTEM_UNAVAILABLE",
+            message=(
+                health.last_error
+                or "Voice subsystem is currently unreachable."
+            ),
+            status_code=503,
+        )
+
     # Look up which server owns this room and verify membership
     result = await db.execute(
         select(Channel).where(Channel.matrix_room_id == body.room_name)

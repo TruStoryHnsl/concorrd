@@ -14,22 +14,25 @@
 
 import { describe, expect, it } from "vitest";
 import chatLayoutSource from "../ChatLayout.tsx?raw";
+import topBarMenuSource from "../TopBarMenu.tsx?raw";
 
 describe("TopBarMoreMenu Extension Library wiring (INS-070)", () => {
   it("renames the room-bound entry to 'Room Extensions'", () => {
     // The room-bound legacy item is renamed so the new library entry
     // doesn't read as a duplicate. The previous "Extensions" label
     // must NOT appear on an OverflowMenuItem under TopBarMoreMenu.
-    expect(chatLayoutSource).toContain(
+    // After the architecture-cleanup sprint, the TopBarMoreMenu body
+    // lives in TopBarMenu.tsx — that's where the labels are pinned.
+    expect(topBarMenuSource).toContain(
       'label="Room Extensions"',
     );
-    expect(chatLayoutSource).not.toMatch(
+    expect(topBarMenuSource).not.toMatch(
       /<OverflowMenuItem\s+icon="extension"\s+label="Extensions"\s+onClick/,
     );
   });
 
   it("renders an 'Extension Library' OverflowMenuItem with the library_books icon", () => {
-    expect(chatLayoutSource).toMatch(
+    expect(topBarMenuSource).toMatch(
       /icon="library_books"\s+label="Extension Library"/,
     );
   });

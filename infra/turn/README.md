@@ -18,6 +18,10 @@ at the repo root, which builds web/api/conduwuit/livekit/coturn-internal):
 
 ## First-time install on a new host
 
+Every deployment-specific file ships as a `.example` template — the
+live copies (`sslh.conf`, `docker-compose.yml`, `turnserver.conf`,
+`.env`) are gitignored. Operator copies + edits.
+
 ```bash
 # 1. Clone the concord repo somewhere stable. The application stack
 #    expects to live at /docker/stacks/concord/, so use that path.
@@ -28,14 +32,20 @@ sudo git clone https://github.com/TruStoryHnsl/concord.git /docker/stacks/concor
 #    keeps the on-host path stable while the source of truth is in git.
 sudo ln -s /docker/stacks/concord/infra/turn /docker/stacks/turn
 
-# 3. Populate the secret-bearing files (NOT in git):
-sudo cp /docker/stacks/turn/turnserver.conf.example /docker/stacks/turn/turnserver.conf
-sudo nano /docker/stacks/turn/turnserver.conf     # fill in the __SET_*__ values
-sudo mkdir -p /docker/stacks/turn/certs
+# 3. Populate the deployment-specific files (NOT in git):
+cd /docker/stacks/turn
+sudo cp .env.example                .env
+sudo cp docker-compose.yml.example  docker-compose.yml
+sudo cp sslh.conf.example           sslh.conf
+sudo cp turnserver.conf.example     turnserver.conf
+sudo nano .env                      # set CONCORD_PUBLIC_DOMAIN
+sudo nano sslh.conf                 # fill in __SET_HOST_IP__ and __SET_TURN_SNI__
+sudo nano turnserver.conf           # fill in the __SET_*__ values
+sudo mkdir -p certs
 # drop fullchain1.pem + privkey1.pem from Let's Encrypt into certs/
 
 # 4. Start the stack.
-cd /docker/stacks/turn && sudo docker compose up -d
+sudo docker compose up -d
 ```
 
 ## Updates
@@ -44,6 +54,11 @@ cd /docker/stacks/turn && sudo docker compose up -d
 cd /docker/stacks/concord && sudo git pull
 cd /docker/stacks/turn && sudo docker compose up -d
 ```
+
+`git pull` will not touch the live `sslh.conf`, `docker-compose.yml`,
+`turnserver.conf`, or `.env` — they are gitignored. If the `.example`
+templates picked up new fields, diff them against the live versions
+and apply by hand.
 
 If only sslh.conf changed, `sudo docker restart sslh` is sufficient
 (sslh re-reads the config on start; the volume mount is `:ro`). If
@@ -69,15 +84,24 @@ runs every 30 s with 2 retries before marking unhealthy).
 
 ### Why sslh wedged (history)
 
-The `keepalive: true` line in `sslh.conf` was added on 2026-05-12 after
-a 25-day-uptime wedge. Default sslh doesn't set `SO_KEEPALIVE` on its
-forwarded TURN connections, so when voice clients silently vanish (NAT
-rebind, ISP drop, browser crash) the half-open socket lingers
-indefinitely. They eventually accumulate to the point that sslh's
-main loop stops consuming established sockets and the whole `:443`
-listener goes effectively dead even though TCP `accept()` still works.
-Keepalive lets the kernel reap dead peers; ulimit bump and autoheal
-add belt-and-suspenders on top.
+`keepalive: true` was added on 2026-05-12 after a 25-day-uptime wedge.
+Default sslh doesn't set `SO_KEEPALIVE` on its forwarded TURN
+connections, so when voice clients silently vanish (NAT rebind, ISP
+drop, browser crash) the half-open socket lingers indefinitely. They
+eventually accumulate to the point that sslh's main loop stops
+consuming established sockets and the `:443` listener goes effectively
+dead even though TCP `accept()` still works. Keepalive lets the kernel
+reap dead peers; ulimit bump and autoheal add belt-and-suspenders.
+
+A 2026-05-17 attempt placed `keepalive: true` at the file's top level,
+which sslh-select v2.3.1 rejects with "Unknown settings: keepalive" and
+exits. Autoheal then turned that into a restart loop, tearing down
+live TLS forwards mid-handshake and taking prod down a second time.
+The fix is syntactic: `keepalive` is a per-`listen{}` /
+per-`protocols{}` option, not a top-level key. The current
+`sslh.conf.example` places it correctly on every block. The image is
+also pinned to `ghcr.io/yrutschle/sslh:2.3.1` rather than `:latest` so
+syntax compatibility stays stable across deploys.
 
 ### Backups left by the migration
 

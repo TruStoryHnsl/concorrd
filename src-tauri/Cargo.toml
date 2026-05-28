@@ -69,6 +69,16 @@ regex = "1"
 reqwest = { version = "0.12", features = ["rustls-tls", "stream", "json"], default-features = false }
 # Async file IO for streaming downloads to disk.
 futures-util = "0.3"
+# SHA-256 for the peer-identity fingerprint (Phase 2 — P2P identity). Already
+# pulled in transitively by tauri-plugin-stronghold; declared here so this
+# crate's direct dependency on it is explicit. No new top-level crate is
+# added — we use the existing version pinned in Cargo.lock.
+# Stronghold itself supplies the Ed25519 keypair + signing primitives via its
+# `procedures` module, so no separate ed25519-dalek dep is required.
+sha2 = "0.10"
+# iota_stronghold is pulled in transitively by tauri-plugin-stronghold;
+# declared here so identity.rs can name its Client/Location types directly.
+iota_stronghold = "2.1"
 
 # Unix-only deps for servitude child-process management. `nix::sys::signal`
 # gives us SIGTERM for graceful shutdown — std::process::Child::kill uses
@@ -139,3 +149,12 @@ nix = { version = "0.29", features = ["signal", "process"] }
 # it to the top [features] table.
 [dev-dependencies]
 # Servitude tests use only std + serde + toml; no extra deps required.
+# Phase-2 identity integration tests need an independent Ed25519 verifier
+# (so we don't ask Stronghold to verify its own signatures) plus snapshot
+# round-trip helpers. All three crates are ALREADY in the lock file via
+# iota_stronghold's transitive graph — declaring them here just exposes
+# them to the integration-test target.
+ed25519-zebra = "4"
+zeroize = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde_json = "1"

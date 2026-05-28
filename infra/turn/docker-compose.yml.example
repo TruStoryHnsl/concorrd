@@ -1,6 +1,22 @@
+# Copy this file to ``docker-compose.yml`` next to it, then create a
+# ``.env`` file in the same directory populated from ``.env.example``.
+# The live ``docker-compose.yml`` and ``.env`` are gitignored.
+#
+# Required env vars (loaded from ./.env):
+#   CONCORD_PUBLIC_DOMAIN   Public hostname the operator's Concord instance
+#                           answers to (e.g. ``chat.example.com``). Used by
+#                           the sslh healthcheck so it actually exercises
+#                           sslh -> NPM -> conduwuit, not just sslh TCP
+#                           accept (which kept succeeding during the
+#                           2026-05-09 wedge while TLS hung).
+
 services:
   sslh:
-    image: ghcr.io/yrutschle/sslh:latest
+    # Pinned: ``latest`` previously masked a config-compat regression
+    # (top-level ``keepalive`` accepted in some builds, rejected in
+    # v2.3.1) that took prod down on 2026-05-17. Bump deliberately
+    # with a test run after.
+    image: ghcr.io/yrutschle/sslh:2.3.1
     container_name: sslh
     restart: unless-stopped
     ports:
@@ -17,13 +33,10 @@ services:
       nofile:
         soft: 65536
         hard: 65536
-    # extra_hosts lets the healthcheck send SNI=concorrd.com over loopback
-    # so it actually exercises sslh -> NPM -> conduwuit, not just sslh TCP
-    # accept (which kept succeeding during the wedge while TLS hung).
     extra_hosts:
-      - "concorrd.com:127.0.0.1"
+      - "${CONCORD_PUBLIC_DOMAIN:?CONCORD_PUBLIC_DOMAIN must be set in ./.env}:127.0.0.1"
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --timeout=3 --no-check-certificate -O /dev/null https://concorrd.com/_matrix/client/versions"]
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --timeout=3 --no-check-certificate -O /dev/null https://${CONCORD_PUBLIC_DOMAIN}/_matrix/client/versions"]
       interval: 30s
       timeout: 5s
       retries: 2

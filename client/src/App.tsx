@@ -6,13 +6,13 @@ import { useToastStore } from "./stores/toast";
 import { useVoiceStore, getPendingVoiceSession, clearPendingVoiceSession, MAX_RECONNECT_ATTEMPTS, RECONNECT_BASE_DELAY_MS } from "./stores/voice";
 import { useSettingsStore } from "./stores/settings";
 import { useServerConfigStore } from "./stores/serverConfig";
-import { isDesktopMode, getHomeserverUrl } from "./api/serverUrl";
+import { isDesktopMode } from "./api/serverUrl";
+import { joinVoiceSession } from "./components/voice/joinVoiceSession";
 import { usePlatform } from "./hooks/usePlatform";
 import { useServitudeLifecycle } from "./hooks/useServitudeLifecycle";
 import { runStartupCheck as runUpdaterStartupCheck } from "./lib/updater";
 import { computeInitialServerConnected } from "./serverPickerGate";
 import { redeemInvite, getInstanceInfo } from "./api/concord";
-import { getVoiceToken } from "./api/livekit";
 import { showBootSplash } from "./bootSplash";
 import { LoginForm } from "./components/auth/LoginForm";
 import { ServerPickerScreen } from "./components/auth/ServerPickerScreen";
@@ -304,8 +304,10 @@ export default function App() {
   // Auto-reconnect to voice after page refresh.
   // Retries up to MAX_RECONNECT_ATTEMPTS with exponential backoff
   // (1s, 2s, 4s) before giving up and clearing the pending session.
+  // Routes through joinVoiceSession() so the implementation is shared
+  // with the manual-join path — both paths hold the same connect-attempt
+  // lock so they can't run concurrently.
   const voiceReconnectHandled = useRef(false);
-  const voiceConnect = useVoiceStore((s) => s.connect);
   useEffect(() => {
     if (!isLoggedIn || !accessToken || voiceReconnectHandled.current) return;
     if (voiceConnected) return; // already connected
@@ -326,49 +328,20 @@ export default function App() {
 
       if (attempt > 0) {
         const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt - 1);
-        useVoiceStore.getState().setConnectionState("reconnecting");
         useVoiceStore.getState().incrementReconnectAttempt();
         await new Promise((r) => setTimeout(r, delay));
-      } else {
-        useVoiceStore.getState().setConnectionState("connecting");
       }
 
       try {
-        // Request mic permission (guard for webviews where mediaDevices
-        // may be undefined outside a secure context).
-        let micGrantedLocal = false;
-        if (navigator.mediaDevices?.getUserMedia) {
-          try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            stream.getTracks().forEach((t) => t.stop());
-            micGrantedLocal = true;
-          } catch {
-            // Continue without mic
-          }
-        }
-
-        const result = await getVoiceToken(session.channelId, accessToken);
-
-        // Same well-known-first resolution as VoiceChannel.tsx.
-        // Trailing slash is critical — see VoiceChannel.tsx comment.
-        const wkLivekit = useServerConfigStore.getState().config?.livekit_url;
-        const rawUrl = wkLivekit
-          || result.livekit_url
-          || `${getHomeserverUrl().replace(/^http/, "ws")}/livekit/`;
-        const lkUrl = rawUrl.endsWith("/") ? rawUrl : `${rawUrl}/`;
-
-        voiceConnect({
-          token: result.token,
-          livekitUrl: lkUrl,
-          iceServers: result.ice_servers?.length ? result.ice_servers : [],
-          serverId: session.serverId,
-          serverName: session.serverName ?? null,
-          channelId: session.channelId,
+        await joinVoiceSession({
+          roomId: session.channelId,
           channelName: session.channelName,
-          roomName: session.roomName,
+          serverId: session.serverId,
+          accessToken,
+          serverName: session.serverName ?? null,
           returnChannelId: session.returnChannelId ?? null,
           returnChannelName: session.returnChannelName ?? null,
-          micGranted: micGrantedLocal,
+          reconnecting: attempt > 0,
         });
 
         // Restore the associated text channel when we have one.
@@ -383,7 +356,7 @@ export default function App() {
     };
 
     attemptReconnect(0);
-  }, [isLoggedIn, accessToken, voiceConnected, voiceConnect, addToast]);
+  }, [isLoggedIn, accessToken, voiceConnected, addToast]);
 
   // The launch splash is a curtain: the app mounts and does its work
   // underneath while the splash covers it. The splash is isolated into

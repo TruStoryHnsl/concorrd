@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import MATRIX_HOMESERVER_URL, SITE_URL
 from database import get_db
 from models import User
-from routers.servers import get_user_id
+from dependencies import get_user_id
 from services import email as email_service
 
 logger = logging.getLogger(__name__)

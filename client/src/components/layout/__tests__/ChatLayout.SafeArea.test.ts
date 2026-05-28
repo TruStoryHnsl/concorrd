@@ -67,12 +67,10 @@ describe("ChatLayout safe-area mobile layout", () => {
   });
 
   // ── Bottom pill bar ──
-
-  it("pill bar wrapper has safe-bottom class", () => {
-    expect(chatLayoutSource).toMatch(
-      /concord-mobile-nav-wrap safe-bottom/
-    );
-  });
+  // (The `concord-mobile-nav-wrap safe-bottom` pin previously guarded
+  // the dead `_MobilePillRow` source; that component was deleted in
+  // the architecture-cleanup sprint and the live mobile nav uses
+  // safe-bottom inline via the AccountSheet / DM / settings sheets.)
 
   // ── CSS infrastructure ──
 

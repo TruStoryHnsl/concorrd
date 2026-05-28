@@ -61,7 +61,7 @@ from pydantic import BaseModel
 
 from config import DATA_DIR, EXTENSIONS_DIR
 from routers.admin import require_admin
-from routers.servers import get_user_id
+from dependencies import get_user_id
 from routers import extensions as extensions_router
 
 logger = logging.getLogger(__name__)

@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { useAuthStore } from "../../stores/auth";
 import { useToastStore } from "../../stores/toast";
+import { useIdentityStore, IDENTITY_ERROR_NATIVE_ONLY } from "../../stores/identity";
+import { isTauri } from "../../api/servitude";
 import { changePassword, getTOTPStatus, setupTOTP, verifyTOTP, disableTOTP, getRecoveryEmailStatus, setRecoveryEmail, type TOTPSetupResult } from "../../api/concord";
 import { Avatar } from "../ui/Avatar";
 
@@ -119,6 +121,9 @@ export function ProfileTab() {
         <span className="text-sm text-on-surface-variant">User ID</span>
         <span className="text-sm text-on-surface-variant font-mono">{userId}</span>
       </div>
+
+      {/* Peer identity (Phase 2 — Ed25519 device identity) */}
+      <PeerIdentitySection />
 
       {/* Password change */}
       <PasswordChangeSection />
@@ -476,6 +481,101 @@ function RecoveryEmailSection() {
           Remove recovery email
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * Peer identity surface (Phase 2 — Ed25519 device identity).
+ *
+ * Renders the fingerprint string returned by the Tauri `peer_identity`
+ * command, with a copy-to-clipboard control alongside it. The private key
+ * never enters this component — see `../../stores/identity.ts` and
+ * `../../api/peerIdentity.ts` for the wire-contract guards.
+ *
+ * Web build (no `__TAURI_INTERNALS__`): renders the same row layout as
+ * the User ID display above, but with a "native builds only" placeholder
+ * in the value column. Matches the precedent set by `HostingTab` /
+ * `AboutTab` which keep their tab rendered in the web build but degrade
+ * the native-only controls gracefully.
+ */
+function PeerIdentitySection() {
+  const fingerprint = useIdentityStore((s) => s.fingerprint);
+  const isLoading = useIdentityStore((s) => s.isLoading);
+  const error = useIdentityStore((s) => s.error);
+  const addToast = useToastStore((s) => s.addToast);
+
+  useEffect(() => {
+    // Pull `load` off the store imperatively so it isn't a hook dep — the
+    // function identity is stable inside zustand but lint can't see that
+    // and we don't want re-fires if any state slice mutates.
+    useIdentityStore.getState().load();
+  }, []);
+
+  const handleCopy = async () => {
+    if (!fingerprint) return;
+    try {
+      await navigator.clipboard.writeText(fingerprint);
+      addToast("Peer fingerprint copied", "success");
+    } catch {
+      addToast("Couldn't copy to clipboard", "error");
+    }
+  };
+
+  // Native-only placeholder for the web build. We deliberately render the
+  // row so the visual structure stays consistent between native + web —
+  // hiding it entirely would make the User ID row look like a dead-end.
+  if (!isTauri() || error === IDENTITY_ERROR_NATIVE_ONLY) {
+    return (
+      <div className="flex items-center justify-between py-2">
+        <span className="text-sm text-on-surface-variant">Peer Identity</span>
+        <span className="text-sm text-on-surface-variant italic">
+          native builds only
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between py-2 gap-3">
+      <span className="text-sm text-on-surface-variant">Peer Identity</span>
+      <div className="flex items-center gap-2 min-w-0">
+        {isLoading && !fingerprint ? (
+          <span className="text-sm text-on-surface-variant italic">Loading…</span>
+        ) : error && !fingerprint ? (
+          <span
+            className="text-sm text-error truncate"
+            title={error}
+          >
+            Failed to load
+          </span>
+        ) : fingerprint ? (
+          <>
+            <span
+              className="text-sm text-on-surface-variant font-mono truncate"
+              title={fingerprint}
+            >
+              {fingerprint}
+            </span>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="btn-press inline-flex items-center justify-center px-2 py-1 rounded-md text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors"
+              aria-label="Copy peer fingerprint"
+              title="Copy peer fingerprint"
+            >
+              <span
+                className="material-symbols-outlined text-base leading-none"
+                style={{ fontVariationSettings: '"FILL" 0, "wght" 500, "GRAD" 0, "opsz" 24' }}
+              >
+                content_copy
+              </span>
+            </button>
+          </>
+        ) : (
+          <span className="text-sm text-on-surface-variant italic">—</span>
+        )}
+      </div>
     </div>
   );
 }

@@ -4,6 +4,24 @@
 }
 
 {$SITE_ADDRESS} {
+    # TLS — `tls internal` uses Caddy's internal CA to issue a self-signed
+    # cert for the configured hostname. Browsers show a one-time warning;
+    # acceptable for Tailscale-only dev where the operator trusts every
+    # device that can reach the origin.
+    #
+    # Production / public-domain deployments should swap this for one of:
+    #   tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }   # DNS-01, see below
+    #   tls user@example.com                                # HTTP-01 (public origin)
+    #
+    # DNS-01 via Cloudflare (when origin isn't publicly reachable):
+    # The CLOUDFLARE_API_TOKEN var (.env.example documents the token scope)
+    # lets Caddy write transient TXT records into the zone to satisfy the
+    # ACME challenge without exposing the origin.
+    #
+    # Tracked: task #36 in PLAN.md — TLS_MODE env var + install.sh prompt
+    # so this is operator-pickable rather than hand-edited per deploy.
+    tls internal
+
     encode gzip
 
     header {

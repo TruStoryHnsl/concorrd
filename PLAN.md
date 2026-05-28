@@ -1,6 +1,8 @@
 # Concord — Master Development Plan
 
-Decentralized communication platform. The stable Matrix-based build lives at the repo root (currently `v0.1.0`, tagged, deployed on the deploy host). The native Rust/Tauri + libp2p mesh rewrite lives in its own separate repository at `<separate-repo>/concord_beta/` (extracted 2026-04-07 via commit 56cf2f9 — the `beta/` subdirectory in the root repo is now a near-empty stub). Both tracks share this roadmap while they converge, but they have independent commit histories.
+Decentralized communication platform. **One codebase, two deployment profiles**: a Docker / server build that maintains a persistent web-accessible presence (browsers, public domain, the existing Caddy / LiveKit / coturn / sslh stack), and a native build (Tauri desktop, iOS, Android) that is **P2P-first** — peer-to-peer over libp2p with no public-domain requirement, web stack disabled by default but available as an opt-in toggle.
+
+> **2026-05-27 architecture refocus: P2P-first for native builds.** The libp2p mesh work that was previously split into the separate `concord_beta` repo is being absorbed back into the main repo as the primary native-build transport. Native Concord instances talk to each other directly via libp2p, with project-run Kademlia DHT bootstrap nodes for first-discovery. The web/docker path remains as the compatibility surface for browser users and large-room SFU fallback. Full design captured in **[`docs/architecture/p2p-design.md`](docs/architecture/p2p-design.md)** — that document is the spec orrchestrator sequences implementation against; this PLAN.md is the rollup of all in-flight work and historical context.
 
 > **2026-04-26: Discord integration purged.** All Discord bridge code, configuration, runtime state, and DB tables were removed in `chore/purge-discord-bridge-d15c`. INS-024 (sandboxed Discord bridge), INS-033 (Discord-as-source), and INS-035 (Discord voice/video) are abandoned. Historical references below describe past state and are retained only for changelog continuity.
 
@@ -141,22 +143,32 @@ All must pass on real physical devices (iPhone, iPad, desktop) before distributi
 
 ## Architecture
 
-### Stable — repo root (`v0.1.0`, Matrix-based, running on the deploy host)
-- Tuwunel (Matrix homeserver), concord-api (FastAPI), React client, LiveKit SFU, Caddy, coturn (TURN relay)
+> **2026-05-27**: the previously-separate `concord_beta/` libp2p mesh track is being absorbed back into the main repo as the **native build's primary transport**. One codebase serves two deployment profiles — Docker (web-first) and native (P2P-first) — by varying which services start at boot, not by maintaining two codebases. See [`docs/architecture/p2p-design.md`](docs/architecture/p2p-design.md) for the full architectural spec.
+
+### Profile 1: Docker / server build (web-first, current production)
+- Tuwunel (Matrix homeserver), concord-api (FastAPI), React client, LiveKit SFU, Caddy, coturn (TURN relay), bundled sslh on 443 (web + TURN-TLS muxed by SNI)
 - Tauri v2 desktop shell wraps the web client (`src-tauri/` at root)
 - Federation: allowlist-only between Concord instances (shipped 2026-04 — `server/routers/admin.py`, `client/src/hooks/useFederation.ts`, `FederationBadge.tsx`)
 - Sources panel: hollow-shell first boot; multi-source picker (Matrix/Concord); `SourcesPanel.tsx`, `sources.ts` Zustand store
 - Voice: LiveKit SFU, speech gate (`noiseGate.ts`), TURN relay hardened (coturn TLS + e2e smoke test)
 - Deploy: `<deploy-host>:/docker/stacks/concord/`
-- Active development on: `feat/reintegration-70bc4a6` (not yet merged to `main`)
+- Phase 0 (web-compat hardening) landed 2026-05-27: `INSTANCE_DOMAIN` auto-derived from `PUBLIC_BASE_URL`, RFC1918 `TURN_HOST` refused, voice subsystem health probed in background + surfaced via `/api/hosting/status`, `/api/voice/token` returns 503 with remediation on degraded TURN instead of silently issuing broken ICE URLs. Web users get working voice once the operator's one-time port-forward (443 → host) is in place.
 - Renamed from "v1" during the 2026-03-31 SemVer restructure
 
-### Experimental — `beta/` (native Rust/Tauri + libp2p mesh)
-- Tauri v2 + Rust, libp2p swarm (mDNS, Kademlia, GossipSub, QUIC, Noise, Relay, DCUtR)
-- Three-pathway comms: forums (mesh-scoped), servers/places (org-scoped), direct (walkie-talkie)
-- Voice currently over GossipSub raw frames; str0m WebRTC signaling placeholder
-- See `beta/CLAUDE.md` and `beta/ARCHITECTURE.md` for the full technical architecture
-- Renamed from "v2" during the 2026-03-31 SemVer restructure
+### Profile 2: Native build (P2P-first, the new primary direction)
+- Same codebase. Web stack disabled by default. Operator can opt in to "Make this instance web-accessible" which flips on the same Profile-1 services on this machine.
+- libp2p swarm in `src-tauri/src/servitude/` provides the P2P transport (QUIC + WebRTC + Noise + Yamux, with Kademlia DHT + GossipSub + Circuit Relay v2 + DCUtR for NAT traversal).
+- Peer identity: Ed25519 keypair per install, stored in `tauri-plugin-stronghold` (Phase 2). The public-key fingerprint is the canonical identity; Matrix user IDs layer on top.
+- Peer pairing: QR code / `concord://` deeplink for first contact, Matrix-room peer card exchange, silent Kad DHT lookup for re-discovery (project runs 3–5 bootstrap nodes, ~$5/mo total, metadata-only bandwidth — Phase 4 / 5).
+- Federation: pluggable payload layer over libp2p streams. Matrix federation is priority-1 handler (embedded conduwuit federates over libp2p instead of HTTPS). ActivityPub is priority-2 (interop with Mastodon / Mozilla.social). Adding a new federated protocol is a new handler module, not a transport change. (Phase 6)
+- Voice: raw WebRTC peer connections over libp2p WebRTC transport for ≤8-participant rooms (full mesh, no SFU). >8 participants OR any web-only participant in the call → fall back to LiveKit on a docker-profile instance. (Phase 8)
+- Lessons salvaged from the prior `concord_beta` repo's libp2p prototype (str0m WebRTC, audio pipeline, identity, security audit scaffolding) inform Phases 2–8 without inheriting half-finished pieces; the absorbed work is rebuilt against this codebase's standards.
+- The previous `concord_beta` separate repo is retired as a separate target; its useful artifacts move into the main repo as Phases 2–9 land.
+
+### Profile 3: Browser client (P2P-first when paired, web-compat when not)
+- React client integrates js-libp2p with WebRTC transport (Phase 9). Browser tabs become first-class peers.
+- A browser tab opened by a user who has their own native Concord install can hole-punch directly to that install via libp2p; the docker LiveKit/coturn pipeline isn't in the path.
+- A browser tab opened by a user with no native install (e.g., logging in from a borrowed laptop) hits the docker profile the way it always has — that's the web-compat surface.
 
 ### Mesh Network Architecture (from user feedback 2026-03-26, refined 2026-03-27)
 - **Nodes**: Every concord instance. Same binary. Nodes represent either a user or a place.
@@ -217,6 +229,23 @@ No direct anonymous mode. Instead: **private browsing via disposable user node**
 - **Server authorization**: Default behavior whitelists admin's friends list. Server added via admin minting a ledger appendix.
 
 ## Feature Roadmap
+
+### TOP PRIORITY: P2P-first native architecture (routed 2026-05-27)
+
+**Source of truth: [`docs/architecture/p2p-design.md`](docs/architecture/p2p-design.md).** This is the largest single architectural shift on the roadmap; orrchestrator sequences these phases one at a time, each ending in a shippable state. Earlier roadmap items below remain relevant — voice subsystem health, mobile UI polish, settings, extensions, etc. — but the P2P phases below are the dominant track until they land. Phase 0 already shipped in this branch (2026-05-27); Phases 2–9 are the orrchestrator's queue.
+
+- [x] **Phase 0 — Web-compat hardening (shipped 2026-05-27, branch `chore/architecture-cleanup-7f3a`):** `INSTANCE_DOMAIN` auto-derived from `PUBLIC_BASE_URL`; `TURN_HOST` derives to `turn.<INSTANCE_DOMAIN>` and refuses RFC1918 values with logged warning; `services/voice_health.py` runs a non-blocking background STUN probe every 10 min and caches the snapshot; `/api/hosting/status` + `/api/hosting/status/refresh` expose the snapshot; `/api/voice/token` returns 503 with actionable remediation when subsystem is known-unhealthy but allows the never-probed boot window through; bundled `sslh` service added to `docker-compose.yml` under the `public-ingress` profile (off by default for native, on for docker); `.env.example` updated to document auto-derivation. Tests: `tests/test_voice_subsystem_health.py` (10 cases) covers RFC1918 rejection, derivation, status surfacing, 503 gate, boot-window pass-through, and probe behavior. Net: web users get correctly-routed ICE URLs and visible health diagnostics after the operator's one-time port-forward; no more silent broken voice.
+- [ ] **Phase 1 — P2P architecture design doc** (shipped 2026-05-27 as `docs/architecture/p2p-design.md`; captured here as a phase rather than separately marked completed for orrchestrator's accounting purposes).
+- [x] **Phase 2 — Peer identity scaffolding.** Ed25519 keypair on first launch, persisted in `tauri-plugin-stronghold`. Public-key fingerprint exposed via Tauri command + Settings UI. Matrix user ID becomes a layer on top of peer identity. *(Implementation: `src-tauri/src/servitude/identity.rs` + `peer_identity` Tauri command in `src-tauri/src/lib.rs`; integration tests in `src-tauri/tests/identity_test.rs`. Frontend Settings UI surface deferred to a follow-up — backend is wired and IPC-callable today.)*
+- [ ] **Phase 3 — rust-libp2p integration in `src-tauri/src/servitude/`.** Add `libp2p` crate with QUIC + WebRTC + Noise + Yamux + Kademlia + Identify + Ping + Gossipsub + Circuit Relay v2 + DCUtR features. Build a `Swarm`, wire events to the Tauri app, replace the `NoopTransport` placeholder with a real `LibP2pTransport`. Salvage lessons from `concord_beta`'s prior libp2p prototype without inheriting half-finished pieces.
+- [ ] **Phase 4 — Silent Kademlia DHT + project bootstrap nodes.** Kad behavior runs as part of the swarm; bootstrap multiaddrs hard-coded in binary. Project deploys 3–5 small VPS instances (~$5/mo total) running libp2p-only Kad+Identify nodes. Operator-facing: nothing — DHT participation is silent, metadata-only bandwidth.
+- [ ] **Phase 5 — Peer pairing UX.** QR code generator + scanner, `concord://` deeplink handler, Matrix-room `concord.peer_card` custom event for first contact via existing federated rooms. ActivityPub mention/bookmark exchange follows in this phase but isn't blocking.
+- [ ] **Phase 6 — Protocol-agnostic federation payload layer.** `FederationProtocol` trait + `MatrixFederationHandler` (priority 1, conduwuit federation over libp2p stream `/concord/matrix-federation/1.0.0`) + `ActivityPubHandler` (priority 2, for Mastodon / Mozilla.social interop, stream `/concord/activitypub/1.0.0`). New federated protocols are new handler modules, not transport changes.
+- [ ] **Phase 7 — Native build default profile.** Native Tauri builds boot with the web stack (Caddy / LiveKit / coturn / sslh) **OFF** by default. Settings toggle "Make this instance web-accessible" starts the full Profile-1 stack on demand + uses Phase 0's hosting-status surface to walk the operator through DNS + port-forward.
+- [ ] **Phase 8 — Voice over libp2p.** Raw WebRTC peer connections over libp2p WebRTC transport for ≤8-participant rooms (full P2P mesh, no SFU). Larger rooms OR rooms with any web-only participant fall back to LiveKit on a docker-profile instance. The voice subsystem decides per-call.
+- [ ] **Phase 9 — js-libp2p in the browser client.** `@libp2p/js-libp2p` + WebRTC transport in `client/`. Browser becomes a real peer in the Concord mesh. Browser↔native and browser↔browser P2P. The existing web-via-API flow remains for users without a native install.
+
+**Sequencing notes for orrchestrator:** Phase 2 is the foundation everything builds on. Phases 4 (DHT) and 5 (Pairing UX) are parallel after Phase 3. Phase 6 (federation payload) blocks Phase 8 (voice uses the same stream abstraction). Phase 9 (browser libp2p) is genuinely independent after Phase 3 and can be parallelized. agent-pm reviews each PR against `docs/architecture/p2p-design.md`; deviations require a doc update first, not silent code drift.
 
 ### PRIORITY: Mobile Testing (from 2026-04-11 feedback)
 - [x] **iOS build pipeline — Xcode scaffold present** — Tauri v2 iOS scaffold exists at `src-tauri/gen/apple/`; `aarch64-apple-ios` + `aarch64-apple-ios-sim` triples mentioned in `src-tauri/Cargo.toml:99-101` (comments). <!-- audit 2026-04-24: split — Xcode project scaffold verified, but `native-audio` Cargo feature claim is unverified in this repo. -->
