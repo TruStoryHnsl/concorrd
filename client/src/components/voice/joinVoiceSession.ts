@@ -14,6 +14,14 @@ interface JoinVoiceSessionParams {
   activeServer?: Server;
   activeChannelId?: string | null;
   channelType?: "place" | "voice";
+  /** When set (i.e. coming from a persisted pending session on page refresh),
+   *  these win over the values derived from activeServer/activeChannelId. */
+  serverName?: string | null;
+  returnChannelId?: string | null;
+  returnChannelName?: string | null;
+  /** When true, transition connectionState through "reconnecting" rather
+   *  than "connecting". The lock is acquired in either case. */
+  reconnecting?: boolean;
 }
 
 export async function joinVoiceSession({
@@ -24,7 +32,17 @@ export async function joinVoiceSession({
   activeServer,
   activeChannelId,
   channelType,
+  serverName,
+  returnChannelId: returnChannelIdOverride,
+  returnChannelName: returnChannelNameOverride,
+  reconnecting,
 }: JoinVoiceSessionParams): Promise<void> {
+  const claimed = useVoiceStore.getState().beginConnectAttempt({ reconnecting });
+  if (!claimed) {
+    // Another attempt is already in flight. Bail to avoid concurrent
+    // getUserMedia + connect calls fighting each other.
+    return;
+  }
   const {
     echoCancellation,
     noiseSuppression,
@@ -66,39 +84,50 @@ export async function joinVoiceSession({
     ctx?.close();
   }
 
-  const result = await getVoiceToken(roomId, accessToken);
+  let result;
+  try {
+    result = await getVoiceToken(roomId, accessToken);
+  } catch (err) {
+    // Release the connect lock so the next attempt (manual retry or the next
+    // backoff iteration) can proceed.
+    useVoiceStore.getState().setConnectionState("disconnected");
+    throw err;
+  }
   const wkLivekit = useServerConfigStore.getState().config?.livekit_url;
   const rawUrl = wkLivekit
     || result.livekit_url
     || `${getHomeserverUrl().replace(/^http/, "ws")}/livekit/`;
   const livekitUrl = rawUrl.endsWith("/") ? rawUrl : `${rawUrl}/`;
 
+  const derivedReturnChannelId =
+    activeServer?.channels.find(
+      (channel) =>
+        channel.matrix_room_id === activeChannelId &&
+        channel.channel_type !== "voice",
+    )?.matrix_room_id ??
+    activeServer?.channels.find((channel) => channel.channel_type !== "voice")?.matrix_room_id ??
+    null;
+  const derivedReturnChannelName =
+    activeServer?.channels.find(
+      (channel) =>
+        channel.matrix_room_id === activeChannelId &&
+        channel.channel_type !== "voice",
+    )?.name ??
+    activeServer?.channels.find((channel) => channel.channel_type !== "voice")?.name ??
+    null;
+
   useVoiceStore.getState().connect({
     token: result.token,
     livekitUrl,
     iceServers: result.ice_servers?.length ? result.ice_servers : [],
     serverId,
-    serverName: activeServer?.name ?? null,
+    serverName: serverName ?? activeServer?.name ?? null,
     channelId: roomId,
     channelName,
     channelType: channelType ?? "voice",
     roomName: roomId,
-    returnChannelId:
-      activeServer?.channels.find(
-        (channel) =>
-          channel.matrix_room_id === activeChannelId &&
-          channel.channel_type !== "voice",
-      )?.matrix_room_id ??
-      activeServer?.channels.find((channel) => channel.channel_type !== "voice")?.matrix_room_id ??
-      null,
-    returnChannelName:
-      activeServer?.channels.find(
-        (channel) =>
-          channel.matrix_room_id === activeChannelId &&
-          channel.channel_type !== "voice",
-      )?.name ??
-      activeServer?.channels.find((channel) => channel.channel_type !== "voice")?.name ??
-      null,
+    returnChannelId: returnChannelIdOverride ?? derivedReturnChannelId,
+    returnChannelName: returnChannelNameOverride ?? derivedReturnChannelName,
     micGranted,
   });
 }

@@ -15,7 +15,7 @@ from config import SOUNDBOARD_DIR, FREESOUND_API_KEY, ADMIN_USER_IDS
 from database import get_db
 from dependencies import require_server_member
 from models import SoundboardClip, Server
-from routers.servers import get_user_id
+from dependencies import get_user_id
 
 router = APIRouter(prefix="/api/soundboard", tags=["soundboard"])
 

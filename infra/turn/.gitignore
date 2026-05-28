@@ -1,7 +1,11 @@
-# Live, secret-bearing files. Operators populate these on the host
-# from the .example template (turnserver.conf) and from Let's Encrypt
-# (certs/, letsencrypt/) — they never live in version control.
+# Live, secret-bearing or deployment-specific files. Operators populate
+# these on the host from the .example templates and from Let's Encrypt
+# (certs/, letsencrypt/) — they never live in version control. The
+# .example versions are what ship in git; operator copies + edits.
+sslh.conf
+docker-compose.yml
 turnserver.conf
+.env
 certs/
 letsencrypt/
 

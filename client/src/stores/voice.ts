@@ -66,6 +66,12 @@ interface VoiceState {
   }) => void;
   disconnect: () => void;
   setConnectionState: (state: VoiceConnectionState) => void;
+  /** Claim the "connection attempt in flight" lock. Returns false if another
+   *  attempt (page-refresh auto-reconnect or a manual join) is already running,
+   *  in which case the caller should bail. Sets connectionState to "connecting"
+   *  (or "reconnecting" when reconnecting=true). Must be paired with a
+   *  setConnectionState("connected"|"disconnected"|"failed") on resolve. */
+  beginConnectAttempt: (opts?: { reconnecting?: boolean }) => boolean;
   incrementReconnectAttempt: () => void;
   resetReconnectAttempt: () => void;
   /** INS-048: Called by VoiceChannel when local mic enabled state changes. */
@@ -120,6 +126,12 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   cameraActive: false,
 
   setConnectionState: (state) => set({ connectionState: state }),
+  beginConnectAttempt: ({ reconnecting } = {}) => {
+    const current = get().connectionState;
+    if (current === "connecting" || current === "reconnecting") return false;
+    set({ connectionState: reconnecting ? "reconnecting" : "connecting" });
+    return true;
+  },
   incrementReconnectAttempt: () => set({ reconnectAttempt: get().reconnectAttempt + 1 }),
   resetReconnectAttempt: () => set({ reconnectAttempt: 0 }),
   setMicActive: (active) => set({ micActive: active }),

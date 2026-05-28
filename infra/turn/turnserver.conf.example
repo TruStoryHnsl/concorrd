@@ -3,9 +3,10 @@
 # gitignored because ``static-auth-secret`` is sensitive.
 #
 # Required substitutions (marked __SET_*__):
-#   __SET_LISTENING_IP__  Internal/LAN IP of this host (e.g. 192.168.1.145
-#                         on orrgate, 172.31.93.247 on orr1on). Bind
-#                         target — coturn will listen on this IP.
+#   __SET_LISTENING_IP__  Internal/LAN IP of this host (e.g.
+#                         192.168.1.10 on a home LAN, or the cloud VM's
+#                         internal IP on AWS/GCP). Bind target — coturn
+#                         will listen on this IP.
 #   __SET_EXTERNAL_IP__   Public reachable IP of this host (the address
 #                         clients on the open internet hit). Required so
 #                         coturn writes correct relay candidates into

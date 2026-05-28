@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback, useRef, Component, type ReactNode } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import type { IPublicRoomsChunkRoom } from "matrix-js-sdk";
 import {
   useMatrixSync,
@@ -14,7 +14,6 @@ import type { ChatMessage } from "../../hooks/useMatrix";
 import { useTypingUsers, useSendTyping } from "../../hooks/useTyping";
 import { useAuthStore } from "../../stores/auth";
 import { useServerStore } from "../../stores/server";
-import { useServerConfigStore } from "../../stores/serverConfig";
 import { usePlatform } from "../../hooks/usePlatform";
 import { useDpadNav } from "../../hooks/useDpadNav";
 import { useSendReadReceipt } from "../../hooks/useUnreadCounts";
@@ -22,7 +21,15 @@ import { useNotifications } from "../../hooks/useNotifications";
 import { useSettingsStore } from "../../stores/settings";
 import { useVoiceStore } from "../../stores/voice";
 import { useHostingStatus } from "../settings/HostingTab";
+import { SectionBoundary } from "./SectionBoundary";
 import { SourcesPanel } from "./SourcesPanel";
+import { HelpModal, OnboardingGuide, RulesGate } from "./OnboardingViews";
+import { AccountSheet, DesktopAccountButton } from "./AccountUI";
+import {
+  HostingStatusButton,
+  TopBarIconButton,
+  TopBarMoreMenu,
+} from "./TopBarMenu";
 import {
   sourceMatchesMatrixDomain,
   useSourcesStore,
@@ -40,7 +47,6 @@ import { ExtensionCatalogModal } from "../extension/ExtensionCatalogModal";
 import { LocalHostingControl } from "../sources/LocalHostingControl";
 import { HostOnboarding } from "../onboarding/HostOnboarding";
 import { ServerSidebar } from "./ServerSidebar";
-import { Avatar } from "../ui/Avatar";
 import { ChannelSidebar, UserBar } from "./ChannelSidebar";
 import { DMSidebar } from "../dm/DMSidebar";
 import { ExploreModal } from "../server/ExploreModal";
@@ -55,11 +61,9 @@ import { BugReportModal } from "../BugReportModal";
 import { StatsModal } from "../StatsModal";
 import { SourceBrandIcon, inferSourceBrand } from "../sources/sourceBrand";
 import {
-  getMyStats,
   getRoomDiagnostics,
   getServerRules,
   type RoomDiagnostics,
-  type UserStats,
 } from "../../api/concord";
 import {
   buildMatrixSourceDraft,
@@ -74,48 +78,9 @@ import {
 import { useFormatStore } from "../../stores/format";
 import { useBootReadyStore } from "../../stores/bootReady";
 
-/** RulesGate — full-panel screen shown to members who haven't accepted the server rules yet. */
-function RulesGate({ rulesText, onAccept }: { rulesText: string; onAccept: () => void }) {
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center p-8 gap-6 min-h-0 overflow-y-auto">
-      <div className="max-w-lg w-full space-y-4">
-        <div className="flex items-center gap-3">
-          <span className="material-symbols-outlined text-primary text-2xl">gavel</span>
-          <h2 className="text-xl font-headline font-semibold text-on-surface">Server Rules</h2>
-        </div>
-        <p className="text-xs text-on-surface-variant">
-          Please read and accept the rules before participating in this server.
-        </p>
-        <div className="px-4 py-4 bg-surface-container border border-outline-variant/20 rounded-lg text-sm text-on-surface whitespace-pre-wrap leading-relaxed max-h-80 overflow-y-auto">
-          {rulesText}
-        </div>
-        <button
-          onClick={onAccept}
-          className="w-full py-2.5 primary-glow hover:brightness-110 text-on-surface font-medium text-sm rounded-lg transition-colors"
-        >
-          I accept the rules
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /** localStorage key for tracking rules acceptance per server per user. */
 function rulesAcceptedKey(userId: string, serverId: string) {
   return `concord_rules_accepted:${userId}:${serverId}`;
-}
-
-/** Lightweight error boundary that silently recovers instead of hiding content. */
-class SilentBoundary extends Component<{ children: ReactNode; fallback?: ReactNode }, { ok: boolean }> {
-  state = { ok: true };
-  static getDerivedStateFromError() { return { ok: false }; }
-  componentDidCatch(err: Error) {
-    console.warn("SilentBoundary caught:", err.message);
-    setTimeout(() => this.setState({ ok: true }), 100);
-  }
-  render() {
-    return this.state.ok ? this.props.children : (this.props.fallback ?? null);
-  }
 }
 
 type MobileView = "sources" | "servers" | "channels" | "chat" | "dms" | "settings";
@@ -300,59 +265,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       }));
     }
   }, []);
-
-  const _addBrowseTab = useCallback(() => {
-    const outServerId = useServerStore.getState().activeServerId;
-    const outChannelId = useServerStore.getState().activeChannelId;
-    const outDmActive = useDMStore.getState().dmActive;
-    const outDmRoomId = useDMStore.getState().activeDMRoomId;
-    const id = newTabId();
-    setTabState((prev) => ({
-      tabs: [
-        ...prev.tabs.map((t) =>
-          t.id === prev.activeId
-            ? { ...t, serverId: outServerId, channelId: outChannelId, dmActive: outDmActive, dmRoomId: outDmRoomId }
-            : t,
-        ),
-        { id, pageView: "sources", serverId: null, channelId: null, dmActive: false, dmRoomId: null },
-      ],
-      activeId: id,
-    }));
-    // New tab starts fresh — no server or channel selected
-    useServerStore.setState({ activeServerId: null, activeChannelId: null });
-    useDMStore.setState({ dmActive: false, activeDMRoomId: null });
-    setOverlayView(null);
-  }, []);
-
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _switchToTab = useCallback((targetId: string) => {
-    const outServerId = useServerStore.getState().activeServerId;
-    const outChannelId = useServerStore.getState().activeChannelId;
-    const outDmActive = useDMStore.getState().dmActive;
-    const outDmRoomId = useDMStore.getState().activeDMRoomId;
-    setTabState((prev) => {
-      if (!prev.tabs.find((t) => t.id === targetId)) return prev;
-      const targetTab = prev.tabs.find((t) => t.id === targetId)!;
-      // Restore incoming tab's saved navigation state
-      useServerStore.setState({ activeServerId: targetTab.serverId, activeChannelId: targetTab.channelId });
-      useDMStore.setState({ dmActive: targetTab.dmActive, activeDMRoomId: targetTab.dmRoomId });
-      return {
-        tabs: prev.tabs.map((t) =>
-          t.id === prev.activeId
-            ? { ...t, serverId: outServerId, channelId: outChannelId, dmActive: outDmActive, dmRoomId: outDmRoomId }
-            : t,
-        ),
-        activeId: targetId,
-      };
-    });
-    setOverlayView(null);
-  }, []);
-
-  // Reserved for INS-044 multitab wiring; reference to satisfy noUnusedLocals
-  // until the new mobile pill row is wired in.
-  void _addBrowseTab;
-  void _switchToTab;
-  void _MobilePillRow;
 
   // Mobile account sheet (T003)
   const [accountSheetOpen, setAccountSheetOpen] = useState(false);
@@ -851,33 +763,33 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-surface">
               <div className="flex min-h-0 flex-1">
                 <div className="w-[41px] mr-[2px] flex-shrink-0">
-                  <SilentBoundary>
+                  <SectionBoundary>
                     <SourcesPanel
                       onAddSource={openAddSource}
                       onSourceOpen={openSourceBrowser}
                       onExplore={openExplore}
                     />
-                  </SilentBoundary>
+                  </SectionBoundary>
                 </div>
 
-                <SilentBoundary>
+                <SectionBoundary>
                   <ServerSidebar />
-                </SilentBoundary>
+                </SectionBoundary>
 
                 {/* Channel / DM sidebar */}
                 <div className="flex min-h-0" style={{ width: sidebarWidth, minWidth: SIDEBAR_MIN, maxWidth: SIDEBAR_MAX }}>
-                  <SilentBoundary>
+                  <SectionBoundary>
                     {dmActive ? <DMSidebar /> : <ChannelSidebar onServerTitleClick={() => {
                       if (activeServerId) setStatsTarget({ type: "server", serverId: activeServerId });
                     }} />}
-                  </SilentBoundary>
+                  </SectionBoundary>
                 </div>
               </div>
 
               {userId && (
-                <SilentBoundary>
+                <SectionBoundary>
                   <UserBar userId={userId} logout={logout} />
-                </SilentBoundary>
+                </SectionBoundary>
               )}
             </div>
 
@@ -1235,15 +1147,15 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           </div>
           {/* Panel: Servers */}
           <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
-            <SilentBoundary>
+            <SectionBoundary>
               <ServerSidebar mobile onServerSelect={() => setMobileView("channels")} />
-            </SilentBoundary>
+            </SectionBoundary>
           </div>
           {/* Panel: Channels */}
           <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
-            <SilentBoundary>
+            <SectionBoundary>
               <ChannelSidebar mobile onChannelSelect={(chId) => { handleMobileChannelSelect(chId); setMobileView("chat"); }} />
-            </SilentBoundary>
+            </SectionBoundary>
           </div>
           {/* Panel: Chat */}
           <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
@@ -1266,9 +1178,9 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         {/* DMs overlay — absolute so the strip keeps its scroll position */}
         {mobileView === "dms" && (
           <div className="absolute inset-0 z-10 bg-surface">
-            <SilentBoundary>
+            <SectionBoundary>
               <DMSidebar mobile onDMSelect={handleMobileDMSelect} />
-            </SilentBoundary>
+            </SectionBoundary>
           </div>
         )}
 
@@ -1873,19 +1785,19 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const renderTVLayout = () => (
     <div className="h-full w-full min-h-0 min-w-0 flex overflow-hidden bg-surface text-on-surface tv-layout" data-concord-layout="tv">
       {/* Server sidebar — TV: icon-only rail with focus targets */}
-      <SilentBoundary>
+      <SectionBoundary>
         <div data-focus-group="tv-main">
           <ServerSidebar />
         </div>
-      </SilentBoundary>
+      </SectionBoundary>
 
       {/* Channel sidebar */}
       <div className="flex min-h-0 tv-channel-sidebar" style={{ width: 320, minWidth: 200 }}>
-        <SilentBoundary>
+        <SectionBoundary>
           <div className="w-full" data-focus-group="tv-main">
             {dmActive ? <DMSidebar /> : <ChannelSidebar />}
           </div>
-        </SilentBoundary>
+        </SectionBoundary>
       </div>
 
       {/* Main content */}
@@ -2443,223 +2355,6 @@ export function SourceServerBrowser({
   );
 }
 
-function formatVoiceSummary(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  return `${hours}h ${minutes}m`;
-}
-
-function UserStatsPopover({
-  accessToken,
-  userId,
-  onClose,
-  onOpenSettings,
-  onOpenStats,
-}: {
-  accessToken: string | null;
-  userId: string;
-  onClose: () => void;
-  onOpenSettings: () => void;
-  onOpenStats: () => void;
-}) {
-  const [stats, setStats] = useState<UserStats | null>(null);
-  const [loading, setLoading] = useState(() => Boolean(accessToken));
-
-  useEffect(() => {
-    if (!accessToken) return;
-    let cancelled = false;
-    setLoading(true);
-    getMyStats(accessToken, 14)
-      .then((result) => {
-        if (!cancelled) setStats(result);
-      })
-      .catch(() => {
-        if (!cancelled) setStats(null);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [accessToken]);
-
-  const username = userId.split(":")[0].replace("@", "");
-  const activeSinceLabel = stats?.active_since
-    ? new Date(stats.active_since).toLocaleDateString(undefined, {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      })
-    : "No activity yet";
-
-  return (
-    <div className="absolute right-0 top-full mt-2 z-40 w-72 glass-panel rounded-2xl border border-outline-variant/20 p-4 shadow-2xl">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-label uppercase tracking-widest text-on-surface-variant/70">
-            Account
-          </p>
-          <p className="mt-1 text-sm font-headline font-semibold text-on-surface truncate">
-            {username}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="btn-press w-8 h-8 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
-          aria-label="Close account panel"
-        >
-          <span className="material-symbols-outlined text-base">close</span>
-        </button>
-      </div>
-
-      <div className="mt-4 rounded-xl bg-surface-container-high/60 border border-outline-variant/10 p-3">
-        {loading ? (
-          <p className="text-xs text-on-surface-variant">Loading your stats…</p>
-        ) : (
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-lg bg-surface-container px-3 py-2">
-                <p className="text-[10px] uppercase tracking-wide text-on-surface-variant/70">
-                  Messages
-                </p>
-                <p className="mt-1 text-lg font-semibold text-on-surface">
-                  {stats?.total_messages ?? 0}
-                </p>
-              </div>
-              <div className="rounded-lg bg-surface-container px-3 py-2">
-                <p className="text-[10px] uppercase tracking-wide text-on-surface-variant/70">
-                  Voice
-                </p>
-                <p className="mt-1 text-lg font-semibold text-on-surface">
-                  {formatVoiceSummary(stats?.total_voice_seconds ?? 0)}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center justify-between gap-3 text-xs">
-              <span className="text-on-surface-variant">Active since</span>
-              <span className="text-on-surface">{activeSinceLabel}</span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="mt-3 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          className="flex-1 px-3 py-2 rounded-xl bg-primary text-on-primary text-sm font-medium hover:bg-primary/90 transition-colors"
-        >
-          Open settings
-        </button>
-        <button
-          type="button"
-          onClick={onOpenStats}
-          className="px-3 py-2 rounded-xl bg-surface-container-high text-on-surface text-sm font-medium hover:bg-surface-container-highest transition-colors"
-        >
-          Full stats
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function DesktopAccountButton({
-  desktopAccountRef,
-  open,
-  userId,
-  accessToken,
-  onToggle,
-  onClose,
-  onOpenSettings,
-  onOpenStats,
-}: {
-  desktopAccountRef: { current: HTMLDivElement | null };
-  open: boolean;
-  userId: string | null;
-  accessToken: string | null;
-  onToggle: () => void;
-  onClose: () => void;
-  onOpenSettings: () => void;
-  onOpenStats: () => void;
-}) {
-  if (!userId) return null;
-  return (
-    <div ref={desktopAccountRef} className="relative ml-2 flex-shrink-0">
-      <button
-        onClick={onToggle}
-        className="flex items-center gap-1.5 hover:bg-surface-container-high rounded-lg px-2 py-1 transition-colors"
-        title="Account"
-      >
-        <Avatar userId={userId} size="sm" showPresence />
-        <span className="text-xs text-on-surface-variant truncate max-w-[80px]">
-          {userId.split(":")[0].replace("@", "")}
-        </span>
-        <span className="material-symbols-outlined text-sm text-on-surface-variant/70">
-          expand_more
-        </span>
-      </button>
-      {open && (
-        <UserStatsPopover
-          accessToken={accessToken}
-          userId={userId}
-          onClose={onClose}
-          onOpenSettings={onOpenSettings}
-          onOpenStats={onOpenStats}
-        />
-      )}
-    </div>
-  );
-}
-
-/* ── Account Sheet (Mobile, T003) ── */
-function AccountSheet({
-  userId,
-  onClose,
-}: {
-  userId: string | null;
-  onClose: () => void;
-}) {
-  const handleLogout = () => {
-    onClose();
-    useAuthStore.getState().logout();
-  };
-  const username = userId?.split(":")[0].replace("@", "") ?? "Signed in";
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-black/60 backdrop-blur-sm animate-[fadeIn_0.2s_ease-out]"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="glass-panel w-full max-w-sm rounded-t-2xl md:rounded-2xl p-5 m-0 md:m-4 animate-[fadeSlideUp_0.25s_ease-out] safe-bottom">
-        <div className="flex items-center gap-3 mb-4 min-w-0">
-          <div className="w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center flex-shrink-0">
-            <span className="material-symbols-outlined text-on-surface-variant">person</span>
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs text-on-surface-variant font-label">Signed in as</p>
-            <p className="text-sm font-headline font-semibold text-on-surface break-all min-w-0">{username}</p>
-          </div>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="btn-press w-9 h-9 flex items-center justify-center rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
-          >
-            <span className="material-symbols-outlined text-base">close</span>
-          </button>
-        </div>
-        <button
-          onClick={handleLogout}
-          className="w-full px-4 py-3 rounded-xl text-error border border-error/30 hover:bg-error/10 transition-colors text-sm font-label font-medium min-h-[44px]"
-        >
-          Logout
-        </button>
-      </div>
-    </div>
-  );
-}
 
 /* ── Mobile Nav Items (shared by pill row + full sheet) ── */
 // Page-depth hierarchy for swipe navigation. Swiping left goes deeper,
@@ -2675,146 +2370,6 @@ const PAGE_PILL_META: Record<string, { icon: string; label: string }> = {
   chat: { icon: "forum", label: "Chat" },
 };
 
-/* ── Mobile Pill Row (INS-016 → INS-020 → INS-044 redesign) ──
-   Layout: [+] [browse-tab-1] [browse-tab-2...] [⚡ Actions] [💬 DMs] [⚙️ Settings]
-   The + button creates a new independent browse tab starting at the welcome page.
-   Each browse tab shows the page-depth icon for that tab's current position.
-   Tapping a tab switches to it (clearing any overlay). Voice pill inserts
-   dynamically when in a voice call. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function _MobilePillRow({
-  active,
-  onNavigate,
-  pageDepth: _pageDepth,
-  voiceActive,
-  voiceChannelName,
-  onVoiceReturn,
-  browseTabs,
-  activeTabId,
-  onAddTab,
-  onSwitchTab,
-  hidden,
-}: {
-  active: MobileView;
-  onNavigate: (view: MobileView) => void;
-  pageDepth: MobileView;
-  voiceActive?: boolean;
-  voiceChannelName?: string;
-  onVoiceReturn?: () => void;
-  /** INS-044: the full list of open browse tabs. */
-  browseTabs?: BrowseTab[];
-  /** INS-044: the ID of the currently-active tab. */
-  activeTabId?: string;
-  /** INS-044: callback to open a new browse tab. */
-  onAddTab?: () => void;
-  /** INS-044: callback to switch to an existing tab. */
-  onSwitchTab?: (id: string) => void;
-  /** INS-042: hide the pill row (e.g. when scrolling down in chat). */
-  hidden?: boolean;
-}) {
-  const isOnPage = PAGE_DEPTH.includes(active);
-  const tabs = browseTabs ?? [];
-
-  // Fixed right-hand pills: [💬 DMs] (+ optional Voice)
-  // Settings moved to top bar (INS-040). Actions removed (INS-041).
-  const rightPills: { key: string; icon: string; label: string; isActive: boolean; onClick: () => void }[] = [
-    ...(voiceActive
-      ? [{
-          key: "voice",
-          icon: "mic",
-          label: voiceChannelName ?? "Voice",
-          isActive: false,
-          onClick: () => onVoiceReturn?.(),
-        }]
-      : []),
-    {
-      key: "dms",
-      icon: "chat_bubble",
-      label: "DMs",
-      isActive: active === "dms",
-      onClick: () => onNavigate("dms"),
-    },
-  ];
-
-  return (
-    <div className={`concord-mobile-nav-wrap safe-bottom flex-shrink-0 transition-all duration-300 overflow-hidden ${hidden ? "max-h-0 opacity-0 pointer-events-none" : "max-h-24"}`}>
-      <nav
-        className="concord-mobile-pill-row mx-3 mb-2 rounded-full relative flex items-center gap-1 px-2 py-1.5"
-        aria-label="Mobile navigation"
-      >
-        {/* + button — opens a new browse tab */}
-        <button
-          type="button"
-          onClick={onAddTab}
-          aria-label="New tab"
-          className="concord-mobile-pill flex items-center justify-center min-h-[44px] min-w-[36px] h-9 w-9 flex-shrink-0 rounded-full active:scale-95 transition-all duration-150 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/40"
-        >
-          <span className="material-symbols-outlined text-lg">add</span>
-        </button>
-
-        {/* Browse tabs — flex-1 so they share available space equally */}
-        <div className="flex flex-1 min-w-0 gap-1">
-          {tabs.map((tab) => {
-            const isActiveTab = tab.id === activeTabId && isOnPage;
-            const tabMeta = PAGE_PILL_META[tab.pageView] ?? PAGE_PILL_META.servers;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => onSwitchTab?.(tab.id)}
-                aria-label={`Browse tab: ${tabMeta.label}`}
-                aria-current={isActiveTab ? "page" : undefined}
-                className={`concord-mobile-pill relative flex items-center justify-center min-h-[44px] min-w-[36px] h-9 flex-1 rounded-full active:scale-95 transition-all duration-150 ${
-                  isActiveTab
-                    ? "concord-mobile-pill-active text-on-surface"
-                    : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/40"
-                }`}
-              >
-                <span
-                  className="material-symbols-outlined text-lg transition-all duration-200"
-                  style={
-                    isActiveTab
-                      ? { fontVariationSettings: '"FILL" 1, "wght" 600, "GRAD" 0, "opsz" 24' }
-                      : undefined
-                  }
-                >
-                  {tabMeta.icon}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Right-hand fixed pills: Actions, DMs, Settings (+ optional Voice) */}
-        {rightPills.map(({ key, icon, label, isActive, onClick }) => (
-          <button
-            key={key}
-            type="button"
-            onClick={onClick}
-            aria-label={label}
-            aria-current={isActive ? "page" : undefined}
-            className={`concord-mobile-pill relative flex items-center justify-center min-h-[44px] min-w-[44px] h-9 w-11 flex-shrink-0 rounded-full active:scale-95 transition-all duration-150 ${
-              isActive
-                ? "concord-mobile-pill-active text-on-surface"
-                : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/40"
-            }`}
-          >
-            <span
-              className="material-symbols-outlined text-lg transition-all duration-200"
-              style={
-                isActive
-                  ? { fontVariationSettings: '"FILL" 1, "wght" 600, "GRAD" 0, "opsz" 24' }
-                  : undefined
-              }
-            >
-              {icon}
-            </span>
-          </button>
-        ))}
-      </nav>
-    </div>
-  );
-}
 
 // ActionsPanel and QuickActionButton removed (INS-041).
 
@@ -3385,287 +2940,7 @@ function AddSourceModal({
   );
 }
 
-/**
- * Small pill showing which Concord instance the client is currently
- * connected to (INS-027 follow-up). Resolution order:
- *
- *   1. `serverConfig.config` — set by the first-launch server-picker
- *      flow on native builds. Shows `instance_name` if present,
- *      falling back to `host`.
- *   2. `window.location.hostname` — the browser origin. This covers
- *      the web deploy where the picker is never shown.
- *
- * Rendered inline in the top bar, small and unobtrusive. On mobile
- * the label truncates at the first dot so "chat.example.com" becomes
- * "chat" to save horizontal space; tapping is NOT wired to
- * anything (purely informational for now).
- */
-function ConnectedHostLabel({ compact = false }: { compact?: boolean }) {
-  const config = useServerConfigStore((s) => s.config);
 
-  const display = useMemo(() => {
-    if (config) {
-      return config.instance_name || config.host;
-    }
-    if (typeof window !== "undefined") {
-      return window.location.hostname || "web";
-    }
-    return "web";
-  }, [config]);
-
-  // On compact mode (mobile ≤360px), trim to the first dot so long
-  // domains don't crowd the top bar.
-  const shown = compact ? display.split(".")[0] : display;
-
-  return (
-    <span
-      className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container-high/60 text-[10px] font-label font-medium text-on-surface-variant max-w-[140px] truncate"
-      title={`Connected to ${display}`}
-      aria-label={`Connected to ${display}`}
-    >
-      <span
-        className="w-1.5 h-1.5 rounded-full bg-secondary flex-shrink-0"
-        aria-hidden="true"
-      />
-      <span className="truncate">{shown}</span>
-    </span>
-  );
-}
-
-/* ── Top Bar Icon Button (INS-011) ──
-   Shared styling for the bug/stats/help buttons in the top bar. Matches the
-   account-icon footprint (w-11 h-11) so the four icons form a balanced row.
-   Also used on desktop's channel header, which gives us pixel-identical
-   icon-button styling across viewports. */
-function TopBarIconButton({
-  icon,
-  label,
-  onClick,
-  ref,
-  className = "",
-}: {
-  icon: string;
-  label: string;
-  onClick: () => void;
-  ref?: React.Ref<HTMLButtonElement>;
-  className?: string;
-}) {
-  return (
-    <button
-      ref={ref}
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-      className={`btn-press flex items-center justify-center w-11 h-11 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0 ${className}`}
-    >
-      <span className="material-symbols-outlined text-xl">{icon}</span>
-    </button>
-  );
-}
-
-/* ── Hosting Status Button ──
-   A colored dot button indicating the Servitude / hosting module state.
-   Green = running, Orange = stopped/not configured, Red = error. */
-function HostingStatusButton({
-  status,
-  onClick,
-}: {
-  status: import("../settings/HostingTab").HostingStatus;
-  onClick: () => void;
-}) {
-  const dotColor =
-    status === "running" ? "bg-green-500" :
-    status === "error" ? "bg-red-500" :
-    status === "loading" ? "bg-outline-variant/40 animate-pulse" :
-    "bg-orange-400";
-  const label =
-    status === "running" ? "Hosting active" :
-    status === "error" ? "Hosting error" :
-    "Hosting offline";
-  return (
-    <button
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-      className="btn-press flex items-center justify-center w-11 h-11 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
-    >
-      <div className={`w-2.5 h-2.5 rounded-full ${dotColor}`} />
-    </button>
-  );
-}
-
-/* ── Top Bar More Menu ──
-   Wrench button that opens a dropdown containing all secondary actions.
-   Replaces the old overflow menu and the individual help/stats/bug buttons.
-   Always rendered at every viewport size — no more breakpoint branching. */
-function TopBarMoreMenu({
-  voiceMicActive,
-  showExtension,
-  onExtension,
-  onHelp,
-  onStats,
-  onBug,
-  onSettings,
-  onExtensionLibrary,
-}: {
-  voiceMicActive?: boolean;
-  showExtension?: boolean;
-  onExtension?: () => void;
-  onHelp: () => void;
-  onStats: () => void;
-  onBug: () => void;
-  onSettings: () => void;
-  /**
-   * INS-070 — admin-only Extension Library entry. When defined,
-   * renders a "library_books" menu item that opens the global
-   * install/uninstall modal. Hidden when undefined (non-admins).
-   */
-  onExtensionLibrary?: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const handle = (fn: () => void) => () => { setOpen(false); fn(); };
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        aria-label="Menu"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title="Menu"
-        className="btn-press flex items-center justify-center w-11 h-11 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
-      >
-        <span className="material-symbols-outlined text-xl">handyman</span>
-      </button>
-      {open && (
-        <div
-          role="menu"
-          className="absolute right-0 top-full mt-1 z-40 min-w-[200px] glass-panel rounded-xl py-1 animate-[fadeSlideUp_0.15s_ease-out] shadow-2xl"
-        >
-          {/* Connected host info row */}
-          <div className="px-3 py-2 flex items-center gap-2 border-b border-outline-variant/10">
-            {voiceMicActive && (
-              <div className="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Microphone active" />
-            )}
-            <ConnectedHostLabel />
-          </div>
-          {showExtension && onExtension && (
-            <OverflowMenuItem
-              icon="extension"
-              label="Room Extensions"
-              onClick={handle(onExtension)}
-            />
-          )}
-          {onExtensionLibrary && (
-            <OverflowMenuItem
-              icon="library_books"
-              label="Extension Library"
-              onClick={handle(onExtensionLibrary)}
-            />
-          )}
-          <OverflowMenuItem icon="help" label="Help" onClick={handle(onHelp)} />
-          <OverflowMenuItem icon="bar_chart" label="Your stats" onClick={handle(onStats)} />
-          <OverflowMenuItem icon="bug_report" label="Report a bug" onClick={handle(onBug)} />
-          <div className="mx-3 my-1 border-t border-outline-variant/15" />
-          {/* ISSUE C (2026-04-18): outer Tools/wrench button keeps `handyman`
-           *  (it's the button that OPENS this menu), but the inner Settings
-           *  row must use the universal gear glyph `settings` — `handyman`
-           *  inside `handyman` looked like "tools inside tools". */}
-          <OverflowMenuItem icon="settings" label="Settings" onClick={handle(onSettings)} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function OverflowMenuItem({
-  icon,
-  label,
-  onClick,
-}: {
-  icon: string;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      role="menuitem"
-      onClick={onClick}
-      className="w-full flex items-center gap-3 px-3 py-2.5 min-h-[44px] text-sm font-label text-on-surface hover:bg-surface-container-high transition-colors text-left"
-    >
-      <span className="material-symbols-outlined text-lg text-on-surface-variant">{icon}</span>
-      {label}
-    </button>
-  );
-}
-
-/* ── Onboarding Guide ── */
-function OnboardingGuide() {
-  return (
-    <div className="max-w-md w-full space-y-6 animate-[fadeSlideUp_0.5s_ease-out]">
-      <div className="text-center space-y-2">
-        <h2 className="text-2xl font-headline font-bold text-on-surface">Welcome to Concord</h2>
-        <p className="text-on-surface-variant text-sm font-body" style={{ lineHeight: "1.6" }}>
-          Get started by joining or creating a server.
-        </p>
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex items-start gap-3 p-4 rounded-xl bg-surface-container">
-          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-            <span className="material-symbols-outlined text-primary text-lg">add</span>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-on-surface font-headline">Create or browse servers</p>
-            <p className="text-xs text-on-surface-variant mt-0.5 font-body">
-              Tap the <strong className="text-on-surface">+</strong> button to create your own server or browse public ones.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-start gap-3 p-4 rounded-xl bg-surface-container">
-          <div className="w-8 h-8 rounded-full bg-secondary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-            <span className="material-symbols-outlined text-secondary text-lg">link</span>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-on-surface font-headline">Got an invite link?</p>
-            <p className="text-xs text-on-surface-variant mt-0.5 font-body">
-              Paste the invite URL in your browser to automatically join a server.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-start gap-3 p-4 rounded-xl bg-surface-container">
-          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-            <span className="material-symbols-outlined text-primary text-lg">tune</span>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-on-surface font-headline">Customize your profile</p>
-            <p className="text-xs text-on-surface-variant mt-0.5 font-body">
-              Open settings to configure two-factor auth, passwords, and audio devices.
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /* ── DM Header Name (uses hook, must be a component) ── */
 function DMHeaderName({ userId }: { userId: string }) {
@@ -3673,23 +2948,3 @@ function DMHeaderName({ userId }: { userId: string }) {
   return <h2 className="font-headline font-semibold truncate">{name}</h2>;
 }
 
-/* ── Help Modal ── */
-function HelpModal({ onClose }: { onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="relative glass-panel rounded-2xl p-6 animate-[fadeSlideUp_0.3s_ease-out]">
-        <button
-          onClick={onClose}
-          className="absolute -top-3 -right-3 w-8 h-8 flex items-center justify-center rounded-full bg-surface-container-highest text-on-surface-variant hover:text-on-surface transition-colors z-10"
-          title="Close"
-        >
-          <span className="material-symbols-outlined text-lg">close</span>
-        </button>
-        <OnboardingGuide />
-      </div>
-    </div>
-  );
-}

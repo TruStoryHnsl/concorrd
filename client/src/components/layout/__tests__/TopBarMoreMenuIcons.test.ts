@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import chatLayoutSource from "../ChatLayout.tsx?raw";
+import topBarMenuSource from "../TopBarMenu.tsx?raw";
 
 /**
  * Regression test for Issue C observed 2026-04-18.
@@ -10,20 +10,23 @@ import chatLayoutSource from "../ChatLayout.tsx?raw";
  * on `handyman` (that IS the tools button), but the inner Settings row
  * should use the universal gear glyph `settings` so it doesn't look like
  * "tools inside tools".
+ *
+ * The TopBarMoreMenu body lives in TopBarMenu.tsx after the
+ * architecture-cleanup sprint extraction.
  */
 describe("top-bar Tools menu — inner Settings row uses the gear glyph", () => {
   it("renders the Settings menu item with icon='settings', not 'handyman'", () => {
-    expect(chatLayoutSource).toContain(
-      '<OverflowMenuItem icon="settings" label="Settings"',
+    expect(topBarMenuSource).toMatch(
+      /<OverflowMenuItem\s+[\s\S]*?icon="settings"[\s\S]*?label="Settings"/,
     );
     // Sanity: the outer wrench button should still use `handyman`. Its line
     // lives inside TopBarMoreMenu above the menu open branch.
-    expect(chatLayoutSource).toContain(
+    expect(topBarMenuSource).toContain(
       '<span className="material-symbols-outlined text-xl">handyman</span>',
     );
     // Negative: no OverflowMenuItem labelled Settings should still carry
     // the handyman icon.
-    expect(chatLayoutSource).not.toContain(
+    expect(topBarMenuSource).not.toContain(
       '<OverflowMenuItem icon="handyman" label="Settings"',
     );
   });

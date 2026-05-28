@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import INSTANCE_SETTINGS_FILE, INSTANCE_NAME_DEFAULT
 from database import get_db
 from models import UserTOTP
-from routers.servers import get_user_id
+from dependencies import get_user_id
 
 logger = logging.getLogger(__name__)
 

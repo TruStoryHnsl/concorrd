@@ -46,7 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import DATA_DIR, EXTENSIONS_DIR
 from database import get_db
 from models import Extension
-from routers.servers import get_user_id
+from dependencies import get_user_id
 
 logger = logging.getLogger(__name__)
 

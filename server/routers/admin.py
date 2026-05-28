@@ -23,7 +23,7 @@ from models import (
     Server, Channel, ServerMember, InviteToken,
     SoundboardClip, Webhook, BugReport,
 )
-from routers.servers import get_user_id, get_access_token
+from dependencies import get_user_id, get_access_token
 
 logger = logging.getLogger(__name__)
 
