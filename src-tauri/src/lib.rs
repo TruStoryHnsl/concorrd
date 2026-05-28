@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 pub mod servitude;
 
 use servitude::{LifecycleState, ServitudeConfig, ServitudeHandle};
+use servitude::identity::{self, StrongholdHandle};
 use servitude::transport::dendrite_federation::RegisterOwnerResponse;
 
 /// Tauri-managed state wrapping the optional embedded servitude handle.
@@ -24,6 +25,163 @@ use servitude::transport::dendrite_federation::RegisterOwnerResponse;
 /// `unwrap_or_else(|p| p.into_inner())` recovery shim is no longer
 /// necessary and has been removed.
 pub struct ServitudeState(pub Mutex<Option<ServitudeHandle>>);
+
+/// Tauri-managed state for the lazily-opened peer-identity Stronghold.
+///
+/// The Stronghold snapshot file holding the Ed25519 secret is opened on the
+/// first `peer_identity` call and reused for every subsequent call. The
+/// `tokio::sync::Mutex` wrapping the `Option` serializes the open path so
+/// two parallel callers on first launch don't both try to create the file.
+///
+/// The `Arc<StrongholdHandle>` lets concurrent signing/identity-reads
+/// share the underlying Stronghold client without re-opening the snapshot;
+/// the handle has its own internal mutex protecting the load_or_create
+/// race (see `servitude::identity`).
+pub struct PeerIdentityState(pub Mutex<Option<std::sync::Arc<StrongholdHandle>>>);
+
+/// Public peer-identity descriptor serialized back to the renderer.
+///
+/// **Deliberately has NO `secret_key`, `private_key`, `sk`, `seed`, or any
+/// similar field.** The struct exists precisely so the
+/// `peer_identity` Tauri command's response shape is locked at compile time
+/// to the public-only surface. A negative integration test asserts this
+/// stays true (see `src-tauri/tests/identity_test.rs`).
+#[derive(serde::Serialize)]
+struct PeerIdentityPublic {
+    public_key_hex: String,
+    fingerprint: String,
+}
+
+/// Open (or create) the peer-identity Stronghold snapshot and return a
+/// shared handle.
+///
+/// Snapshot file: `<app_local_data_dir>/peer-identity.stronghold`
+/// Password file: `<app_local_data_dir>/peer-identity.password` (auto
+/// generated, 32 random bytes hex-encoded; on Unix the file is chmod 0600).
+///
+/// The password file is intentionally separate from the snapshot so the
+/// Stronghold file-level encryption guards the secret bytes; the password
+/// file is the moral equivalent of a system-keychain entry. A future
+/// hardening pass swaps this for an OS keyring or argon2-from-user-passcode
+/// derivation without changing the on-disk snapshot format.
+fn open_peer_identity_stronghold(
+    app: &tauri::AppHandle,
+) -> Result<std::sync::Arc<StrongholdHandle>, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("no app_local_data_dir: {e}"))?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+
+    let snapshot_path = data_dir.join("peer-identity.stronghold");
+    let password_path = data_dir.join("peer-identity.password");
+
+    // Load or create the password. The file holds a hex-encoded 32-byte
+    // random secret. We generate on first launch and persist; subsequent
+    // launches re-read.
+    let password_bytes: Vec<u8> = if password_path.exists() {
+        let hex_str = std::fs::read_to_string(&password_path)
+            .map_err(|e| format!("read peer-identity password: {e}"))?;
+        hex::decode(hex_str.trim())
+            .map_err(|e| format!("decode peer-identity password: {e}"))?
+    } else {
+        use rand::RngCore;
+        let mut buf = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut buf);
+        let encoded = hex::encode(buf);
+        std::fs::write(&password_path, &encoded)
+            .map_err(|e| format!("write peer-identity password: {e}"))?;
+        // Tighten file permissions on Unix so other users can't read it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &password_path,
+                std::fs::Permissions::from_mode(0o600),
+            );
+        }
+        buf.to_vec()
+    };
+
+    let stronghold = tauri_plugin_stronghold::stronghold::Stronghold::new(
+        &snapshot_path,
+        password_bytes,
+    )
+    .map_err(|e| format!("open peer-identity stronghold: {e}"))?;
+
+    // Resolve the client.
+    //
+    // Three cases:
+    //   1. Snapshot did not exist  -> create a fresh client.
+    //   2. Snapshot existed AND the client has been loaded this process
+    //      lifetime -> get_client returns it.
+    //   3. Snapshot existed but the client is only in the snapshot, not
+    //      in the live client map -> load_client hydrates it.
+    //
+    // We try (2) first, fall back to (3), and only on a "not in snapshot"
+    // error do we (1) create from scratch.
+    let client_path = b"peer-identity".to_vec();
+    let client = match stronghold.inner().get_client(&client_path) {
+        Ok(c) => c,
+        Err(_) => match stronghold.inner().load_client(&client_path) {
+            Ok(c) => c,
+            Err(_) => stronghold
+                .inner()
+                .create_client(&client_path)
+                .map_err(|e| format!("create peer-identity client: {e}"))?,
+        },
+    };
+
+    // Commit any newly-created client to disk so the next launch sees it.
+    if let Err(e) = stronghold.save() {
+        log::warn!(
+            target: "concord::identity",
+            "failed to save peer-identity snapshot on open: {e}"
+        );
+    }
+
+    Ok(std::sync::Arc::new(StrongholdHandle::new(client)))
+}
+
+async fn get_or_open_peer_identity(
+    state: &tauri::State<'_, PeerIdentityState>,
+    app: &tauri::AppHandle,
+) -> Result<std::sync::Arc<StrongholdHandle>, String> {
+    let mut guard = state.0.lock().await;
+    if let Some(h) = guard.as_ref() {
+        return Ok(h.clone());
+    }
+    let handle = open_peer_identity_stronghold(app)?;
+    *guard = Some(handle.clone());
+    Ok(handle)
+}
+
+/// Return the install's peer identity — Ed25519 public key + short
+/// fingerprint.
+///
+/// The keypair is generated on first call and persisted in a dedicated
+/// Stronghold snapshot under the app's local data dir. Subsequent calls
+/// return the same identity (idempotent + restart-persistent).
+///
+/// The Ed25519 secret key NEVER crosses the IPC boundary: it lives only
+/// inside Stronghold's protected runtime. The returned struct is
+/// hard-coded to public-only fields; a negative test in
+/// `src-tauri/tests/identity_test.rs` enforces this at the JSON-shape
+/// level.
+#[tauri::command]
+async fn peer_identity(
+    state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+) -> Result<PeerIdentityPublic, String> {
+    let stronghold = get_or_open_peer_identity(&state, &app).await?;
+    let id = identity::load_or_create(&stronghold)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(PeerIdentityPublic {
+        public_key_hex: hex::encode(id.public_key),
+        fingerprint: id.fingerprint,
+    })
+}
 
 #[tauri::command]
 fn get_server_url(app: tauri::AppHandle) -> String {
@@ -244,6 +402,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(ServitudeState(Mutex::new(None)))
+        .manage(PeerIdentityState(Mutex::new(None)))
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -397,6 +556,7 @@ pub fn run() {
             servitude_get_registration_token,
             servitude_register_owner,
             log_diagnostic,
+            peer_identity,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

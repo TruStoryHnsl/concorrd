@@ -82,6 +82,7 @@ Each phase ends with a working state; nothing is left half-finished between sess
 Captures every decision in this conversation so subsequent sessions don't re-derive them. No code, just the spec orrchestrator sequences against.
 
 ### Phase 2 — Peer identity scaffolding
+> **Phase 2 implementation landed on `feat/peer-identity-ed25519`** — see `src-tauri/src/servitude/identity.rs`.
 - Generate Ed25519 keypair on first launch in `src-tauri/src/servitude/`.
 - Persist via `tauri-plugin-stronghold` (already in use; same encrypted store as Matrix credentials).
 - Expose public key + short fingerprint via new Tauri command (`peer_identity`).
