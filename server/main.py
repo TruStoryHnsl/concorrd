@@ -18,7 +18,8 @@ logging.basicConfig(
 
 from database import async_session, init_db
 from errors import ConcordError, ErrorResponse
-from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_extensions, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms, service_node, ext_proxy, auth_recovery, matrix_proxy
+from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_extensions, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms, service_node, ext_proxy, auth_recovery, matrix_proxy, hosting
+from services import voice_health
 
 
 logger = logging.getLogger("concord.main")
@@ -60,6 +61,22 @@ async def lifespan(app: FastAPI):
     _bootstrap_tuwunel_config()
 
     await init_db()
+
+    # Alembic-driven schema migrations. apply_migrations() handles three
+    # cases: a fresh DB (runs full migration history), an existing
+    # pre-Alembic DB (stamps head without re-running anything), or an
+    # Alembic-tracked DB (applies pending revisions).
+    #
+    # The inline ``_migrate()`` block below is the FROZEN history of the
+    # pre-Alembic era. It still runs on every startup as a safety net
+    # for stamped legacy DBs, but DO NOT add new ``ALTER TABLE`` entries
+    # here — new schema work goes through alembic/versions/. See
+    # server/migrations.py for the rationale.
+    from migrations import apply_migrations
+    try:
+        apply_migrations()
+    except Exception as e:
+        logger.warning("Alembic apply_migrations failed: %s", e)
 
     # Migrate existing tables: add new columns if missing
     from database import engine
@@ -363,7 +380,17 @@ async def lifespan(app: FastAPI):
     # mounts at request time via routers.extensions.register_mount().
     extensions.mount_installed(app)
 
+    # Start the voice-subsystem health probe loop. Runs in the
+    # background; never blocks startup. If the probe finds the local
+    # TURN relay is misconfigured or unreachable, /api/hosting/status
+    # surfaces the failure to the operator and /api/voice/token returns
+    # 503 with a clear remediation message — but the rest of the API
+    # stays available so the Concord *client* role still works.
+    voice_health.start_background_probe()
+
     yield
+
+    await voice_health.stop_background_probe()
 
 
 LOBBY_WELCOME_POST_VERSION = 2
@@ -704,6 +731,7 @@ app.include_router(rooms.router)
 app.include_router(service_node.router)
 app.include_router(matrix_proxy.router)
 app.include_router(auth_recovery.router)
+app.include_router(hosting.router)
 
 
 @app.get("/api/health")

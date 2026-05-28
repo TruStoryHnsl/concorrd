@@ -240,6 +240,52 @@ services:
     networks:
       - concord
 
+  # Bundled SNI multiplexer on the operator's public 443.
+  #
+  # sslh sniffs the ClientHello of each inbound TCP/443 connection and
+  # routes by SNI:
+  #
+  #   * SNI == turn.<INSTANCE_DOMAIN>  -> coturn TLS on 5349
+  #   * everything else                -> Caddy web on 8080 (HTTPS)
+  #
+  # This is what lets a single port-forwarded 443 on the operator's home
+  # router carry BOTH the regular Concord web UI AND TURN-over-TLS for
+  # WebRTC media. Without this multiplexer, the operator would need to
+  # port-forward both 443 (web) and 5349 (TURN-TLS) — and ISPs frequently
+  # block uncommon ports while leaving 443 open.
+  #
+  # Disabled-by-default: present in the compose but only started when
+  # ``COMPOSE_PROFILES=public-ingress`` is set. Native builds (which
+  # default to P2P-first and don't expose a public web surface) omit the
+  # profile and so don't start sslh. Docker / public-web operators set
+  # the profile in their .env and get the multiplexer at boot.
+  sslh:
+    image: ghcr.io/yrutschle/sslh:2.3.1
+    container_name: concord-sslh
+    restart: unless-stopped
+    profiles: ["public-ingress"]
+    network_mode: host
+    volumes:
+      - ./config/sslh.conf:/etc/sslh/sslh.cfg:ro
+    command: ["-F/etc/sslh/sslh.cfg"]
+    # Match the ulimit + healthcheck + autoheal pattern that the prior
+    # infra/turn/ edge stack used — those mitigations exist because the
+    # default 1024-fd ceiling combined with no liveness probe caused
+    # sslh to wedge on accumulated half-open TURN connections on a
+    # 25-day uptime. Same risk applies wherever sslh runs.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "ss -ltn 'sport = :443' | grep -q LISTEN || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 2
+      start_period: 10s
+    labels:
+      - "autoheal=true"
+
   # Bundled TURN relay for NAT traversal.
   #
   # coturn runs in host networking mode because it must relay UDP media
