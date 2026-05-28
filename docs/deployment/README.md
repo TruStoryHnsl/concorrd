@@ -13,6 +13,32 @@ New environments should land their own `.md` file in this directory and link int
 
 ---
 
+## Tailscale-only dev deployment (TLS via Cloudflare DNS-01)
+
+A development Concord instance can be served exclusively over Tailscale — the
+host's public internet ingress is never used and no router port-forward is
+required. The topology: a Cloudflare DNS A record (gray-cloud, proxy OFF) for
+`dev.<your-zone>` points directly at the host's Tailscale 100.x IP. Tailscale
+peers route to that IP through the WireGuard mesh; non-peers can't resolve it
+to anything reachable. The web container's Caddy publishes `443` on the host
+(binding all interfaces, including `tailscale0`), so a peer's browser hitting
+`https://dev.<your-zone>/` connects to Caddy on the Tailscale side — no public
+ingress involved.
+
+Let's Encrypt issuance for this topology uses the DNS-01 ACME challenge against
+Cloudflare instead of HTTP-01. DNS-01 proves zone control by writing a
+transient `_acme-challenge.<host>` TXT record via the Cloudflare API, which
+works even though the origin is invisible to the public internet. The `web`
+service in `docker-compose.dev.yml` injects `CLOUDFLARE_API_TOKEN` into Caddy's
+environment, and the dev Caddyfile's `tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }`
+directive consumes it. The Caddy image is built with `xcaddy` against the
+`caddy-dns/cloudflare` plugin (see `web/Dockerfile`); plain `caddy:alpine` does
+not include this provider. Set `CLOUDFLARE_API_TOKEN` in `.env` (see
+`.env.example` for the required token scope and minting steps) before bringing
+the dev stack up.
+
+---
+
 ## Reticulum Transport (experimental)
 
 > **Status:** Experimental — Wave 0 scaffold only. Do **not** enable in production.

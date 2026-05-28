@@ -4,6 +4,30 @@
 }
 
 {$SITE_ADDRESS} {
+    # TLS via Let's Encrypt DNS-01 challenge against Cloudflare.
+    #
+    # Why DNS-01 (not HTTP-01): dev deployments (e.g. dev.concorrd.com) are
+    # Tailscale-only — the gray-cloud Cloudflare DNS record points at a
+    # 100.x Tailscale IP, so Let's Encrypt's HTTP-01 validation can't reach
+    # the origin from the public internet. DNS-01 proves control by writing
+    # a TXT record into the zone via the Cloudflare API, which works
+    # regardless of origin reachability.
+    #
+    # Required env var:
+    #   CLOUDFLARE_API_TOKEN — Cloudflare API token with Zone:Read + DNS:Edit
+    #     scoped to the concorrd.com zone (or whatever zone the site uses).
+    #     Minted at https://dash.cloudflare.com/profile/api-tokens. See
+    #     .env.example for the full token-permissions rationale.
+    #
+    # Behaviour when CLOUDFLARE_API_TOKEN is unset: Caddy still attempts the
+    # DNS-01 challenge, fails on missing credentials, and falls back to
+    # serving the site without auto-TLS (or with self-signed certs on
+    # internal domains). For TLS to work you MUST set this env var; the
+    # dev Compose override loads it from .env automatically.
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
+
     encode gzip
 
     header {
