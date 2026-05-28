@@ -7,7 +7,7 @@ Thanks for showing up. concord is a small project run mostly by one maintainer w
 1. Check whether your issue is actually a question — those go to [Discussions](https://github.com/TruStoryHnsl/concord/discussions), not Issues.
 2. Use the templates in `.github/ISSUE_TEMPLATE/`. Bug report or feature request — pick one. Blank issues are disabled on purpose.
 3. Bug reports need: what you expected, what actually happened, reproduction steps, version, environment, and logs. The more concrete, the faster the fix.
-4. Mesh / Reticulum / libp2p / WireGuard P2P video questions belong on the [concord-beta](https://github.com/TruStoryHnsl/concord-beta) repo, not here.
+4. Mesh / Reticulum / libp2p / WireGuard P2P questions are in scope here — native P2P connectivity is part of the main build's P2P-first roadmap (see [PLAN.md](./PLAN.md) and [docs/architecture/p2p-design.md](docs/architecture/p2p-design.md)).
 
 ## Opening a PR
 

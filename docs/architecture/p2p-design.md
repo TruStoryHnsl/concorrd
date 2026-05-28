@@ -1,6 +1,6 @@
 # Concord P2P Architecture — Design
 
-> **Status:** design captured 2026-05-27 from a multi-iteration conversation that refocused Concord's hosting story away from a domain-centric / TURN-on-public-IP model toward a P2P-first model for native builds. Supersedes earlier assumptions in PLAN.md that the root repo was Matrix/web-only and that the libp2p mesh lived solely in the separate `concord_beta` repo. This document is the spec future implementation sessions execute against.
+> **Status:** design captured 2026-05-27 from a multi-iteration conversation that refocused Concord's hosting story away from a domain-centric / TURN-on-public-IP model toward a P2P-first model for native builds. Supersedes earlier assumptions in PLAN.md that the root repo was Matrix/web-only and that the libp2p mesh lived solely in a separate repo (since renamed `conquered` and re-scoped) — native P2P now lands in this main build. This document is the spec future implementation sessions execute against.
 >
 > **Audience:** orrchestrator (sequencing the implementation), agent-pm (per-PR review against the architecture), and any future contributor reading PLAN.md.
 
@@ -95,7 +95,7 @@ Captures every decision in this conversation so subsequent sessions don't re-der
 - Build a `Swarm` inside the servitude module that boots concurrently with the existing transport variants.
 - Wire swarm events to the Tauri app via channels so the React UI can observe peer state.
 - Replace the placeholder `NoopTransport` variant in `transport/mod.rs` with `LibP2pTransport`.
-- Reuse architecture lessons from `concord_beta` (the separate repo's libp2p prototype) without inheriting its half-finished pieces.
+- Reuse architecture lessons from the `conquered` repo (formerly `concord_beta`) libp2p prototype without inheriting its half-finished pieces.
 - Tests: swarm starts cleanly, identifies its own multiaddr, accepts an incoming connection on QUIC.
 
 ### Phase 4 — Silent Kademlia DHT + project bootstrap nodes
