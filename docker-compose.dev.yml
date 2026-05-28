@@ -78,7 +78,12 @@ services:
     # internet to issue/renew the cert, so Tailscale-only origins work
     # cleanly.
     ports:
-      - "${BIND_HOST:-0.0.0.0}:443:443"
+      # Map host 443 -> container 8443. The dev Caddyfile global block pins
+      # `https_port 8443` (legacy from rootless-docker compat where Caddy
+      # couldn't bind ports < 1024). Browsers dial https://dev.concorrd.com
+      # (port 443 default) on the Tailscale interface; Docker forwards to
+      # Caddy's actual HTTPS listener inside the container.
+      - "${BIND_HOST:-0.0.0.0}:443:8443"
     environment:
       # Cloudflare API token for Caddy's DNS-01 ACME challenge. See
       # .env.example for the token-permissions rationale. Required when

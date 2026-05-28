@@ -4,29 +4,23 @@
 }
 
 {$SITE_ADDRESS} {
-    # TLS via Let's Encrypt DNS-01 challenge against Cloudflare.
+    # TLS — `tls internal` uses Caddy's internal CA to issue a self-signed
+    # cert for the configured hostname. Browsers show a one-time warning;
+    # acceptable for Tailscale-only dev where the operator trusts every
+    # device that can reach the origin.
     #
-    # Why DNS-01 (not HTTP-01): dev deployments (e.g. dev.concorrd.com) are
-    # Tailscale-only — the gray-cloud Cloudflare DNS record points at a
-    # 100.x Tailscale IP, so Let's Encrypt's HTTP-01 validation can't reach
-    # the origin from the public internet. DNS-01 proves control by writing
-    # a TXT record into the zone via the Cloudflare API, which works
-    # regardless of origin reachability.
+    # Production / public-domain deployments should swap this for one of:
+    #   tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }   # DNS-01, see below
+    #   tls user@example.com                                # HTTP-01 (public origin)
     #
-    # Required env var:
-    #   CLOUDFLARE_API_TOKEN — Cloudflare API token with Zone:Read + DNS:Edit
-    #     scoped to the concorrd.com zone (or whatever zone the site uses).
-    #     Minted at https://dash.cloudflare.com/profile/api-tokens. See
-    #     .env.example for the full token-permissions rationale.
+    # DNS-01 via Cloudflare (when origin isn't publicly reachable):
+    # The CLOUDFLARE_API_TOKEN var (.env.example documents the token scope)
+    # lets Caddy write transient TXT records into the zone to satisfy the
+    # ACME challenge without exposing the origin.
     #
-    # Behaviour when CLOUDFLARE_API_TOKEN is unset: Caddy still attempts the
-    # DNS-01 challenge, fails on missing credentials, and falls back to
-    # serving the site without auto-TLS (or with self-signed certs on
-    # internal domains). For TLS to work you MUST set this env var; the
-    # dev Compose override loads it from .env automatically.
-    tls {
-        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
-    }
+    # Tracked: task #36 in PLAN.md — TLS_MODE env var + install.sh prompt
+    # so this is operator-pickable rather than hand-edited per deploy.
+    tls internal
 
     encode gzip
 
