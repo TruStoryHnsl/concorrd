@@ -232,6 +232,39 @@ async fn sign_verify_round_trip_uses_only_public_key() {
 }
 
 // ---------------------------------------------------------------------------
+// (c2) cross-derivation: PeerIdentity.public_key MUST equal the public key
+//      derived from the seed `peer_seed()` returns. This is the architectural
+//      unification check — Phase 2's fingerprint and Phase 3's libp2p PeerId
+//      both consume the same seed, so the public-key bytes have to agree.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn peer_seed_derives_same_public_key_as_load_or_create() {
+    use ed25519_dalek::SigningKey;
+
+    let (_sh, handle) = in_memory_handle();
+    let id = identity::load_or_create(&handle).await.expect("load");
+
+    let seed = identity::peer_seed(&handle).await.expect("peer_seed");
+    let derived_pub = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+
+    assert_eq!(
+        derived_pub, id.public_key,
+        "PeerIdentity.public_key must equal the public key derived from \
+         peer_seed() — both come from the SAME per-install Ed25519 seed; \
+         a mismatch here means Settings → Profile and libp2p would show \
+         different identities for the same user."
+    );
+
+    // And the fingerprint must be deterministic over the same public key.
+    assert_eq!(
+        fingerprint_for(&derived_pub),
+        id.fingerprint,
+        "fingerprint(seed-derived public_key) must equal PeerIdentity.fingerprint"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // (d) negative test: PeerIdentityPublic JSON shape is locked
 // ---------------------------------------------------------------------------
 

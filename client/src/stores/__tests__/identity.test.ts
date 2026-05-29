@@ -1,15 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Hoisted mocks for the two SUT dependencies. `vi.hoisted` is required so
+// Hoisted mocks for the SUT dependencies. `vi.hoisted` is required so
 // the `vi.mock(...)` factories below — which are themselves hoisted to the
 // top of the module by vitest — can reference the spies they install.
-const { fetchPeerIdentityMock, isTauriMock } = vi.hoisted(() => ({
-  fetchPeerIdentityMock: vi.fn(),
-  isTauriMock: vi.fn(),
-}));
+const { fetchPeerIdentityMock, fetchPeerSwarmStatusMock, isTauriMock } =
+  vi.hoisted(() => ({
+    fetchPeerIdentityMock: vi.fn(),
+    fetchPeerSwarmStatusMock: vi.fn(),
+    isTauriMock: vi.fn(),
+  }));
 
 vi.mock("../../api/peerIdentity", () => ({
   fetchPeerIdentity: fetchPeerIdentityMock,
+}));
+
+vi.mock("../../api/peerSwarm", () => ({
+  fetchPeerSwarmStatus: fetchPeerSwarmStatusMock,
 }));
 
 vi.mock("../../api/servitude", () => ({
@@ -21,6 +27,7 @@ import { useIdentityStore, IDENTITY_ERROR_NATIVE_ONLY } from "../identity";
 describe("useIdentityStore", () => {
   beforeEach(() => {
     fetchPeerIdentityMock.mockReset();
+    fetchPeerSwarmStatusMock.mockReset();
     isTauriMock.mockReset();
     // Reset store to its initial state between tests. Zustand stores hold
     // module-level state; without this reset, ordering between tests can
@@ -30,6 +37,12 @@ describe("useIdentityStore", () => {
       publicKeyHex: null,
       isLoading: false,
       error: null,
+      swarmPeerId: null,
+      swarmMultiaddrs: [],
+      swarmPeerCount: 0,
+      swarmLastEvent: null,
+      swarmLoading: false,
+      swarmError: null,
     });
   });
 

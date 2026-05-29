@@ -1,55 +1,85 @@
-//! Peer identity scaffolding — Phase 2 of the P2P-first native architecture.
+//! Peer identity — single Ed25519 keypair per install, backing both Phase 2's
+//! user-visible fingerprint AND Phase 3's libp2p `PeerId`.
 //!
-//! On first launch each Concord install generates an Ed25519 keypair and
-//! persists the **private half inside Stronghold**. The private bytes never
-//! leave Stronghold: signing is delegated to Stronghold's `Ed25519Sign`
-//! procedure so the secret only ever lives in the protected runtime buffer.
+//! ## Architectural unification
 //!
-//! This module exposes:
-//!   * [`PeerIdentity`] — public-facing identity: the 32-byte public key plus
-//!     a short, deterministic, human-readable fingerprint. NO private-key
-//!     field by deliberate design; the `Serialize`-able shape downstream of
-//!     this struct (`PeerIdentityPublic` in `lib.rs`) guarantees the same
-//!     property at the Tauri command boundary.
-//!   * [`StrongholdHandle`] — a thin wrapper around `iota_stronghold::Client`
-//!     plus a process-wide mutex that serializes `load_or_create` so two
-//!     concurrent first-launch callers can't race and persist two different
-//!     keypairs.
-//!   * [`load_or_create`] — idempotent identity loader.
-//!   * [`sign`] — protected-context signing helper.
+//! Each Concord install owns exactly ONE Ed25519 seed. That seed is the install's
+//! identity, full stop:
 //!
-//! The fingerprint is `BASE32-NOPAD(SHA-256(public_key))[..16]`. Base32 with
-//! the RFC4648 alphabet (no padding) is the simplest user-presentable
-//! encoding that avoids easy-to-mis-read pairs in case-sensitive contexts.
-//! Hand-rolled (15 lines, std-only) to avoid pulling a new top-level crate
-//! dep just for the encoder.
+//!   * Phase 2's `PeerIdentity.fingerprint` is `base32_nopad(SHA-256(public_key))`,
+//!     where `public_key = SigningKey::from_bytes(seed).verifying_key().to_bytes()`.
+//!   * Phase 3's libp2p `PeerId` is `PeerId::from_public_key(libp2p_keypair.public())`,
+//!     where `libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(seed)`.
 //!
-//! ### Stronghold layout
+//! Both encodings differ on the wire (base32-of-SHA256 vs multihash-of-pubkey),
+//! but they derive from the same `[u8; 32]` public key bytes. The user sees one
+//! identity in Settings → Profile; libp2p observes the same identity over the
+//! swarm. No split.
 //!
-//! The peer-identity keypair lives at a dedicated `Location::generic` so it
-//! never collides with future Matrix-credential records:
+//! ## Storage
+//!
+//! The seed lives in Stronghold at a single canonical location:
 //!
 //! ```text
 //!   vault  = b"peer-identity"
-//!   record = b"ed25519/v1"
+//!   record = b"ed25519-seed/v1"
 //! ```
 //!
-//! The `v1` suffix exists so a future key-format change can write a new
+//! On first launch we generate 32 random bytes via `OsRng`, `WriteVault` them
+//! into Stronghold (the snapshot file encrypts them at rest), and cache a
+//! `Zeroizing<[u8; 32]>` copy in the [`StrongholdHandle`]'s in-memory buffer.
+//! Subsequent calls in the same handle lifetime reuse the cached seed. The
+//! `v1` suffix on the record name lets a future key-format change write a new
 //! record alongside the old one rather than mutating in place.
+//!
+//! ## Cross-restart behaviour
+//!
+//! Stronghold has no `ReadVault` procedure — once `WriteVault` runs, the bytes
+//! are inaccessible from outside the protected runtime for the rest of that
+//! Stronghold session.
+//!
+//! That means after a snapshot reload (app restart), the seed bytes are on
+//! disk but not in our in-memory cache. We handle the two callers of the
+//! identity differently in that state:
+//!
+//!   * [`load_or_create`] / fingerprint: works fine cross-restart. We use
+//!     Stronghold's `PublicKey` procedure, which derives the public key from
+//!     the WriteVault'd seed *inside* the protected runtime and only the
+//!     32-byte public key crosses out. The fingerprint is then computed from
+//!     the public key bytes — same algorithm whether the seed came out of our
+//!     cache or out of the in-Stronghold derivation path.
+//!   * [`peer_seed`] / [`sign`]: requires the raw seed bytes. Cross-restart
+//!     the cache is empty and Stronghold has no way to hand the bytes back.
+//!     These functions return [`IdentityError::SeedUnavailable`] in that
+//!     state. Phase 4 will wire a secondary OS-keychain-encrypted store keyed
+//!     under the user's data dir so the seed survives restarts; until then,
+//!     callers must call `load_or_create` AND have generated the seed in the
+//!     current handle lifetime to use signing or libp2p.
 
+use ed25519_dalek::{Signer, SigningKey};
 use iota_stronghold::{
-    procedures::{Ed25519Sign, GenerateKey, KeyType, PublicKey, StrongholdProcedure},
+    procedures::{KeyType, PublicKey, StrongholdProcedure, WriteVault},
     Client, Location,
 };
+use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 /// Stronghold vault path for the peer-identity record.
 const VAULT_PATH: &[u8] = b"peer-identity";
 
-/// Stronghold record path for the v1 Ed25519 secret key.
-const RECORD_PATH: &[u8] = b"ed25519/v1";
+/// Stronghold record path for the single per-install Ed25519 seed.
+///
+/// One seed, one record. Both the Phase 2 fingerprint and Phase 3 libp2p
+/// `PeerId` derive from these bytes — see the module-level architectural
+/// note. The `v1` suffix is reserved for forward compatibility.
+const SEED_RECORD_PATH: &[u8] = b"ed25519-seed/v1";
+
+/// Ed25519 secret-seed length in bytes (Ed25519 expands a 32-byte seed into
+/// the full keypair material).
+pub const SECRET_SEED_LEN: usize = 32;
 
 /// Length (in chars) of the public-key fingerprint exposed to users.
 /// 16 base32 chars = 80 bits of SHA-256(public_key), more than enough to
@@ -84,7 +114,8 @@ impl Signature {
 }
 
 /// Public peer identity. **Has no private-key field by deliberate design**;
-/// the Stronghold runtime is the sole holder of the secret half.
+/// the seed lives in Stronghold (WriteVault'd) plus a `Zeroizing` in-memory
+/// cache. This struct only carries public-facing bytes.
 #[derive(Debug, Clone)]
 pub struct PeerIdentity {
     /// 32-byte Ed25519 public key.
@@ -106,27 +137,43 @@ pub enum IdentityError {
     #[error("stronghold returned a public key of unexpected length: got {0}, expected {1}")]
     PublicKeyLength(usize, usize),
 
-    #[error("stronghold returned a signature of unexpected length: got {0}, expected {1}")]
-    SignatureLength(usize, usize),
+    #[error(
+        "peer seed not available in this handle lifetime — the seed record \
+         exists in Stronghold (from a prior session) but the in-memory cache \
+         is empty and Stronghold has no read-back procedure. Phase 4 will \
+         persist the seed in an OS-keychain-encrypted secondary store so it \
+         survives restarts."
+    )]
+    SeedUnavailable,
 }
 
-/// Thin wrapper around `iota_stronghold::Client` plus the cross-call mutex
-/// that serializes the read-or-create transition on the peer-identity
-/// record. The mutex is what makes [`load_or_create`] race-safe: even if two
-/// async tasks call it simultaneously on the same handle (or the user
-/// double-clicks the Tauri command), exactly one will reach the
-/// `record_exists` check first and persist the keypair; the second sees the
-/// record and reads back the same one.
+/// Thin wrapper around `iota_stronghold::Client` plus a process-wide mutex
+/// that serializes the read-or-create transition on the peer-identity record.
+/// The mutex is what makes [`load_or_create`] race-safe: even if two async
+/// tasks call it simultaneously on the same handle (or the user double-clicks
+/// the Tauri command), exactly one will reach the `record_exists` check first
+/// and persist the seed; the second sees the record and reads back the same
+/// derived identity.
 ///
-/// The mutex is intentionally NOT held across the `sign` path — Stronghold's
-/// `Client` is internally `Arc<RwLock<...>>` and is safe to call from
-/// multiple threads in parallel for read-only-style operations like signing
-/// (the underlying procedure machinery synchronizes itself).
+/// The handle also owns a `Mutex<Option<Zeroizing<[u8; 32]>>>` cache for the
+/// seed bytes. Stronghold has no `ReadVault`, so once the seed is WriteVault'd
+/// the only way to get raw bytes back out is through this cache. The cache is
+/// populated:
+///
+///   * On the create branch of [`load_or_create`] — fresh seed generated by
+///     OsRng, persisted to Stronghold, AND cached so signing/libp2p in the
+///     same handle lifetime can reuse the bytes without a Stronghold round
+///     trip.
+///   * (Phase 4 will add a second population path keyed off an OS-keychain
+///     secondary store so cross-restart usage works.)
 pub struct StrongholdHandle {
     client: Client,
     /// Serializes [`load_or_create`] so concurrent first-launches collapse
-    /// to a single keypair-creation.
+    /// to a single seed-creation.
     create_mutex: Mutex<()>,
+    /// In-process cache of the per-install Ed25519 seed bytes. See the
+    /// struct-level note.
+    seed_cache: Mutex<Option<Zeroizing<[u8; SECRET_SEED_LEN]>>>,
 }
 
 impl StrongholdHandle {
@@ -139,9 +186,9 @@ impl StrongholdHandle {
         Self {
             client,
             create_mutex: Mutex::new(()),
+            seed_cache: Mutex::new(None),
         }
     }
-
 }
 
 impl std::fmt::Debug for StrongholdHandle {
@@ -154,96 +201,200 @@ impl std::fmt::Debug for StrongholdHandle {
 /// first call.
 ///
 /// **Idempotency**: repeat calls return the same `PeerIdentity` because the
-/// underlying Stronghold record is only written when it doesn't already exist.
+/// underlying Stronghold record is only written when it doesn't already
+/// exist, and the public key is a deterministic function of the seed bytes
+/// stored there.
 ///
 /// **Race safety**: the per-handle `create_mutex` serializes the
 /// record-exists check + write so two concurrent first-launch callers
-/// collapse to a single keypair. Both callers return the same identity.
+/// collapse to a single seed. Both callers return the same identity.
 ///
-/// **Private-key handling**: the private bytes only ever live inside the
-/// Stronghold runtime. This function exports only the 32-byte public key
-/// (via the `PublicKey` procedure) and computes the fingerprint from it.
+/// **Cross-restart**: on snapshot reload the seed bytes are inaccessible from
+/// outside Stronghold's protected runtime, but the public key can still be
+/// derived via Stronghold's `PublicKey` procedure — same `public_key` bytes,
+/// same fingerprint. Signing/libp2p, however, requires the in-memory cache
+/// to be populated; see [`peer_seed`].
 pub async fn load_or_create(
     stronghold: &StrongholdHandle,
 ) -> Result<PeerIdentity, IdentityError> {
-    let location = identity_location();
+    let location = seed_location();
 
     // Serialize the existence-check + create across concurrent callers on
     // the same handle. Tokio tasks can both hit this entry simultaneously
     // on first launch; without the mutex, both would observe
-    // `record_exists() == false` and both would call GenerateKey, the
-    // second overwriting the first — and the second caller would return a
-    // PeerIdentity whose public key doesn't match the now-persisted
-    // private key.
+    // `record_exists() == false` and both would WriteVault, the second
+    // overwriting the first.
     let _guard = stronghold
         .create_mutex
         .lock()
         .expect("identity create_mutex poisoned (a previous call panicked)");
 
     let client = &stronghold.client;
-    if !client.record_exists(&location)? {
-        // Persist a fresh Ed25519 secret key inside Stronghold. The bytes
-        // never leave the protected runtime; only the eventual public-key
-        // export (next call below) crosses the boundary.
-        let proc = StrongholdProcedure::GenerateKey(GenerateKey {
-            ty: KeyType::Ed25519,
-            output: location.clone(),
-        });
-        client.execute_procedure(proc)?;
+
+    // Fast path: cache populated from an earlier call in this handle
+    // lifetime. Derive public_key from the cached seed without touching
+    // Stronghold.
+    {
+        let cache = stronghold
+            .seed_cache
+            .lock()
+            .expect("seed_cache poisoned");
+        if let Some(seed) = cache.as_ref() {
+            let public_key = pubkey_from_seed(seed);
+            let fingerprint = fingerprint_for(&public_key);
+            return Ok(PeerIdentity { public_key, fingerprint });
+        }
     }
 
-    // Export only the public half. The private key is held by Stronghold
-    // for the lifetime of the snapshot; we never see it.
-    let pk_bytes_vec: Vec<u8> = client.execute_procedure(StrongholdProcedure::PublicKey(
-        PublicKey {
-            ty: KeyType::Ed25519,
-            private_key: location,
-        },
-    ))?.into();
-
-    if pk_bytes_vec.len() != PUBLIC_KEY_LEN {
-        return Err(IdentityError::PublicKeyLength(
-            pk_bytes_vec.len(),
-            PUBLIC_KEY_LEN,
-        ));
+    if client.record_exists(&location)? {
+        // Cache empty but the record exists — we're either in the "app
+        // restart after first launch" state (snapshot reloaded but no
+        // in-memory cache) or a race where the cache was cleared.
+        // Stronghold has no ReadVault, so we cannot rehydrate the cache
+        // from the on-disk seed. We CAN still derive the public key
+        // without exposing the seed by using Stronghold's `PublicKey`
+        // procedure, which runs the same Ed25519 derivation inside the
+        // protected runtime and hands back only the 32-byte public key.
+        //
+        // Signing and libp2p constructors require the raw seed and will
+        // error with `SeedUnavailable` until Phase 4 wires a secondary
+        // persisted store.
+        let pk_bytes_vec: Vec<u8> = client
+            .execute_procedure(StrongholdProcedure::PublicKey(PublicKey {
+                ty: KeyType::Ed25519,
+                private_key: location,
+            }))?
+            .into();
+        if pk_bytes_vec.len() != PUBLIC_KEY_LEN {
+            return Err(IdentityError::PublicKeyLength(
+                pk_bytes_vec.len(),
+                PUBLIC_KEY_LEN,
+            ));
+        }
+        let mut public_key = [0u8; PUBLIC_KEY_LEN];
+        public_key.copy_from_slice(&pk_bytes_vec);
+        let fingerprint = fingerprint_for(&public_key);
+        return Ok(PeerIdentity { public_key, fingerprint });
     }
-    let mut public_key = [0u8; PUBLIC_KEY_LEN];
-    public_key.copy_from_slice(&pk_bytes_vec);
+
+    // Fresh install: generate 32 random bytes via the OS CSPRNG, persist
+    // to Stronghold (WriteVault encrypts at rest in the snapshot), AND
+    // cache a Zeroizing copy in-memory so subsequent signing / libp2p
+    // calls in this handle lifetime can reuse the bytes.
+    let mut seed = Zeroizing::new([0u8; SECRET_SEED_LEN]);
+    rand::rngs::OsRng.fill_bytes(seed.as_mut());
+
+    let proc = StrongholdProcedure::WriteVault(WriteVault {
+        data: Zeroizing::new(seed.to_vec()),
+        location,
+    });
+    client.execute_procedure(proc)?;
+
+    // Derive the public key from the seed bytes we just generated. Same
+    // algorithm Stronghold would use internally — `SigningKey::from_bytes`
+    // expands the 32-byte seed into the full keypair material.
+    let public_key = pubkey_from_seed(&seed);
+
+    // Stash in handle cache. Subsequent calls (including `peer_seed` for
+    // the libp2p swarm) reuse this copy.
+    {
+        let mut cache = stronghold
+            .seed_cache
+            .lock()
+            .expect("seed_cache poisoned");
+        *cache = Some(Zeroizing::new(*seed));
+    }
 
     let fingerprint = fingerprint_for(&public_key);
-
-    Ok(PeerIdentity {
-        public_key,
-        fingerprint,
-    })
+    Ok(PeerIdentity { public_key, fingerprint })
 }
 
-/// Sign `payload` with the peer-identity Ed25519 secret key. The secret
-/// never leaves Stronghold's protected runtime — the procedure machinery
-/// loads it into a guarded `Buffer<u8>`, signs there, and only the 64-byte
-/// signature crosses back out.
+/// Hand the raw 32-byte Ed25519 seed back to a trusted caller (the libp2p
+/// swarm constructor in [`crate::servitude::p2p`], or anyone signing without
+/// the [`sign`] helper). This is the single source of truth for "the install's
+/// secret key" — both Phase 2's signing and Phase 3's libp2p Keypair derive
+/// from these bytes.
 ///
-/// Caller must have previously called [`load_or_create`] at least once
-/// against the same Stronghold so the record exists; if not, the underlying
-/// procedure errors with a "record not found" `ClientError`.
+/// Returns a freshly-allocated `Zeroizing<[u8; 32]>` so the caller's drop
+/// wipes its copy without disturbing the handle's cached seed.
+///
+/// ## Errors
+///
+/// Returns [`IdentityError::SeedUnavailable`] if the in-memory cache is empty
+/// AND the on-disk record exists (i.e. we're in the cross-restart state and
+/// Stronghold has no read-back). Until Phase 4 lands the secondary persisted
+/// store, callers must call [`load_or_create`] earlier in the same handle
+/// lifetime when the record didn't pre-exist.
+pub async fn peer_seed(
+    stronghold: &StrongholdHandle,
+) -> Result<Zeroizing<[u8; SECRET_SEED_LEN]>, IdentityError> {
+    // Cache hit: hand back a fresh copy.
+    {
+        let cache = stronghold
+            .seed_cache
+            .lock()
+            .expect("seed_cache poisoned");
+        if let Some(seed) = cache.as_ref() {
+            return Ok(Zeroizing::new(**seed));
+        }
+    }
+
+    // Cache miss: serialize with the create mutex and re-check (another
+    // caller may have populated it while we waited).
+    let _guard = stronghold
+        .create_mutex
+        .lock()
+        .expect("identity create_mutex poisoned (a previous call panicked)");
+
+    {
+        let cache = stronghold
+            .seed_cache
+            .lock()
+            .expect("seed_cache poisoned");
+        if let Some(seed) = cache.as_ref() {
+            return Ok(Zeroizing::new(**seed));
+        }
+    }
+
+    // No cached seed. If the on-disk record exists we cannot read it back
+    // (see SeedUnavailable error doc). If it doesn't exist either, the
+    // caller skipped `load_or_create` — same error fits.
+    Err(IdentityError::SeedUnavailable)
+}
+
+/// Sign `payload` with the peer-identity Ed25519 seed.
+///
+/// Implemented via `ed25519_dalek::SigningKey::from_bytes(seed).sign(payload)`
+/// against the seed returned by [`peer_seed`]. The seed is held in a
+/// `Zeroizing` buffer for the duration of the call and wiped on drop.
+///
+/// ## Errors
+///
+/// Returns [`IdentityError::SeedUnavailable`] if the seed isn't in the
+/// handle's in-memory cache (typically because the app restarted after
+/// `load_or_create` first ran — see [`peer_seed`]).
 pub async fn sign(
     stronghold: &StrongholdHandle,
     payload: &[u8],
 ) -> Result<Signature, IdentityError> {
-    let proc = StrongholdProcedure::Ed25519Sign(Ed25519Sign {
-        msg: payload.to_vec(),
-        private_key: identity_location(),
-    });
-    // ProcedureOutput is `Into<Vec<u8>>` for Ed25519Sign (returns the
-    // 64-byte signature as a Vec). We confirm length and copy into a
-    // fixed-size newtype.
-    let sig_vec: Vec<u8> = stronghold.client.execute_procedure(proc)?.into();
-    if sig_vec.len() != SIGNATURE_LEN {
-        return Err(IdentityError::SignatureLength(sig_vec.len(), SIGNATURE_LEN));
-    }
-    let mut sig = [0u8; SIGNATURE_LEN];
-    sig.copy_from_slice(&sig_vec);
-    Ok(Signature(sig))
+    let seed = peer_seed(stronghold).await?;
+    let signing_key = SigningKey::from_bytes(&seed);
+    let sig = signing_key.sign(payload);
+    Ok(Signature(sig.to_bytes()))
+}
+
+/// Stable Stronghold location for the per-install Ed25519 seed record.
+fn seed_location() -> Location {
+    Location::generic(VAULT_PATH.to_vec(), SEED_RECORD_PATH.to_vec())
+}
+
+/// Derive the 32-byte Ed25519 public key from a 32-byte seed. Pure function;
+/// same input always yields the same output. Identical math to what
+/// Stronghold's `PublicKey` procedure performs internally on a WriteVault'd
+/// seed — so both code paths agree on the public key bytes for any given
+/// seed.
+fn pubkey_from_seed(seed: &[u8; SECRET_SEED_LEN]) -> [u8; PUBLIC_KEY_LEN] {
+    SigningKey::from_bytes(seed).verifying_key().to_bytes()
 }
 
 /// Compute the deterministic short fingerprint for a given public key.
@@ -256,11 +407,6 @@ pub fn fingerprint_for(public_key: &[u8; PUBLIC_KEY_LEN]) -> String {
     let encoded = base32_nopad_upper(&digest);
     // SHA-256 -> 32 bytes -> 52 base32 chars; truncate to FINGERPRINT_LEN.
     encoded[..FINGERPRINT_LEN].to_string()
-}
-
-/// Stable Stronghold location for the peer-identity v1 record.
-fn identity_location() -> Location {
-    Location::generic(VAULT_PATH.to_vec(), RECORD_PATH.to_vec())
 }
 
 /// Hand-rolled RFC4648 base32 (uppercase alphabet, NO padding). Pure-std
