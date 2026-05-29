@@ -288,3 +288,274 @@ fn quic_loopback_with_peer_id(addr: &Multiaddr, peer: PeerId) -> Multiaddr {
     rebuilt.push(Protocol::P2p(peer));
     rebuilt
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4 helpers — spin up "bootstrap-like" swarms locally and drive them in
+// parallel with the swarm under test.
+// ---------------------------------------------------------------------------
+
+/// Build a transport with an empty bootstrap list, flip Kad to Server
+/// mode (the role real project bootstrap nodes play in production), and
+/// wait until its first QUIC listen address materializes. Returns the
+/// transport + the loopback multiaddr with `/p2p/<peer>` appended,
+/// ready to inject as a bootstrap seed into another swarm.
+///
+/// The owning `Stronghold` is intentionally leaked so it outlives the
+/// returned transport — `iota_stronghold::Client` doesn't keep the
+/// `Stronghold` itself alive, and dropping the Stronghold while the
+/// transport is still using its client invalidates the keypair. The
+/// test process is short-lived so the leak is fine.
+async fn spawn_bootstrap_swarm(label: &str) -> (LibP2pTransport, Multiaddr) {
+    let (sh, handle) = fresh_handle(label);
+    Box::leak(Box::new(sh));
+    let peer_identity = identity::load_or_create(&handle)
+        .await
+        .expect("phase 2 load_or_create must succeed for bootstrap swarm");
+    let mut transport = LibP2pTransport::new_with_bootstrap_override(
+        &peer_identity,
+        &handle,
+        Vec::new(),
+    )
+    .await
+    .expect("bootstrap swarm must construct");
+
+    // Real bootstrap VPS instances run in Server mode so they advertise
+    // themselves as routable to the wider DHT. Match that here so the
+    // node under test can complete its Kad queries against them.
+    transport
+        .swarm_mut()
+        .behaviour_mut()
+        .kad
+        .set_mode(Some(libp2p::kad::Mode::Server));
+
+    let peer = transport.local_peer_id();
+    let raw_addr = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let RawSwarmEvent::NewListenAddr { address, .. } =
+                transport.swarm_mut().select_next_some().await
+            {
+                if multiaddr_contains_quic_v1(&address) {
+                    return address;
+                }
+            }
+        }
+    })
+    .await
+    .expect("bootstrap swarm timed out waiting for its QUIC listen addr");
+
+    // Leak the handle too — same reason as Stronghold above.
+    Box::leak(Box::new(handle));
+
+    (transport, quic_loopback_with_peer_id(&raw_addr, peer))
+}
+
+/// Drive a list of swarms in parallel from a single async task, returning
+/// when `done(&events)` predicate returns true OR the timeout elapses.
+/// Each polled event is appended to a shared Vec keyed by swarm index.
+///
+/// This is the workhorse used by tests 4–6: it lets the test express
+/// "drive everyone for up to N seconds until I see condition X" without
+/// hand-rolling a `tokio::select!` over five+ moving parts.
+async fn drive_until<F>(
+    transports: &mut [&mut LibP2pTransport],
+    timeout: Duration,
+    mut done: F,
+) -> bool
+where
+    F: FnMut(usize, &RawSwarmEvent<app_lib::servitude::p2p::BehaviourEvent>) -> bool,
+{
+    tokio::time::timeout(timeout, async {
+        loop {
+            // Tokio's select! macro requires a static number of branches,
+            // so for an arbitrary list we use `futures::future::select_all`
+            // over a vector of boxed futures, one per swarm.
+            let next: futures::future::SelectAll<_> = futures::future::select_all(
+                transports
+                    .iter_mut()
+                    .map(|t| Box::pin(t.swarm_mut().select_next_some())),
+            );
+            let (event, idx, _) = next.await;
+            if done(idx, &event) {
+                return true;
+            }
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// (4) Phase 4 acceptance criterion: DHT joins the network via bootstrap seeds.
+//     Spin up TWO bootstrap-like swarms, then a THIRD swarm configured with
+//     those two as its bootstrap list. Assert the third swarm sees
+//     RoutingUpdated for at least one of the bootstrap peers.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dht_joins_network_via_bootstrap_seeds() {
+    use libp2p::kad;
+    use app_lib::servitude::p2p::BehaviourEvent;
+
+    let (mut bs_a, bs_a_addr) = spawn_bootstrap_swarm("dht-bs-a").await;
+    let (mut bs_b, bs_b_addr) = spawn_bootstrap_swarm("dht-bs-b").await;
+    let bs_a_peer = bs_a.local_peer_id();
+    let bs_b_peer = bs_b.local_peer_id();
+
+    let (_sh, handle) = fresh_handle("dht-node");
+    let peer_identity = identity::load_or_create(&handle).await.unwrap();
+    let mut node = LibP2pTransport::new_with_bootstrap_override(
+        &peer_identity,
+        &handle,
+        vec![bs_a_addr.clone(), bs_b_addr.clone()],
+    )
+    .await
+    .expect("node-under-test must construct");
+
+    // Drive all three swarms until the test node reports RoutingUpdated
+    // for one of the bootstrap peers. 30s timeout per spec.
+    let saw_routing = drive_until(
+        &mut [&mut bs_a, &mut bs_b, &mut node],
+        Duration::from_secs(30),
+        |idx, ev| {
+            // idx==2 is our node-under-test in the slice above.
+            if idx != 2 {
+                return false;
+            }
+            matches!(
+                ev,
+                RawSwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::RoutingUpdated {
+                    peer, ..
+                })) if *peer == bs_a_peer || *peer == bs_b_peer
+            )
+        },
+    )
+    .await;
+
+    assert!(
+        saw_routing,
+        "node-under-test must observe Kad RoutingUpdated for at least one \
+         bootstrap peer ({bs_a_peer} or {bs_b_peer}) within 30s"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (5) Phase 4 acceptance criterion: peer-key lookups round-trip via the
+//     bootstrap nodes. After joining, the node issues a `get_closest_peers`
+//     query and must see a successful OutboundQueryProgressed.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kad_lookup_round_trips_via_bootstrap() {
+    use libp2p::kad;
+    use app_lib::servitude::p2p::BehaviourEvent;
+
+    let (mut bs_a, bs_a_addr) = spawn_bootstrap_swarm("dht-lookup-bs-a").await;
+    let (mut bs_b, bs_b_addr) = spawn_bootstrap_swarm("dht-lookup-bs-b").await;
+
+    let (_sh, handle) = fresh_handle("dht-lookup-node");
+    let peer_identity = identity::load_or_create(&handle).await.unwrap();
+    let mut node = LibP2pTransport::new_with_bootstrap_override(
+        &peer_identity,
+        &handle,
+        vec![bs_a_addr, bs_b_addr],
+    )
+    .await
+    .expect("node must construct");
+    let local_peer_id = node.local_peer_id();
+
+    // Issue the lookup against our own PeerId — semantically it's
+    // asking "who are the closest k peers to me?" which is the same
+    // shape of query the production bootstrap routine fires.
+    node.swarm_mut()
+        .behaviour_mut()
+        .kad
+        .get_closest_peers(local_peer_id);
+
+    let saw_lookup = drive_until(
+        &mut [&mut bs_a, &mut bs_b, &mut node],
+        Duration::from_secs(30),
+        |idx, ev| {
+            if idx != 2 {
+                return false;
+            }
+            matches!(
+                ev,
+                RawSwarmEvent::Behaviour(BehaviourEvent::Kad(
+                    kad::Event::OutboundQueryProgressed {
+                        result: kad::QueryResult::GetClosestPeers(Ok(_)),
+                        ..
+                    }
+                ))
+            )
+        },
+    )
+    .await;
+
+    assert!(
+        saw_lookup,
+        "node must complete a GetClosestPeers query via the bootstrap nodes \
+         within 30s — Kad lookup round-trip is broken"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (6) Phase 4 acceptance criterion: bootstrap survives one node going offline.
+//     Spin up THREE bootstrap-like swarms, drop one before the node-under-test
+//     starts bootstrapping. Assert the node still successfully bootstraps
+//     against the remaining two.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn survives_bootstrap_node_going_offline() {
+    use libp2p::kad;
+    use app_lib::servitude::p2p::BehaviourEvent;
+
+    let (mut bs_a, bs_a_addr) = spawn_bootstrap_swarm("dht-fail-bs-a").await;
+    let (mut bs_b, bs_b_addr) = spawn_bootstrap_swarm("dht-fail-bs-b").await;
+    let (bs_c, bs_c_addr) = spawn_bootstrap_swarm("dht-fail-bs-c").await;
+
+    let bs_a_peer = bs_a.local_peer_id();
+    let bs_b_peer = bs_b.local_peer_id();
+    let bs_c_peer = bs_c.local_peer_id();
+
+    // Drop the third bootstrap before the node tries to use it. This
+    // also closes its QUIC listener — any dial to bs_c_addr is now
+    // expected to fail. The node must still bootstrap against the
+    // remaining two without erroring, panicking, or failing the test.
+    drop(bs_c);
+
+    let (_sh, handle) = fresh_handle("dht-fail-node");
+    let peer_identity = identity::load_or_create(&handle).await.unwrap();
+    let mut node = LibP2pTransport::new_with_bootstrap_override(
+        &peer_identity,
+        &handle,
+        vec![bs_a_addr, bs_b_addr, bs_c_addr],
+    )
+    .await
+    .expect("node must construct even with one bootstrap addr unreachable");
+
+    // We just need to see ONE routing-update from a surviving bootstrap.
+    // The dead bs_c_peer must not be the only routing event we observe.
+    let saw_surviving_routing = drive_until(
+        &mut [&mut bs_a, &mut bs_b, &mut node],
+        Duration::from_secs(30),
+        |idx, ev| {
+            if idx != 2 {
+                return false;
+            }
+            matches!(
+                ev,
+                RawSwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::RoutingUpdated {
+                    peer, ..
+                })) if *peer == bs_a_peer || *peer == bs_b_peer
+            )
+        },
+    )
+    .await;
+
+    assert!(
+        saw_surviving_routing,
+        "node must still bootstrap against the two surviving bootstrap peers \
+         ({bs_a_peer}, {bs_b_peer}) within 30s even with {bs_c_peer} offline"
+    );
+}

@@ -130,7 +130,7 @@ fn open_peer_identity_stronghold(
 
     let stronghold = tauri_plugin_stronghold::stronghold::Stronghold::new(
         &snapshot_path,
-        password_bytes,
+        password_bytes.clone(),
     )
     .map_err(|e| format!("open peer-identity stronghold: {e}"))?;
 
@@ -165,7 +165,14 @@ fn open_peer_identity_stronghold(
         );
     }
 
-    Ok(std::sync::Arc::new(StrongholdHandle::new(client)))
+    // Build the handle wired for Phase 4 cross-restart persistence: the
+    // identity module encrypts the Ed25519 seed under the snapshot
+    // password and persists it to a sibling file alongside the snapshot,
+    // so signing / libp2p Keypair construction survive an app restart.
+    // See `servitude/identity.rs` module-level docs.
+    let handle = StrongholdHandle::new_persistent(client, &snapshot_path, &password_bytes)
+        .map_err(|e| format!("build peer-identity handle: {e}"))?;
+    Ok(std::sync::Arc::new(handle))
 }
 
 async fn get_or_open_peer_identity(
@@ -336,6 +343,11 @@ fn apply_event(cache: &SwarmStateCache, event: &P2pSwarmEvent) {
             // Captured via last_event only — the count is updated
             // through the separate PeerCountChanged event.
         }
+        P2pSwarmEvent::DhtRoutingUpdated { .. } => {
+            // Captured via last_event only — the DHT-side "peer_count"
+            // is a routing-table sample, distinct from the swarm-wide
+            // connected count tracked by `PeerCountChanged`.
+        }
     }
 }
 
@@ -350,6 +362,9 @@ fn swarm_event_label(event: &P2pSwarmEvent) -> String {
             Some(p) => format!("dial failed ({p}): {reason}"),
             None => format!("dial failed: {reason}"),
         },
+        P2pSwarmEvent::DhtRoutingUpdated { peer_count } => {
+            format!("dht routed: {peer_count}")
+        }
     }
 }
 
@@ -373,6 +388,10 @@ fn swarm_event_payload(event: &P2pSwarmEvent) -> serde_json::Value {
             "kind": "dial_failure",
             "peer_id": peer_id.map(|p| p.to_string()),
             "reason": reason,
+        }),
+        P2pSwarmEvent::DhtRoutingUpdated { peer_count } => serde_json::json!({
+            "kind": "dht_routing_updated",
+            "peer_count": *peer_count,
         }),
     }
 }
