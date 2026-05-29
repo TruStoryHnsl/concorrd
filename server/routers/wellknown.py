@@ -30,10 +30,26 @@ don't rename.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
+
+
+def _is_rfc1918(host: str) -> bool:
+    """True for RFC1918 / loopback / link-local IPv4 literals.
+
+    Mirrors ``server/routers/voice.py::_is_rfc1918`` — kept local rather
+    than imported because ``wellknown.py`` is in the auth-free path and
+    importing the voice router would pull its auth dependencies into
+    well-known's import graph.
+    """
+    try:
+        addr = ipaddress.ip_address(host)
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+    except ValueError:
+        return False
 
 # No `/api` prefix: the path must live at the exact root
 # `/.well-known/concord/client` because client discovery helpers hit
@@ -218,23 +234,59 @@ def _resolve_api_base() -> str:
     return f"https://{_domain_for_server_name(server_name)}/api"
 
 
+def _resolve_public_host() -> str | None:
+    """Return the public-facing host clients should reach this instance at.
+
+    Precedence:
+      1. ``PUBLIC_BASE_URL`` (hostname extracted) — explicit operator
+         override. Always wins when set, because the operator has
+         stated authoritatively how the outside world reaches them.
+      2. ``CONDUWUIT_SERVER_NAME`` expanded via ``_domain_for_server_name``
+         — fallback for deployments that haven't set ``PUBLIC_BASE_URL``.
+
+    RFC1918 / loopback / link-local addresses are NEVER returned, because
+    advertising them in well-known docs ships a broken contact card to
+    every off-LAN peer that fetches the document. Same rule the voice
+    router applies to ``TURN_HOST``. If neither source yields a routable
+    public host, return ``None`` and the caller omits the field rather
+    than serving a confidently-wrong value.
+    """
+    override = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if override:
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(override)
+            host = (parsed.hostname or "").strip()
+            if host and not _is_rfc1918(host):
+                return host
+        except ValueError:
+            pass
+    server_name = os.environ.get("CONDUWUIT_SERVER_NAME", "").strip()
+    if not server_name:
+        return None
+    expanded = _domain_for_server_name(server_name)
+    if not expanded or _is_rfc1918(expanded):
+        return None
+    return expanded
+
+
 def _resolve_livekit_url() -> str | None:
-    """Derive the public LiveKit URL from ``LIVEKIT_URL``.
+    """Derive the public LiveKit URL from the operator's public host.
 
     The Docker-internal value is ``ws://livekit:7880``, which is NOT
     what native clients should connect to — they need the public
     wss:// endpoint routed by Caddy at ``/livekit/``. We synthesise
-    that public URL from ``CONDUWUIT_SERVER_NAME`` so the value is
-    always consistent with how Caddy actually proxies the signaling
-    channel. INS-051: bare-slug server names get expanded under the
-    default domain root (``concordchat.net``). If the homeserver name
-    is missing the caller is misconfigured, so we return ``None`` and
-    the client disables voice rather than connecting to a bogus URL.
+    that public URL from :func:`_resolve_public_host`, which prefers
+    ``PUBLIC_BASE_URL`` and rejects RFC1918 hosts. If no routable
+    public host can be resolved we return ``None`` and the client
+    disables voice rather than connecting to a LAN IP that fails the
+    moment a friend dials in from another network.
     """
-    server_name = os.environ.get("CONDUWUIT_SERVER_NAME", "").strip()
-    if not server_name:
+    host = _resolve_public_host()
+    if not host:
         return None
-    return f"wss://{_domain_for_server_name(server_name)}/livekit/"
+    return f"wss://{host}/livekit/"
 
 
 def _resolve_instance_name() -> str | None:
@@ -254,13 +306,22 @@ def _resolve_turn_servers() -> list[dict]:
     """
     turn_host = os.environ.get("TURN_HOST", "").strip()
     turn_domain = os.environ.get("TURN_DOMAIN", "").strip()
-    host = turn_host or turn_domain
+    candidate = turn_host or turn_domain
 
     servers: list[dict] = []
-    if host:
-        # Advertise the instance's own STUN endpoint (coturn serves
-        # STUN on the same port as TURN, no credentials needed for STUN).
-        servers.append({"urls": f"stun:{host}:3478"})
+    # Advertise the instance's own STUN endpoint (coturn serves STUN on
+    # the same port as TURN, no credentials needed for STUN). Drop the
+    # entry if the only candidate is an RFC1918 / loopback / link-local
+    # literal — advertising those to off-LAN clients ships a STUN URL
+    # that can never reach the relay, and on the dev stack used to
+    # poison the well-known doc with ``stun:192.168.x.x:3478``. If no
+    # routable LAN candidate, fall back to ``_resolve_public_host`` so
+    # operators that only set ``PUBLIC_BASE_URL`` still advertise their
+    # own STUN endpoint.
+    if candidate and not _is_rfc1918(candidate):
+        servers.append({"urls": f"stun:{candidate}:3478"})
+    elif (public_host := _resolve_public_host()):
+        servers.append({"urls": f"stun:{public_host}:3478"})
     # Always include Google's public STUN as a fallback
     servers.append({"urls": "stun:stun.l.google.com:19302"})
     return servers
