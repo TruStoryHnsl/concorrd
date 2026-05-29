@@ -5,6 +5,9 @@ import { useIdentityStore, IDENTITY_ERROR_NATIVE_ONLY } from "../../stores/ident
 import { isTauri } from "../../api/servitude";
 import { changePassword, getTOTPStatus, setupTOTP, verifyTOTP, disableTOTP, getRecoveryEmailStatus, setRecoveryEmail, type TOTPSetupResult } from "../../api/concord";
 import { Avatar } from "../ui/Avatar";
+import { PeerCardDisplay } from "../peers/PeerCardDisplay";
+import { PeerCardScanner } from "../peers/PeerCardScanner";
+import { KnownPeersList } from "../peers/KnownPeersList";
 
 export function ProfileTab() {
   const client = useAuthStore((s) => s.client);
@@ -129,6 +132,12 @@ export function ProfileTab() {
           beneath the PeerIdentitySection so the two derived-from-the-
           same-seed identity surfaces stay visually paired. */}
       <SwarmStatusSection />
+
+      {/* Paired peers (Phase 5 — peer pairing UX). Renders DIRECTLY
+          beneath SwarmStatusSection so the user can see "this is who I
+          am on the swarm" immediately above "and these are the people
+          I've paired with." */}
+      <PairedPeersSection />
 
       {/* Password change */}
       <PasswordChangeSection />
@@ -717,6 +726,56 @@ function SwarmStatusSection() {
           {lastEvent ?? "—"}
         </span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Paired Peers (Phase 5 — peer pairing UX).
+ *
+ * Bundles the three pairing surfaces — display your card, add a peer,
+ * list paired peers — into one Profile-tab section. Renders directly
+ * beneath `SwarmStatusSection` (per the architecture note above).
+ *
+ * Native-only — but each child component handles its own web-build
+ * placeholder so the section's outer chrome stays consistent.
+ */
+function PairedPeersSection() {
+  const [scannerOpen, setScannerOpen] = useState(false);
+
+  return (
+    <div className="border-t border-outline-variant/15 pt-6 space-y-4">
+      <div>
+        <h4 className="text-sm font-medium text-on-surface">Paired Peers</h4>
+        <p className="text-xs text-on-surface-variant">
+          Direct, server-less connections to other Concord installs.
+        </p>
+      </div>
+
+      {/* Your card — QR + copyable link + post-to-room. */}
+      <PeerCardDisplay />
+
+      {/* Add-a-peer launcher. */}
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => setScannerOpen(true)}
+          disabled={!isTauri()}
+          className="px-4 py-2 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface text-sm rounded-md transition-colors"
+        >
+          Add a peer…
+        </button>
+      </div>
+
+      {/* List of currently paired peers. */}
+      <KnownPeersList />
+
+      {/* Scanner modal — mounted only while open so the camera
+          permission prompt fires on demand, not on every Profile
+          tab render. */}
+      {scannerOpen && (
+        <PeerCardScanner onClose={() => setScannerOpen(false)} />
+      )}
     </div>
   );
 }

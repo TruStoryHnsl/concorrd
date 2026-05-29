@@ -268,6 +268,48 @@ impl StrongholdHandle {
     /// to open the Stronghold snapshot — so it can be reused directly as the
     /// ChaCha20-Poly1305 key. Passing a wrong-length password returns
     /// [`IdentityError::PasswordLength`].
+    /// Borrow the absolute path of the Stronghold snapshot this handle was
+    /// built around, if it has sibling-file persistence configured. Phase 5
+    /// (`peer_store`) uses this to derive its own sibling-file path
+    /// alongside the snapshot, keeping all peer-related on-disk state
+    /// rooted at the same `app_local_data_dir`.
+    ///
+    /// Returns `None` for handles built via [`Self::new`] (in-memory tests).
+    pub fn snapshot_path(&self) -> Option<&Path> {
+        // The snapshot path itself isn't stored — we hold the sibling-file
+        // path. Strip the suffix appended by `new_persistent` to recover
+        // the original snapshot path.
+        let persistence = self.persistence.as_ref()?;
+        let sibling = persistence.sibling_path.as_os_str();
+        let suffix = SIBLING_SEED_FILE_SUFFIX.as_bytes();
+        let bytes = sibling.as_encoded_bytes();
+        if bytes.len() < suffix.len() {
+            return None;
+        }
+        let (head, tail) = bytes.split_at(bytes.len() - suffix.len());
+        if tail != suffix {
+            return None;
+        }
+        // SAFETY: `bytes` came from a valid `OsStr`, and stripping a known
+        // ASCII suffix yields another valid OS-string byte sequence.
+        unsafe {
+            Some(Path::new(std::ffi::OsStr::from_encoded_bytes_unchecked(
+                head,
+            )))
+        }
+    }
+
+    /// Borrow the 32-byte snapshot password Phase 4 / Phase 5 use as the
+    /// ChaCha20-Poly1305 key for sibling-file encryption. Returns `None`
+    /// for in-memory ([`Self::new`]) handles.
+    ///
+    /// The slice is held inside a `Zeroizing` buffer and is wiped on
+    /// handle drop. Callers MUST NOT clone the bytes into a long-lived
+    /// unprotected buffer.
+    pub fn snapshot_password(&self) -> Option<&[u8]> {
+        self.persistence.as_ref().map(|p| &p.password[..])
+    }
+
     pub fn new_persistent(
         client: Client,
         snapshot_path: &Path,

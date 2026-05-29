@@ -7,6 +7,7 @@ pub mod servitude;
 use servitude::{LifecycleState, ServitudeConfig, ServitudeHandle};
 use servitude::identity::{self, StrongholdHandle};
 use servitude::p2p::SwarmEvent as P2pSwarmEvent;
+use servitude::peer_store::{self, KnownPeer, PeerCard, PeerSource};
 use servitude::transport::dendrite_federation::RegisterOwnerResponse;
 
 /// Tauri-managed state wrapping the optional embedded servitude handle.
@@ -76,6 +77,73 @@ pub struct SwarmStateCache(std::sync::Mutex<SwarmStatus>);
 /// `peer_swarm_status`; written by the background mirror task spawned in
 /// `run()`.
 pub struct SwarmEventChannel(pub std::sync::Arc<SwarmStateCache>);
+
+// ---------------------------------------------------------------------------
+// Phase 5 — peer-store IPC shapes
+// ---------------------------------------------------------------------------
+
+/// Frontend-facing peer record. camelCase via `serde(rename_all)` so the
+/// TS wrapper layer doesn't have to manually transcribe every field.
+///
+/// Derived from [`KnownPeer`] at the IPC boundary so internal changes to
+/// `KnownPeer` don't auto-leak into the renderer contract — adding a
+/// new internal field requires a deliberate update here too.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KnownPeerPublic {
+    peer_id: String,
+    public_key_hex: String,
+    multiaddrs: Vec<String>,
+    source: String,
+    first_seen: String,
+    last_seen: String,
+}
+
+impl From<KnownPeer> for KnownPeerPublic {
+    fn from(kp: KnownPeer) -> Self {
+        Self {
+            peer_id: kp.peer_id,
+            public_key_hex: kp.public_key_hex,
+            multiaddrs: kp.multiaddrs,
+            source: source_to_wire(&kp.source).to_string(),
+            // RFC 3339 string is JSON-friendly + sortable lexicographically.
+            first_seen: kp.first_seen.to_rfc3339(),
+            last_seen: kp.last_seen.to_rfc3339(),
+        }
+    }
+}
+
+/// Input shape for `peer_store_add`. The `source` field is a plain
+/// string so the TS layer can pass `"qr" | "deeplink" | "matrix_room"
+/// | "dht"` without a discriminated-union dance.
+#[derive(serde::Deserialize)]
+struct PeerCardInput {
+    peer_id: String,
+    public_key_hex: String,
+    multiaddrs: Vec<String>,
+    source: String,
+}
+
+fn parse_source(raw: &str) -> Result<PeerSource, String> {
+    match raw {
+        "qr" => Ok(PeerSource::Qr),
+        "deeplink" => Ok(PeerSource::Deeplink),
+        "matrix_room" => Ok(PeerSource::MatrixRoom),
+        "dht" => Ok(PeerSource::Dht),
+        other => Err(format!(
+            "unknown peer source {other:?} — expected one of: qr | deeplink | matrix_room | dht"
+        )),
+    }
+}
+
+fn source_to_wire(source: &PeerSource) -> &'static str {
+    match source {
+        PeerSource::Qr => "qr",
+        PeerSource::Deeplink => "deeplink",
+        PeerSource::MatrixRoom => "matrix_room",
+        PeerSource::Dht => "dht",
+    }
+}
 
 /// Open (or create) the peer-identity Stronghold snapshot and return a
 /// shared handle.
@@ -240,6 +308,56 @@ async fn peer_swarm_status(
     Ok(snapshot.clone())
 }
 
+// ---------------------------------------------------------------------------
+// Phase 5 — peer-store Tauri commands
+// ---------------------------------------------------------------------------
+
+/// List every known peer currently in the store. Empty on first call.
+#[tauri::command]
+async fn peer_store_list(
+    state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<KnownPeerPublic>, String> {
+    let stronghold = get_or_open_peer_identity(&state, &app).await?;
+    let peers = peer_store::list(&stronghold)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(peers.into_iter().map(KnownPeerPublic::from).collect())
+}
+
+/// Add a peer to the store. Idempotent — see `peer_store::add`.
+#[tauri::command]
+async fn peer_store_add(
+    state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+    input: PeerCardInput,
+) -> Result<KnownPeerPublic, String> {
+    let stronghold = get_or_open_peer_identity(&state, &app).await?;
+    let source = parse_source(&input.source)?;
+    let card = PeerCard {
+        peer_id: input.peer_id,
+        public_key_hex: input.public_key_hex,
+        multiaddrs: input.multiaddrs,
+    };
+    let updated = peer_store::add(&stronghold, card, source)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(KnownPeerPublic::from(updated))
+}
+
+/// Remove a peer from the store. Returns `true` if a peer was removed.
+#[tauri::command]
+async fn peer_store_remove(
+    state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+    peer_id: String,
+) -> Result<bool, String> {
+    let stronghold = get_or_open_peer_identity(&state, &app).await?;
+    peer_store::remove(&stronghold, &peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Spawn a background task that mirrors the running libp2p swarm's
 /// broadcast events into the shared [`SwarmStateCache`] AND re-emits each
 /// event onto Tauri's app-wide event bus under the `"peer_swarm_event"`
@@ -322,6 +440,114 @@ fn spawn_swarm_event_mirror(
             }
         }
     });
+}
+
+/// Register the concord:// deeplink handler.
+///
+/// The Tauri deep-link plugin emits a `deep-link://new-url` event on the
+/// runtime's event bus whenever the OS hands the app a custom-scheme
+/// URL (QR scan launcher, click in another app, bare CLI arg on
+/// Windows/Linux). This function attaches a callback that:
+///
+///   1. Parses each incoming URL via `peer_store::handle_deeplink_url`,
+///      which base64url-decodes the payload, JSON-deserializes into a
+///      `PeerCard`, validates the fields, and `add()`s under
+///      `PeerSource::Deeplink`.
+///   2. Emits `peer_paired` (success) or `peer_paired_error` (failure
+///      with `{stage, message}`) on the renderer event bus so the
+///      Settings → Profile → Paired Peers section can react.
+///
+/// All failures are logged at `warn`/`debug` only — never `error`. A
+/// deeplink URL is untrusted input and a malformed value must never
+/// raise a panic banner.
+fn spawn_deeplink_listener(app: tauri::AppHandle) {
+    use tauri_plugin_deep_link::DeepLinkExt;
+
+    // Register the on_open_url callback synchronously — the plugin's
+    // event-bus listener handles concurrent URLs internally. We move
+    // each URL into an async task so the peer-store IO doesn't block
+    // the event-bus thread.
+    let deep_link = app.deep_link();
+    let app_for_cb = app.clone();
+    deep_link.on_open_url(move |event| {
+        let app = app_for_cb.clone();
+        let urls = event.urls();
+        tauri::async_runtime::spawn(async move {
+            for url in urls {
+                handle_one_deeplink(&app, url.as_str()).await;
+            }
+        });
+    });
+}
+
+/// Handle a single deeplink URL: forward to peer_store, emit the
+/// resulting `peer_paired` / `peer_paired_error` event back to the
+/// renderer. Failures here are logged + emitted — never panicked.
+async fn handle_one_deeplink(app: &tauri::AppHandle, url: &str) {
+    log::debug!(target: "concord::deeplink", "received deeplink url: {url}");
+
+    // Open (or reuse) the peer-identity stronghold — same path the
+    // `peer_store_*` Tauri commands use. If this fails, the user
+    // hasn't passed the identity-creation step yet; emit a structured
+    // error and bail.
+    let state = app.state::<PeerIdentityState>();
+    let stronghold = match get_or_open_peer_identity(&state, app).await {
+        Ok(h) => h,
+        Err(msg) => {
+            log::warn!(
+                target: "concord::deeplink",
+                "failed to open peer-identity stronghold for deeplink: {msg}"
+            );
+            let _ = app.emit(
+                "peer_paired_error",
+                serde_json::json!({
+                    "stage": "add",
+                    "message": format!("identity unavailable: {msg}"),
+                }),
+            );
+            return;
+        }
+    };
+
+    match peer_store::handle_deeplink_url(&stronghold, url).await {
+        Ok(known_peer) => {
+            log::debug!(
+                target: "concord::deeplink",
+                "deeplink paired peer {}", known_peer.peer_id
+            );
+            let payload: KnownPeerPublic = known_peer.into();
+            if let Err(emit_err) = app.emit("peer_paired", payload) {
+                log::warn!(
+                    target: "concord::deeplink",
+                    "failed to emit peer_paired event: {emit_err}"
+                );
+            }
+        }
+        Err(e) => {
+            // Untrusted-input failure path. Stage tag lets the UI
+            // distinguish "couldn't read the QR" vs "couldn't add the
+            // peer to the store".
+            log::warn!(
+                target: "concord::deeplink",
+                "deeplink handling failed at stage {:?}: {}",
+                e.stage(),
+                e.message()
+            );
+            let stage = match e.stage() {
+                peer_store::DeeplinkStage::Decode => "decode",
+                peer_store::DeeplinkStage::Json => "json",
+                peer_store::DeeplinkStage::Validate => "validate",
+                peer_store::DeeplinkStage::Add => "add",
+            };
+            let _ = app.emit(
+                "peer_paired_error",
+                serde_json::json!({
+                    "stage": stage,
+                    "message": e.message(),
+                }),
+            );
+        }
+    }
 }
 
 /// Apply a single swarm event to the shared cache. Pure function on
@@ -650,6 +876,13 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
+        // Phase 5 (INS-019b) — concord:// deeplink handler. The plugin
+        // wires the OS-level URL-scheme registration AND emits the
+        // `deep-link://new-url` event from the OS handler thread.
+        // `spawn_deeplink_listener` (called in `setup` below) is what
+        // turns those events into peer-store writes + emit_all signals
+        // to the renderer.
+        .plugin(tauri_plugin_deep_link::init())
         .manage(ServitudeState(Mutex::new(None)))
         .manage(PeerIdentityState(Mutex::new(None)))
         .manage(SwarmEventChannel(swarm_cache.clone()))
@@ -683,6 +916,18 @@ pub fn run() {
             // `ServitudeState` until a started libp2p runtime is
             // available; it then runs for the full swarm lifetime.
             spawn_swarm_event_mirror(app.handle().clone(), swarm_cache.clone());
+
+            // Phase 5 — register the concord:// deeplink handler. The
+            // plugin emits `deep-link://new-url` on a background thread
+            // whenever the OS launches a deeplink (QR scan, click,
+            // bare CLI arg on Windows/Linux). We forward each URL to
+            // `peer_store::handle_deeplink_url` and emit one of two
+            // Tauri events back to the renderer:
+            //   * `peer_paired`        — KnownPeer added successfully
+            //   * `peer_paired_error`  — { stage, message }
+            // Logging is `warn`/`debug` only; deeplink failures must
+            // NEVER raise a panic banner (the URL is untrusted input).
+            spawn_deeplink_listener(app.handle().clone());
 
             // Devtools auto-open is gated on the `devtools` Cargo feature
             // (off by default — see `Cargo.toml`). Release builds never link
@@ -815,6 +1060,9 @@ pub fn run() {
             log_diagnostic,
             peer_identity,
             peer_swarm_status,
+            peer_store_list,
+            peer_store_add,
+            peer_store_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
