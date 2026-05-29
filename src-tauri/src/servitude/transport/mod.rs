@@ -235,6 +235,36 @@ impl LibP2pRuntime {
             transport.register_federation_handler(handler);
         }
 
+        // Phase 8 (INS-019b) — register the voice signaling handler so
+        // inbound `/concord/voice-signaling/1.0.0` streams are routed
+        // to the WebRTC negotiation layer. Phase 8 ships with a
+        // `NoopVoiceSink` placeholder — the real call-orchestration
+        // sink (which routes envelopes to per-peer `WebRtcPeer`
+        // instances) lands in the Phase 8 media follow-up. Until
+        // then, an inbound signaling envelope is decoded, logged,
+        // and dropped.
+        {
+            use crate::servitude::voice::{
+                SignalingMessage, VoiceCallSink, VoiceSignalingHandler,
+            };
+
+            struct NoopVoiceSink;
+
+            #[async_trait::async_trait]
+            impl VoiceCallSink for NoopVoiceSink {
+                async fn deliver(&self, from: libp2p::PeerId, message: SignalingMessage) {
+                    log::debug!(
+                        target: "concord::servitude::voice",
+                        "voice signaling envelope received but no sink wired (Phase 8 scaffold): from={from} message={message:?}"
+                    );
+                }
+            }
+
+            let sink = std::sync::Arc::new(NoopVoiceSink);
+            let handler = std::sync::Arc::new(VoiceSignalingHandler::new(sink));
+            transport.register_federation_handler(handler);
+        }
+
         self.local_peer_id = Some(transport.local_peer_id());
         self.event_tx = Some(transport.event_sender());
         self.shutdown_tx = Some(transport.shutdown_handle());

@@ -161,11 +161,20 @@ impl FederationHandler for MatrixFederationHandler {
         PayloadKind::Matrix
     }
 
-    async fn handle_inbound(&self, mut stream: Stream) -> Result<(), FederationError> {
+    async fn handle_inbound(
+        &self,
+        _peer_id: PeerId,
+        mut stream: Stream,
+    ) -> Result<(), FederationError> {
         // Loop reading framed envelopes until the peer cleanly closes the
         // stream (EOF on the length-prefix read). Each envelope is
         // dispatched to the underlying API and a framed response is
         // written back on the same stream.
+        //
+        // Matrix federation envelopes carry their own auth (X-Matrix
+        // signature), so the handler doesn't need `peer_id` for
+        // dispatch. The parameter is wired through for trait uniformity
+        // (Phase 8 voice signaling needs it).
         loop {
             let mut len_buf = [0u8; 4];
             match stream.read_exact(&mut len_buf).await {

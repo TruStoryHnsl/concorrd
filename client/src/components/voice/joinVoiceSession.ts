@@ -1,6 +1,10 @@
 import type { Server } from "../../api/concord";
 import { getVoiceToken } from "../../api/livekit";
 import { getHomeserverUrl } from "../../api/serverUrl";
+import {
+  selectVoicePath,
+  type VoiceParticipant,
+} from "../../api/voicePath";
 import { useServerConfigStore } from "../../stores/serverConfig";
 import { useSettingsStore } from "../../stores/settings";
 import { useVoiceStore } from "../../stores/voice";
@@ -82,6 +86,50 @@ export async function joinVoiceSession({
     // Best-effort playback resume only.
   } finally {
     ctx?.close();
+  }
+
+  // Phase 8 (INS-019b) — ask the native servitude layer which voice
+  // path to use. Mesh decisions land in this PR; the mesh-MEDIA layer
+  // (real audio over libp2p WebRTC via webrtc-rs) is queued as a
+  // Phase 8 follow-up. Until that lands the decision is logged and
+  // we fall through to LiveKit so the existing working voice path
+  // remains the default behavior.
+  //
+  // Web builds short-circuit to `livekit_sfu` inside `selectVoicePath`;
+  // a browser tab can't participate in the libp2p mesh until Phase 9
+  // (js-libp2p in the browser client) ships.
+  try {
+    // The Phase 8 selector treats `peer_id === null` as a web-only
+    // participant. The room-roster → peer-store resolution lands as
+    // part of the Phase 8 media follow-up; for now we send an empty
+    // participant list, which the Rust selector evaluates as a
+    // degenerate mesh case (path: "libp2p_mesh", reason:
+    // "all_native_under_cap"). This is informational only — the
+    // result is logged but does NOT branch the join flow yet.
+    const participants: VoiceParticipant[] = [];
+    const decision = await selectVoicePath(participants);
+    if (decision.path === "libp2p_mesh") {
+      // eslint-disable-next-line no-console
+      console.info(
+        "[voice] libp2p mesh selected (Phase 8 scaffolding); " +
+          "falling back to LiveKit for media — " +
+          `reason=${decision.reason}`,
+      );
+    } else {
+      // eslint-disable-next-line no-console
+      console.info(
+        `[voice] LiveKit SFU selected — reason=${decision.reason}`,
+      );
+    }
+  } catch (decisionErr) {
+    // selectVoicePath has its own try/catch fallback; this is
+    // belt-and-suspenders so a bug in path selection cannot prevent
+    // the voice flow from progressing to LiveKit.
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[voice] voice path selection threw; continuing on LiveKit:",
+      decisionErr,
+    );
   }
 
   let result;

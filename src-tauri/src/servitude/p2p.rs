@@ -539,8 +539,9 @@ impl LibP2pTransport {
                     // streams on the same protocol.
                     let handler_for_stream = handler_for_spawn.clone();
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            handler_for_stream.handle_inbound(stream).await
+                        if let Err(e) = handler_for_stream
+                            .handle_inbound(peer_id, stream)
+                            .await
                         {
                             log::warn!(
                                 target: "concord::servitude::p2p",

@@ -46,6 +46,7 @@ pub mod lifecycle;
 pub mod p2p;
 pub mod peer_store;
 pub mod transport;
+pub mod voice;
 
 pub use config::{ServitudeConfig, Transport};
 pub use lifecycle::{LifecycleError, LifecycleState};
