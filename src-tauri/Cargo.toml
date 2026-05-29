@@ -116,6 +116,11 @@ libp2p = { version = "0.56", features = [
     "dcutr",
     "relay",
 ] }
+# Phase 6 (INS-019b) — protocol-agnostic federation payload layer over libp2p
+# streams. `libp2p-stream` is a separate companion crate (libp2p 0.56 does NOT
+# expose it as a feature flag); 0.4.0-alpha is the version that pins
+# libp2p-core 0.43 / libp2p-swarm 0.47 to match our libp2p 0.56 stack.
+libp2p-stream = "0.4.0-alpha"
 # In-memory zeroize for the libp2p secret-key bytes we have to materialize
 # outside Stronghold's protected runtime (Phase 3 trade-off — documented in
 # `servitude/identity.rs::export_or_create_libp2p_seed`).

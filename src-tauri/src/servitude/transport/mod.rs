@@ -213,7 +213,27 @@ impl LibP2pRuntime {
             .await
             .map_err(|e| TransportError::StartFailed(format!("identity load: {e}")))?;
 
-        let transport = LibP2pTransport::new(&peer_identity, &self.stronghold).await?;
+        let mut transport = LibP2pTransport::new(&peer_identity, &self.stronghold).await?;
+
+        // Phase 6 (INS-019b) — register the Matrix federation handler so
+        // inbound `/concord/matrix-federation/1.0.0` streams are routed
+        // through the conduwuit federation dispatch. The handler is
+        // wired with a `ConduwuitClient` pointed at the bundled
+        // homeserver's HTTP endpoint (localhost:6167 — same default the
+        // tuwunel `from_config` path uses). Other federation handlers
+        // (ActivityPub, etc.) plug in here as separate
+        // `register_federation_handler` calls in later phases.
+        {
+            use crate::servitude::federation::{
+                ConduwuitClient, MatrixFederationHandler,
+            };
+            let conduwuit = std::sync::Arc::new(ConduwuitClient::new(
+                "http://localhost:6167",
+            ));
+            let handler =
+                std::sync::Arc::new(MatrixFederationHandler::new(conduwuit));
+            transport.register_federation_handler(handler);
+        }
 
         self.local_peer_id = Some(transport.local_peer_id());
         self.event_tx = Some(transport.event_sender());

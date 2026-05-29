@@ -348,6 +348,11 @@ fn apply_event(cache: &SwarmStateCache, event: &P2pSwarmEvent) {
             // is a routing-table sample, distinct from the swarm-wide
             // connected count tracked by `PeerCountChanged`.
         }
+        P2pSwarmEvent::FederationStreamOpened { .. } => {
+            // Captured via last_event only — the federation stream
+            // surface is per-protocol-ID and per-peer, distinct from
+            // the swarm-wide multiaddr / peer-count cache.
+        }
     }
 }
 
@@ -364,6 +369,12 @@ fn swarm_event_label(event: &P2pSwarmEvent) -> String {
         },
         P2pSwarmEvent::DhtRoutingUpdated { peer_count } => {
             format!("dht routed: {peer_count}")
+        }
+        P2pSwarmEvent::FederationStreamOpened {
+            protocol_id,
+            peer_id,
+        } => {
+            format!("federation stream ({protocol_id}) from {peer_id}")
         }
     }
 }
@@ -392,6 +403,14 @@ fn swarm_event_payload(event: &P2pSwarmEvent) -> serde_json::Value {
         P2pSwarmEvent::DhtRoutingUpdated { peer_count } => serde_json::json!({
             "kind": "dht_routing_updated",
             "peer_count": *peer_count,
+        }),
+        P2pSwarmEvent::FederationStreamOpened {
+            protocol_id,
+            peer_id,
+        } => serde_json::json!({
+            "kind": "federation_stream_opened",
+            "protocol_id": protocol_id,
+            "peer_id": peer_id,
         }),
     }
 }
