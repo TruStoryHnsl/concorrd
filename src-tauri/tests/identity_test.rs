@@ -265,6 +265,189 @@ async fn peer_seed_derives_same_public_key_as_load_or_create() {
 }
 
 // ---------------------------------------------------------------------------
+// (c3) Phase 4 — cross-restart seed persistence.
+//      Phase 3 left a known follow-up: after a process restart, the seed
+//      record exists in Stronghold but the in-memory cache is empty, so
+//      `peer_seed()` and `sign()` returned `SeedUnavailable`. Phase 4 wires
+//      a sibling encrypted seed file alongside the Stronghold snapshot so
+//      the seed bytes survive the restart and signing keeps working under
+//      the SAME public key.
+//
+//      The empirical assertion is: a signature produced AFTER the restart
+//      verifies under the public key reported BEFORE the restart. If the
+//      seed bytes weren't preserved correctly, the verify step fails — no
+//      amount of "the code compiles" hides that.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cross_restart_seed_persists_and_signs() {
+    use ed25519_zebra::{Signature as ZSignature, VerificationKey};
+
+    // Allocate a fresh tmp dir so the test runs without colliding with
+    // other test invocations on the same machine.
+    let dir = tmp_dir("phase4-restart");
+    let snapshot_path = dir.join("test.stronghold");
+
+    // 32-byte snapshot password — same length the production code uses
+    // for the ChaCha20-Poly1305 key in the sibling file. The pattern is
+    // a stand-in for the random 32 bytes the real installer would
+    // generate.
+    let password: [u8; 32] = [
+        0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18,
+        0x29, 0x3A, 0x4B, 0x5C, 0x6D, 0x7E, 0x8F, 0x90,
+        0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18,
+        0x29, 0x3A, 0x4B, 0x5C, 0x6D, 0x7E, 0x8F, 0x90,
+    ];
+    let keyprovider = KeyProvider::try_from(
+        zeroize::Zeroizing::new(password.to_vec()),
+    )
+    .expect("keyprovider");
+
+    let payload: &[u8] = b"the cold reader observes a signature that survived a restart";
+    let snapshot_path_arg = SnapshotPath::from_path(&snapshot_path);
+
+    // ── Pass 1: fresh install on Phase 4 — load_or_create generates a
+    //    seed, persists to Stronghold AND to the sibling encrypted file,
+    //    signs the payload. We capture the seed bytes, fingerprint, and
+    //    signature so we can compare across restart.
+    let (public_key_v1, fingerprint_v1, seed_v1, sig_v1) = {
+        let stronghold = Stronghold::default();
+        let client = stronghold
+            .create_client(b"peer-identity-test")
+            .expect("create_client");
+        let handle = StrongholdHandle::new_persistent(
+            client,
+            &snapshot_path,
+            &password,
+        )
+        .expect("new_persistent must accept a 32-byte password");
+
+        let id = identity::load_or_create(&handle)
+            .await
+            .expect("load_or_create pass 1 must succeed (fresh install)");
+
+        let seed = identity::peer_seed(&handle)
+            .await
+            .expect("peer_seed must succeed in the same handle lifetime");
+
+        let sig = identity::sign(&handle, payload)
+            .await
+            .expect("sign must succeed in the same handle lifetime");
+
+        stronghold
+            .commit_with_keyprovider(&snapshot_path_arg, &keyprovider)
+            .expect("commit snapshot");
+
+        (id.public_key, id.fingerprint, *seed, sig)
+    };
+
+    // The sibling encrypted file MUST exist on disk after Pass 1 — that's
+    // the new persistence surface we're locking in.
+    let sibling_path = {
+        let mut p = snapshot_path.clone().into_os_string();
+        p.push(".seed.enc");
+        std::path::PathBuf::from(p)
+    };
+    assert!(
+        sibling_path.exists(),
+        "Phase 4 expectation: encrypted seed sibling file must exist at \
+         {sibling_path:?} after first launch — without it, restart \
+         persistence cannot work"
+    );
+
+    // ── Pass 2: simulate an app restart. Drop the Stronghold + handle,
+    //    reload the snapshot from disk, hydrate the client, build a NEW
+    //    persistent handle pointed at the SAME snapshot path. The handle
+    //    has an EMPTY in-memory cache; the only way it can sign is by
+    //    decrypting the sibling file.
+    let (public_key_v2, fingerprint_v2, seed_v2, sig_v2) = {
+        let stronghold = Stronghold::default();
+        stronghold
+            .load_snapshot(&keyprovider, &snapshot_path_arg)
+            .expect("load_snapshot after restart");
+        let client = stronghold
+            .load_client(b"peer-identity-test")
+            .expect("load_client after reload");
+
+        let handle = StrongholdHandle::new_persistent(
+            client,
+            &snapshot_path,
+            &password,
+        )
+        .expect("new_persistent (pass 2)");
+
+        let id = identity::load_or_create(&handle)
+            .await
+            .expect(
+                "load_or_create pass 2 — Phase 4 must rehydrate the cache \
+                 from the sibling file so the identity stays signable",
+            );
+
+        let seed = identity::peer_seed(&handle).await.expect(
+            "peer_seed must succeed AFTER restart — Phase 4 closes the \
+             SeedUnavailable known issue from Phase 3",
+        );
+
+        let sig = identity::sign(&handle, payload).await.expect(
+            "sign must succeed AFTER restart — the sibling encrypted file \
+             must have restored the seed bytes to the cache",
+        );
+
+        (id.public_key, id.fingerprint, *seed, sig)
+    };
+
+    // Sanity: fingerprint and public key are identical across restart.
+    // Phase 3 already enforced this via Stronghold's PublicKey procedure;
+    // we re-check it here so a regression in either layer fails loudly.
+    assert_eq!(
+        public_key_v1, public_key_v2,
+        "public key drifted across restart"
+    );
+    assert_eq!(
+        fingerprint_v1, fingerprint_v2,
+        "fingerprint drifted across restart"
+    );
+
+    // The seed bytes themselves must match — this is the new invariant
+    // Phase 4 establishes.
+    assert_eq!(
+        seed_v1, seed_v2,
+        "Ed25519 seed bytes changed across restart — sibling-file \
+         persistence is broken"
+    );
+
+    // Empirical proof that the seed survived: the signature produced
+    // POST-restart must verify under the public key reported PRE-restart.
+    // Use ed25519-zebra (an independent verifier, NOT ed25519-dalek which
+    // produced the signature) so we're not asking the signer to verify
+    // its own work.
+    let vk = VerificationKey::try_from(public_key_v1).expect(
+        "pre-restart public key must decode as a valid Ed25519 verification key",
+    );
+    let zsig_v2 = ZSignature::from(*sig_v2.as_bytes());
+    vk.verify(&zsig_v2, payload).expect(
+        "POST-restart signature must verify against the PRE-restart public \
+         key — this is the empirical proof that the seed survived the \
+         restart correctly. If this fails, Phase 4 persistence is broken.",
+    );
+
+    // And vice versa: the pre-restart signature still verifies under the
+    // public key we re-derived post-restart. This rules out the case
+    // where the public keys agree but the seeds don't (impossible under
+    // Ed25519 but worth catching empirically).
+    let vk2 = VerificationKey::try_from(public_key_v2).expect("vk2");
+    let zsig_v1 = ZSignature::from(*sig_v1.as_bytes());
+    vk2.verify(&zsig_v1, payload).expect(
+        "PRE-restart signature must verify against the POST-restart \
+         public key",
+    );
+
+    // Clean up the tmp dir on success. (On failure we leave it for the
+    // tester to inspect.)
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
 // (d) negative test: PeerIdentityPublic JSON shape is locked
 // ---------------------------------------------------------------------------
 

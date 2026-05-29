@@ -120,6 +120,13 @@ libp2p = { version = "0.56", features = [
 # outside Stronghold's protected runtime (Phase 3 trade-off — documented in
 # `servitude/identity.rs::export_or_create_libp2p_seed`).
 zeroize = "1"
+# ChaCha20-Poly1305 AEAD for the Phase 4 sibling-file seed persistence.
+# Already in the lock file transitively (via libp2p noise); declared here so
+# `servitude/identity.rs` can name `ChaCha20Poly1305` directly. Used to
+# encrypt the Ed25519 seed bytes alongside the Stronghold snapshot under the
+# same snapshot password — see the module-level note on cross-restart
+# persistence.
+chacha20poly1305 = "0.10"
 # futures::StreamExt is needed to drive `Swarm::select_next_some` in p2p.rs.
 futures = "0.3"
 
