@@ -102,17 +102,32 @@ export function VoiceChannel({ roomId, channelName, serverId, onOpenSettings }: 
     } catch (err) {
       console.error("Failed to join voice:", err);
       const msg = err instanceof Error ? err.message : "Failed to connect";
+      // getVoiceToken (api/livekit.ts) attaches HTTP status + ConcordError
+      // code to its thrown Error. Prefer those for classification — string
+      // matching on the human-readable message historically misclassified
+      // the 503 VOICE_SUBSYSTEM_UNAVAILABLE path as "Authentication failed"
+      // because the message happened to be the literal fallback string
+      // "Failed to get voice token" when the response body wasn't read
+      // correctly (see livekit.ts comment).
+      const annotated = err as Error & { status?: number; errorCode?: string | null };
+      const status = typeof annotated.status === "number" ? annotated.status : null;
+      const errorCode = typeof annotated.errorCode === "string" ? annotated.errorCode : null;
 
-      // Classify the error for actionable diagnostics
+      // Classify the error for actionable diagnostics. Structured fields
+      // win; string heuristics are last-resort.
       let diag: string | null = null;
-      if (msg.includes("Failed to get voice token") || msg.includes("401") || msg.includes("403")) {
+      if (errorCode === "VOICE_SUBSYSTEM_UNAVAILABLE" || status === 503) {
+        diag = "Voice subsystem is currently unreachable. " +
+          "An admin can check /api/hosting/status for the diagnostic. " +
+          "Detail: " + msg;
+      } else if (status === 401 || status === 403 || errorCode === "AUTH_INVALID_TOKEN" || errorCode === "AUTH_REQUIRED" || errorCode === "AUTH_FORBIDDEN") {
         diag = "Authentication failed. Try logging out and back in.";
+      } else if (status === 404 || errorCode === "RESOURCE_NOT_FOUND") {
+        diag = "Voice service not found. The server may not have LiveKit configured.";
+      } else if (status !== null && status >= 500 && status !== 503) {
+        diag = "Voice server error. An admin should check the server logs.";
       } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("net::ERR")) {
         diag = "Cannot reach the voice server. Check your internet connection.";
-      } else if (msg.includes("404")) {
-        diag = "Voice service not found. The server may not have LiveKit configured.";
-      } else if (msg.includes("500") || msg.includes("Internal")) {
-        diag = "Voice server error. An admin should check the server logs.";
       } else if (msg.includes("WebSocket") || msg.includes("signaling")) {
         diag = "WebSocket signaling failed. This may be a firewall or proxy issue blocking wss:// connections.";
       } else if (msg.includes("ICE") || msg.includes("TURN") || msg.includes("STUN")) {

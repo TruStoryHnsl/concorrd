@@ -48,6 +48,7 @@
 
 use std::collections::HashSet;
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -62,6 +63,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::broadcast;
 
 use crate::servitude::bootstrap;
+use crate::servitude::federation::FederationHandler;
 use crate::servitude::identity::{self, PeerIdentity, StrongholdHandle};
 
 /// Identify protocol-version string. Pinned to the package version at
@@ -151,6 +153,15 @@ pub enum SwarmEvent {
     /// doesn't expose a cheap snapshot count, and the UI cares about
     /// "is the DHT alive?" more than the exact size).
     DhtRoutingUpdated { peer_count: usize },
+    /// Phase 6: an inbound libp2p stream was accepted for a registered
+    /// federation protocol ID and is being driven by the matching
+    /// `FederationHandler`. `protocol_id` is the literal stream protocol
+    /// (e.g. `/concord/matrix-federation/1.0.0`); `peer_id` is the
+    /// remote peer's libp2p PeerId stringified for the UI.
+    FederationStreamOpened {
+        protocol_id: String,
+        peer_id: String,
+    },
 }
 
 /// Composed network behaviour. The derive-macro generates a single struct
@@ -170,6 +181,11 @@ pub struct Behaviour {
     pub relay_client: relay::client::Behaviour,
     /// Direct Connection Upgrade through Relay — hole-punching.
     pub dcutr: dcutr::Behaviour,
+    /// Phase 6: generic libp2p stream protocol multiplexer. Lets the
+    /// transport register inbound stream acceptors per
+    /// federation-protocol ID and clone a `Control` for outbound
+    /// stream opens.
+    pub stream: libp2p_stream::Behaviour,
 }
 
 /// Handle to a running libp2p swarm.
@@ -183,6 +199,16 @@ pub struct LibP2pTransport {
     local_peer_id: PeerId,
     shutdown_rx: tokio::sync::mpsc::Receiver<()>,
     shutdown_tx: tokio::sync::mpsc::Sender<()>,
+    /// Phase 6: federation handlers registered for this swarm. Each one
+    /// is paired with a libp2p stream protocol ID; the dispatcher in
+    /// `run()` opens an `IncomingStreams` per handler and spawns a
+    /// per-stream task that calls `handle_inbound`.
+    federation_handlers: Vec<Arc<dyn FederationHandler>>,
+    /// Phase 6: clone-able control handle for the `libp2p_stream`
+    /// behaviour. Exposed to outbound-stream callers via
+    /// [`Self::stream_control`] so they can `open_stream(peer, proto)`
+    /// without needing `&mut swarm`.
+    stream_control: libp2p_stream::Control,
 }
 
 impl LibP2pTransport {
@@ -321,6 +347,8 @@ impl LibP2pTransport {
 
                 let dcutr = dcutr::Behaviour::new(local_id);
 
+                let stream = libp2p_stream::Behaviour::new();
+
                 Ok(Behaviour {
                     kad,
                     identify,
@@ -330,6 +358,7 @@ impl LibP2pTransport {
                     relay,
                     relay_client,
                     dcutr,
+                    stream,
                 })
             })
             .map_err(|e| P2pError::Gossipsub(Box::leak(e.to_string().into_boxed_str()) as &'static str))?
@@ -384,18 +413,44 @@ impl LibP2pTransport {
             ),
         }
 
+        // Phase 6: extract the stream-behaviour control BEFORE moving the
+        // swarm into Self. Control is `Clone` so subsequent calls to
+        // `stream_control()` hand callers their own copy.
+        let stream_control = swarm.behaviour().stream.new_control();
+
         Ok(Self {
             swarm,
             event_tx,
             local_peer_id,
             shutdown_rx,
             shutdown_tx,
+            federation_handlers: Vec::new(),
+            stream_control,
         })
     }
 
     /// Local peer id (deterministic function of the libp2p seed).
     pub fn local_peer_id(&self) -> PeerId {
         self.local_peer_id
+    }
+
+    /// Phase 6: register a federation handler under its declared
+    /// protocol ID. Must be called BEFORE [`Self::run`] consumes the
+    /// transport — the dispatch loop opens one `IncomingStreams` per
+    /// handler when `run()` starts.
+    ///
+    /// Calling this with two handlers that share a `protocol_id()` is
+    /// a programmer error: the second `Control::accept` would return
+    /// `AlreadyRegistered`. The dispatch loop logs and skips that case.
+    pub fn register_federation_handler(&mut self, handler: Arc<dyn FederationHandler>) {
+        self.federation_handlers.push(handler);
+    }
+
+    /// Phase 6: clone of the libp2p stream-behaviour `Control`. Lets
+    /// outbound-stream callers open streams against the running swarm
+    /// without needing mutable access to it.
+    pub fn stream_control(&self) -> libp2p_stream::Control {
+        self.stream_control.clone()
     }
 
     /// Subscribe to swarm events. The receiver sees every event published
@@ -446,6 +501,59 @@ impl LibP2pTransport {
         // backoff window is needed.
         let bootstrap_retry = tokio::time::sleep(Duration::from_secs(60 * 60 * 24));
         tokio::pin!(bootstrap_retry);
+
+        // Phase 6: bootstrap inbound stream acceptors per registered
+        // federation handler. Each handler gets its own `IncomingStreams`
+        // receiver wired through the cloned `Control`; per-stream tasks
+        // are spawned as inbound streams arrive. This loop drains the
+        // registered handlers and starts long-lived listener tasks; it
+        // does NOT block the main swarm event loop below.
+        let mut stream_control = self.stream_control.clone();
+        for handler in self.federation_handlers.drain(..) {
+            let proto = StreamProtocol::new(handler.protocol_id());
+            let incoming = match stream_control.accept(proto.clone()) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!(
+                        target: "concord::servitude::p2p",
+                        "skipping duplicate federation handler registration for {}: {e:?}",
+                        handler.protocol_id()
+                    );
+                    continue;
+                }
+            };
+            let event_tx = self.event_tx.clone();
+            let handler_for_spawn = handler.clone();
+            tokio::spawn(async move {
+                let mut incoming = incoming;
+                while let Some((peer_id, stream)) = incoming.next().await {
+                    // Publish the FederationStreamOpened event BEFORE
+                    // driving the handler so the UI sees the stream
+                    // open even if the handler errors out immediately.
+                    let _ = event_tx.send(SwarmEvent::FederationStreamOpened {
+                        protocol_id: handler_for_spawn.protocol_id().to_string(),
+                        peer_id: peer_id.to_string(),
+                    });
+                    // Drive each inbound stream concurrently — one
+                    // misbehaving peer must not block other peers'
+                    // streams on the same protocol.
+                    let handler_for_stream = handler_for_spawn.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            handler_for_stream.handle_inbound(stream).await
+                        {
+                            log::warn!(
+                                target: "concord::servitude::p2p",
+                                "federation handler error (protocol={}, peer={}): {e}",
+                                handler_for_stream.protocol_id(),
+                                peer_id
+                            );
+                        }
+                    });
+                }
+            });
+        }
+
         loop {
             tokio::select! {
                 _ = self.shutdown_rx.recv() => {

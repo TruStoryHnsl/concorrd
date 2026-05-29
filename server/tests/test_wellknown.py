@@ -119,10 +119,13 @@ async def test_public_base_url_override_wins(client, monkeypatch):
     body = resp.json()
 
     assert body["api_base"] == "https://homelab.example.net/concord/api"
-    # LiveKit resolution is still keyed on CONDUWUIT_SERVER_NAME —
-    # documented behaviour, pinned here so future refactors that
-    # change the resolution source are caught.
-    assert body["livekit_url"] == "wss://chat.example.com/livekit/"
+    # LiveKit resolution prefers PUBLIC_BASE_URL too — historically it
+    # was keyed only on CONDUWUIT_SERVER_NAME, which silently advertised
+    # the homeserver name (often a stale bootstrap value like a LAN IP)
+    # to every off-LAN peer. The well-known doc must reflect the same
+    # public host the api_base does, so both fields agree on what the
+    # client should dial.
+    assert body["livekit_url"] == "wss://homelab.example.net/livekit/"
 
 
 async def test_public_base_url_trailing_slash_stripped(client, monkeypatch):
@@ -396,3 +399,84 @@ async def test_malformed_branding_falls_back_to_null(client, monkeypatch, tmp_pa
     resp = await client.get("/.well-known/concord/client")
     assert resp.status_code == 200
     assert resp.json()["branding"] is None
+
+
+# ---------------------------------------------------------------------------
+# RFC1918-host hardening — the well-known document must NEVER advertise a
+# LAN-only host to off-LAN peers. This caused a live regression on the
+# dev stack: ``CONDUWUIT_SERVER_NAME=192.168.1.152`` was inherited from
+# the original LAN-only bootstrap, then surfaced as
+# ``livekit_url=wss://192.168.1.152/livekit/`` in the discovery doc.
+# Browsers that fetched the doc tried to dial the LAN IP, hit a TLS
+# cert-name mismatch (cert is for the public domain), and surfaced
+# "Encountered websocket error during connection establishment".
+# These tests pin the fix.
+# ---------------------------------------------------------------------------
+
+
+async def test_lan_ip_server_name_drops_livekit_url(client, monkeypatch):
+    """A ``CONDUWUIT_SERVER_NAME`` set to an RFC1918 literal (e.g. a
+    stale LAN bootstrap) and no ``PUBLIC_BASE_URL`` override MUST yield
+    ``livekit_url=null`` rather than synthesising a ``wss://192.168...``
+    URL the client can never reach from off-LAN."""
+    monkeypatch.setenv("CONDUWUIT_SERVER_NAME", "192.168.1.152")
+
+    resp = await client.get("/.well-known/concord/client")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["livekit_url"] is None
+
+
+async def test_public_base_url_overrides_lan_ip_server_name(client, monkeypatch):
+    """When the homeserver name is a stale LAN IP but
+    ``PUBLIC_BASE_URL`` advertises the real public host, the LiveKit
+    URL must derive from the public host — NOT from the LAN IP. This
+    is the dev-stack failure mode the regression test was added for:
+    cert is for dev.concorrd.com, doc was advertising wss://192.168.x."""
+    monkeypatch.setenv("CONDUWUIT_SERVER_NAME", "192.168.1.152")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://dev.example.test")
+
+    resp = await client.get("/.well-known/concord/client")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["livekit_url"] == "wss://dev.example.test/livekit/"
+    assert body["api_base"] == "https://dev.example.test/api"
+
+
+async def test_lan_ip_turn_host_drops_stun_advertisement(client, monkeypatch):
+    """An RFC1918 ``TURN_HOST`` (the dev stack's stale value) must NOT
+    leak into ``turn_servers`` as a ``stun:192.168.x.x:3478`` entry —
+    that URL is unreachable for every off-LAN client and clutters the
+    ICE candidate list with a guaranteed-failed candidate."""
+    monkeypatch.setenv("CONDUWUIT_SERVER_NAME", "192.168.1.152")
+    monkeypatch.setenv("TURN_HOST", "192.168.1.152")
+
+    resp = await client.get("/.well-known/concord/client")
+    assert resp.status_code == 200
+    servers = resp.json()["turn_servers"]
+
+    for server in servers:
+        url = server.get("urls", "")
+        assert "192.168" not in url, f"LAN IP leaked into turn_servers: {url}"
+    # Google STUN fallback must still be present so the client always
+    # has at least one ICE candidate to try.
+    assert any("stun.l.google.com" in s.get("urls", "") for s in servers)
+
+
+async def test_public_base_url_promotes_stun_endpoint(client, monkeypatch):
+    """When ``TURN_HOST`` is RFC1918 but ``PUBLIC_BASE_URL`` is set,
+    the STUN advertisement is promoted to the public host so off-LAN
+    clients still get a usable own-instance STUN candidate."""
+    monkeypatch.setenv("CONDUWUIT_SERVER_NAME", "192.168.1.152")
+    monkeypatch.setenv("TURN_HOST", "192.168.1.152")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://dev.example.test")
+
+    resp = await client.get("/.well-known/concord/client")
+    assert resp.status_code == 200
+    servers = resp.json()["turn_servers"]
+
+    assert any(
+        s.get("urls") == "stun:dev.example.test:3478" for s in servers
+    ), f"public-host STUN missing from {servers!r}"

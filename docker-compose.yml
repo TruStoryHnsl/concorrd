@@ -102,6 +102,18 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
       LIVEKIT_URL: ws://livekit:7880
+      # PUBLIC_BASE_URL is the canonical public origin clients reach this
+      # instance at. server/config.py derives INSTANCE_DOMAIN from it
+      # (which in turn feeds TURN_HOST / TURN_DOMAIN derivations in
+      # server/routers/voice.py when those env vars aren't usable —
+      # e.g. when TURN_HOST is an RFC1918 address that off-LAN browsers
+      # can't reach). Without this passthrough, INSTANCE_DOMAIN falls
+      # back to ``localhost`` (from SITE_URL's default), TURN_HOST
+      # derives to ``turn.localhost`` -> 127.0.0.1, the voice-health
+      # probe correctly flags that as private, and /api/voice/token
+      # 503s every voice-join. .env already carries PUBLIC_BASE_URL;
+      # this line just routes it into the api container.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       TURN_SECRET: ${TURN_SECRET:-}
       TURN_HOST: ${TURN_HOST:-}
       TURN_DOMAIN: ${TURN_DOMAIN:-localhost}

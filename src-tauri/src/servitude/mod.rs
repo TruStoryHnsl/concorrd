@@ -40,6 +40,7 @@
 
 pub mod bootstrap;
 pub mod config;
+pub mod federation;
 pub mod identity;
 pub mod lifecycle;
 pub mod p2p;
