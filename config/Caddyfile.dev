@@ -1,26 +1,47 @@
 {
     http_port 8080
     https_port 8443
+    # Extend the internal CA's intermediate + root lifetimes so the
+    # per-site leaf can match. Without this, the intermediate's
+    # default ~7-day TTL caps every leaf to a few days regardless of
+    # the `lifetime` directive on `tls { issuer internal { ... } }`.
+    # Intermediate must be strictly shorter than the root's
+    # default ~10y lifetime, so we stay just under that.
+    pki {
+        ca local {
+            root_cn "Concord Dev Root"
+            intermediate_cn "Concord Dev Intermediate"
+            intermediate_lifetime 80000h
+        }
+    }
 }
 
 {$SITE_ADDRESS} {
-    # TLS — `tls internal` uses Caddy's internal CA to issue a self-signed
-    # cert for the configured hostname. Browsers show a one-time warning;
-    # acceptable for Tailscale-only dev where the operator trusts every
-    # device that can reach the origin.
+    # TLS — Caddy's internal CA with a long-lived leaf cert.
     #
-    # Production / public-domain deployments should swap this for one of:
-    #   tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }   # DNS-01, see below
-    #   tls user@example.com                                # HTTP-01 (public origin)
+    # Tailscale-only dev origin: no public-internet reachability, no
+    # external CA. Operators add Caddy's root CA to their browser
+    # trust store (or accept the cert exception) once.
     #
-    # DNS-01 via Cloudflare (when origin isn't publicly reachable):
-    # The CLOUDFLARE_API_TOKEN var (.env.example documents the token scope)
-    # lets Caddy write transient TXT records into the zone to satisfy the
-    # ACME challenge without exposing the origin.
+    # The `lifetime` override is load-bearing: Caddy's `tls internal`
+    # default issues 12-hour leaf certs that auto-renew on a similar
+    # cadence, and every renewal invalidates the operator's browser
+    # cert exception. Plain HTTPS click-through warnings re-fire on
+    # the next load — annoying. WebSocket connections silently fail
+    # with close code 1015 (TLS handshake) because there's no UI to
+    # re-accept a cert for WSS. The result is voice rooms breaking
+    # every ~12h with "Encountered websocket error during connection
+    # establishment" even though the page itself still works.
     #
-    # Tracked: task #36 in PLAN.md — TLS_MODE env var + install.sh prompt
-    # so this is operator-pickable rather than hand-edited per deploy.
-    tls internal
+    # 87600h ≈ 10 years: covers the dev box's expected operational
+    # lifetime so the exception accepted on day one carries forward.
+    # Caddy still rotates the internal CA itself on its own schedule,
+    # but the leaf chains back to a stable trust anchor.
+    tls {
+        issuer internal {
+            lifetime 78000h
+        }
+    }
 
     encode gzip
 
