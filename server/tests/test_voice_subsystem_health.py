@@ -181,23 +181,35 @@ async def _seed_voice_channel(db_session, *, room_id: str, user_id: str) -> str:
 
 
 @pytest.mark.anyio
-async def test_voice_token_returns_503_when_subsystem_unhealthy(
+async def test_voice_token_returns_503_when_turn_unconfigured(
     client, db_session, monkeypatch
 ):
-    """A known-broken voice subsystem must not silently mint tokens
-    that point at unreachable ICE servers — the endpoint surfaces the
-    failure with an actionable error code instead."""
+    """A hard-broken voice subsystem (no TURN_SECRET / RFC1918 host)
+    must not silently mint tokens that point at unreachable ICE
+    servers — the endpoint surfaces the failure with an actionable
+    error code instead.
+
+    ``turn_configured=False`` is the probe's signal for "this is a
+    state no browser can recover from", and is the ONLY snapshot
+    state that should produce a 503 here. Soft failures (STUN probe
+    timeout from the api container's network namespace, transient
+    coturn restart) must NOT block the endpoint — those still
+    permit LAN + Google STUN paths to work, and the 503 itself
+    produced a worse silent-broken-voice failure mode where users
+    saw 'Authentication failed' for what was actually a routable
+    relay.
+    """
     user = "@member:test.local"
     room_id = "!voice-503:test.local"
     await _seed_voice_channel(db_session, room_id=room_id, user_id=user)
 
     snap = voice_health.VoiceHealthSnapshot(
         healthy=False,
-        turn_configured=True,
-        turn_host="turn.example.com",
+        turn_configured=False,  # hard-broken — no creds can be minted
+        turn_host="turn.localhost",
         turn_reachable=False,
-        last_error="STUN binding to turn.example.com:3478/udp timed out",
-        remediation=["Forward UDP/3478."],
+        last_error="TURN_HOST 'turn.localhost' resolves to private address 127.0.0.1",
+        remediation=["Set PUBLIC_BASE_URL so INSTANCE_DOMAIN is non-loopback."],
         last_checked_at=time.time(),
     )
     monkeypatch.setattr(
@@ -210,7 +222,52 @@ async def test_voice_token_returns_503_when_subsystem_unhealthy(
     assert resp.status_code == 503
     body = resp.json()
     assert body["error_code"] == "VOICE_SUBSYSTEM_UNAVAILABLE"
-    assert "timed out" in body["message"]
+    assert "127.0.0.1" in body["message"] or "private" in body["message"]
+
+
+@pytest.mark.anyio
+async def test_voice_token_allows_request_when_only_stun_probe_failed(
+    client, db_session, monkeypatch
+):
+    """Regression for the 2026-05-28 voice-token bug: an api container
+    that can't STUN-reach its own (host-networked) coturn from the
+    bridge network would 503 every voice join, even though the
+    browser-side path to coturn was fine. The endpoint must NOT
+    block on STUN-probe failure when ``turn_configured=True``;
+    LAN peers + Google STUN still work, and forcing 503 there was
+    surfacing as 'Authentication failed' on the client (because the
+    client's error parser fell through to the literal 'Failed to
+    get voice token' string and mislabeled the cause).
+    """
+    user = "@member:test.local"
+    room_id = "!voice-stun-fail:test.local"
+    await _seed_voice_channel(db_session, room_id=room_id, user_id=user)
+
+    snap = voice_health.VoiceHealthSnapshot(
+        healthy=False,  # probe says unhealthy
+        turn_configured=True,  # but creds CAN be minted
+        turn_host="turn.example.com",
+        turn_reachable=False,
+        last_error="STUN binding to turn.example.com:3478/udp timed out",
+        remediation=["Verify coturn is up and UDP/3478 forwards through."],
+        last_checked_at=time.time(),
+    )
+    monkeypatch.setattr(
+        "services.voice_health.current_status", lambda: snap
+    )
+    login_as(user)
+
+    resp = await client.post("/api/voice/token", json={"room_name": room_id})
+
+    assert resp.status_code == 200, (
+        "STUN probe failure from the api container's network namespace "
+        "must NOT block voice-token issuance — coturn may be reachable "
+        "from the browser even when the api container can't reach it, "
+        "and Google STUN remains a viable fallback for LAN peers."
+    )
+    body = resp.json()
+    assert "token" in body
+    assert body["token"]
 
 
 @pytest.mark.anyio
