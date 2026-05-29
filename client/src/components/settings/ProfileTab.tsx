@@ -125,6 +125,11 @@ export function ProfileTab() {
       {/* Peer identity (Phase 2 — Ed25519 device identity) */}
       <PeerIdentitySection />
 
+      {/* Swarm status (Phase 3 — libp2p swarm). Renders DIRECTLY
+          beneath the PeerIdentitySection so the two derived-from-the-
+          same-seed identity surfaces stay visually paired. */}
+      <SwarmStatusSection />
+
       {/* Password change */}
       <PasswordChangeSection />
 
@@ -575,6 +580,142 @@ function PeerIdentitySection() {
         ) : (
           <span className="text-sm text-on-surface-variant italic">—</span>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Phase 3 — libp2p swarm status row.
+ *
+ * Renders directly beneath the Phase 2 [`PeerIdentitySection`] because
+ * the two surfaces are derived from the same per-install Ed25519 seed
+ * (see `src-tauri/src/servitude/identity.rs` for the architectural
+ * unification note). The local libp2p `PeerId`, the multiaddrs the
+ * swarm is listening on, the current connected-peer count, and a label
+ * for the last observed swarm event are displayed.
+ *
+ * Web build (no `__TAURI_INTERNALS__`): renders a native-only
+ * placeholder row matching the precedent set by
+ * [`PeerIdentitySection`].
+ *
+ * Phase 3 polling note: we currently re-fetch on a 5-second cadence
+ * via `setInterval`. A future revision will switch this to the
+ * `peer_swarm_event` Tauri event bus the backend already publishes,
+ * eliminating the poll entirely. The polling fallback is acceptable
+ * here because the swarm cache update on the backend is itself an
+ * O(1) lock-and-clone; the cost is one IPC round-trip every 5 s
+ * with the Settings → Profile tab open.
+ */
+function SwarmStatusSection() {
+  const peerId = useIdentityStore((s) => s.swarmPeerId);
+  const multiaddrs = useIdentityStore((s) => s.swarmMultiaddrs);
+  const peerCount = useIdentityStore((s) => s.swarmPeerCount);
+  const lastEvent = useIdentityStore((s) => s.swarmLastEvent);
+  const isLoading = useIdentityStore((s) => s.swarmLoading);
+  const error = useIdentityStore((s) => s.swarmError);
+
+  useEffect(() => {
+    // Initial fetch, then poll on a 5 s cadence while the tab is mounted.
+    // See the function-doc note above for why polling is acceptable in
+    // Phase 3.
+    useIdentityStore.getState().loadSwarm();
+    if (!isTauri()) return;
+    const id = setInterval(() => {
+      useIdentityStore.getState().loadSwarm();
+    }, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Native-only placeholder for the web build. Same convention as
+  // PeerIdentitySection above — render the row so the visual structure
+  // stays consistent between native + web.
+  if (!isTauri() || error === IDENTITY_ERROR_NATIVE_ONLY) {
+    return (
+      <div className="flex items-center justify-between py-2">
+        <span className="text-sm text-on-surface-variant">Swarm</span>
+        <span className="text-sm text-on-surface-variant italic">
+          native builds only
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 py-2">
+      {/* Our PeerId */}
+      <div className="flex items-start justify-between gap-3">
+        <span className="text-sm text-on-surface-variant pt-0.5">
+          Our PeerId
+        </span>
+        <div className="flex items-center gap-2 min-w-0">
+          {isLoading && !peerId ? (
+            <span className="text-sm text-on-surface-variant italic">
+              Loading…
+            </span>
+          ) : error && !peerId ? (
+            <span
+              className="text-sm text-error truncate"
+              title={error}
+            >
+              Failed to load
+            </span>
+          ) : peerId ? (
+            <span
+              className="text-sm text-on-surface-variant font-mono truncate"
+              title={peerId}
+            >
+              {peerId}
+            </span>
+          ) : (
+            <span className="text-sm text-on-surface-variant italic">
+              swarm not started
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Listening multiaddrs */}
+      <div className="flex items-start justify-between gap-3">
+        <span className="text-sm text-on-surface-variant pt-0.5">
+          Listening on
+        </span>
+        <div className="flex flex-col items-end gap-0.5 min-w-0">
+          {multiaddrs.length === 0 ? (
+            <span className="text-sm text-on-surface-variant italic">—</span>
+          ) : (
+            multiaddrs.map((addr) => (
+              <span
+                key={addr}
+                className="text-xs text-on-surface-variant font-mono truncate"
+                title={addr}
+              >
+                {addr}
+              </span>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Peer count */}
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm text-on-surface-variant">
+          Peers connected
+        </span>
+        <span className="text-sm text-on-surface-variant font-mono">
+          {peerCount}
+        </span>
+      </div>
+
+      {/* Last event */}
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm text-on-surface-variant">Last event</span>
+        <span
+          className="text-xs text-on-surface-variant truncate"
+          title={lastEvent ?? undefined}
+        >
+          {lastEvent ?? "—"}
+        </span>
       </div>
     </div>
   );
