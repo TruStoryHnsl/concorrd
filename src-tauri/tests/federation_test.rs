@@ -93,6 +93,7 @@ impl FederationHandler for StubHandler {
 
     async fn handle_inbound(
         &self,
+        _peer_id: libp2p::PeerId,
         mut stream: libp2p::Stream,
     ) -> Result<(), app_lib::servitude::federation::FederationError> {
         *self.counter.lock().unwrap() += 1;

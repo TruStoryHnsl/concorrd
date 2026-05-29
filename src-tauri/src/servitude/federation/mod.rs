@@ -31,7 +31,7 @@
 //! runtime.
 
 use async_trait::async_trait;
-use libp2p::Stream;
+use libp2p::{PeerId, Stream};
 use thiserror::Error;
 
 /// Distinguishes the wire payload a handler carries. Used for logging /
@@ -90,7 +90,17 @@ pub trait FederationHandler: Send + Sync {
     /// responses) until either the peer closes the stream or a fatal
     /// error occurs. Returning `Ok(())` is the normal exit; the
     /// dispatcher logs `Err(_)` at warn level and moves on.
-    async fn handle_inbound(&self, stream: Stream) -> Result<(), FederationError>;
+    ///
+    /// `peer_id` is the remote peer's libp2p `PeerId` (resolved by the
+    /// `libp2p_stream::IncomingStreams` receiver before the stream is
+    /// handed off). Phase 8 added this parameter so handlers like
+    /// voice-signaling can attribute inbound envelopes to the right
+    /// remote peer without inventing a sentinel.
+    async fn handle_inbound(
+        &self,
+        peer_id: PeerId,
+        stream: Stream,
+    ) -> Result<(), FederationError>;
 }
 
 /// Compile-time-known protocol ID. Concrete handlers implement this in

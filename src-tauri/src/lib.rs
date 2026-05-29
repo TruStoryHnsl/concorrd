@@ -359,6 +359,78 @@ async fn peer_store_remove(
         .map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Phase 8 — voice path selection
+// ---------------------------------------------------------------------------
+
+/// Frontend-supplied participant descriptor. `peer_id` is the libp2p
+/// PeerId in base58 form if the local peer-store has a resolved entry
+/// for this Matrix user, else `None`. The Matrix user ID is carried
+/// through for diagnostics + future mesh-orchestration use; the
+/// selector itself only reads `peer_id` (presence/absence).
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct VoiceParticipantInput {
+    matrix_user_id: String,
+    /// Resolved peer_id from the local peer-store if known, else
+    /// null. `null` signals a web-only participant per the Phase 8
+    /// design-doc rule.
+    peer_id: Option<String>,
+}
+
+/// Wire form of [`servitude::voice::VoicePath`]. The TS type
+/// `VoicePath = "libp2p_mesh" | "livekit_sfu"` matches these literals
+/// 1:1.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct VoicePathSelection {
+    /// `"libp2p_mesh"` or `"livekit_sfu"`.
+    path: String,
+    /// Stable, snake_case reason for the chosen path —
+    /// `"above_cap_8"` / `"web_only_participant_present"` /
+    /// `"all_native_under_cap"`. The UI translates these to user-
+    /// facing copy.
+    reason: String,
+}
+
+/// Phase 8: select the voice path for a call given its participant
+/// list. Pure function — no IO, no state. Reads `peer_id == Some(_)`
+/// as native, `peer_id == None` as web-only.
+///
+/// Decision rules (full text in
+/// `src-tauri/src/servitude/voice/selector.rs`):
+///   * `participants.len() > 8` → SFU (`"above_cap_8"`).
+///   * any null `peer_id` → SFU (`"web_only_participant_present"`).
+///   * else → mesh (`"all_native_under_cap"`).
+#[tauri::command]
+async fn select_voice_path(
+    participants: Vec<VoiceParticipantInput>,
+) -> Result<VoicePathSelection, String> {
+    use servitude::voice::{ParticipantKind, VoicePath, VoicePathSelector};
+    let mut kinds: Vec<ParticipantKind> = Vec::with_capacity(participants.len());
+    for p in &participants {
+        match &p.peer_id {
+            Some(pid_str) => {
+                let pid = pid_str.parse::<libp2p::PeerId>().map_err(|e| {
+                    format!(
+                        "select_voice_path: invalid peer_id {:?}: {}",
+                        pid_str, e
+                    )
+                })?;
+                kinds.push(ParticipantKind::Native { peer_id: pid });
+            }
+            None => kinds.push(ParticipantKind::WebOnly),
+        }
+    }
+    let (path, reason) = VoicePathSelector::select_with_reason(&kinds);
+    let path_str = match path {
+        VoicePath::LibP2pMesh => "libp2p_mesh",
+        VoicePath::LiveKitSfu => "livekit_sfu",
+    };
+    Ok(VoicePathSelection {
+        path: path_str.to_string(),
+        reason: reason.as_str().to_string(),
+    })
+}
+
 /// Spawn a background task that mirrors the running libp2p swarm's
 /// broadcast events into the shared [`SwarmStateCache`] AND re-emits each
 /// event onto Tauri's app-wide event bus under the `"peer_swarm_event"`
@@ -1115,6 +1187,7 @@ pub fn run() {
             peer_store_list,
             peer_store_add,
             peer_store_remove,
+            select_voice_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
