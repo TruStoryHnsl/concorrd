@@ -273,18 +273,36 @@ async def get_voice_token(
     The user_id from the auth header is used as the participant identity.
     Verifies the user is a member of the server that owns this room.
 
-    Returns 503 if the voice subsystem is known-unhealthy — issuing ICE
-    servers a client cannot reach was the silent-broken-voice failure
-    mode this architecture explicitly eliminates. The /api/hosting/status
-    endpoint carries the same diagnostic payload.
+    Returns 503 only for hard-broken voice configurations the operator
+    must fix before any client can connect — TURN_SECRET unset (no
+    credentials to mint) or TURN_HOST resolving to an RFC1918 address
+    that off-LAN browsers can never reach. Soft failures (STUN probe
+    timeout, latency degradation, etc.) are recorded on
+    ``/api/hosting/status`` but do NOT block the endpoint: the api
+    container often probes from a different network namespace than
+    the browser, and many deployments rely on LiveKit's embedded SFU
+    + Google STUN as the primary path with the bundled TURN relay as
+    a fallback for restrictive NATs. Blocking on probe failure means
+    a working LAN-only voice call gets killed by a probe that has no
+    way to reach the relay from its own network.
     """
     from services.voice_health import current_status
 
     health = current_status()
-    # Allow the never-probed initial-boot window through; only block on
-    # a probe that explicitly says we're broken. Otherwise a clean
-    # startup would 503 every voice-join until the first probe lands.
-    if health.last_checked_at and not health.healthy:
+    # Only block on configurations a browser provably cannot use:
+    #   * TURN_SECRET unset -> no credentials can be minted
+    #   * TURN_HOST is RFC1918/loopback (encoded in turn_configured
+    #     remaining False even when the probe ran)
+    # For everything else (STUN timeout from the api container,
+    # transient relay restart, etc.) issue the token and let the
+    # browser try — Google STUN + direct LiveKit signaling cover the
+    # LAN happy path, and the operator-facing health endpoint
+    # surfaces the diagnostic for fix.
+    if (
+        health.last_checked_at
+        and not health.healthy
+        and not health.turn_configured
+    ):
         raise ConcordError(
             error_code="VOICE_SUBSYSTEM_UNAVAILABLE",
             message=(
