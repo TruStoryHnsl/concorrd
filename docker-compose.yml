@@ -166,9 +166,21 @@ services:
       - "${LIVEKIT_UDP_START:-50000}-${LIVEKIT_UDP_END:-50100}:50000-50100/udp"
     volumes:
       - ./config/livekit.yaml:/etc/livekit.yaml:ro
+      - ./config/livekit-entrypoint.sh:/etc/concord-livekit/entrypoint.sh:ro
     environment:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
-    command: --config /etc/livekit.yaml
+      # Optional override of LiveKit's ICE host candidate IP. Empty by
+      # default — LiveKit STUN-discovers the container's external view
+      # (correct for public deployments with port-forwarded WAN). Set
+      # in .env to an interface the browser can actually route to when
+      # STUN's answer doesn't match reality: e.g. a Tailscale-only dev
+      # origin where STUN returns the operator's home WAN IP but the
+      # browser is on Tailscale and can never reach it. Without this
+      # override, the signaling WebSocket connects fine but every ICE
+      # candidate pair fails and the RTCPeerConnection times out with
+      # "could not establish pc connection".
+      LIVEKIT_RTC_NODE_IP: "${LIVEKIT_RTC_NODE_IP:-}"
+    entrypoint: ["/bin/sh", "/etc/concord-livekit/entrypoint.sh"]
     # INS-067 W3 (deferred): a runtime UDP-bound healthcheck would
     # detect the docker-port-mapping black-hole that caused the
     # 2026-05-01 incident, but LiveKit doesn't pre-bind the ICE range
