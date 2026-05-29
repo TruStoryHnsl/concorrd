@@ -43,6 +43,7 @@ pub mod config;
 pub mod identity;
 pub mod lifecycle;
 pub mod p2p;
+pub mod peer_store;
 pub mod transport;
 
 pub use config::{ServitudeConfig, Transport};

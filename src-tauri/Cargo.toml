@@ -42,6 +42,10 @@ tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-store = "2"
 tauri-plugin-stronghold = { version = "2", features = ["kdf"] }
+# Phase 5 (INS-019b) — concord:// deeplink handler for QR-payload pairing.
+# The plugin parses incoming custom-scheme URLs and dispatches them into a
+# Rust callback registered at app build time. See `peer_store::deeplink`.
+tauri-plugin-deep-link = "2"
 # Servitude embedded module dependencies
 toml = "0.8"
 thiserror = "1.0"
@@ -129,6 +133,14 @@ zeroize = "1"
 chacha20poly1305 = "0.10"
 # futures::StreamExt is needed to drive `Swarm::select_next_some` in p2p.rs.
 futures = "0.3"
+# Phase 5 — UTC timestamps for the peer-store KnownPeer.first_seen / last_seen
+# fields. Already in the transitive graph; declared here so peer_store can
+# name DateTime/Utc directly without an internal-API rename.
+chrono = { version = "0.4", features = ["serde"] }
+# Phase 5 — base64url decoding for the concord:// deeplink payload.
+# Already in the transitive graph via libp2p; declared here so the deeplink
+# handler can name the URL_SAFE_NO_PAD engine directly.
+base64 = "0.22"
 
 # Unix-only deps for servitude child-process management. `nix::sys::signal`
 # gives us SIGTERM for graceful shutdown — std::process::Child::kill uses
