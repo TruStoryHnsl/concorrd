@@ -147,6 +147,13 @@ services:
       TUWUNEL_CONFIG_PATH: /etc/concord-config/tuwunel.toml
       # docker-socket-proxy endpoint for the restart-on-apply flow.
       DOCKER_PROXY_URL: http://docker-socket-proxy:2375
+      # Phase 7 (INS-019b): pin the docker deployment to the web-first
+      # profile. The Tauri sidecar and the server both read this — the
+      # Rust side gates non-libp2p transports behind WebFirst, and the
+      # FastAPI hosting endpoints report it via /api/hosting/profile.
+      # Native installs leave this unset; their persisted profile
+      # defaults to p2p_only.
+      CONCORD_PROFILE: web_first
     depends_on:
       conduwuit:
         condition: service_started

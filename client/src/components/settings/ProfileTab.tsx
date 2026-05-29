@@ -8,6 +8,7 @@ import { Avatar } from "../ui/Avatar";
 import { PeerCardDisplay } from "../peers/PeerCardDisplay";
 import { PeerCardScanner } from "../peers/PeerCardScanner";
 import { KnownPeersList } from "../peers/KnownPeersList";
+import { DeploymentProfileSection } from "./DeploymentProfileSection";
 
 export function ProfileTab() {
   const client = useAuthStore((s) => s.client);
@@ -138,6 +139,11 @@ export function ProfileTab() {
           am on the swarm" immediately above "and these are the people
           I've paired with." */}
       <PairedPeersSection />
+
+      {/* Deployment profile (Phase 7 — native default profile).
+          Renders the native/web toggle and the Phase-0 hosting
+          status summary when the operator flips to web_first. */}
+      <DeploymentProfileSection />
 
       {/* Password change */}
       <PasswordChangeSection />
