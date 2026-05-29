@@ -20,6 +20,79 @@ pub const SERVITUDE_STORE_KEY: &str = "servitude";
 /// the rest of the Concord settings surface (see `lib.rs`).
 pub const SETTINGS_STORE_FILE: &str = "settings.json";
 
+/// Env var used to override the persisted [`Profile`] at boot.
+///
+/// docker-compose.yml sets this to `web_first` for the
+/// `concord-api` container so the docker stack always runs the full
+/// web stack regardless of whatever value made it onto disk from a
+/// prior native run. Native Tauri builds leave the variable unset,
+/// so the persisted (or defaulted) profile is what takes effect.
+pub const PROFILE_ENV_VAR: &str = "CONCORD_PROFILE";
+
+/// Deployment profile — which subset of services the servitude brings up.
+///
+/// Phase 7 (INS-019b) introduces the explicit native/web split. The same
+/// Rust binary ships in both contexts; only the chosen subset of
+/// transports actually starts. The Phase-0 hosting status surface
+/// (`/api/hosting/status`) is what the Settings UI uses to walk an
+/// operator through DNS + port-forward when they flip native to web.
+///
+/// Default for native Tauri builds is [`Profile::P2pOnly`] — libp2p
+/// runs, every other transport is gated behind an explicit toggle.
+/// Docker builds set `CONCORD_PROFILE=web_first` in docker-compose so
+/// every transport in `enabled_transports` materializes at boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Profile {
+    /// libp2p swarm only — no Caddy / LiveKit / coturn / sslh and no
+    /// Matrix federation child process. The default for native Tauri
+    /// builds: the install joins the Concord P2P mesh and can be
+    /// reached via Phase-5 peer pairing, but a browser tab cannot
+    /// load it directly because no public HTTP surface is bound.
+    P2pOnly,
+    /// Full web stack (Caddy + LiveKit + coturn + sslh, Matrix
+    /// federation child process, etc.) plus libp2p. The default for
+    /// docker / web-first deployments. Native installs flip to this
+    /// via the Settings → Profile → "Make this instance
+    /// web-accessible" toggle.
+    WebFirst,
+}
+
+impl Profile {
+    /// Parse a [`Profile`] from a string, matching the snake_case wire
+    /// form. Used by [`Self::from_env`] so an invalid env value falls
+    /// through to the persisted/default profile instead of crashing
+    /// the boot.
+    pub fn parse_str(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "p2p_only" | "p2ponly" => Some(Profile::P2pOnly),
+            "web_first" | "webfirst" => Some(Profile::WebFirst),
+            _ => None,
+        }
+    }
+
+    /// If the [`PROFILE_ENV_VAR`] is set and parseable, return its
+    /// value. Otherwise `None` and the caller falls back to the
+    /// persisted/default profile.
+    pub fn from_env() -> Option<Self> {
+        std::env::var(PROFILE_ENV_VAR)
+            .ok()
+            .and_then(|s| Self::parse_str(&s))
+    }
+}
+
+impl Default for Profile {
+    /// Native = `P2pOnly`. Docker = `WebFirst` via the
+    /// `CONCORD_PROFILE` env var set in `docker-compose.yml`. We can't
+    /// reliably tell at compile time which we are (the Rust binary in
+    /// the Tauri sidecar is the same in both contexts) so the
+    /// default is the safer one for native — and the docker stack
+    /// MUST set the env var to flip it.
+    fn default() -> Self {
+        Profile::P2pOnly
+    }
+}
+
 /// Layered transports the embedded servitude can advertise.
 ///
 /// The actual runtime wiring lives in a separate task — this enum is the
@@ -75,6 +148,17 @@ pub struct ServitudeConfig {
     /// Layered transports this node will speak. At least one must be enabled.
     #[serde(default = "default_transports")]
     pub enabled_transports: Vec<Transport>,
+
+    /// Deployment profile. Native Tauri builds default to
+    /// [`Profile::P2pOnly`]; the docker stack flips this to
+    /// [`Profile::WebFirst`] via the `CONCORD_PROFILE` env var at boot
+    /// (see [`PROFILE_ENV_VAR`] and [`Profile::from_env`]). The
+    /// persisted value is what the user-facing Settings toggle writes
+    /// to. The env var ALWAYS wins over the persisted value so the
+    /// docker stack can never accidentally come up in p2p-only mode
+    /// because of a stale on-disk config.
+    #[serde(default)]
+    pub profile: Profile,
 }
 
 fn default_transports() -> Vec<Transport> {
@@ -89,6 +173,7 @@ impl Default for ServitudeConfig {
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: default_transports(),
+            profile: Profile::default(),
         }
     }
 }
@@ -103,9 +188,25 @@ impl ServitudeConfig {
 
     /// Parse a TOML string and run [`Self::validate`].
     pub fn from_toml_str(raw: &str) -> Result<Self, ConfigError> {
-        let cfg: Self = toml::from_str(raw).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        let mut cfg: Self =
+            toml::from_str(raw).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        cfg.apply_profile_env_override();
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// If [`PROFILE_ENV_VAR`] is set to a parseable value, override the
+    /// in-memory `profile` with it. The persisted value on disk is
+    /// untouched — the override only affects this loaded handle.
+    ///
+    /// Docker compose sets this env var so the stack is guaranteed to
+    /// boot in `web_first` regardless of any value the on-disk config
+    /// might carry. Native builds leave it unset and the persisted
+    /// (or default) value is what takes effect.
+    fn apply_profile_env_override(&mut self) {
+        if let Some(p) = Profile::from_env() {
+            self.profile = p;
+        }
     }
 
     /// Load a validated `ServitudeConfig` from the shared tauri settings
@@ -126,11 +227,14 @@ impl ServitudeConfig {
             .map_err(|e| ConfigError::Store(e.to_string()))?;
 
         let Some(value) = store.get(SERVITUDE_STORE_KEY) else {
-            return Ok(Self::default());
+            let mut cfg = Self::default();
+            cfg.apply_profile_env_override();
+            return Ok(cfg);
         };
 
-        let cfg: Self =
+        let mut cfg: Self =
             serde_json::from_value(value).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        cfg.apply_profile_env_override();
         cfg.validate()?;
         Ok(cfg)
     }
@@ -218,6 +322,7 @@ mod tests {
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::MatrixFederation],
+            profile: Profile::P2pOnly,
         }
     }
 
@@ -250,6 +355,7 @@ mod tests {
             listen_port: 31_337,
             allow_privileged_port: true,
             enabled_transports,
+            profile: Profile::WebFirst,
         };
 
         let json =
@@ -265,6 +371,7 @@ mod tests {
             original.allow_privileged_port
         );
         assert_eq!(decoded.enabled_transports, original.enabled_transports);
+        assert_eq!(decoded.profile, original.profile);
 
         // And the decoded config must still pass validation (catches
         // "serde accepted garbage but validator would have rejected it").
@@ -368,6 +475,7 @@ listen_port = 8765
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::MatrixFederation],
+            profile: Profile::P2pOnly,
         };
         // This assertion currently PASSES — meaning validate() accepts
         // a null-only display name. That's the bug.
@@ -386,6 +494,7 @@ listen_port = 8765
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::MatrixFederation],
+            profile: Profile::P2pOnly,
         };
         // PASSES — validator does not reject embedded ANSI escapes.
         assert!(cfg.validate().is_ok());

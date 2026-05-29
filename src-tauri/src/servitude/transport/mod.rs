@@ -873,6 +873,7 @@ mod tests {
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: vec![TransportVariant::MatrixFederation],
+            profile: crate::servitude::config::Profile::WebFirst,
         }
     }
 

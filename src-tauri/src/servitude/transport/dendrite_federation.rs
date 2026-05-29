@@ -1120,6 +1120,7 @@ mod tests {
             listen_port: port,
             allow_privileged_port: false,
             enabled_transports: vec![TransportVariant::MatrixFederation],
+            profile: crate::servitude::config::Profile::P2pOnly,
         }
     }
 

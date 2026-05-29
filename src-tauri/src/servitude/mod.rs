@@ -132,17 +132,36 @@ impl ServitudeHandle {
         stronghold: Option<Arc<StrongholdHandle>>,
     ) -> Result<Self, ServitudeError> {
         config.validate()?;
+        // Phase 7 profile gating (INS-019b): on `P2pOnly` we only
+        // materialize the libp2p baseline transport. Every other
+        // `enabled_transports` entry stays in the persisted config
+        // (so the user's intent isn't lost) but is NOT spawned at
+        // boot. Flipping the profile to `WebFirst` in Settings → and
+        // the next `servitude_start` materializes them. Docker /
+        // `web_first` profile materializes everything as before.
+        let p2p_only = matches!(config.profile, config::Profile::P2pOnly);
         let mut transports: Vec<TransportRuntime> = config
             .enabled_transports
             .iter()
-            .map(|variant| TransportRuntime::for_variant(*variant, &config))
+            .filter_map(|variant| {
+                if p2p_only {
+                    log::info!(
+                        target: "concord::servitude",
+                        "transport {:?} skipped: profile=p2p_only",
+                        variant
+                    );
+                    None
+                } else {
+                    Some(TransportRuntime::for_variant(*variant, &config))
+                }
+            })
             .collect();
         if let Some(sh) = stronghold {
-            // libp2p is the always-on baseline P2P transport. It is NOT
-            // declared in `config.enabled_transports` — the config enum
-            // existed before Phase 3 and `Mesh` placeholders predate
-            // the real libp2p wiring. Append rather than prepend so
-            // existing transports keep their start order.
+            // libp2p is the always-on baseline P2P transport regardless
+            // of profile. It is NOT declared in `config.enabled_transports`
+            // — the config enum existed before Phase 3 and `Mesh`
+            // placeholders predate the real libp2p wiring. Append rather
+            // than prepend so existing transports keep their start order.
             transports.push(TransportRuntime::LibP2p(LibP2pRuntime::new(sh)));
         }
         Ok(Self {
@@ -444,6 +463,7 @@ mod tests {
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::MatrixFederation],
+            profile: crate::servitude::config::Profile::WebFirst,
         }
     }
 
@@ -514,6 +534,9 @@ mod tests {
                 Transport::MatrixFederation,
                 Transport::Tunnel,
             ],
+            // WebFirst so both transports materialize; under P2pOnly
+            // non-libp2p transports would be skipped (Phase 7).
+            profile: crate::servitude::config::Profile::WebFirst,
         };
         let handle = ServitudeHandle::new(cfg).expect("config must validate");
         assert_eq!(handle.transports.len(), 2);
@@ -588,6 +611,7 @@ mod tests {
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::MatrixFederation],
+            profile: crate::servitude::config::Profile::WebFirst,
         };
 
         let mut handle = ServitudeHandle::new_with_runtimes_for_test(
@@ -617,6 +641,7 @@ mod tests {
             listen_port: 9999,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::WireGuard, Transport::Tunnel],
+            profile: crate::servitude::config::Profile::WebFirst,
         };
 
         // This block mirrors exactly what the fixed `servitude_start`

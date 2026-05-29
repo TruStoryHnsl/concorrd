@@ -4,6 +4,7 @@ use tokio::sync::Mutex;
 
 pub mod servitude;
 
+use servitude::config::Profile;
 use servitude::{LifecycleState, ServitudeConfig, ServitudeHandle};
 use servitude::identity::{self, StrongholdHandle};
 use servitude::p2p::SwarmEvent as P2pSwarmEvent;
@@ -825,6 +826,55 @@ async fn servitude_register_owner(
         .map_err(|e| e.to_string())
 }
 
+/// Phase 7 — return the currently configured deployment profile.
+///
+/// Reads the persisted [`ServitudeConfig`] from the shared settings
+/// store. The env override (`CONCORD_PROFILE=web_first`, set by
+/// `docker-compose.yml` for the concord-api container) is applied
+/// inside `ServitudeConfig::from_store` so the value returned here
+/// reflects the EFFECTIVE profile, not just what's on disk. Native
+/// builds with no env override report whatever the user last toggled
+/// to; fresh installs report [`Profile::P2pOnly`].
+///
+/// Used by the Settings → Profile → "Deployment profile" section to
+/// render the toggle's current state.
+#[tauri::command]
+async fn get_servitude_profile(app: tauri::AppHandle) -> Result<Profile, String> {
+    let cfg = ServitudeConfig::from_store(&app).map_err(|e| e.to_string())?;
+    Ok(cfg.profile)
+}
+
+/// Phase 7 — persist a new deployment profile to the settings store.
+///
+/// Writes the new profile through to the persisted [`ServitudeConfig`]
+/// so the next `servitude_start` materializes the right transport set.
+/// The currently-running servitude (if any) is NOT restarted by this
+/// command — the caller is expected to follow up with
+/// `servitude_stop` + `servitude_start` (or rely on the next
+/// app launch) so the user has a confirmation moment before the
+/// service set actually changes.
+///
+/// Web / docker builds: this command exists on every platform but
+/// docker installs use `CONCORD_PROFILE=web_first` env to force the
+/// runtime value, so calling it on a docker stack only changes the
+/// on-disk persisted value (which the env override masks). The
+/// frontend Settings section renders read-only in the web build for
+/// exactly that reason.
+#[tauri::command]
+async fn set_servitude_profile(
+    app: tauri::AppHandle,
+    profile: Profile,
+) -> Result<(), String> {
+    // Load the existing config, mutate `profile`, save back. This
+    // preserves every other field the user (or default) set —
+    // display_name, listen_port, enabled_transports — so flipping the
+    // profile doesn't clobber unrelated settings.
+    let mut cfg = ServitudeConfig::from_store(&app).map_err(|e| e.to_string())?;
+    cfg.profile = profile;
+    cfg.save_to_store(&app).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Diagnostic logger for INS-065 — appends to
 /// `<app_local_data>/diag.log` so the renderer can surface
 /// errors and lifecycle markers that aren't visible because the
@@ -1057,6 +1107,8 @@ pub fn run() {
             servitude_status,
             servitude_get_registration_token,
             servitude_register_owner,
+            get_servitude_profile,
+            set_servitude_profile,
             log_diagnostic,
             peer_identity,
             peer_swarm_status,
