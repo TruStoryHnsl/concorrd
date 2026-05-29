@@ -28,18 +28,28 @@ vi.mock("../servitude", async (importOriginal) => {
   };
 });
 
+// Mock `getNode()` so each browser-path test pins the libp2p
+// availability explicitly. The real `node.ts` is exercised in
+// `libp2p/__tests__/node.test.ts`.
+vi.mock("../../libp2p/node", () => ({
+  getNode: vi.fn(),
+}));
+
 import * as servitudeApi from "../servitude";
+import * as nodeApi from "../../libp2p/node";
 import {
   selectVoicePath,
   type VoiceParticipant,
 } from "../voicePath";
 
 const isTauriMock = vi.mocked(servitudeApi.isTauri);
+const getNodeMock = vi.mocked(nodeApi.getNode);
 
 describe("selectVoicePath wrapper", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     isTauriMock.mockReset();
+    getNodeMock.mockReset();
   });
 
   afterEach(() => {
@@ -77,11 +87,14 @@ describe("selectVoicePath wrapper", () => {
   });
 
   /**
-   * Web build short-circuits to SFU. The Tauri invoke path is
-   * forbidden — browsers can't be libp2p mesh peers until Phase 9.
+   * Web build, no libp2p node yet. The browser falls back to SFU
+   * with the Phase 9 `browser_libp2p_not_running` reason, and the
+   * Tauri invoke path is forbidden — there's no native runtime to
+   * ask.
    */
-  it("web build short-circuits to livekit_sfu without invoking the Tauri command", async () => {
+  it("web build without a libp2p node returns livekit_sfu, no Tauri call", async () => {
     isTauriMock.mockReturnValue(false);
+    getNodeMock.mockReturnValue(null);
 
     const participants: VoiceParticipant[] = [
       { matrix_user_id: "@alice:example.org", peer_id: "12D3KooWAlice" },
@@ -92,9 +105,8 @@ describe("selectVoicePath wrapper", () => {
 
     expect(result).toEqual({
       path: "livekit_sfu",
-      reason: "browser_or_web_build",
+      reason: "browser_libp2p_not_running",
     });
-    // The Tauri command must NOT have been invoked.
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
@@ -148,5 +160,81 @@ describe("selectVoicePath wrapper", () => {
     expect(result.path).toBe("livekit_sfu");
     expect(result.reason).toContain("select_voice_path_error");
     expect(result.reason).toContain("not registered");
+  });
+
+  // ---- Phase 9: browser libp2p selector cases ----
+
+  /**
+   * Browser build with a running libp2p node and three native
+   * participants — the browser is now mesh-eligible per Phase 9.
+   * No Tauri invocation; the selector is replicated locally.
+   */
+  it("browser with libp2p node + 3 known peers selects libp2p_mesh", async () => {
+    isTauriMock.mockReturnValue(false);
+    // Any truthy object; the selector only checks `getNode() !== null`.
+    getNodeMock.mockReturnValue({} as never);
+
+    const participants: VoiceParticipant[] = [
+      { matrix_user_id: "@alice:example.org", peer_id: "12D3KooWAlice" },
+      { matrix_user_id: "@bob:example.org", peer_id: "12D3KooWBob" },
+      { matrix_user_id: "@carol:example.org", peer_id: "12D3KooWCarol" },
+    ];
+
+    const result = await selectVoicePath(participants);
+
+    expect(result).toEqual({
+      path: "libp2p_mesh",
+      reason: "all_native_under_cap",
+    });
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Browser build with a running libp2p node but 9 participants —
+   * mesh cap is 8, so SFU.
+   */
+  it("browser with libp2p node + 9 participants falls back to livekit_sfu (cap)", async () => {
+    isTauriMock.mockReturnValue(false);
+    getNodeMock.mockReturnValue({} as never);
+
+    const participants: VoiceParticipant[] = Array.from(
+      { length: 9 },
+      (_, i) => ({
+        matrix_user_id: `@user${i}:example.org`,
+        peer_id: `12D3KooWPeer${i}`,
+      }),
+    );
+
+    const result = await selectVoicePath(participants);
+
+    expect(result).toEqual({
+      path: "livekit_sfu",
+      reason: "above_cap_8",
+    });
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Browser build with a running libp2p node but one web-only
+   * participant — SFU, same as the native selector's
+   * `web_only_participant_present` branch.
+   */
+  it("browser with libp2p node + one web-only participant returns livekit_sfu", async () => {
+    isTauriMock.mockReturnValue(false);
+    getNodeMock.mockReturnValue({} as never);
+
+    const participants: VoiceParticipant[] = [
+      { matrix_user_id: "@alice:example.org", peer_id: "12D3KooWAlice" },
+      { matrix_user_id: "@bob:example.org", peer_id: "12D3KooWBob" },
+      { matrix_user_id: "@web:example.org", peer_id: null },
+    ];
+
+    const result = await selectVoicePath(participants);
+
+    expect(result).toEqual({
+      path: "livekit_sfu",
+      reason: "web_only_participant_present",
+    });
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 });
