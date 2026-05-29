@@ -27,10 +27,16 @@
 //! servitude module, and flows up into [`crate::servitude::ServitudeError`]
 //! via `#[from]`.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use thiserror::Error;
+use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 
 use crate::servitude::config::{ServitudeConfig, Transport as TransportVariant};
+use crate::servitude::identity::StrongholdHandle;
+use crate::servitude::p2p::{LibP2pTransport, P2pError, SwarmEvent as P2pSwarmEvent};
 
 pub mod matrix_federation;
 #[cfg(feature = "reticulum")]
@@ -81,6 +87,12 @@ pub enum TransportError {
     /// in config without crashing.
     #[error("transport not yet implemented: {0}")]
     NotImplemented(&'static str),
+
+    /// libp2p swarm failed to come up. The wrapped [`P2pError`] carries
+    /// the exact failure (Stronghold seed unavailable, listen bind
+    /// failure, etc).
+    #[error("libp2p transport error: {0}")]
+    LibP2p(#[from] P2pError),
 }
 
 /// Async trait implemented by every transport runtime. Used internally
@@ -122,6 +134,142 @@ pub trait Transport: Send + Sync {
     async fn is_healthy(&self) -> bool;
 }
 
+/// Phase 3 libp2p runtime wrapper.
+///
+/// `LibP2pTransport::new()` is async and consumes a `StrongholdHandle`, so
+/// it cannot be built inside the sync [`TransportRuntime::for_variant`]
+/// factory. Instead we hold the [`StrongholdHandle`] + a placeholder for
+/// the running swarm here, and construct the swarm on `start()`.
+///
+/// Architectural invariant: the libp2p `PeerId` derives from the same
+/// per-install Ed25519 seed that backs the Phase 2 user-visible
+/// `PeerIdentity.fingerprint`. The runtime enforces this by loading the
+/// identity from Stronghold before building the swarm — both code paths
+/// use the same seed (see [`crate::servitude::identity::peer_seed`]).
+pub struct LibP2pRuntime {
+    /// Stronghold handle the swarm reads its seed from on start. Held
+    /// across the whole runtime lifetime so a stop/start cycle can
+    /// re-derive the same swarm identity.
+    stronghold: Arc<StrongholdHandle>,
+    /// Sender that triggers a clean shutdown of the spawned event loop.
+    /// Populated on `start()`, drained on `stop()`.
+    shutdown_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    /// Join handle for the spawned swarm event loop. Populated on
+    /// `start()`, awaited on `stop()`.
+    swarm_task: Option<JoinHandle<()>>,
+    /// Clone of the swarm's broadcast sender. Populated on `start()` so
+    /// the Tauri lib can register the same sender into managed state
+    /// without having to wait on the spawned task.
+    event_tx: Option<broadcast::Sender<P2pSwarmEvent>>,
+    /// Local libp2p PeerId cached on start. Useful for status reporting.
+    local_peer_id: Option<libp2p::PeerId>,
+}
+
+impl std::fmt::Debug for LibP2pRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LibP2pRuntime")
+            .field("running", &self.swarm_task.is_some())
+            .field("local_peer_id", &self.local_peer_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LibP2pRuntime {
+    /// Build a not-yet-started runtime around the install's shared
+    /// `StrongholdHandle`. Construction is cheap — no network and no
+    /// Stronghold round trip happens until `start()`.
+    pub fn new(stronghold: Arc<StrongholdHandle>) -> Self {
+        Self {
+            stronghold,
+            shutdown_tx: None,
+            swarm_task: None,
+            event_tx: None,
+            local_peer_id: None,
+        }
+    }
+
+    /// Clone of the swarm's broadcast sender. Returns `None` while the
+    /// runtime is stopped. Used by the Tauri layer to mirror swarm
+    /// events into a Tauri event channel.
+    pub fn event_sender(&self) -> Option<broadcast::Sender<P2pSwarmEvent>> {
+        self.event_tx.clone()
+    }
+
+    /// Local libp2p `PeerId` derived from the per-install Ed25519 seed.
+    /// `None` while the runtime is stopped.
+    pub fn local_peer_id(&self) -> Option<libp2p::PeerId> {
+        self.local_peer_id
+    }
+
+    async fn start(&mut self) -> Result<(), TransportError> {
+        if self.swarm_task.is_some() {
+            return Err(TransportError::AlreadyRunning);
+        }
+
+        // Load identity first — this also primes the in-memory seed cache
+        // used by `peer_seed` below. Both Phase 2's fingerprint and the
+        // libp2p PeerId derive from the same per-install seed.
+        let peer_identity = crate::servitude::identity::load_or_create(&self.stronghold)
+            .await
+            .map_err(|e| TransportError::StartFailed(format!("identity load: {e}")))?;
+
+        let transport = LibP2pTransport::new(&peer_identity, &self.stronghold).await?;
+
+        self.local_peer_id = Some(transport.local_peer_id());
+        self.event_tx = Some(transport.event_sender());
+        self.shutdown_tx = Some(transport.shutdown_handle());
+
+        // `run()` consumes the transport and drives the swarm event
+        // loop until shutdown. Spawned onto the Tokio runtime so the
+        // lifecycle transition can return without blocking.
+        let task = tokio::spawn(async move {
+            transport.run().await;
+        });
+        self.swarm_task = Some(task);
+
+        log::info!(
+            target: "concord::servitude::libp2p",
+            "libp2p swarm started (peer_id={:?})",
+            self.local_peer_id
+        );
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> Result<(), TransportError> {
+        let task = match self.swarm_task.take() {
+            Some(t) => t,
+            None => return Err(TransportError::NotRunning),
+        };
+        if let Some(tx) = self.shutdown_tx.take() {
+            // Ignore send errors — the receiver may already have dropped
+            // if the loop exited on its own; either way the JoinHandle
+            // await below tells us the actual termination state.
+            let _ = tx.send(()).await;
+        }
+        // Drop the cached event sender so subscribers attached to a
+        // dead loop bottom out cleanly.
+        self.event_tx = None;
+        self.local_peer_id = None;
+
+        // Wait for the spawned event loop to exit. If the task panicked
+        // we surface that as a stop failure rather than silently dropping.
+        match task.await {
+            Ok(()) => Ok(()),
+            Err(e) if e.is_cancelled() => Ok(()),
+            Err(e) => Err(TransportError::StopFailed(format!(
+                "libp2p swarm task panicked: {e}"
+            ))),
+        }
+    }
+
+    fn is_healthy(&self) -> bool {
+        match &self.swarm_task {
+            Some(handle) => !handle.is_finished(),
+            None => false,
+        }
+    }
+}
+
 /// Enum-dispatched runtime object owned by a running servitude handle.
 ///
 /// We use an enum instead of `Box<dyn Transport>` so the call sites
@@ -161,6 +309,18 @@ pub enum TransportRuntime {
     /// Only available when the `reticulum` Cargo feature is enabled.
     #[cfg(feature = "reticulum")]
     Reticulum(reticulum::ReticulumTransport),
+    /// Phase 3 libp2p swarm. Always-on baseline P2P transport
+    /// composed of Kad / Identify / Ping / Gossipsub /
+    /// RequestResponse / Relay(server+client) / DCUtR over TCP+QUIC
+    /// with Noise + Yamux. The PeerId derives from the same Ed25519
+    /// seed that backs the Phase 2 `PeerIdentity.fingerprint`.
+    ///
+    /// Non-critical: a libp2p start failure leaves the rest of the
+    /// servitude (Matrix federation, etc.) running and records the
+    /// failure in `degraded`. The frontend's Profile tab surfaces
+    /// the swarm status (peer count + multiaddrs) so degradation is
+    /// visible.
+    LibP2p(LibP2pRuntime),
     /// No-op runtime used only by unit tests that drive the
     /// `ServitudeHandle` state machine without spawning any real
     /// transport. Intentionally `#[doc(hidden)]` — the public
@@ -311,6 +471,7 @@ impl TransportRuntime {
             TransportRuntime::Tunnel => "tunnel",
             #[cfg(feature = "reticulum")]
             TransportRuntime::Reticulum(_) => "reticulum",
+            TransportRuntime::LibP2p(_) => "libp2p",
             TransportRuntime::Noop => "noop",
             TransportRuntime::NoopNonCritical => "noop_noncritical",
             TransportRuntime::FailingNonCritical => "failing_noncritical",
@@ -329,6 +490,7 @@ impl TransportRuntime {
             TransportRuntime::Tunnel => "tunnel",
             #[cfg(feature = "reticulum")]
             TransportRuntime::Reticulum(_) => "reticulum",
+            TransportRuntime::LibP2p(_) => "libp2p",
             TransportRuntime::Noop => "noop",
             TransportRuntime::NoopNonCritical => "noop_noncritical",
             TransportRuntime::FailingNonCritical => "failing_noncritical",
@@ -353,6 +515,12 @@ impl TransportRuntime {
             | TransportRuntime::Tunnel => true,
             #[cfg(feature = "reticulum")]
             TransportRuntime::Reticulum(t) => t.is_critical(),
+            // libp2p is the baseline P2P transport but a swarm-start
+            // failure should NOT take down the rest of the servitude
+            // (Matrix federation runs independently of it). Mark
+            // non-critical so the partial-failure path captures the
+            // failure in `degraded` rather than rolling back.
+            TransportRuntime::LibP2p(_) => false,
             // Test-only variants. Noop is critical (matches the
             // existing Wave 2 lifecycle tests); the dedicated
             // non-critical noops below override to false.
@@ -380,6 +548,7 @@ impl TransportRuntime {
             }
             #[cfg(feature = "reticulum")]
             TransportRuntime::Reticulum(t) => t.start().await,
+            TransportRuntime::LibP2p(t) => t.start().await,
             TransportRuntime::Noop | TransportRuntime::NoopNonCritical => Ok(()),
             TransportRuntime::FailingNonCritical => {
                 Err(TransportError::NotImplemented("failing_noncritical"))
@@ -403,6 +572,7 @@ impl TransportRuntime {
             | TransportRuntime::FailingNonCritical => Ok(()),
             #[cfg(feature = "reticulum")]
             TransportRuntime::Reticulum(t) => t.stop().await,
+            TransportRuntime::LibP2p(t) => t.stop().await,
         }
     }
 
@@ -420,8 +590,30 @@ impl TransportRuntime {
             | TransportRuntime::Tunnel => false,
             #[cfg(feature = "reticulum")]
             TransportRuntime::Reticulum(t) => t.is_healthy().await,
+            TransportRuntime::LibP2p(t) => t.is_healthy(),
             TransportRuntime::Noop | TransportRuntime::NoopNonCritical => true,
             TransportRuntime::FailingNonCritical => false,
+        }
+    }
+
+    /// If this runtime is a [`TransportRuntime::LibP2p`] and the swarm
+    /// has been started, returns a clone of its broadcast sender so
+    /// callers can subscribe to swarm events. Returns `None` for every
+    /// other variant or when the libp2p swarm is stopped.
+    pub fn libp2p_event_sender(&self) -> Option<broadcast::Sender<P2pSwarmEvent>> {
+        match self {
+            TransportRuntime::LibP2p(t) => t.event_sender(),
+            _ => None,
+        }
+    }
+
+    /// If this runtime is a [`TransportRuntime::LibP2p`] and the swarm
+    /// has been started, returns the local libp2p `PeerId`. Returns
+    /// `None` for every other variant or when the swarm is stopped.
+    pub fn libp2p_local_peer_id(&self) -> Option<libp2p::PeerId> {
+        match self {
+            TransportRuntime::LibP2p(t) => t.local_peer_id(),
+            _ => None,
         }
     }
 }

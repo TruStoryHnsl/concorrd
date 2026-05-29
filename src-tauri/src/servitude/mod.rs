@@ -41,14 +41,18 @@
 pub mod config;
 pub mod identity;
 pub mod lifecycle;
+pub mod p2p;
 pub mod transport;
 
 pub use config::{ServitudeConfig, Transport};
 pub use lifecycle::{LifecycleError, LifecycleState};
-pub use transport::{TransportError, TransportRuntime};
+pub use transport::{LibP2pRuntime, TransportError, TransportRuntime};
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use thiserror::Error;
+
+use crate::servitude::identity::StrongholdHandle;
 
 /// Top-level error type for the servitude module.
 ///
@@ -101,13 +105,43 @@ impl ServitudeHandle {
     /// Transport runtimes are built eagerly from `config.enabled_transports`
     /// via [`TransportRuntime::for_variant`]. This is a cheap operation
     /// (pure data-carrier construction); nothing is spawned until `start`.
+    ///
+    /// Backward-compatible thin wrapper around [`Self::new_with_identity`]
+    /// for call sites (and tests) that don't have the install's shared
+    /// `StrongholdHandle` to hand. No libp2p swarm is constructed in that
+    /// case — the Phase 3 P2P transport is opt-in via the identity arg.
     pub fn new(config: ServitudeConfig) -> Result<Self, ServitudeError> {
+        Self::new_with_identity(config, None)
+    }
+
+    /// Same as [`Self::new`] but threads through the install's shared
+    /// peer-identity `StrongholdHandle`. When present, the handle adds
+    /// a Phase 3 [`TransportRuntime::LibP2p`] runtime to the transport
+    /// list — the libp2p swarm becomes the always-on baseline P2P
+    /// transport whose `PeerId` derives from the same Ed25519 seed
+    /// backing the Phase 2 `PeerIdentity.fingerprint`.
+    ///
+    /// `None` preserves the prior behavior for tests that drive the
+    /// lifecycle without a Stronghold (and for embedded callers that
+    /// haven't yet wired one).
+    pub fn new_with_identity(
+        config: ServitudeConfig,
+        stronghold: Option<Arc<StrongholdHandle>>,
+    ) -> Result<Self, ServitudeError> {
         config.validate()?;
-        let transports = config
+        let mut transports: Vec<TransportRuntime> = config
             .enabled_transports
             .iter()
             .map(|variant| TransportRuntime::for_variant(*variant, &config))
             .collect();
+        if let Some(sh) = stronghold {
+            // libp2p is the always-on baseline P2P transport. It is NOT
+            // declared in `config.enabled_transports` — the config enum
+            // existed before Phase 3 and `Mesh` placeholders predate
+            // the real libp2p wiring. Append rather than prepend so
+            // existing transports keep their start order.
+            transports.push(TransportRuntime::LibP2p(LibP2pRuntime::new(sh)));
+        }
         Ok(Self {
             config,
             lifecycle: lifecycle::Lifecycle::new(),
@@ -210,6 +244,37 @@ impl ServitudeHandle {
         Err(ServitudeError::Transport(TransportError::NotImplemented(
             "no MatrixFederation transport configured for register_owner",
         )))
+    }
+
+    /// Clone of the running libp2p swarm's broadcast sender, if a
+    /// libp2p runtime is part of this handle AND `start()` has run
+    /// successfully. The Tauri layer calls this after `start()` to
+    /// register the sender into a `tauri::State<...>` and mirror
+    /// swarm events into the frontend via `emit_all`.
+    ///
+    /// Returns `None` for handles built without a `StrongholdHandle`
+    /// (the libp2p runtime is opt-in via [`Self::new_with_identity`])
+    /// or when the swarm has not been started yet.
+    pub fn libp2p_event_sender(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Sender<crate::servitude::p2p::SwarmEvent>> {
+        for runtime in &self.transports {
+            if let Some(tx) = runtime.libp2p_event_sender() {
+                return Some(tx);
+            }
+        }
+        None
+    }
+
+    /// Local libp2p `PeerId` for the running swarm. Same lifecycle
+    /// gating as [`Self::libp2p_event_sender`].
+    pub fn libp2p_local_peer_id(&self) -> Option<libp2p::PeerId> {
+        for runtime in &self.transports {
+            if let Some(pid) = runtime.libp2p_local_peer_id() {
+                return Some(pid);
+            }
+        }
+        None
     }
 
     /// Drive the state machine `Stopped -> Starting -> Running`, bringing

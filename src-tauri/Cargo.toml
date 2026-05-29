@@ -73,12 +73,55 @@ futures-util = "0.3"
 # pulled in transitively by tauri-plugin-stronghold; declared here so this
 # crate's direct dependency on it is explicit. No new top-level crate is
 # added — we use the existing version pinned in Cargo.lock.
-# Stronghold itself supplies the Ed25519 keypair + signing primitives via its
-# `procedures` module, so no separate ed25519-dalek dep is required.
 sha2 = "0.10"
+# ed25519-dalek: the canonical Ed25519 implementation for Phase 2 + Phase 3
+# identity unification. The single per-install seed lives in Stronghold via
+# WriteVault; signing and public-key derivation happen via
+# `SigningKey::from_bytes(seed)`. Already in the transitive graph via libp2p,
+# declared here so identity.rs can name SigningKey/Verifier types directly.
+ed25519-dalek = "2"
 # iota_stronghold is pulled in transitively by tauri-plugin-stronghold;
 # declared here so identity.rs can name its Client/Location types directly.
 iota_stronghold = "2.1"
+
+# rust-libp2p — Phase 3 of the P2P-first native architecture (INS-019b).
+# Version pinned to 0.56 (latest stable at time of Phase 3 work). 0.56 raised
+# its MSRV to 1.83 — the workspace rustc is 1.94 so the published
+# `rust-version = "1.77.2"` field above is forward-tolerant. If a future
+# downgrade to <1.83 is required, pin libp2p back to 0.54.
+#
+# Feature set captures the Phase 3 design-doc requirements:
+#   * transports:   tcp + quic + noise + yamux
+#   * core protos:  kad + identify + ping + gossipsub + request-response
+#   * NAT traversal: relay (server side) + dcutr (hole punching)
+#   * builder ergonomics: tokio + macros + ed25519
+#
+# `request-response`'s `cbor`/`json` codec helpers are NOT enabled — the
+# Phase 3 surface uses a hand-rolled length-delimited bytes codec
+# (see `servitude/p2p.rs::BytesCodec`) so we don't pull cbor4ii into the
+# build. Re-evaluate when concrete request/response payload types land.
+libp2p = { version = "0.56", features = [
+    "tokio",
+    "tcp",
+    "quic",
+    "noise",
+    "yamux",
+    "kad",
+    "identify",
+    "ping",
+    "gossipsub",
+    "request-response",
+    "macros",
+    "ed25519",
+    "dcutr",
+    "relay",
+] }
+# In-memory zeroize for the libp2p secret-key bytes we have to materialize
+# outside Stronghold's protected runtime (Phase 3 trade-off — documented in
+# `servitude/identity.rs::export_or_create_libp2p_seed`).
+zeroize = "1"
+# futures::StreamExt is needed to drive `Swarm::select_next_some` in p2p.rs.
+futures = "0.3"
 
 # Unix-only deps for servitude child-process management. `nix::sys::signal`
 # gives us SIGTERM for graceful shutdown — std::process::Child::kill uses

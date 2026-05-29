@@ -1,4 +1,4 @@
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
 
@@ -6,6 +6,7 @@ pub mod servitude;
 
 use servitude::{LifecycleState, ServitudeConfig, ServitudeHandle};
 use servitude::identity::{self, StrongholdHandle};
+use servitude::p2p::SwarmEvent as P2pSwarmEvent;
 use servitude::transport::dendrite_federation::RegisterOwnerResponse;
 
 /// Tauri-managed state wrapping the optional embedded servitude handle.
@@ -51,6 +52,30 @@ struct PeerIdentityPublic {
     public_key_hex: String,
     fingerprint: String,
 }
+
+/// Public swarm-status descriptor serialized back to the renderer for the
+/// Phase 3 Profile tab swarm row.
+///
+/// Fields are snake_case on the wire — the React side's `peerSwarm.ts`
+/// wrapper transcribes to camelCase via explicit field-by-field copy.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+struct SwarmStatus {
+    our_peer_id: String,
+    our_multiaddrs: Vec<String>,
+    peer_count: usize,
+    last_event: Option<String>,
+}
+
+/// In-memory cache the `peer_swarm_status` command reads from. A background
+/// task seeded at app startup subscribes to the running libp2p swarm's
+/// broadcast channel and keeps this mirror up to date as new events arrive.
+#[derive(Default)]
+pub struct SwarmStateCache(std::sync::Mutex<SwarmStatus>);
+
+/// Tauri-managed state holding the swarm event cache. Read by
+/// `peer_swarm_status`; written by the background mirror task spawned in
+/// `run()`.
+pub struct SwarmEventChannel(pub std::sync::Arc<SwarmStateCache>);
 
 /// Open (or create) the peer-identity Stronghold snapshot and return a
 /// shared handle.
@@ -183,6 +208,175 @@ async fn peer_identity(
     })
 }
 
+/// Return the current libp2p swarm status — peer count, multiaddrs, the
+/// local PeerId, and the last observed swarm event (if any).
+///
+/// The data is read from a shared in-memory cache populated by a
+/// background task that subscribes to the swarm's broadcast channel
+/// (see `spawn_swarm_event_mirror`). The cache is empty until the
+/// embedded servitude has been started AND the libp2p runtime inside
+/// it has bound its first listening multiaddr.
+///
+/// The Ed25519 seed backing the swarm's `PeerId` is the same seed
+/// backing the Phase 2 `peer_identity` fingerprint — see the
+/// architectural note in `servitude/identity.rs`. The two commands
+/// expose the same identity in different encodings; they never disagree.
+#[tauri::command]
+async fn peer_swarm_status(
+    state: tauri::State<'_, SwarmEventChannel>,
+) -> Result<SwarmStatus, String> {
+    let cache = state.0.clone();
+    let snapshot = cache
+        .0
+        .lock()
+        .map_err(|e| format!("swarm cache poisoned: {e}"))?;
+    Ok(snapshot.clone())
+}
+
+/// Spawn a background task that mirrors the running libp2p swarm's
+/// broadcast events into the shared [`SwarmStateCache`] AND re-emits each
+/// event onto Tauri's app-wide event bus under the `"peer_swarm_event"`
+/// channel so React listeners can subscribe live.
+///
+/// The task polls `ServitudeState` for a started libp2p runtime; once the
+/// swarm comes up, it locks onto the broadcast receiver and runs until
+/// the receiver drops (i.e. the swarm stops). Then it loops back to the
+/// poll path so a subsequent restart re-attaches transparently.
+fn spawn_swarm_event_mirror(
+    app: tauri::AppHandle,
+    cache: std::sync::Arc<SwarmStateCache>,
+) {
+    tauri::async_runtime::spawn(async move {
+        // Poll interval for the "is the swarm running yet?" check. Cheap
+        // — just a lock-and-check; not a network call.
+        let poll = std::time::Duration::from_millis(500);
+        loop {
+            let sender_opt = {
+                let state = app.state::<ServitudeState>();
+                let guard = state.0.lock().await;
+                guard
+                    .as_ref()
+                    .and_then(|h| h.libp2p_event_sender())
+            };
+            let Some(sender) = sender_opt else {
+                tokio::time::sleep(poll).await;
+                continue;
+            };
+
+            // Seed the cache with what we know now (PeerId, no events
+            // yet). Subsequent loop iterations refresh peer_id if the
+            // swarm restarts under a new (Stronghold seed identical)
+            // identity.
+            let peer_id_str = {
+                let state = app.state::<ServitudeState>();
+                let guard = state.0.lock().await;
+                guard
+                    .as_ref()
+                    .and_then(|h| h.libp2p_local_peer_id())
+                    .map(|p| p.to_string())
+                    .unwrap_or_default()
+            };
+            if !peer_id_str.is_empty() {
+                if let Ok(mut snap) = cache.0.lock() {
+                    snap.our_peer_id = peer_id_str;
+                }
+            }
+
+            let mut rx = sender.subscribe();
+            // Drain the broadcast channel until the sender is dropped
+            // (swarm stop) — at that point `recv()` returns
+            // `Err(RecvError::Closed)` and we break to re-poll.
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        apply_event(&cache, &event);
+                        // Mirror the event onto the app's event bus.
+                        // Failures here are non-fatal — if no listener
+                        // is attached the emit silently drops.
+                        let payload = swarm_event_payload(&event);
+                        let _ = app.emit("peer_swarm_event", payload);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Slow subscriber — broadcast dropped some
+                        // events. Keep going; the cache will reconverge.
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        // Swarm event loop exited. Reset the cache so
+                        // stale multiaddrs don't appear "live" while
+                        // the swarm is stopped, then loop back to
+                        // poll for a restart.
+                        if let Ok(mut snap) = cache.0.lock() {
+                            *snap = SwarmStatus::default();
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Apply a single swarm event to the shared cache. Pure function on
+/// the cache — no side effects.
+fn apply_event(cache: &SwarmStateCache, event: &P2pSwarmEvent) {
+    let Ok(mut snap) = cache.0.lock() else { return };
+    snap.last_event = Some(swarm_event_label(event));
+    match event {
+        P2pSwarmEvent::LocalAddrChanged { addr } => {
+            let s = addr.to_string();
+            if !snap.our_multiaddrs.iter().any(|a| a == &s) {
+                snap.our_multiaddrs.push(s);
+            }
+        }
+        P2pSwarmEvent::PeerCountChanged { count } => {
+            snap.peer_count = *count;
+        }
+        P2pSwarmEvent::DialSuccess { .. } | P2pSwarmEvent::DialFailure { .. } => {
+            // Captured via last_event only — the count is updated
+            // through the separate PeerCountChanged event.
+        }
+    }
+}
+
+/// Short human-readable label for a swarm event. Used for both the
+/// cache's `last_event` field AND the per-event emit payload below.
+fn swarm_event_label(event: &P2pSwarmEvent) -> String {
+    match event {
+        P2pSwarmEvent::LocalAddrChanged { addr } => format!("listening: {addr}"),
+        P2pSwarmEvent::PeerCountChanged { count } => format!("peers: {count}"),
+        P2pSwarmEvent::DialSuccess { peer_id } => format!("dialed: {peer_id}"),
+        P2pSwarmEvent::DialFailure { peer_id, reason } => match peer_id {
+            Some(p) => format!("dial failed ({p}): {reason}"),
+            None => format!("dial failed: {reason}"),
+        },
+    }
+}
+
+/// JSON payload emitted on the `peer_swarm_event` Tauri event bus.
+/// Snake_case fields; React side transcribes to camelCase.
+fn swarm_event_payload(event: &P2pSwarmEvent) -> serde_json::Value {
+    match event {
+        P2pSwarmEvent::LocalAddrChanged { addr } => serde_json::json!({
+            "kind": "local_addr_changed",
+            "addr": addr.to_string(),
+        }),
+        P2pSwarmEvent::PeerCountChanged { count } => serde_json::json!({
+            "kind": "peer_count_changed",
+            "count": *count,
+        }),
+        P2pSwarmEvent::DialSuccess { peer_id } => serde_json::json!({
+            "kind": "dial_success",
+            "peer_id": peer_id.to_string(),
+        }),
+        P2pSwarmEvent::DialFailure { peer_id, reason } => serde_json::json!({
+            "kind": "dial_failure",
+            "peer_id": peer_id.map(|p| p.to_string()),
+            "reason": reason,
+        }),
+    }
+}
+
 #[tauri::command]
 fn get_server_url(app: tauri::AppHandle) -> String {
     let store = app.store("settings.json").expect("failed to open store");
@@ -214,11 +408,18 @@ fn set_server_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
 #[tauri::command]
 async fn servitude_start(
     state: tauri::State<'_, ServitudeState>,
+    identity_state: tauri::State<'_, PeerIdentityState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Load config OUTSIDE the lock so the (very cheap) store access never
     // overlaps with the mutex guard.
     let config = ServitudeConfig::from_store(&app).map_err(|e| e.to_string())?;
+
+    // Open (or reuse) the peer-identity Stronghold. The libp2p baseline
+    // transport inside the servitude handle derives its `PeerId` from
+    // the same per-install Ed25519 seed — see `servitude/identity.rs`
+    // for the architectural unification note.
+    let stronghold = get_or_open_peer_identity(&identity_state, &app).await?;
 
     let mut guard = state.0.lock().await;
 
@@ -233,7 +434,10 @@ async fn servitude_start(
         Some(handle) => handle.status() == LifecycleState::Stopped,
     };
     if should_recreate {
-        *guard = Some(ServitudeHandle::new(config).map_err(|e| e.to_string())?);
+        *guard = Some(
+            ServitudeHandle::new_with_identity(config, Some(stronghold))
+                .map_err(|e| e.to_string())?,
+        );
     }
 
     let handle = guard
@@ -399,11 +603,19 @@ pub fn run() {
         }
     }
 
+    // Shared swarm-state cache. One instance lives in `tauri::State`
+    // (read by the `peer_swarm_status` command) and another `Arc` clone
+    // is handed to the background mirror task in `setup`, so the cache
+    // updates published by the mirror are visible to the command without
+    // any further synchronization.
+    let swarm_cache = std::sync::Arc::new(SwarmStateCache::default());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(ServitudeState(Mutex::new(None)))
         .manage(PeerIdentityState(Mutex::new(None)))
-        .setup(|app| {
+        .manage(SwarmEventChannel(swarm_cache.clone()))
+        .setup(move |app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -426,6 +638,13 @@ pub fn run() {
 
             // Ensure settings store exists
             let _ = app.handle().store("settings.json");
+
+            // Phase 3 — start the background task that mirrors the
+            // libp2p swarm's broadcast events into the shared cache and
+            // emits them onto the Tauri event bus. The task polls
+            // `ServitudeState` until a started libp2p runtime is
+            // available; it then runs for the full swarm lifetime.
+            spawn_swarm_event_mirror(app.handle().clone(), swarm_cache.clone());
 
             // Devtools auto-open is gated on the `devtools` Cargo feature
             // (off by default — see `Cargo.toml`). Release builds never link
@@ -557,6 +776,7 @@ pub fn run() {
             servitude_register_owner,
             log_diagnostic,
             peer_identity,
+            peer_swarm_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
