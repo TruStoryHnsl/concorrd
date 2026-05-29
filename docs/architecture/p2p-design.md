@@ -113,12 +113,17 @@ Captures every decision in this conversation so subsequent sessions don't re-der
 - Tests: DHT joins the network, peer-key lookups round-trip via bootstrap, survives a bootstrap node going offline.
 
 ### Phase 5 — Peer pairing UX
+
+> **Phase 5 implementation landed: feat/peer-pairing-p5.** The first user-facing P2P surface. Three converging input paths (QR + `concord://` deeplink + Matrix-room peer card) feed a single local peer-store; the stored `KnownPeer` records carry their `source` so downstream phases can attribute provenance. ActivityPub remains queued as a follow-up — the design doc keeps it in scope but Phase 5 ships the Matrix-federated path first.
+
 - QR code generator + scanner (using a Tauri-compatible JS library on the React side, e.g. `qrcode` for display and `jsQR` for scan).
 - `concord://` deeplink handler registered with the OS (Tauri's `deep-link` plugin).
 - Matrix-room peer card: custom `m.room.message` event type `concord.peer_card` carrying the peer's libp2p public key + last-known multiaddr.
 - ActivityPub mention/bookmark exchange (later within this phase; not blocking).
 - React UI surfaces: "Show my peer card" (QR + copyable link + Matrix-room post button), "Add a peer" (scan QR / paste link / pick from Matrix-room mention).
 - Tests: roundtrip pairing via QR, deeplink, and Matrix-room — all end with both peers having the other's key in their local peer-store.
+- **Local peer-store** at `peer-store/known-peers/v1` in Stronghold, persisted via the same ChaCha20-Poly1305 sibling-file pattern Phase 4 introduced for the seed (`<snapshot_path>.peer_store.json.enc`, chmod 0600). Idempotent `add` (multiaddr-union dedup, `first_seen` preserved, `last_seen` advanced). Tauri commands `peer_store_list` / `peer_store_add` / `peer_store_remove` surfaced to the frontend; Tauri events `peer_paired` and `peer_paired_error` fire on successful and failed deeplink-driven adds.
+- **Scanner is Tauri-only.** `jsQR` + `getUserMedia` need camera permissions that have different surfaces in browsers vs native; for Phase 5 the camera tab is hidden on web. Web users can still DISPLAY a QR for someone else to scan with their native build.
 
 ### Phase 6 — Protocol-agnostic federation payload layer
 - Abstract `FederationProtocol` trait in `src-tauri/src/servitude/federation/`.
