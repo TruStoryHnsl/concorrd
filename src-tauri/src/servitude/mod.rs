@@ -38,6 +38,7 @@
 //!      driven to the terminal state — we never leave a handle stuck in
 //!      `Stopping` because that would wedge the UI.
 
+pub mod bootstrap;
 pub mod config;
 pub mod identity;
 pub mod lifecycle;

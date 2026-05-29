@@ -99,11 +99,17 @@ Captures every decision in this conversation so subsequent sessions don't re-der
 - Tests: swarm starts cleanly, identifies its own multiaddr, accepts an incoming connection on QUIC.
 
 ### Phase 4 — Silent Kademlia DHT + project bootstrap nodes
+> **Phase 4 implementation landed** — see `src-tauri/src/servitude/bootstrap.rs` for the hardcoded multiaddr list and `src-tauri/src/servitude/p2p.rs::new_inner` + `seed_kad_bootstrap` + the retry loop in `LibP2pTransport::run` for the wiring. Operational spec for the project-run nodes lives at [`p2p-bootstrap-deployment.md`](p2p-bootstrap-deployment.md).
+>
+> Pattern: hardcoded `&[&str]` multiaddrs parsed at startup; Kad defaults to `Mode::Client` on native (the docker / always-on profile flips it to `Mode::Server` in a follow-up commit — no per-profile config flag exists yet); failed bootstrap queries retry with exponential backoff starting at 5s and doubling until capped at 5 min, logged at `debug!` so a transient network drop never surfaces as a red banner in the UI; the swarm emits a new lightweight `SwarmEvent::DhtRoutingUpdated { peer_count }` whenever the routing table picks up a new peer, so the React UI can render a passive "DHT is alive, N peers known" indicator without subscribing to the full Kad event firehose.
+>
+> Cross-restart: the libp2p `PeerId` derives from the same per-install Ed25519 seed that backs Phase 2's `PeerIdentity`. Cluster A's parallel commit completes the seed-persistence fix from Phase 3 — see `identity.rs` for the encrypted-sibling-file pattern.
 - Enable libp2p Kad behavior inside the swarm.
-- Hard-code 3–5 bootstrap node multiaddrs in the binary (`crates/orrch-core/src/p2p/bootstrap.rs` or equivalent).
+- Hard-code 3–5 bootstrap node multiaddrs in the binary (`src-tauri/src/servitude/bootstrap.rs`).
 - Concord-api startup connects to bootstrap nodes silently; no operator setup, no per-user dialog.
 - Spec the bootstrap node deployment: tiny VPS (~$5/mo each), runs ONLY a libp2p node with Kad and Identify. Deployed and operated by the project, not by self-hosters.
 - Operator-facing docs explain that the DHT runs silently and uses negligible bandwidth (metadata-only lookups).
+- **Identity cross-restart persistence (Phase 3 follow-up):** the Ed25519 seed is now persisted in a ChaCha20-Poly1305-encrypted sibling file (`<snapshot_path>.seed.enc`, chmod 0600 on Unix) alongside the Stronghold snapshot, keyed off the same 32-byte snapshot password. This closes the Phase 3 known issue where `peer_seed()` and `sign()` returned `SeedUnavailable` after a process restart — Stronghold has no `ReadVault` procedure, so the seed bytes had no path back into memory. The sibling file decrypts on startup and rehydrates the in-handle cache, so signing and the libp2p `Keypair` survive restarts. The backward-compat path (Stronghold record present, sibling file missing) leaves the fingerprint working but signing unavailable until the next `load_or_create` rewrites both stores.
 - Tests: DHT joins the network, peer-key lookups round-trip via bootstrap, survives a bootstrap node going offline.
 
 ### Phase 5 — Peer pairing UX
