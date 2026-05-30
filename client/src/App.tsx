@@ -10,7 +10,6 @@ import { isDesktopMode } from "./api/serverUrl";
 import { joinVoiceSession } from "./components/voice/joinVoiceSession";
 import { usePlatform } from "./hooks/usePlatform";
 import { useServitudeLifecycle } from "./hooks/useServitudeLifecycle";
-import { useBrowserLibp2p } from "./hooks/useBrowserLibp2p";
 import { runStartupCheck as runUpdaterStartupCheck } from "./lib/updater";
 import { computeInitialServerConnected } from "./serverPickerGate";
 import { redeemInvite, getInstanceInfo } from "./api/concord";
@@ -53,12 +52,15 @@ export default function App() {
   // listeners and tears them down on unmount.
   useServitudeLifecycle();
 
-  // Phase 9: spin up a per-tab js-libp2p node on web builds so the
-  // browser is a real peer in the Concord mesh (federation +
-  // voice-path selection). No-op inside Tauri — the Rust swarm IS
-  // the libp2p layer on native. Status is intentionally unrendered
-  // for now; a Settings → Profile badge lands in a Phase 9 follow-up.
-  useBrowserLibp2p();
+  // Phase 9 (bundle split): the per-tab js-libp2p node is no longer
+  // eagerly started on App mount. The ~600 KB libp2p stack is loaded
+  // lazily via `client/src/libp2p/lazyNode.ts` the first time a
+  // surface that actually needs it mounts (voice room with
+  // mesh-eligible participants, or the Paired Peers section in
+  // Settings → Profile). Sessions that never hit one of those
+  // surfaces pay zero libp2p cost. The `useBrowserLibp2p({ enabled:
+  // true })` opt-in from VoiceChannel / ProfileTab drives the lazy
+  // start path through the shared singleton node.
 
   // In-app updater: native builds poll the GitHub releases listing on
   // launch (6h debounce via localStorage) and prompt if a newer per-

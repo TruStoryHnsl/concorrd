@@ -28,28 +28,33 @@ vi.mock("../servitude", async (importOriginal) => {
   };
 });
 
-// Mock `getNode()` so each browser-path test pins the libp2p
-// availability explicitly. The real `node.ts` is exercised in
-// `libp2p/__tests__/node.test.ts`.
-vi.mock("../../libp2p/node", () => ({
-  getNode: vi.fn(),
+// Mock `getBrowserNodeIfStarted()` so each browser-path test pins
+// the libp2p availability explicitly. The real `node.ts` is exercised
+// in `libp2p/__tests__/node.test.ts`; the lazy seam is exercised in
+// `libp2p/__tests__/lazyNode.test.ts`. Here we only care that the
+// selector calls into the lazy accessor and interprets its result.
+vi.mock("../../libp2p/lazyNode", () => ({
+  getBrowserNodeIfStarted: vi.fn(),
 }));
 
 import * as servitudeApi from "../servitude";
-import * as nodeApi from "../../libp2p/node";
+import * as lazyNodeApi from "../../libp2p/lazyNode";
 import {
   selectVoicePath,
   type VoiceParticipant,
 } from "../voicePath";
 
 const isTauriMock = vi.mocked(servitudeApi.isTauri);
-const getNodeMock = vi.mocked(nodeApi.getNode);
+const getNodeMock = vi.mocked(lazyNodeApi.getBrowserNodeIfStarted);
 
 describe("selectVoicePath wrapper", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     isTauriMock.mockReset();
     getNodeMock.mockReset();
+    // The lazy accessor is async — default it to "no node" so tests
+    // that don't explicitly pin it default to the cold path.
+    getNodeMock.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -94,7 +99,7 @@ describe("selectVoicePath wrapper", () => {
    */
   it("web build without a libp2p node returns livekit_sfu, no Tauri call", async () => {
     isTauriMock.mockReturnValue(false);
-    getNodeMock.mockReturnValue(null);
+    getNodeMock.mockResolvedValue(null);
 
     const participants: VoiceParticipant[] = [
       { matrix_user_id: "@alice:example.org", peer_id: "12D3KooWAlice" },
@@ -172,7 +177,7 @@ describe("selectVoicePath wrapper", () => {
   it("browser with libp2p node + 3 known peers selects libp2p_mesh", async () => {
     isTauriMock.mockReturnValue(false);
     // Any truthy object; the selector only checks `getNode() !== null`.
-    getNodeMock.mockReturnValue({} as never);
+    getNodeMock.mockResolvedValue({} as never);
 
     const participants: VoiceParticipant[] = [
       { matrix_user_id: "@alice:example.org", peer_id: "12D3KooWAlice" },
@@ -195,7 +200,7 @@ describe("selectVoicePath wrapper", () => {
    */
   it("browser with libp2p node + 9 participants falls back to livekit_sfu (cap)", async () => {
     isTauriMock.mockReturnValue(false);
-    getNodeMock.mockReturnValue({} as never);
+    getNodeMock.mockResolvedValue({} as never);
 
     const participants: VoiceParticipant[] = Array.from(
       { length: 9 },
@@ -221,7 +226,7 @@ describe("selectVoicePath wrapper", () => {
    */
   it("browser with libp2p node + one web-only participant returns livekit_sfu", async () => {
     isTauriMock.mockReturnValue(false);
-    getNodeMock.mockReturnValue({} as never);
+    getNodeMock.mockResolvedValue({} as never);
 
     const participants: VoiceParticipant[] = [
       { matrix_user_id: "@alice:example.org", peer_id: "12D3KooWAlice" },

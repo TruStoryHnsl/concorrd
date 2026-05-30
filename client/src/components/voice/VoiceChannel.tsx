@@ -16,6 +16,7 @@ import { useServerStore } from "../../stores/server";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { useVoiceNotifications } from "../../hooks/useVoiceNotifications";
 import { useMutedSpeaking } from "../../hooks/useMutedSpeaking";
+import { useBrowserLibp2p } from "../../hooks/useBrowserLibp2p";
 import { useToastStore } from "../../stores/toast";
 import { updateDisplayName, getVoiceParticipants, getChannelLockStatus, verifyChannelPin, startVoteKick, getActiveVoteKicks, lockChannel, unlockChannel, getMyKickCount } from "../../api/concord";
 import { SoundboardPanel } from "./SoundboardPanel";
@@ -58,6 +59,15 @@ export function VoiceChannel({ roomId, channelName, serverId, onOpenSettings }: 
   const [showPinDialog, setShowPinDialog] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const [pinVerified, setPinVerified] = useState(false);
+
+  // Phase 9 (bundle split): voice surface is one of the two trigger
+  // points for lazily loading the browser libp2p stack. We pass
+  // `enabled: true` here so the swarm is up by the time
+  // `selectVoicePath()` runs in `joinVoiceSession`. On native (Tauri)
+  // the hook is a no-op — the Rust swarm IS the libp2p layer. The
+  // hook tolerates concurrent mounts (e.g. ProfileTab + VoiceChannel)
+  // because the underlying singleton in `./libp2p/node` dedupes.
+  useBrowserLibp2p({ enabled: true });
 
   // Check lock status
   const activeChannel = activeServer?.channels.find((c) => c.matrix_room_id === roomId);

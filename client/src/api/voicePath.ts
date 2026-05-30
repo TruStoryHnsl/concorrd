@@ -33,7 +33,7 @@
  */
 
 import { isTauri } from "./servitude";
-import { getNode } from "../libp2p/node";
+import { getBrowserNodeIfStarted } from "../libp2p/lazyNode";
 
 /** Stable wire form of the chosen path. */
 export type VoicePath = "libp2p_mesh" | "livekit_sfu";
@@ -114,7 +114,12 @@ export async function selectVoicePath(
   // The browser is mesh-eligible ONLY when a libp2p node is running
   // AND every participant has a resolved peerId AND the room is at or
   // under the 8-peer cap. Otherwise — SFU.
-  const node = getNode();
+  //
+  // `getBrowserNodeIfStarted` is the lazy-load variant: it returns
+  // null WITHOUT fetching the libp2p chunk when the swarm was never
+  // started, so a voice join on a session that never had libp2p up
+  // pays zero chunk-fetch cost on the selector path.
+  const node = await getBrowserNodeIfStarted();
   if (!node) {
     return { path: "livekit_sfu", reason: "browser_libp2p_not_running" };
   }
