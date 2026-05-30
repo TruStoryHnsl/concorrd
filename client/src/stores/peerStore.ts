@@ -34,8 +34,20 @@ import {
   type PeerSource,
 } from "../api/peerStore";
 import { isTauri } from "../api/servitude";
+import {
+  addBrowserPeerFromCard,
+  listBrowserPeers,
+  removeBrowserPeer,
+} from "./peerStoreBrowser";
 
-/** Sentinel for the no-Tauri (browser/web) case — matches `identity.ts`. */
+/**
+ * Sentinel for the no-Tauri case — preserved for backward compat with
+ * any consumer that compared against it. Post Phase-9-UI-surface the
+ * web build no longer flips this on, because the localStorage-backed
+ * browser store actually services the calls. Native code-paths that
+ * previously surfaced this constant continue to work; new browser
+ * code-paths set `error: null` because the store IS available.
+ */
 export const PEER_STORE_ERROR_NATIVE_ONLY = "native-only";
 
 export interface PeerStoreState {
@@ -127,11 +139,18 @@ export const usePeerStore = create<PeerStoreState>((set, get) => ({
 
   load: async () => {
     if (!isTauri()) {
-      set({
-        isLoading: false,
-        error: PEER_STORE_ERROR_NATIVE_ONLY,
-        knownPeers: [],
-      });
+      // Phase 9 (browser P2P UI surface): web build now reads from the
+      // localStorage-backed browser peer store rather than no-op'ing.
+      // Same KnownPeer shape as native so the rest of the UI doesn't
+      // need to branch — see `./peerStoreBrowser.ts` for the wire model.
+      try {
+        const peers = listBrowserPeers();
+        set({ knownPeers: peers, isLoading: false, error: null });
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : String(err ?? "unknown error");
+        set({ isLoading: false, error: message });
+      }
       return;
     }
 
@@ -160,8 +179,17 @@ export const usePeerStore = create<PeerStoreState>((set, get) => ({
 
   addFromCard: async (card, source) => {
     if (!isTauri()) {
-      set({ error: PEER_STORE_ERROR_NATIVE_ONLY });
-      return null;
+      // Phase 9: route through the localStorage backend. Same idempotency
+      // contract as the native `peer_store_add` command (re-add unions
+      // multiaddrs, preserves firstSeen/source, advances lastSeen).
+      const result = addBrowserPeerFromCard(card, source);
+      if (!result.ok) {
+        set({ error: result.error });
+        return null;
+      }
+      const peers = listBrowserPeers();
+      set({ knownPeers: peers, error: null });
+      return result.value;
     }
     try {
       const added = await addPeer(card, source);
@@ -181,8 +209,18 @@ export const usePeerStore = create<PeerStoreState>((set, get) => ({
 
   remove: async (peerId) => {
     if (!isTauri()) {
-      set({ error: PEER_STORE_ERROR_NATIVE_ONLY });
-      return false;
+      const result = removeBrowserPeer(peerId);
+      if (!result.ok) {
+        set({ error: result.error });
+        return false;
+      }
+      if (result.value) {
+        set((s) => ({
+          knownPeers: s.knownPeers.filter((p) => p.peerId !== peerId),
+          error: null,
+        }));
+      }
+      return result.value;
     }
     try {
       const removed = await removePeer(peerId);

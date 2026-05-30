@@ -35,6 +35,8 @@ import {
   encodeToQrPayload,
   type PeerCard,
 } from "../../lib/peerCard";
+import { getBrowserIdentity } from "../../libp2p/identity";
+import { getBrowserNodeIfStarted } from "../../libp2p/lazyNode";
 
 /**
  * Matrix msgtype we use to broadcast a peer card into a room. The
@@ -165,10 +167,63 @@ export function PeerCardDisplay() {
 
   const [pickerOpen, setPickerOpen] = useState(false);
 
-  // Assemble the public peer card. All three components have to be
-  // present and non-empty — a card with no multiaddrs is unreachable
-  // and a card with no swarmPeerId can't be dialled.
+  // Phase 9 (browser P2P UI surface): on web, derive the card from the
+  // browser libp2p identity + the running libp2p node's multiaddrs.
+  // Polled lazily — `getBrowserNodeIfStarted` short-circuits when the
+  // node hasn't been started yet so this hook doesn't trigger the
+  // libp2p chunk fetch on its own.
+  const [browserCard, setBrowserCard] = useState<PeerCard | null>(null);
+
+  useEffect(() => {
+    if (isTauri()) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const identity = await getBrowserIdentity();
+        const node = await getBrowserNodeIfStarted();
+        if (cancelled) return;
+        if (!node) {
+          // Node not running yet — keep waiting; the parent ProfileTab
+          // calls `useBrowserLibp2p({ enabled: true })` so it should
+          // come up within a second.
+          setBrowserCard(null);
+          return;
+        }
+        const multiaddrs = node.getMultiaddrs().map((m) => m.toString());
+        if (multiaddrs.length === 0) {
+          // Node up but not yet listening on anything dialable.
+          setBrowserCard(null);
+          return;
+        }
+        setBrowserCard({
+          peerId: identity.peerId,
+          publicKeyHex: identity.publicKeyHex,
+          multiaddrs,
+        });
+      } catch (err) {
+        console.debug(
+          "[peer-card-display] browser card refresh failed",
+          err,
+        );
+      }
+    };
+    void refresh();
+    // Same 5s cadence as the swarm-status block — keeps the multiaddr
+    // list in sync as the browser node discovers / loses listen addrs.
+    const id = setInterval(() => void refresh(), 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  // Assemble the public peer card. On native: read from the identity
+  // store (Phase 2 + 3). On web: use the browser-derived card above.
+  // All three components have to be present and non-empty — a card with
+  // no multiaddrs is unreachable and a card with no peerId can't be
+  // dialled.
   const card: PeerCard | null = useMemo(() => {
+    if (!isTauri()) return browserCard;
     if (!publicKeyHex) return null;
     if (!swarmPeerId) return null;
     if (!swarmMultiaddrs || swarmMultiaddrs.length === 0) return null;
@@ -177,7 +232,7 @@ export function PeerCardDisplay() {
       publicKeyHex,
       multiaddrs: swarmMultiaddrs,
     };
-  }, [publicKeyHex, swarmPeerId, swarmMultiaddrs]);
+  }, [publicKeyHex, swarmPeerId, swarmMultiaddrs, browserCard]);
 
   const deeplinkUrl = useMemo(
     () => (card ? encodeToDeeplink(card) : null),
@@ -232,22 +287,13 @@ export function PeerCardDisplay() {
     }
   };
 
-  // ── Web build placeholder ────────────────────────────────────────
-  if (!isTauri()) {
-    return (
-      <div className="border-t border-outline-variant/15 pt-6 space-y-2">
-        <h4 className="text-sm font-medium text-on-surface">Your Peer Card</h4>
-        <p className="text-xs text-on-surface-variant italic">
-          Peer pairing is available in native builds only.
-        </p>
-      </div>
-    );
-  }
-
-  // ── Native: card not yet assembled (loading / swarm starting up) ─
+  // ── Card not yet assembled (loading / swarm starting up) ────────
   if (!card) {
     return (
-      <div className="border-t border-outline-variant/15 pt-6 space-y-2">
+      <div
+        className="border-t border-outline-variant/15 pt-6 space-y-2"
+        data-testid="peer-card-display"
+      >
         <h4 className="text-sm font-medium text-on-surface">Your Peer Card</h4>
         <p className="text-xs text-on-surface-variant italic">
           Preparing your peer card… (waiting for the swarm to come up)
@@ -257,13 +303,27 @@ export function PeerCardDisplay() {
   }
 
   return (
-    <div className="border-t border-outline-variant/15 pt-6 space-y-3">
+    <div
+      className="border-t border-outline-variant/15 pt-6 space-y-3"
+      data-testid="peer-card-display"
+    >
       <div>
         <h4 className="text-sm font-medium text-on-surface">Your Peer Card</h4>
         <p className="text-xs text-on-surface-variant">
           Share this with another Concord install to pair directly without a
           server in the middle.
         </p>
+        {/* Phase 9 (browser P2P UI surface): make the ephemeral nature
+            of the browser session card explicit so users don't hand it
+            to a friend, close the tab, and wonder why pairing fails. */}
+        {!isTauri() && (
+          <p
+            className="text-xs text-on-surface-variant italic"
+            data-testid="peer-card-session-subtitle"
+          >
+            (session card — recipients can dial you while this tab is open)
+          </p>
+        )}
       </div>
 
       {/* QR code */}

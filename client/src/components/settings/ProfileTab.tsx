@@ -15,12 +15,23 @@ import {
   type LanPeer,
 } from "../../api/lanPeers";
 import { usePeerStore } from "../../stores/peerStore";
+import { getBrowserIdentity } from "../../libp2p/identity";
+import { getBrowserNodeIfStarted } from "../../libp2p/lazyNode";
+import { fingerprintForHex } from "../../libp2p/fingerprint";
+import type { Libp2p } from "@libp2p/interface";
 
 export function ProfileTab() {
   const client = useAuthStore((s) => s.client);
   const userId = useAuthStore((s) => s.userId);
   const logout = useAuthStore((s) => s.logout);
   const addToast = useToastStore((s) => s.addToast);
+
+  // Phase 9 (browser P2P UI surface): opening Settings → Profile is
+  // the trigger for booting the browser libp2p swarm. The hook is a
+  // no-op on Tauri (the Rust swarm IS the libp2p layer); on web it
+  // dynamically imports the libp2p chunk and starts the per-tab
+  // ephemeral node so the SwarmStatusSection below has data to show.
+  useBrowserLibp2p({ enabled: true });
 
   const currentName = userId?.split(":")[0].replace("@", "") ?? "";
   const [displayName, setDisplayName] = useState(currentName);
@@ -548,18 +559,13 @@ function PeerIdentitySection() {
     }
   };
 
-  // Native-only placeholder for the web build. We deliberately render the
-  // row so the visual structure stays consistent between native + web —
-  // hiding it entirely would make the User ID row look like a dead-end.
+  // Phase 9 (browser P2P UI surface): on web, render the per-tab
+  // ephemeral identity instead of a native-only placeholder. The row
+  // label changes to "Session identity (ephemeral)" so users understand
+  // the identity resets each tab; the fingerprint is computed from the
+  // same algorithm the native side uses (see `../../libp2p/fingerprint`).
   if (!isTauri() || error === IDENTITY_ERROR_NATIVE_ONLY) {
-    return (
-      <div className="flex items-center justify-between py-2">
-        <span className="text-sm text-on-surface-variant">Peer Identity</span>
-        <span className="text-sm text-on-surface-variant italic">
-          native builds only
-        </span>
-      </div>
-    );
+    return <BrowserSessionIdentityRow handleCopy={handleCopy} />;
   }
 
   return (
@@ -600,6 +606,138 @@ function PeerIdentitySection() {
           </>
         ) : (
           <span className="text-sm text-on-surface-variant italic">—</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Phase 9 (browser P2P UI surface) — web variant of the peer-identity
+ * row. Shows the per-tab ephemeral Ed25519 fingerprint derived from the
+ * browser libp2p identity, plus a tooltip explaining the ephemeral
+ * nature ("Native installs get a persistent identity tied to your
+ * install. To carry the same identity across reloads, install
+ * Concord."). The native row is left unchanged.
+ *
+ * The fingerprint algorithm matches the native `fingerprint_for()`
+ * formula bit-for-bit so a browser user sharing their fingerprint with
+ * a native user sees the same string format on both sides. See
+ * `../../libp2p/fingerprint.ts` for the wire definition + test vector.
+ *
+ * `handleCopy` is parameterized rather than re-declared here so the
+ * native + web rows share the same toast / clipboard behavior even
+ * though the fingerprint source differs. We still need a local clipboard
+ * copy for the ephemeral fingerprint because the parent's copy handler
+ * uses the native fingerprint from the identity store.
+ */
+function BrowserSessionIdentityRow(_props: { handleCopy: () => void }) {
+  // Underscore-prefixed prop because the web row uses a local copy
+  // handler that reads from `localFingerprint` directly — keeping the
+  // signature matches the native row's API surface for callers that
+  // might inject a custom copy handler in the future.
+  void _props;
+  const addToast = useToastStore((s) => s.addToast);
+  const [localFingerprint, setLocalFingerprint] = useState<string | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const identity = await getBrowserIdentity();
+        const fp = await fingerprintForHex(identity.publicKeyHex);
+        if (!cancelled) setLocalFingerprint(fp);
+      } catch (err) {
+        if (!cancelled) {
+          setIdentityError(
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleLocalCopy = async () => {
+    if (!localFingerprint) return;
+    try {
+      await navigator.clipboard.writeText(localFingerprint);
+      addToast("Session fingerprint copied", "success");
+    } catch {
+      addToast("Couldn't copy to clipboard", "error");
+    }
+  };
+
+  // Tooltip text: small, informational, NOT a sales pitch. The goal is
+  // to let users know the fingerprint resets each tab so they don't
+  // hand it to a friend and then wonder why pairing failed after a
+  // reload.
+  const tooltipText =
+    "Your browser tab gets a fresh peer identity each load. " +
+    "Native installs (Settings → About → Download) get a persistent " +
+    "identity tied to your install. To carry the same identity across " +
+    "reloads, install Concord.";
+
+  return (
+    <div className="flex items-center justify-between py-2 gap-3">
+      <div className="flex items-center gap-1.5">
+        <span className="text-sm text-on-surface-variant">
+          Session identity (ephemeral)
+        </span>
+        <span
+          className="material-symbols-outlined text-sm leading-none text-on-surface-variant cursor-help"
+          style={{
+            fontVariationSettings:
+              '"FILL" 0, "wght" 500, "GRAD" 0, "opsz" 20',
+          }}
+          title={tooltipText}
+          aria-label={tooltipText}
+          role="img"
+        >
+          info
+        </span>
+      </div>
+      <div className="flex items-center gap-2 min-w-0">
+        {identityError ? (
+          <span
+            className="text-sm text-error truncate"
+            title={identityError}
+          >
+            Failed to load
+          </span>
+        ) : localFingerprint ? (
+          <>
+            <span
+              className="text-sm text-on-surface-variant font-mono truncate"
+              title={localFingerprint}
+            >
+              {localFingerprint}
+            </span>
+            <button
+              type="button"
+              onClick={handleLocalCopy}
+              className="btn-press inline-flex items-center justify-center px-2 py-1 rounded-md text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors"
+              aria-label="Copy session fingerprint"
+              title="Copy session fingerprint"
+            >
+              <span
+                className="material-symbols-outlined text-base leading-none"
+                style={{
+                  fontVariationSettings:
+                    '"FILL" 0, "wght" 500, "GRAD" 0, "opsz" 24',
+                }}
+              >
+                content_copy
+              </span>
+            </button>
+          </>
+        ) : (
+          <span className="text-sm text-on-surface-variant italic">
+            Loading…
+          </span>
         )}
       </div>
     </div>
@@ -648,18 +786,15 @@ function SwarmStatusSection() {
     return () => clearInterval(id);
   }, []);
 
-  // Native-only placeholder for the web build. Same convention as
-  // PeerIdentitySection above — render the row so the visual structure
-  // stays consistent between native + web.
+  // Phase 9 (browser P2P UI surface): on web, render the browser
+  // swarm status instead of the native-only placeholder. The browser
+  // libp2p node is started by the parent `ProfileTab`'s
+  // `useBrowserLibp2p` hook, so by the time the user has the Profile
+  // tab open the swarm should be running (or starting). See
+  // `<BrowserSwarmStatusBlock />` for the live PeerId / multiaddrs /
+  // peer-count / last-event polling.
   if (!isTauri() || error === IDENTITY_ERROR_NATIVE_ONLY) {
-    return (
-      <div className="flex items-center justify-between py-2">
-        <span className="text-sm text-on-surface-variant">Swarm</span>
-        <span className="text-sm text-on-surface-variant italic">
-          native builds only
-        </span>
-      </div>
-    );
+    return <BrowserSwarmStatusBlock />;
   }
 
   return (
@@ -755,12 +890,10 @@ function SwarmStatusSection() {
 function PairedPeersSection() {
   const [scannerOpen, setScannerOpen] = useState(false);
 
-  // Phase 9 (bundle split): the paired-peers surface is the other
-  // trigger for lazily loading the browser libp2p stack. Mounting
-  // this section means the user is actively looking at P2P state,
-  // so we kick the swarm up here. No-op on Tauri (the Rust swarm IS
-  // the libp2p layer) — see `useBrowserLibp2p` for the detect path.
-  useBrowserLibp2p({ enabled: true });
+  // Phase 9 (browser P2P UI surface): the libp2p swarm-start hook now
+  // lives in the parent `ProfileTab` body so opening Settings → Profile
+  // is the trigger. No duplicate hook here — multiple consumers of the
+  // same singleton would only burn React renders.
 
   return (
     <div className="border-t border-outline-variant/15 pt-6 space-y-4">
@@ -774,12 +907,13 @@ function PairedPeersSection() {
       {/* Your card — QR + copyable link + post-to-room. */}
       <PeerCardDisplay />
 
-      {/* Add-a-peer launcher. */}
+      {/* Add-a-peer launcher. Phase 9: enabled on web because the
+          browser is now a real libp2p peer, the scanner has a paste
+          path on every platform, and a camera path where supported. */}
       <div className="flex justify-end">
         <button
           type="button"
           onClick={() => setScannerOpen(true)}
-          disabled={!isTauri()}
           className="px-4 py-2 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface text-sm rounded-md transition-colors"
         >
           Add a peer…
@@ -792,8 +926,11 @@ function PairedPeersSection() {
       {/* Peers on your LAN (post-2026-05-29 architecture redirect).
           mDNS-discovered peers on the local network are surfaced here
           alongside the persistent paired-peers list. One-click pair
-          promotes a LAN peer into the persistent peer store. */}
-      <LanPeersSection />
+          promotes a LAN peer into the persistent peer store.
+          Native-only: browsers have no portable mDNS surface to
+          enumerate from a tab, so the subsection is hidden entirely
+          on web rather than rendered as a permanent dead-state. */}
+      {isTauri() && <LanPeersSection />}
 
       {/* Scanner modal — mounted only while open so the camera
           permission prompt fires on demand, not on every Profile
@@ -853,17 +990,12 @@ function LanPeersSection() {
     }
   };
 
+  // `LanPeersSection` is only rendered on Tauri (the parent gates the
+  // mount). Keeping the guard as belt-and-braces means a future
+  // refactor that mistakenly mounts it on web still falls back to the
+  // safe placeholder rather than calling the Tauri-only event bus.
   if (!isTauri()) {
-    return (
-      <div className="space-y-1.5">
-        <div className="text-xs text-on-surface-variant uppercase tracking-wide">
-          Peers on your LAN
-        </div>
-        <p className="text-xs text-on-surface-variant italic">
-          LAN peer discovery (mDNS) runs in native builds only.
-        </p>
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -899,6 +1031,205 @@ function LanPeersSection() {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/**
+ * Phase 9 (browser P2P UI surface) — web variant of the swarm status
+ * block. Mirrors the four-row layout of the native version (Our PeerId,
+ * Listening on, Peers connected, Last event) but reads from the browser
+ * libp2p singleton via `getBrowserNodeIfStarted()` instead of the
+ * `peer_swarm_status` Tauri command.
+ *
+ * Polling cadence matches native (5 s). We additionally attach
+ * `peer:connect` / `peer:disconnect` listeners on the node so the
+ * "Last event" line updates immediately when a remote dial succeeds
+ * or drops — the poll catches the steady-state count but a fast
+ * connect-then-disconnect would otherwise vanish between polls.
+ *
+ * "Swarm not started" placeholder: if `getBrowserNodeIfStarted()`
+ * returns null (the lazy libp2p module hasn't been loaded yet —
+ * e.g. the user opened a non-Profile surface first and the parent
+ * hook hasn't kicked in), we render an informative hint rather than
+ * auto-starting the swarm here. The parent `ProfileTab` already starts
+ * the swarm via `useBrowserLibp2p({ enabled: true })`; this block
+ * just visualizes the result.
+ */
+function BrowserSwarmStatusBlock() {
+  const [node, setNode] = useState<Libp2p | null>(null);
+  const [peerId, setPeerId] = useState<string | null>(null);
+  const [multiaddrs, setMultiaddrs] = useState<string[]>([]);
+  const [peerCount, setPeerCount] = useState<number>(0);
+  const [lastEvent, setLastEvent] = useState<string | null>(null);
+
+  // Refresh helper — pulled out of the polling effect so the event
+  // listeners can call it directly when peers come and go.
+  useEffect(() => {
+    let cancelled = false;
+
+    const refresh = async () => {
+      const running = await getBrowserNodeIfStarted();
+      if (cancelled) return;
+      setNode(running);
+      if (!running) {
+        setPeerId(null);
+        setMultiaddrs([]);
+        setPeerCount(0);
+        return;
+      }
+      try {
+        setPeerId(running.peerId.toString());
+        setMultiaddrs(
+          running.getMultiaddrs().map((m) => m.toString()),
+        );
+        setPeerCount(running.getPeers().length);
+      } catch (err) {
+        // Defensive — js-libp2p's accessors generally don't throw, but
+        // a node in the middle of teardown can yield unexpected
+        // results. We swallow rather than tearing down the UI.
+        console.debug("[swarm-status] refresh failed", err);
+      }
+    };
+
+    void refresh();
+    const intervalId = setInterval(() => {
+      void refresh();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  // Wire connect / disconnect listeners onto the node once it's known.
+  useEffect(() => {
+    if (!node) return;
+    // libp2p's CustomEvent shape: detail is the PeerId of the remote.
+    // We label the line identically to the native side
+    // (`connected: <peer>` / `disconnected: <peer>`) so cross-platform
+    // documentation stays uniform.
+    const connectHandler = (e: CustomEvent<{ toString(): string }>) => {
+      const remote = e.detail?.toString() ?? "<unknown>";
+      setLastEvent(`connected: ${remote}`);
+      // Also bump the count immediately rather than waiting for the
+      // next poll — better UX for the "I just paired, did it work?"
+      // flow.
+      setPeerCount((c) => c + 1);
+    };
+    const disconnectHandler = (
+      e: CustomEvent<{ toString(): string }>,
+    ) => {
+      const remote = e.detail?.toString() ?? "<unknown>";
+      setLastEvent(`disconnected: ${remote}`);
+      setPeerCount((c) => Math.max(0, c - 1));
+    };
+    node.addEventListener(
+      "peer:connect",
+      connectHandler as EventListener,
+    );
+    node.addEventListener(
+      "peer:disconnect",
+      disconnectHandler as EventListener,
+    );
+    return () => {
+      node.removeEventListener(
+        "peer:connect",
+        connectHandler as EventListener,
+      );
+      node.removeEventListener(
+        "peer:disconnect",
+        disconnectHandler as EventListener,
+      );
+    };
+  }, [node]);
+
+  if (!node) {
+    return (
+      <div className="space-y-2 py-2">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm text-on-surface-variant">Swarm</span>
+          <span
+            className="text-xs text-on-surface-variant italic text-right"
+            title="The browser libp2p swarm is started on demand. Open a voice channel or paired-peers section to spin it up."
+          >
+            Browser swarm not started — open a voice channel or
+            paired-peers section to start it.
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 py-2">
+      {/* Our PeerId */}
+      <div className="flex items-start justify-between gap-3">
+        <span className="text-sm text-on-surface-variant pt-0.5">
+          Our PeerId
+        </span>
+        <div className="flex items-center gap-2 min-w-0">
+          {peerId ? (
+            <span
+              className="text-sm text-on-surface-variant font-mono truncate"
+              title={peerId}
+            >
+              {peerId}
+            </span>
+          ) : (
+            <span className="text-sm text-on-surface-variant italic">
+              starting…
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Listening multiaddrs */}
+      <div className="flex items-start justify-between gap-3">
+        <span className="text-sm text-on-surface-variant pt-0.5">
+          Listening on
+        </span>
+        <div className="flex flex-col items-end gap-0.5 min-w-0">
+          {multiaddrs.length === 0 ? (
+            <span className="text-sm text-on-surface-variant italic">—</span>
+          ) : (
+            multiaddrs.map((addr) => (
+              <span
+                key={addr}
+                className="text-xs text-on-surface-variant font-mono truncate"
+                title={addr}
+              >
+                {addr}
+              </span>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Peer count */}
+      <div
+        className="flex items-center justify-between gap-3"
+        data-testid="swarm-peers-row"
+      >
+        <span className="text-sm text-on-surface-variant">
+          Peers connected
+        </span>
+        <span className="text-sm text-on-surface-variant font-mono">
+          {peerCount}
+        </span>
+      </div>
+
+      {/* Last event */}
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm text-on-surface-variant">Last event</span>
+        <span
+          className="text-xs text-on-surface-variant truncate"
+          title={lastEvent ?? undefined}
+        >
+          {lastEvent ?? "—"}
+        </span>
+      </div>
     </div>
   );
 }
