@@ -270,6 +270,12 @@ SMTP_USER=""
 SMTP_PASS=""
 SMTP_FROM=""
 FREESOUND_KEY=""
+# TLS strategy threaded into Caddy via the TLS_MODE env var. Empty
+# falls back to each Caddyfile's documented default
+# (internal_longlived for dev, letsencrypt_http01 for prod). See
+# .env.example and config/Caddyfile* for the mode matrix.
+TLS_MODE=""
+ACME_EMAIL=""
 
 # ── Step 1: Server Name ──────────────────────────────────────────────
 
@@ -777,6 +783,48 @@ wizard_step_3() {
         echo -e "${DIM}If your domain is behind a CDN, use a direct IP or subdomain.${NC}"
         read_input "TURN host: " "${TURN_HOST:-${LIVEKIT_TURN_DOMAIN}}" TURN_HOST || return 1
 
+        # ── TLS strategy (only meaningful when Caddy is fronting TLS) ──
+        # SITE_ADDRESS that's port-only (`:8080`) means Caddy serves
+        # plain HTTP and the TLS_MODE knob is a no-op — skip the prompt.
+        if [ "$USE_HTTPS" = true ]; then
+          echo ""
+          echo -e "${BOLD}TLS strategy${NC}"
+          echo -e "${DIM}How should Caddy obtain TLS certificates? See .env.example for full details.${NC}"
+          echo ""
+          echo -e "  ${BOLD}1${NC}  internal_longlived           ${DIM}Tailscale-only / LAN; self-signed (~9y)${NC}"
+          echo -e "  ${BOLD}2${NC}  letsencrypt_http01           ${DIM}Public origin reachable on port 80${NC}"
+          echo -e "  ${BOLD}3${NC}  letsencrypt_dns01_cloudflare ${DIM}Cloudflare DNS-01 (no public reachability)${NC}"
+          echo ""
+          local TLS_CHOICE
+          while true; do
+            echo -en "${CYAN}Choose [1-3, default 2]: ${NC}"
+            read -r TLS_CHOICE
+            if [ "$TLS_CHOICE" = "back" ]; then return 1; fi
+            TLS_CHOICE=${TLS_CHOICE:-2}
+            case "$TLS_CHOICE" in
+              1) TLS_MODE="internal_longlived"; break ;;
+              2) TLS_MODE="letsencrypt_http01"; break ;;
+              3) TLS_MODE="letsencrypt_dns01_cloudflare"; break ;;
+              *) warn "Please choose 1, 2, or 3." ;;
+            esac
+          done
+          if [[ "$TLS_MODE" == letsencrypt_* ]]; then
+            echo ""
+            echo -e "${DIM}Optional ACME contact email — Let's Encrypt uses this for expiry warnings.${NC}"
+            echo -e "${DIM}Leave blank to skip (Caddy creates an anonymous account).${NC}"
+            read_input "ACME email: " "${ACME_EMAIL:-}" ACME_EMAIL || return 1
+          fi
+          if [ "$TLS_MODE" = "letsencrypt_dns01_cloudflare" ]; then
+            echo ""
+            echo -e "${DIM}DNS-01 mode requires a Cloudflare API token with${NC}"
+            echo -e "${DIM}Zone.Zone:Read + Zone.DNS:Edit on the zone hosting your domain.${NC}"
+            echo -e "${DIM}See .env.example for the token-minting walkthrough. Paste it below${NC}"
+            echo -e "${DIM}or leave blank and set CLOUDFLARE_API_TOKEN in .env later.${NC}"
+            read_input "CLOUDFLARE_API_TOKEN: " "${DNS_API_TOKEN:-}" DNS_API_TOKEN || return 1
+          fi
+          info "TLS_MODE=${TLS_MODE}"
+        fi
+
         echo ""
         info "Manual network configuration set"
         ;;
@@ -1001,6 +1049,15 @@ SITE_URL="${SITE_URL}"
 # ── Cloudflare Tunnel ────────────────────────────────────────────
 # Set by the installer when using automatic mode. Leave empty to disable.
 TUNNEL_TOKEN="${TUNNEL_TOKEN}"
+
+# ── TLS strategy (Caddy) ───────────────────────────────────────────
+# Empty falls back to each Caddyfile's documented default
+# (internal_longlived for dev, letsencrypt_http01 for prod). See
+# .env.example for the full mode matrix.
+TLS_MODE="${TLS_MODE}"
+ACME_EMAIL="${ACME_EMAIL}"
+# Cloudflare API token — only consumed when TLS_MODE=letsencrypt_dns01_cloudflare.
+CLOUDFLARE_API_TOKEN="${DNS_API_TOKEN:-}"
 
 # ── LiveKit (Voice/Video) ─────────────────────────────────────────
 LIVEKIT_API_KEY="${LK_KEY}"

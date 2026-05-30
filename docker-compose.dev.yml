@@ -85,11 +85,12 @@ services:
       # Caddy's actual HTTPS listener inside the container.
       - "${BIND_HOST:-0.0.0.0}:443:8443"
     environment:
-      # Cloudflare API token for Caddy's DNS-01 ACME challenge. See
-      # .env.example for the token-permissions rationale. Required when
-      # SITE_ADDRESS resolves to a Tailscale-only origin (or any other
-      # origin not reachable from the public internet for HTTP-01).
-      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      # Override the prod-default TLS_MODE so the dev stack falls back
+      # to internal_longlived when the operator leaves TLS_MODE empty
+      # in .env. ACME_EMAIL / CLOUDFLARE_API_TOKEN are inherited from
+      # the base compose's web env block. See .env.example for the
+      # operator-facing TLS_MODE matrix.
+      TLS_MODE: ${TLS_MODE:-internal_longlived}
     depends_on:
       conduwuit:
         condition: service_started

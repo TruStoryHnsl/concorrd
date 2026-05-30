@@ -59,6 +59,15 @@ jobs:
       - name: Run port-coherence lint
         run: python3 scripts/lint_config_coherence.py
 
+      - name: TLS_MODE Caddyfile matrix lint
+        # Validates both Caddyfiles adapt cleanly across the three
+        # TLS_MODE values + unset fallback. Skips the DNS-01 case
+        # when concord-web image is not pre-built (CI doesn't build
+        # the web image at this stage). The plumbing check still
+        # runs via the Python lint above, so a missing snippet
+        # would already be caught at line 60.
+        run: bash scripts/lint_tls_mode_matrix.sh
+
   client-tests:
     name: client / vitest + build
     runs-on: ubuntu-latest
