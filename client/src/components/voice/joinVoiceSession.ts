@@ -88,33 +88,75 @@ export async function joinVoiceSession({
     ctx?.close();
   }
 
-  // Phase 8 (INS-019b) — ask the native servitude layer which voice
-  // path to use. Mesh decisions land in this PR; the mesh-MEDIA layer
-  // (real audio over libp2p WebRTC via webrtc-rs) is queued as a
-  // Phase 8 follow-up. Until that lands the decision is logged and
-  // we fall through to LiveKit so the existing working voice path
-  // remains the default behavior.
-  //
-  // Web builds short-circuit to `livekit_sfu` inside `selectVoicePath`;
-  // a browser tab can't participate in the libp2p mesh until Phase 9
-  // (js-libp2p in the browser client) ships.
+  // Phase 8 follow-up — ask the native servitude layer which voice
+  // path to use. If the selector picks `libp2p_mesh`, attempt the
+  // mesh-join Tauri command; on success the function returns early
+  // and LiveKit is never contacted. On any failure (no native
+  // runtime, command errored, peer connection setup failed) the flow
+  // falls through to the existing LiveKit path — the same property
+  // that holds today, plus a real mesh-media-plane attempt in front.
+  let meshJoined = false;
   try {
     // The Phase 8 selector treats `peer_id === null` as a web-only
-    // participant. The room-roster → peer-store resolution lands as
-    // part of the Phase 8 media follow-up; for now we send an empty
-    // participant list, which the Rust selector evaluates as a
-    // degenerate mesh case (path: "libp2p_mesh", reason:
-    // "all_native_under_cap"). This is informational only — the
-    // result is logged but does NOT branch the join flow yet.
+    // participant. The room-roster → peer-store resolution still
+    // lands as a follow-up; today we send an empty participant
+    // list. With no remotes named, mesh-join is a degenerate
+    // single-peer call (the orchestrator wires the local
+    // PeerConnection + signaling sink so subsequent inbound Offers
+    // from late joiners are still handled).
     const participants: VoiceParticipant[] = [];
     const decision = await selectVoicePath(participants);
     if (decision.path === "libp2p_mesh") {
       // eslint-disable-next-line no-console
       console.info(
-        "[voice] libp2p mesh selected (Phase 8 scaffolding); " +
-          "falling back to LiveKit for media — " +
-          `reason=${decision.reason}`,
+        `[voice] libp2p mesh selected — reason=${decision.reason}; attempting mesh-join`,
       );
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("voice_mesh_join", {
+          roomId,
+          participants: participants
+            .map((p) => p.peer_id)
+            .filter((p): p is string => !!p),
+          iceServers: [] as string[],
+        });
+        useVoiceStore.getState().connect({
+          token: "",
+          livekitUrl: "",
+          iceServers: [],
+          serverId,
+          serverName: serverName ?? activeServer?.name ?? null,
+          channelId: roomId,
+          channelName,
+          channelType: channelType ?? "voice",
+          roomName: roomId,
+          returnChannelId:
+            returnChannelIdOverride ??
+            activeServer?.channels.find(
+              (channel) =>
+                channel.matrix_room_id === activeChannelId &&
+                channel.channel_type !== "voice",
+            )?.matrix_room_id ??
+            null,
+          returnChannelName:
+            returnChannelNameOverride ??
+            activeServer?.channels.find(
+              (channel) =>
+                channel.matrix_room_id === activeChannelId &&
+                channel.channel_type !== "voice",
+            )?.name ??
+            null,
+          micGranted,
+          transport: "libp2p_mesh",
+        });
+        meshJoined = true;
+      } catch (meshErr) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[voice] mesh-join failed; falling back to LiveKit",
+          meshErr,
+        );
+      }
     } else {
       // eslint-disable-next-line no-console
       console.info(
@@ -131,6 +173,7 @@ export async function joinVoiceSession({
       decisionErr,
     );
   }
+  if (meshJoined) return;
 
   let result;
   try {

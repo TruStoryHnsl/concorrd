@@ -299,6 +299,37 @@ impl ServitudeHandle {
         None
     }
 
+    /// Phase 8 follow-up — wire the voice-call registry into the
+    /// libp2p runtime so the signaling handler routes inbound
+    /// envelopes through the orchestrator. MUST be called BEFORE
+    /// `start()` for the real sink to be installed.
+    pub fn set_voice_registry(
+        &mut self,
+        registry: std::sync::Arc<crate::servitude::voice::VoiceCallRegistry>,
+    ) {
+        for runtime in &mut self.transports {
+            runtime.set_voice_registry(registry.clone());
+        }
+    }
+
+    /// Phase 8 follow-up — clone of the outbound voice signaling
+    /// sender. Returns `None` for handles with no libp2p runtime.
+    pub fn voice_outbound_sender(
+        &self,
+    ) -> Option<
+        tokio::sync::mpsc::Sender<(
+            libp2p::PeerId,
+            crate::servitude::voice::SignalingMessage,
+        )>,
+    > {
+        for runtime in &self.transports {
+            if let Some(tx) = runtime.voice_outbound_sender() {
+                return Some(tx);
+            }
+        }
+        None
+    }
+
     /// Drive the state machine `Stopped -> Starting -> Running`, bringing
     /// up each enabled transport in config order.
     ///

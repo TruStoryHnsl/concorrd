@@ -27,10 +27,16 @@
 //! same property as the Phase 8 design doc's "What's NOT in scope"
 //! note on CGNAT + no-docker mobile-mobile calls.
 
+pub mod call;
+pub mod error;
+pub mod media;
 pub mod selector;
 pub mod signaling;
 pub mod webrtc_peer;
 
+pub use call::{CallState, VoiceCall, VoiceCallRegistry, VoiceCallSinkImpl};
+pub use error::VoiceError;
+pub use media::{build_media_api, MediaApi, WebRtcMediaPeer};
 pub use selector::{ParticipantKind, VoicePath, VoicePathReason, VoicePathSelector};
 pub use signaling::{
     send_signaling, SignalingMessage, VoiceCallSink, VoiceSignalingHandler,
