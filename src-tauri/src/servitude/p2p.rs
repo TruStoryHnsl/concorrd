@@ -14,10 +14,15 @@
 //! ## Behaviour composition
 //!
 //! The `Behaviour` derive-macro composes the protocols required by the
-//! Phase 3 design doc:
+//! post-2026-05-29 architecture redirect (see
+//! `docs/architecture/p2p-design.md` § Phase 4):
 //!
-//!   * [`libp2p::kad::Behaviour`] — Kademlia DHT (no bootstrap seeds at
-//!     Phase 3; Phase 4 wires project bootstrap nodes).
+//!   * [`libp2p::mdns::tokio::Behaviour`] — LAN-local peer discovery via
+//!     multicast DNS. Replaces the prior Kademlia DHT + project-run
+//!     bootstrap fleet. WAN peers are discovered exclusively through the
+//!     Phase-5 peer-card flow (QR / `concord://` deeplink / Matrix-room
+//!     exchange) — no project-run infrastructure, no third-party
+//!     bootstrap dependency.
 //!   * [`libp2p::identify::Behaviour`] — peer-version exchange. Protocol
 //!     version string is `"concord/<package-version>"`.
 //!   * [`libp2p::ping::Behaviour`] — liveness.
@@ -44,7 +49,8 @@
 //! [`LibP2pTransport::subscribe`] returns a `broadcast::Receiver` over the
 //! lightweight [`SwarmEvent`] enum. The full `libp2p::swarm::SwarmEvent`
 //! shape is intentionally not exposed — the React UI only needs to know
-//! about listen-address changes, peer-count changes, and dial outcomes.
+//! about listen-address changes, peer-count changes, dial outcomes, and
+//! mDNS-discovered LAN peers.
 
 use std::collections::HashSet;
 use std::io;
@@ -54,7 +60,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::prelude::*;
 use libp2p::{
-    dcutr, gossipsub, identify, identity as libp2p_identity, kad, ping, relay, request_response,
+    dcutr, gossipsub, identify, identity as libp2p_identity, mdns, ping, relay, request_response,
     swarm::{NetworkBehaviour, SwarmEvent as LibP2pSwarmEvent},
     Multiaddr, PeerId, StreamProtocol,
 };
@@ -62,7 +68,6 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::broadcast;
 
-use crate::servitude::bootstrap;
 use crate::servitude::federation::FederationHandler;
 use crate::servitude::identity::{self, PeerIdentity, StrongholdHandle};
 
@@ -73,10 +78,6 @@ const IDENTIFY_PROTOCOL_VERSION: &str = concat!("concord/", env!("CARGO_PKG_VERS
 /// Identify agent-version string — included in remote peers' Identify
 /// payloads for human-readable diagnostics.
 const IDENTIFY_AGENT_VERSION: &str = concat!("concord/", env!("CARGO_PKG_VERSION"));
-
-/// Kademlia protocol name. Distinct namespace from `/ipfs/kad/1.0.0` so
-/// Concord swarms don't accidentally cross-pollinate with public IPFS DHTs.
-const KAD_PROTOCOL: StreamProtocol = StreamProtocol::new("/concord/kad/1.0.0");
 
 /// Request-response protocol name. Phase 3 placeholder; concrete payload
 /// types land in Phase 4+.
@@ -94,15 +95,6 @@ const MAX_FRAME_BYTES: u64 = 1024 * 1024;
 /// Capacity of the event broadcast channel. Slow subscribers will drop
 /// older events rather than back-pressure the swarm loop.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
-
-/// Phase 4 Kademlia bootstrap retry — initial backoff after a failed
-/// `kad::bootstrap()` call.
-const BOOTSTRAP_RETRY_INITIAL: Duration = Duration::from_secs(5);
-
-/// Phase 4 Kademlia bootstrap retry — backoff ceiling. Doubles each
-/// failed attempt until it hits this cap; from there every retry
-/// happens at this fixed interval.
-const BOOTSTRAP_RETRY_MAX: Duration = Duration::from_secs(300);
 
 /// Errors raised while constructing or driving the libp2p transport.
 #[derive(Debug, Error)]
@@ -128,6 +120,9 @@ pub enum P2pError {
     #[error("listen failed: {0}")]
     ListenFailed(String),
 
+    #[error("mdns init failed: {0}")]
+    MdnsInit(String),
+
     #[error("io error: {0}")]
     Io(#[from] io::Error),
 }
@@ -146,13 +141,19 @@ pub enum SwarmEvent {
         peer_id: Option<PeerId>,
         reason: String,
     },
-    /// Phase 4: the Kad routing table picked up (or refreshed) a peer.
-    /// `peer_count` is the number of distinct peers the local node has
-    /// seen via Kad routing updates over the swarm's lifetime — NOT a
-    /// live count of currently-routable peers (libp2p's routing table
-    /// doesn't expose a cheap snapshot count, and the UI cares about
-    /// "is the DHT alive?" more than the exact size).
-    DhtRoutingUpdated { peer_count: usize },
+    /// Post-2026-05-29 redirect: mDNS picked up a peer on the local
+    /// network. The UI surfaces these as "Peers on your LAN" alongside
+    /// the persistent Phase-5 paired-peers list. The user can one-click
+    /// pair any LAN peer to promote it into the persistent store.
+    ///
+    /// `peer_id` is the remote's libp2p `PeerId` in base58, and
+    /// `multiaddrs` carries every multiaddr mDNS reported for that peer
+    /// in the announcement burst. Both fields are pre-stringified so
+    /// the React side doesn't need to import a Multiaddr type.
+    MdnsPeerDiscovered {
+        peer_id: String,
+        multiaddrs: Vec<String>,
+    },
     /// Phase 6: an inbound libp2p stream was accepted for a registered
     /// federation protocol ID and is being driven by the matching
     /// `FederationHandler`. `protocol_id` is the literal stream protocol
@@ -168,7 +169,9 @@ pub enum SwarmEvent {
 /// implementing [`libp2p::swarm::NetworkBehaviour`] over each field.
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
-    pub kad: kad::Behaviour<kad::store::MemoryStore>,
+    /// LAN-local peer discovery via multicast DNS. Replaces the prior
+    /// Kademlia DHT (removed 2026-05-29) — see module docs.
+    pub mdns: mdns::tokio::Behaviour,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
@@ -215,8 +218,7 @@ impl LibP2pTransport {
     /// Build a new transport. The PeerId is derived from the same per-install
     /// Ed25519 seed that backs Phase 2's user-visible `PeerIdentity` (see
     /// [`identity::peer_seed`]). The swarm starts listening on ephemeral TCP
-    /// + QUIC ports and seeds Kad with the hardcoded project bootstrap nodes
-    /// (Phase 4 — see [`crate::servitude::bootstrap`]).
+    /// + QUIC ports and spins up mDNS for LAN-local peer discovery.
     ///
     /// `peer_identity` is taken for cross-derivation sanity — the libp2p
     /// keypair's public key bytes must match `peer_identity.public_key`,
@@ -224,29 +226,6 @@ impl LibP2pTransport {
     pub async fn new(
         peer_identity: &PeerIdentity,
         stronghold: &StrongholdHandle,
-    ) -> Result<Self, P2pError> {
-        Self::new_inner(peer_identity, stronghold, bootstrap::bootstrap_multiaddrs()).await
-    }
-
-    /// Test/integration-only constructor that lets the caller substitute a
-    /// custom bootstrap multiaddr list in place of the hardcoded production
-    /// list. Used by `tests/p2p_test.rs` to spin up loopback bootstrap
-    /// swarms without depending on real DNS or the deployed VPS fleet.
-    ///
-    /// Production code MUST keep using [`Self::new`]; the hardcoded list is
-    /// the only project-controlled bootstrap surface.
-    pub async fn new_with_bootstrap_override(
-        peer_identity: &PeerIdentity,
-        stronghold: &StrongholdHandle,
-        bootstrap_addrs: Vec<Multiaddr>,
-    ) -> Result<Self, P2pError> {
-        Self::new_inner(peer_identity, stronghold, bootstrap_addrs).await
-    }
-
-    async fn new_inner(
-        peer_identity: &PeerIdentity,
-        stronghold: &StrongholdHandle,
-        bootstrap_addrs: Vec<Multiaddr>,
     ) -> Result<Self, P2pError> {
         // Pull the per-install seed out of the identity module's cache.
         // Bytes are wrapped in `Zeroizing` so they wipe themselves when the
@@ -308,13 +287,14 @@ impl LibP2pTransport {
             .with_behaviour(|key, relay_client| -> Result<Behaviour, Box<dyn std::error::Error + Send + Sync>> {
                 let local_id = PeerId::from_public_key(&key.public());
 
-                // Kad with an in-memory routing table. Phase 4 swaps in a
-                // disk-backed store and wires bootstrap nodes.
-                let mut kad_config = kad::Config::new(KAD_PROTOCOL);
-                kad_config.set_query_timeout(Duration::from_secs(60));
-                let kad_store = kad::store::MemoryStore::new(local_id);
-                let kad =
-                    kad::Behaviour::with_config(local_id, kad_store, kad_config);
+                // mDNS: LAN-local discovery. Default config matches the
+                // standard libp2p multicast interval; no rendezvous
+                // service, no DNS-SD external dependency, no project-run
+                // infra. Fresh installs on the same tailnet / home LAN
+                // see each other silently within seconds. WAN peers are
+                // discovered via the Phase-5 peer-card flow exclusively.
+                let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), local_id)
+                    .map_err(|e| format!("mdns init: {e}"))?;
 
                 let identify = identify::Behaviour::new(identify::Config::new(
                     IDENTIFY_PROTOCOL_VERSION.to_string(),
@@ -350,7 +330,7 @@ impl LibP2pTransport {
                 let stream = libp2p_stream::Behaviour::new();
 
                 Ok(Behaviour {
-                    kad,
+                    mdns,
                     identify,
                     ping,
                     gossipsub,
@@ -366,7 +346,8 @@ impl LibP2pTransport {
             .build();
 
         // Start listening on ephemeral QUIC + TCP. Order is QUIC first
-        // because the QUIC listener is what test 2 asserts on.
+        // because the QUIC listener is what `swarm_reports_listening_multiaddr_on_quic`
+        // asserts on.
         let quic_addr: Multiaddr = LISTEN_QUIC.parse()?;
         swarm
             .listen_on(quic_addr)
@@ -375,43 +356,6 @@ impl LibP2pTransport {
         swarm
             .listen_on(tcp_addr)
             .map_err(|e| P2pError::ListenFailed(format!("tcp: {e}")))?;
-
-        // Phase 4 (INS-019b) — Kademlia bootstrap wiring.
-        //
-        // Native builds default to Client mode: they consume the DHT
-        // for peer lookups but don't expose their kbucket to the wider
-        // network. The docker / always-on profile gets Server mode in
-        // a follow-up commit (no per-profile config flag exists yet, so
-        // we hardcode Client here and document the override path).
-        //
-        // We don't dial bootstrap peers explicitly — Kad's own
-        // bootstrap query walks the addresses we register via
-        // `add_address` below. The first bootstrap attempt may race
-        // listener setup and fail; the retry loop in `run()` handles
-        // that with exponential backoff.
-        swarm
-            .behaviour_mut()
-            .kad
-            .set_mode(Some(kad::Mode::Client));
-        let bootstrap_count = seed_kad_bootstrap(&mut swarm, &bootstrap_addrs);
-        log::debug!(
-            target: "concord::servitude::p2p",
-            "seeded kad with {bootstrap_count} bootstrap address(es)"
-        );
-        // First bootstrap attempt. `NoKnownPeers` here is expected when
-        // the bootstrap list is empty (no addresses parsed) — the
-        // retry loop in `run()` will pick it up again once listeners
-        // are alive. Never panic, never error out.
-        match swarm.behaviour_mut().kad.bootstrap() {
-            Ok(qid) => log::debug!(
-                target: "concord::servitude::p2p",
-                "initial kad bootstrap query started (id={qid:?})"
-            ),
-            Err(e) => log::debug!(
-                target: "concord::servitude::p2p",
-                "initial kad bootstrap deferred: {e} (retry loop will pick it up)"
-            ),
-        }
 
         // Phase 6: extract the stream-behaviour control BEFORE moving the
         // swarm into Self. Control is `Clone` so subsequent calls to
@@ -475,8 +419,8 @@ impl LibP2pTransport {
     }
 
     /// Mutable access to the underlying swarm. Used by integration tests
-    /// (and Phase 4 dial logic) to issue `dial()` calls without having to
-    /// re-implement the event loop.
+    /// to issue `dial()` calls without having to re-implement the event
+    /// loop.
     pub fn swarm_mut(&mut self) -> &mut libp2p::Swarm<Behaviour> {
         &mut self.swarm
     }
@@ -485,22 +429,8 @@ impl LibP2pTransport {
     /// events into the lightweight [`SwarmEvent`] enum and publishes them
     /// on the broadcast channel. Continues on per-event errors; exits only
     /// when the shutdown sender is signalled.
-    ///
-    /// Also drives the Phase 4 Kad bootstrap retry: on
-    /// `kad::QueryResult::Bootstrap(Err(_))` we schedule a retry with
-    /// exponential backoff (5s → 10s → 20s → … capped at 5 min). The
-    /// retry is logged at `debug!` rather than `error!` — bootstrap
-    /// failure during a transient network drop must not surface as a
-    /// red banner in the UI.
     pub async fn run(mut self) {
         let mut connected: HashSet<PeerId> = HashSet::new();
-        let mut dht_peers: HashSet<PeerId> = HashSet::new();
-        let mut bootstrap_backoff = BOOTSTRAP_RETRY_INITIAL;
-        // `Pin<Box<Sleep>>` so we can hold a single sleep future across
-        // `select!` iterations and reset/replace it in place when a new
-        // backoff window is needed.
-        let bootstrap_retry = tokio::time::sleep(Duration::from_secs(60 * 60 * 24));
-        tokio::pin!(bootstrap_retry);
 
         // Phase 6: bootstrap inbound stream acceptors per registered
         // federation handler. Each handler gets its own `IncomingStreams`
@@ -564,34 +494,12 @@ impl LibP2pTransport {
                     );
                     break;
                 }
-                _ = &mut bootstrap_retry => {
-                    // Push the timer way out so it doesn't fire again
-                    // until we re-arm it on the next Bootstrap(Err).
-                    bootstrap_retry
-                        .as_mut()
-                        .reset(tokio::time::Instant::now() + Duration::from_secs(60 * 60 * 24));
-                    match self.swarm.behaviour_mut().kad.bootstrap() {
-                        Ok(qid) => log::debug!(
-                            target: "concord::servitude::p2p",
-                            "kad bootstrap retry started (id={qid:?})"
-                        ),
-                        Err(e) => log::debug!(
-                            target: "concord::servitude::p2p",
-                            "kad bootstrap retry deferred (no known peers): {e}"
-                        ),
-                    }
-                }
                 event = self.swarm.select_next_some() => {
-                    // Tap Kad events for routing/bootstrap signals first;
-                    // some of them flow straight through to the
-                    // lightweight SwarmEvent translation below.
-                    handle_kad_event(
-                        &event,
-                        &mut dht_peers,
-                        &mut bootstrap_backoff,
-                        bootstrap_retry.as_mut(),
-                        &self.event_tx,
-                    );
+                    // Tap mDNS events first so LAN-discovered peers
+                    // surface as SwarmEvent::MdnsPeerDiscovered. The
+                    // generic translation below handles
+                    // listen-addr/peer-count/dial signals.
+                    handle_mdns_event(&event, &self.event_tx);
                     if let Some(translated) = translate_event(event, &mut connected) {
                         // broadcast::send errors only when there are no
                         // subscribers — drop silently.
@@ -603,101 +511,51 @@ impl LibP2pTransport {
     }
 }
 
-/// Inspect a raw swarm event for Phase 4 Kad signals and publish a
-/// `DhtRoutingUpdated` or schedule a bootstrap retry as appropriate.
+/// Inspect a raw swarm event for mDNS signals and publish one
+/// `MdnsPeerDiscovered` per peer the announcement burst named.
 ///
 /// Pure-ish helper kept outside `LibP2pTransport::run` so the borrow on
 /// `&self.swarm` (via `select_next_some()`) doesn't conflict with the
-/// mutable accesses this helper needs to `dht_peers` / the sleep timer
-/// / the event broadcaster. Takes the event by reference so the main
+/// event broadcaster. Takes the event by reference so the main
 /// `translate_event` call still owns + consumes it.
-fn handle_kad_event(
+fn handle_mdns_event(
     event: &LibP2pSwarmEvent<BehaviourEvent>,
-    dht_peers: &mut HashSet<PeerId>,
-    backoff: &mut Duration,
-    mut retry: std::pin::Pin<&mut tokio::time::Sleep>,
     event_tx: &broadcast::Sender<SwarmEvent>,
 ) {
-    let kad_ev = match event {
-        LibP2pSwarmEvent::Behaviour(BehaviourEvent::Kad(e)) => e,
+    let mdns_ev = match event {
+        LibP2pSwarmEvent::Behaviour(BehaviourEvent::Mdns(e)) => e,
         _ => return,
     };
-    match kad_ev {
-        kad::Event::RoutingUpdated { peer, .. } => {
-            dht_peers.insert(*peer);
-            let _ = event_tx.send(SwarmEvent::DhtRoutingUpdated {
-                peer_count: dht_peers.len(),
-            });
-        }
-        kad::Event::OutboundQueryProgressed {
-            result: kad::QueryResult::Bootstrap(Err(e)),
-            ..
-        } => {
-            log::debug!(
-                target: "concord::servitude::p2p",
-                "kad bootstrap query failed: {e:?} — retrying in {:?}",
-                *backoff
-            );
-            retry.as_mut().reset(tokio::time::Instant::now() + *backoff);
-            // Exponential backoff, capped at BOOTSTRAP_RETRY_MAX.
-            *backoff = (*backoff * 2).min(BOOTSTRAP_RETRY_MAX);
-        }
-        kad::Event::OutboundQueryProgressed {
-            result: kad::QueryResult::Bootstrap(Ok(_)),
-            ..
-        } => {
-            // Successful bootstrap — reset the backoff so a later
-            // network drop starts over at the small initial window
-            // instead of compounding from the prior failure run.
-            *backoff = BOOTSTRAP_RETRY_INITIAL;
-        }
-        _ => {}
-    }
-}
-
-/// Pin each bootstrap address to its embedded PeerId in the Kad
-/// routing table. Returns the number of addresses successfully seeded.
-///
-/// Multiaddrs without a trailing `/p2p/<peer-id>` component are
-/// silently dropped — we have no PeerId to add them under, and silently
-/// dropping is the right call for a hardcoded list (a malformed entry
-/// during development must not break bootstrap altogether).
-fn seed_kad_bootstrap(
-    swarm: &mut libp2p::Swarm<Behaviour>,
-    bootstrap_addrs: &[Multiaddr],
-) -> usize {
-    let mut seeded = 0usize;
-    for addr in bootstrap_addrs {
-        // Walk the protocol stack to extract the trailing /p2p/<peer>
-        // component AND collect the address portion that precedes it
-        // (which is what `kad.add_address` actually wants — the dial
-        // address without the redundant peer suffix).
-        let mut peer_id: Option<PeerId> = None;
-        let mut addr_without_peer = Multiaddr::empty();
-        for proto in addr.iter() {
-            if let libp2p::multiaddr::Protocol::P2p(pid) = proto {
-                peer_id = Some(pid);
-            } else {
-                addr_without_peer.push(proto);
+    match mdns_ev {
+        mdns::Event::Discovered(list) => {
+            // mDNS reports a flat list of (peer_id, multiaddr) tuples;
+            // group by peer so a single discovery burst becomes one
+            // event per distinct peer with every multiaddr the burst
+            // reported.
+            use std::collections::HashMap;
+            let mut by_peer: HashMap<PeerId, Vec<String>> = HashMap::new();
+            for (peer_id, addr) in list.iter() {
+                by_peer
+                    .entry(*peer_id)
+                    .or_default()
+                    .push(addr.to_string());
+            }
+            for (peer_id, multiaddrs) in by_peer {
+                let _ = event_tx.send(SwarmEvent::MdnsPeerDiscovered {
+                    peer_id: peer_id.to_string(),
+                    multiaddrs,
+                });
             }
         }
-        match peer_id {
-            Some(pid) => {
-                swarm
-                    .behaviour_mut()
-                    .kad
-                    .add_address(&pid, addr_without_peer);
-                seeded += 1;
-            }
-            None => {
-                log::debug!(
-                    target: "concord::servitude::p2p",
-                    "skipping bootstrap multiaddr without /p2p/ suffix: {addr}"
-                );
-            }
+        mdns::Event::Expired(_) => {
+            // Peer left the LAN. We intentionally do NOT publish an
+            // "expired" variant — the React side treats the LAN list
+            // as session-scoped and refreshes from live discovery only.
+            // Letting expired peers age out of the UI alongside the
+            // session lifecycle is simpler than tracking a per-peer
+            // TTL across the IPC boundary.
         }
     }
-    seeded
 }
 
 /// Translate a raw `libp2p::swarm::SwarmEvent` into our UI-friendly

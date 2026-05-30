@@ -493,6 +493,25 @@ fn spawn_swarm_event_mirror(
                         // is attached the emit silently drops.
                         let payload = swarm_event_payload(&event);
                         let _ = app.emit("peer_swarm_event", payload);
+
+                        // mDNS peers also fire on a dedicated event
+                        // channel so the React-side `lanPeers` API
+                        // wrapper can maintain its session-scoped LAN
+                        // list without parsing every `peer_swarm_event`
+                        // payload. The 2026-05-29 architecture redirect
+                        // (mDNS + peer cards, no DHT) treats LAN
+                        // discovery as a first-class UI surface.
+                        if let P2pSwarmEvent::MdnsPeerDiscovered {
+                            peer_id,
+                            multiaddrs,
+                        } = &event
+                        {
+                            let lan_payload = serde_json::json!({
+                                "peer_id": peer_id,
+                                "multiaddrs": multiaddrs,
+                            });
+                            let _ = app.emit("peer_lan_discovered", lan_payload);
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         // Slow subscriber — broadcast dropped some
@@ -642,10 +661,13 @@ fn apply_event(cache: &SwarmStateCache, event: &P2pSwarmEvent) {
             // Captured via last_event only — the count is updated
             // through the separate PeerCountChanged event.
         }
-        P2pSwarmEvent::DhtRoutingUpdated { .. } => {
-            // Captured via last_event only — the DHT-side "peer_count"
-            // is a routing-table sample, distinct from the swarm-wide
-            // connected count tracked by `PeerCountChanged`.
+        P2pSwarmEvent::MdnsPeerDiscovered { .. } => {
+            // Captured via last_event only — the LAN-discovered peer
+            // list is maintained in-memory on the React side via the
+            // `peer_lan_discovered` event bus emission (see
+            // `swarm_event_payload` and `client/src/api/lanPeers.ts`).
+            // The swarm-wide multiaddr / peer-count cache stays
+            // dedicated to the listen-addr + connected-count signal.
         }
         P2pSwarmEvent::FederationStreamOpened { .. } => {
             // Captured via last_event only — the federation stream
@@ -666,8 +688,8 @@ fn swarm_event_label(event: &P2pSwarmEvent) -> String {
             Some(p) => format!("dial failed ({p}): {reason}"),
             None => format!("dial failed: {reason}"),
         },
-        P2pSwarmEvent::DhtRoutingUpdated { peer_count } => {
-            format!("dht routed: {peer_count}")
+        P2pSwarmEvent::MdnsPeerDiscovered { peer_id, .. } => {
+            format!("lan peer: {peer_id}")
         }
         P2pSwarmEvent::FederationStreamOpened {
             protocol_id,
@@ -699,9 +721,13 @@ fn swarm_event_payload(event: &P2pSwarmEvent) -> serde_json::Value {
             "peer_id": peer_id.map(|p| p.to_string()),
             "reason": reason,
         }),
-        P2pSwarmEvent::DhtRoutingUpdated { peer_count } => serde_json::json!({
-            "kind": "dht_routing_updated",
-            "peer_count": *peer_count,
+        P2pSwarmEvent::MdnsPeerDiscovered {
+            peer_id,
+            multiaddrs,
+        } => serde_json::json!({
+            "kind": "mdns_peer_discovered",
+            "peer_id": peer_id,
+            "multiaddrs": multiaddrs,
         }),
         P2pSwarmEvent::FederationStreamOpened {
             protocol_id,

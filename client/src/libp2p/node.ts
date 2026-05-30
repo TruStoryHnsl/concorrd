@@ -5,26 +5,34 @@
  * browser needs to be a real Concord peer:
  *
  * - **Transports**: WebRTC (peer-to-peer in the browser) + WebSockets
- *   (for dialing relay / bootstrap nodes that advertise `/wss`).
- *   QUIC is intentionally absent — the browser stack does not speak
- *   QUIC, so the Phase 4 bootstrap multiaddrs that only advertise
- *   `/quic-v1` will fail-to-dial silently. That's fine; the dials are
- *   best-effort and the Kad DHT seeds itself the moment any single
- *   bootstrap responds.
+ *   (for dialing peer multiaddrs that advertise `/wss`). QUIC is
+ *   intentionally absent — the browser stack does not speak QUIC.
  *
  * - **Encryption**: Noise (matches the Rust Phase 3 swarm so a browser
  *   ↔ native handshake is symmetric).
  *
  * - **Muxer**: Yamux (matches Rust Phase 3).
  *
- * - **Services**: Identify (peer-info exchange so both ends learn
- *   each other's protocols), Ping (liveness probe), Kad-DHT in
- *   `clientMode: true` (browser never serves DHT records, only
- *   queries — matches the native default which is also `Client` mode
- *   on non-docker profiles).
+ * - **Services**: Identify (peer-info exchange so both ends learn each
+ *   other's protocols), Ping (liveness probe).
+ *
+ * ## 2026-05-29 architecture redirect
+ *
+ * The prior browser stack also wired `kadDHT` and dialed a hardcoded
+ * bootstrap list at startup. Both are gone. The native build uses mDNS
+ * for LAN-local discovery; browsers can't speak mDNS in any portable way
+ * (no Multicast UDP from a tab), so **the browser swarm has zero
+ * automatic discovery**. Every peer the browser talks to has to come
+ * from the Phase-5 peer-card flow (QR / `concord://` deeplink /
+ * Matrix-room exchange) and be dialed explicitly.
+ *
+ * Tradeoff (user-acknowledged): no random-peer discovery from a browser
+ * tab. That's by design — pairing is always intentional.
  *
  * Heavyweight pieces explicitly NOT in the browser stack:
  *
+ * - **Kad DHT** — removed 2026-05-29 alongside the project-run VPS
+ *   bootstrap fleet.
  * - **Gossipsub** — the browser is a leaf, not a pubsub fanout point.
  * - **Circuit Relay v2 server** — browsers can't be relays.
  * - **Stream behaviour for arbitrary subprotocol routing** — js-libp2p
@@ -32,7 +40,8 @@
  *   stream + Phase 8 voice signaling stream without a separate
  *   behaviour layer.
  *
- * Spec pointer: `docs/architecture/p2p-design.md` § Phase 9.
+ * Spec pointer: `docs/architecture/p2p-design.md` § Phase 9 +
+ * § "Discovery" (post-redirect).
  */
 
 import { createLibp2p } from "libp2p";
@@ -41,9 +50,7 @@ import { webSockets } from "@libp2p/websockets";
 import { noise } from "@chainsafe/libp2p-noise";
 import { yamux } from "@chainsafe/libp2p-yamux";
 import { identify } from "@libp2p/identify";
-import { kadDHT } from "@libp2p/kad-dht";
 import { ping } from "@libp2p/ping";
-import { multiaddr } from "@multiformats/multiaddr";
 import type { Libp2p } from "@libp2p/interface";
 import { getBrowserIdentity } from "./identity";
 
@@ -94,21 +101,21 @@ export function __setCreateLibp2pForTests(fn: CreateLibp2pFn): () => void {
  * second caller awaits the same promise so two concurrent `useEffect`
  * mounts don't race two nodes into existence.
  *
- * Bootstrap dials are best-effort, mirroring the Rust Phase 4
- * `seed_kad_bootstrap` semantics: a transient network drop or a
- * single unreachable bootstrap node MUST NOT take the swarm down.
- * Each failure is logged at debug level only.
+ * **No automatic discovery.** The browser swarm boots with zero peers
+ * known and stays that way until the caller dials something explicitly
+ * (Phase-5 peer card scan, `concord://` deeplink click, or a manual
+ * `node.dial(multiaddr)` against a peer learned through a Matrix-room
+ * peer card). This matches the post-2026-05-29 architecture: WAN
+ * pairing is always intentional, never ambient.
  */
-export async function startBrowserNode(
-  bootstrapMultiaddrs: readonly string[],
-): Promise<Libp2p> {
+export async function startBrowserNode(): Promise<Libp2p> {
   if (node) return node;
   if (starting) return starting;
   starting = (async () => {
     const identity = await getBrowserIdentity();
     // Type inference takes over the services map here — annotating
     // with `Libp2pInit` widens the components type passed to each
-    // service factory and breaks the `kadDHT()` factory signature.
+    // service factory and breaks the service factory signatures.
     // `createLibp2p` infers the right `ServiceMap` from the literal.
     const created = await createLibp2pImpl({
       privateKey: identity.privateKey,
@@ -118,22 +125,11 @@ export async function startBrowserNode(
       services: {
         identify: identify(),
         ping: ping(),
-        kadDHT: kadDHT({ clientMode: true }),
       },
     });
     // js-libp2p v3 auto-starts the node when `createLibp2p` resolves
     // unless `start: false` was passed. We rely on that default — no
     // separate `.start()` call needed here.
-    for (const addr of bootstrapMultiaddrs) {
-      try {
-        await created.dial(multiaddr(addr));
-      } catch (err) {
-        // Best-effort. Identical posture to the Rust Phase 4 bootstrap
-        // loop: a bad placeholder or temporarily-unreachable node must
-        // not surface as a user-visible failure.
-        console.debug("[libp2p] bootstrap dial failed", { addr, err });
-      }
-    }
     node = created;
     return created;
   })();

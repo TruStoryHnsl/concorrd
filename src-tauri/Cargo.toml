@@ -94,11 +94,16 @@ iota_stronghold = "2.1"
 # `rust-version = "1.77.2"` field above is forward-tolerant. If a future
 # downgrade to <1.83 is required, pin libp2p back to 0.54.
 #
-# Feature set captures the Phase 3 design-doc requirements:
+# Feature set captures the post-2026-05-29 architecture redirect:
 #   * transports:   tcp + quic + noise + yamux
-#   * core protos:  kad + identify + ping + gossipsub + request-response
+#   * core protos:  mdns + identify + ping + gossipsub + request-response
 #   * NAT traversal: relay (server side) + dcutr (hole punching)
 #   * builder ergonomics: tokio + macros + ed25519
+#
+# mDNS handles LAN-local discovery silently (replaces the prior Kad DHT
+# bootstrap-list path). WAN peers come exclusively from the Phase-5
+# peer-card flow (QR / `concord://` deeplink / Matrix-room exchange).
+# No project-run bootstrap nodes — pairing is always intentional.
 #
 # `request-response`'s `cbor`/`json` codec helpers are NOT enabled — the
 # Phase 3 surface uses a hand-rolled length-delimited bytes codec
@@ -110,7 +115,7 @@ libp2p = { version = "0.56", features = [
     "quic",
     "noise",
     "yamux",
-    "kad",
+    "mdns",
     "identify",
     "ping",
     "gossipsub",
