@@ -120,8 +120,14 @@ function enableResultFromRaw(
  * native instances don't run a docker stack by definition.
  *
  * Web: fetches `/api/hosting/profile` for the full picture.
+ *
+ * `accessToken` is required on the web path — the endpoint is
+ * authenticated under `get_user_id` so docker stacks don't expose
+ * their profile config to anonymous callers. Native ignores it.
  */
-export async function fetchHostingProfile(): Promise<HostingProfileSnapshot> {
+export async function fetchHostingProfile(
+  accessToken?: string | null,
+): Promise<HostingProfileSnapshot> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     const profile = await invoke<DeploymentProfile>(
@@ -137,7 +143,10 @@ export async function fetchHostingProfile(): Promise<HostingProfileSnapshot> {
       lastChanged: null,
     };
   }
+  const headers: Record<string, string> = {};
+  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
   const resp = await fetch("/api/hosting/profile", {
+    headers,
     credentials: "include",
   });
   if (!resp.ok) {
@@ -183,12 +192,16 @@ export async function setHostingProfile(
  * installs that flip the toggle do so via {@link setHostingProfile}
  * and the next servitude restart.
  *
- * Rejects if not admin (HTTP 403) or if every service start fails
- * (HTTP 503 — error_code DOCKER_PROXY_UNAVAILABLE).
+ * Rejects if not admin (HTTP 403), if no bearer token is supplied
+ * (HTTP 401), or if every service start fails (HTTP 503 —
+ * error_code DOCKER_PROXY_UNAVAILABLE).
  */
-export async function enableWebStack(): Promise<EnableWebStackResult> {
+export async function enableWebStack(
+  accessToken: string,
+): Promise<EnableWebStackResult> {
   const resp = await fetch("/api/hosting/profile/enable_web_stack", {
     method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
     credentials: "include",
   });
   if (!resp.ok) {

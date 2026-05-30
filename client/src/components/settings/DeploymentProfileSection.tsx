@@ -32,6 +32,7 @@ import {
   type DeploymentProfile,
   type HostingProfileSnapshot,
 } from "../../api/hostingProfile";
+import { useAuthStore } from "../../stores/auth";
 import { useToastStore } from "../../stores/toast";
 
 interface ConfirmFlipState {
@@ -41,6 +42,7 @@ interface ConfirmFlipState {
 
 export function DeploymentProfileSection() {
   const addToast = useToastStore((s) => s.addToast);
+  const accessToken = useAuthStore((s) => s.accessToken);
   const [snapshot, setSnapshot] = useState<HostingProfileSnapshot | null>(
     null,
   );
@@ -53,7 +55,9 @@ export function DeploymentProfileSection() {
 
   const refresh = useCallback(async () => {
     try {
-      const snap = await fetchHostingProfile();
+      // On native the token is unused (Tauri command path); on web
+      // the endpoint is auth'd so we pass the user's bearer.
+      const snap = await fetchHostingProfile(accessToken);
       setSnapshot(snap);
       setLoadError(null);
     } catch (err) {
@@ -65,7 +69,7 @@ export function DeploymentProfileSection() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [accessToken]);
 
   useEffect(() => {
     refresh();
@@ -93,7 +97,10 @@ export function DeploymentProfileSection() {
       // Failures here are non-fatal for the profile flip — the
       // persisted profile already changed.
       try {
-        const result = await enableWebStack();
+        if (!accessToken) {
+          throw new Error("Sign in to start the web stack");
+        }
+        const result = await enableWebStack(accessToken);
         addToast(
           result.startedServices.length > 0
             ? `Web stack started (${result.startedServices.length} service(s))`
