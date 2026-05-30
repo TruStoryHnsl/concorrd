@@ -114,8 +114,13 @@ pub trait FederationProtocol {
     const PROTOCOL_ID: &'static str;
 }
 
+pub mod activitypub;
 pub mod matrix;
 
+pub use activitypub::{
+    ActivityPubApi, ActivityPubErrorBody, ActivityPubHandler, ActivityPubRequest,
+    ActivityPubResponse, StubActivityPubClient, ACTIVITYPUB_PROTOCOL_ID,
+};
 pub use matrix::{
     ConduwuitClient, MatrixErrorBody, MatrixFederationApi, MatrixFederationHandler,
     MatrixRequest, MatrixResponse, MATRIX_PROTOCOL_ID,
