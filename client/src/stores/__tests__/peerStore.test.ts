@@ -36,7 +36,6 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import {
   usePeerStore,
-  PEER_STORE_ERROR_NATIVE_ONLY,
   __resetPeerStoreEventSubscriptionForTests,
 } from "../peerStore";
 import type { KnownPeer } from "../../api/peerStore";
@@ -163,16 +162,21 @@ describe("usePeerStore", () => {
   });
 
   /**
-   * Web build path: never calls the API, sets the native-only sentinel.
+   * Web build path (Phase 9 — browser P2P UI surface): never calls the
+   * Tauri API, reads from the localStorage-backed browser store. The
+   * old "native-only sentinel" behavior is gone — the browser store
+   * actually services the call.
    */
-  it("load() in a web build: native-only sentinel, never calls API", async () => {
+  it("load() in a web build: reads from localStorage backend, never calls Tauri API", async () => {
     isTauriMock.mockReturnValue(false);
+    // Empty storage = empty list, error cleared (not the legacy sentinel).
+    window.localStorage.removeItem("concord:browser:peer-store");
 
     await usePeerStore.getState().load();
 
     const final = usePeerStore.getState();
     expect(final.isLoading).toBe(false);
-    expect(final.error).toBe(PEER_STORE_ERROR_NATIVE_ONLY);
+    expect(final.error).toBeNull();
     expect(final.knownPeers).toEqual([]);
     expect(fetchKnownPeersMock).not.toHaveBeenCalled();
     expect(listenMock).not.toHaveBeenCalled();
@@ -235,22 +239,26 @@ describe("usePeerStore", () => {
   });
 
   /**
-   * addFromCard in a web build: never calls the API, native-only sentinel.
+   * addFromCard in a web build (Phase 9 — browser P2P UI surface):
+   * routes through the localStorage backend, never calls the Tauri API,
+   * returns the locally-persisted KnownPeer.
    */
-  it("addFromCard() in a web build: returns null with native-only sentinel", async () => {
+  it("addFromCard() in a web build: persists via localStorage, never calls Tauri API", async () => {
     isTauriMock.mockReturnValue(false);
+    window.localStorage.removeItem("concord:browser:peer-store");
 
     const result = await usePeerStore.getState().addFromCard(
       {
-        peerId: "12D3K",
+        peerId: "12D3KWebPeer",
         publicKeyHex: "d".repeat(64),
         multiaddrs: ["/ip4/127.0.0.1/tcp/4001"],
       },
       "qr",
     );
 
-    expect(result).toBeNull();
-    expect(usePeerStore.getState().error).toBe(PEER_STORE_ERROR_NATIVE_ONLY);
+    expect(result).not.toBeNull();
+    expect(result?.peerId).toBe("12D3KWebPeer");
+    expect(usePeerStore.getState().error).toBeNull();
     expect(addPeerMock).not.toHaveBeenCalled();
   });
 

@@ -942,6 +942,26 @@ The 2026-04-24 codebase audit (Developer agent) discovered that many shipped fea
 - [x] **Hosting tab (`HostingTab.tsx`) — separate from `NodeHostingTab`** — a second hosting-related settings tab beside `NodeHostingTab.tsx`. Code: `client/src/components/settings/HostingTab.tsx`. <!-- audit 2026-04-24: ambiguous — requires user decision: either declare under INS-052 or merge with NodeHostingTab. -->
 
 ## Recent Changes
+- 2026-05-30: **Browser P2P UI surface shipped — docker/web build now
+  exposes the libp2p identity / swarm / peer store / peer-card flows.**
+  Closes the gap between Phase 9 (browser is a peer) and what was
+  visible to docker users. Settings → Profile on web now renders the
+  per-tab ephemeral browser fingerprint (algorithm matches native's
+  `fingerprint_for` bit-for-bit via new `client/src/libp2p/fingerprint.ts`),
+  a live swarm-status block (PeerId / Listening on / Peers connected /
+  Last event, sourced from `getBrowserNodeIfStarted()` + peer:connect /
+  peer:disconnect listeners), a QR-encoded peer card derived from the
+  browser identity + libp2p multiaddrs, and a fully-functional scanner
+  (camera tab now feature-detects `getUserMedia` instead of requiring
+  Tauri). Paired peers persist via a new localStorage backend at
+  `concord:browser:peer-store` (mirrors the native `KnownPeer` wire
+  model so the rest of the UI doesn't branch); `useBrowserLibp2p`
+  lifted to the `ProfileTab` body so opening the tab boots the swarm.
+  LAN-discovery subsection hidden on web (no portable mDNS from a tab).
+  Tests: +1 fingerprint vector, +4 browser peer-store cases, +3
+  ProfileTab.web cases, +2 PeerCardDisplay.web cases; baseline 484 → 496
+  passing. Build clean — main bundle ~794 KB gzipped, libp2p chunk
+  ~150 KB gzipped (bundle split preserved).
 - 2026-05-29: **Mesh audio capture + playback shipped.** Closes the
   `TODO(mesh-media-followup)` markers in `src-tauri/src/servitude/voice/media.rs` and
   `client/src/libp2p/voiceMesh.ts`. Native: new

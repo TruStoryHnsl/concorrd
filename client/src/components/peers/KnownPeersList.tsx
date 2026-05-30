@@ -16,10 +16,9 @@
  */
 
 import { useEffect } from "react";
-import { usePeerStore, PEER_STORE_ERROR_NATIVE_ONLY } from "../../stores/peerStore";
+import { usePeerStore } from "../../stores/peerStore";
 import type { KnownPeer, PeerSource } from "../../api/peerStore";
 import { useToastStore } from "../../stores/toast";
-import { isTauri } from "../../api/servitude";
 
 /**
  * Human-readable label for each source, kept short to fit in a chip.
@@ -55,23 +54,15 @@ function relativeTime(isoTimestamp: string, now: number = Date.now()): string {
 export function KnownPeersList() {
   const knownPeers = usePeerStore((s) => s.knownPeers);
   const isLoading = usePeerStore((s) => s.isLoading);
-  const error = usePeerStore((s) => s.error);
 
   useEffect(() => {
     // Same one-shot load convention as the identity store. Future
     // pushes from `peer_paired` events are wired by the store itself.
+    // Phase 9: on web, `load()` reads from localStorage; on native, it
+    // calls the `peer_store_list` Tauri command. Identical KnownPeer
+    // shape on both sides.
     void usePeerStore.getState().load();
   }, []);
-
-  // Web build: render a thin native-only placeholder so the section
-  // still has visible structure but doesn't pretend to have any data.
-  if (!isTauri() || error === PEER_STORE_ERROR_NATIVE_ONLY) {
-    return (
-      <p className="text-xs text-on-surface-variant italic">
-        Peer pairing is available in native builds only.
-      </p>
-    );
-  }
 
   if (isLoading && knownPeers.length === 0) {
     return (

@@ -33,12 +33,36 @@ import {
 
 type Tab = "camera" | "paste" | "matrix";
 
+/**
+ * Feature-detect `navigator.mediaDevices.getUserMedia`. Used to gate
+ * the camera tab on web: a modern Chrome / Firefox / Safari tab has
+ * the API, but older browsers and enterprise-locked installs may not.
+ * We feature-detect rather than browser-sniff so the rule scales to
+ * future browsers + private contexts uniformly.
+ *
+ * Note: presence of the API does NOT mean a camera permission was
+ * granted — the actual `getUserMedia` call may still reject with
+ * `NotAllowedError`. The CameraScan component surfaces that error in
+ * the UI; we just need to know whether to show the tab at all.
+ */
+function browserHasGetUserMedia(): boolean {
+  if (typeof navigator === "undefined") return false;
+  if (!navigator.mediaDevices) return false;
+  return typeof navigator.mediaDevices.getUserMedia === "function";
+}
+
 export function PeerCardScanner({ onClose }: { onClose: () => void }) {
   const addFromCard = usePeerStore((s) => s.addFromCard);
   const addToast = useToastStore((s) => s.addToast);
 
-  // Default tab: prefer camera in Tauri (most common case), paste on web.
-  const [tab, setTab] = useState<Tab>(isTauri() ? "camera" : "paste");
+  // Phase 9 (browser P2P UI surface): the camera tab is now available
+  // anywhere `getUserMedia` is — Tauri WebView, Chrome/Firefox/Safari
+  // tabs alike. Older browsers and locked-down enterprise installs
+  // fall back to paste-only via the feature detect.
+  const cameraSupported = isTauri() || browserHasGetUserMedia();
+  // Default tab: prefer camera when supported (most common case), paste
+  // otherwise.
+  const [tab, setTab] = useState<Tab>(cameraSupported ? "camera" : "paste");
   const [pasteValue, setPasteValue] = useState("");
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -99,7 +123,7 @@ export function PeerCardScanner({ onClose }: { onClose: () => void }) {
 
         {/* Tab strip */}
         <div className="flex gap-1 border-b border-outline-variant/20">
-          {isTauri() && (
+          {cameraSupported && (
             <TabButton
               active={tab === "camera"}
               onClick={() => setTab("camera")}
@@ -119,7 +143,7 @@ export function PeerCardScanner({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Tab content */}
-        {tab === "camera" && isTauri() && (
+        {tab === "camera" && cameraSupported && (
           <CameraScan
             onDecoded={(card) => handleAdd(card, "qr")}
             error={cameraError}
