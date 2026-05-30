@@ -1,17 +1,21 @@
 /**
  * PeerCardScanner (Phase 5 — peer pairing).
  *
- * "Add a peer" UI with three input paths:
- *   1. Camera scan (Tauri-only). Uses `jsQR` against
- *      `getUserMedia({ video: true })` to decode QR codes. Hidden in
- *      web builds because a web concord client has no peer-store to
- *      add into.
- *   2. Paste a `concord://peer/...` URL.
- *   3. Pick from peer cards observed in joined Matrix rooms (via
+ * "Add a peer" UI with four input paths:
+ *   1. Camera scan. Uses `jsQR` against `getUserMedia({ video: true })`
+ *      to decode QR codes from the live webcam feed. Available
+ *      anywhere `getUserMedia` is (Tauri shell + Chrome / Firefox /
+ *      Safari tabs); falls back-hidden on older browsers and
+ *      enterprise-locked installs.
+ *   2. Image upload — drop, browse, or paste an image of the QR. Decodes
+ *      with the same `jsQR` pipeline as the camera path. Covers desktops
+ *      without a webcam.
+ *   3. Paste a `concord://peer/...` URL.
+ *   4. Pick from peer cards observed in joined Matrix rooms (via
  *      `useMatrixPeerCards`).
  *
  * On a successful decode + add, the dialog closes via the `onClose`
- * callback. All three paths funnel through `handleAdd()` so the
+ * callback. All paths funnel through `handleAdd()` so the
  * source-tagging stays in one place.
  */
 
@@ -31,7 +35,7 @@ import {
   type RecentPeerCard,
 } from "../../hooks/useMatrixPeerCards";
 
-type Tab = "camera" | "paste" | "matrix";
+type Tab = "camera" | "image" | "paste" | "matrix";
 
 /**
  * Feature-detect `navigator.mediaDevices.getUserMedia`. Used to gate
@@ -131,6 +135,11 @@ export function PeerCardScanner({ onClose }: { onClose: () => void }) {
             />
           )}
           <TabButton
+            active={tab === "image"}
+            onClick={() => setTab("image")}
+            label="Image"
+          />
+          <TabButton
             active={tab === "paste"}
             onClick={() => setTab("paste")}
             label="Paste link"
@@ -148,6 +157,11 @@ export function PeerCardScanner({ onClose }: { onClose: () => void }) {
             onDecoded={(card) => handleAdd(card, "qr")}
             error={cameraError}
             setError={setCameraError}
+          />
+        )}
+        {tab === "image" && (
+          <ImageScan
+            onDecoded={(card) => handleAdd(card, "qr")}
           />
         )}
         {tab === "paste" && (
@@ -334,6 +348,177 @@ function CameraScan({
       </p>
     </div>
   );
+}
+
+/**
+ * Image-based QR scanner. Accepts an image of a QR code via three
+ * input affordances — drag-and-drop, file picker, or clipboard paste
+ * (Ctrl/Cmd+V while the tab is focused). Decodes with the same `jsQR`
+ * pipeline the camera path uses.
+ *
+ * Covers the desktop-without-webcam case the live camera tab can't
+ * help with: the user takes a screenshot of the other peer's QR
+ * (or saves the image file) and drops/pastes it here.
+ */
+function ImageScan({
+  onDecoded,
+}: {
+  onDecoded: (card: PeerCard) => void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const handleFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("That file isn't an image. Try a PNG / JPG / WebP screenshot.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const card = await decodeQrFromImageFile(file);
+      onDecoded(card);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't read that image");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Clipboard paste while the tab is mounted. The handler runs on the
+  // document because focus inside the modal isn't tied to a specific
+  // input here — the user just hits Ctrl/Cmd+V with the dialog open.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) {
+            e.preventDefault();
+            void handleFile(file);
+            return;
+          }
+        }
+      }
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+    // handleFile closes over onDecoded; effect-rebind on consumer change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onDecoded]);
+
+  return (
+    <div className="space-y-3">
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          void handleFile(e.dataTransfer.files?.[0]);
+        }}
+        onClick={() => fileInputRef.current?.click()}
+        className={
+          "border-2 border-dashed rounded-md p-6 text-center cursor-pointer " +
+          "transition-colors select-none " +
+          (dragging
+            ? "border-primary bg-surface-container-high"
+            : "border-outline-variant hover:border-outline hover:bg-surface-container-high/50")
+        }
+        role="button"
+        tabIndex={0}
+        aria-label="Drop a QR image here or click to browse"
+      >
+        <div className="flex flex-col items-center gap-2">
+          <span
+            className="material-symbols-outlined text-on-surface-variant"
+            style={{
+              fontVariationSettings:
+                '"FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24',
+              fontSize: "32px",
+            }}
+          >
+            qr_code_2
+          </span>
+          <p className="text-sm text-on-surface">
+            {busy ? "Reading…" : "Drop a QR image, click to browse, or paste"}
+          </p>
+          <p className="text-xs text-on-surface-variant">
+            PNG, JPG, WebP — any screenshot of a peer card QR code
+          </p>
+        </div>
+      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={(e) => {
+          void handleFile(e.target.files?.[0]);
+          // Clear so picking the same file twice re-fires onChange.
+          e.target.value = "";
+        }}
+        className="hidden"
+      />
+      {error && <p className="text-xs text-error">{error}</p>}
+    </div>
+  );
+}
+
+/**
+ * Decode the first valid Concord peer-card QR found in an image file.
+ *
+ * Pipeline: file → ImageBitmap → 2D canvas → jsQR → decodeFromQrPayload.
+ * Throws with a human-readable message if no QR is found OR the QR's
+ * payload isn't a Concord peer card.
+ */
+async function decodeQrFromImageFile(file: File): Promise<PeerCard> {
+  // `createImageBitmap` handles every format the browser can render —
+  // PNG, JPEG, WebP, GIF (first frame), BMP, and animated WebP frames.
+  // It's also off-main-thread on capable browsers, so big screenshots
+  // don't jank the modal.
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error("Couldn't read that image format");
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) {
+    bitmap.close();
+    throw new Error("Browser can't open a 2D canvas — image decode unavailable");
+  }
+  ctx.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  // `attemptBoth` because screenshots from dark-mode UIs sometimes
+  // arrive inverted — try both polarities so a white-on-black QR
+  // decodes as readily as the conventional black-on-white.
+  const result = jsQR(image.data, image.width, image.height, {
+    inversionAttempts: "attemptBoth",
+  });
+  if (!result || !result.data) {
+    throw new Error(
+      "No QR code found in that image. Make sure the whole QR is in frame and not too small.",
+    );
+  }
+  const decoded = decodeFromQrPayload(result.data);
+  if (!decoded.ok) {
+    throw new Error(
+      "Decoded a QR, but it isn't a Concord peer card. Check the source.",
+    );
+  }
+  return decoded.card;
 }
 
 /**
