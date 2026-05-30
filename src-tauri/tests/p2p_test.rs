@@ -441,3 +441,130 @@ async fn swarm_starts_with_no_bootstrap() {
          listeners came up"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression: a successful dial publishes BOTH `DialSuccess` (per-peer) AND
+// `PeerCountChanged` (aggregate) on the broadcast channel, in that order.
+//
+// Pins the fix for the silent-discard bug where `translate_event` built a
+// `SwarmEvent::DialSuccess` value and then dropped it with `let _ = ...`,
+// emitting only `PeerCountChanged`. Any UI surface that gated on the
+// per-peer dial outcome (e.g. peer-pairing flows waiting for a specific
+// peer to come online) would never see the signal.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dial_success_event_reaches_subscribers() {
+    let (_sh_a, handle_a) = fresh_handle("dial-evt-a");
+    let (_sh_b, handle_b) = fresh_handle("dial-evt-b");
+
+    let identity_a = identity::load_or_create(&handle_a)
+        .await
+        .expect("identity a");
+    let identity_b = identity::load_or_create(&handle_b)
+        .await
+        .expect("identity b");
+
+    let mut transport_a = LibP2pTransport::new(&identity_a, &handle_a)
+        .await
+        .expect("transport a");
+    let mut transport_b = LibP2pTransport::new(&identity_b, &handle_b)
+        .await
+        .expect("transport b");
+
+    let peer_a = transport_a.local_peer_id();
+    let peer_b = transport_b.local_peer_id();
+
+    // Drain A's first QUIC listen addr so B has somewhere to dial.
+    let a_quic_addr = {
+        let swarm = transport_a.swarm_mut();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let RawSwarmEvent::NewListenAddr { address, .. } =
+                    swarm.select_next_some().await
+                {
+                    if multiaddr_contains_quic_v1(&address) {
+                        return address;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("A timed out before reporting a quic listen addr")
+    };
+    let dial_addr = quic_loopback_with_peer_id(&a_quic_addr, peer_a);
+
+    // Subscribe to A's broadcast channel BEFORE handing the transport to
+    // its run() task — `subscribe()` only catches events emitted after
+    // the receiver was created.
+    let mut a_events = transport_a.subscribe();
+    let shutdown_a = transport_a.shutdown_handle();
+    let shutdown_b = transport_b.shutdown_handle();
+
+    // B dials A, then both transports drive their event loops concurrently.
+    transport_b
+        .swarm_mut()
+        .dial(dial_addr.clone())
+        .expect("B::dial returned an error before driving the swarm");
+
+    let join_a = tokio::spawn(transport_a.run());
+    let join_b = tokio::spawn(transport_b.run());
+
+    // Wait for both signals on A's broadcast: DialSuccess targeting B's
+    // PeerId, AND PeerCountChanged with count >= 1. DialSuccess must come
+    // first (the fix preserves that ordering so per-peer listeners see
+    // the dial outcome before the aggregate moves).
+    let collected = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut saw_dial_success_for_b = false;
+        let mut saw_count_change = false;
+        let mut dial_success_seen_at: Option<usize> = None;
+        let mut count_change_seen_at: Option<usize> = None;
+        let mut event_index = 0usize;
+        loop {
+            match a_events.recv().await {
+                Ok(SwarmEvent::DialSuccess { peer_id }) if peer_id == peer_b => {
+                    saw_dial_success_for_b = true;
+                    dial_success_seen_at = Some(event_index);
+                }
+                Ok(SwarmEvent::PeerCountChanged { count }) if count >= 1 => {
+                    saw_count_change = true;
+                    count_change_seen_at = Some(event_index);
+                }
+                Ok(_) => {}
+                Err(_) => return (false, false, dial_success_seen_at, count_change_seen_at),
+            }
+            event_index += 1;
+            if saw_dial_success_for_b && saw_count_change {
+                return (true, true, dial_success_seen_at, count_change_seen_at);
+            }
+        }
+    })
+    .await
+    .unwrap_or((false, false, None, None));
+
+    let _ = shutdown_a.send(()).await;
+    let _ = shutdown_b.send(()).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), join_a).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), join_b).await;
+
+    let (saw_dial_success, saw_count, dial_idx, count_idx) = collected;
+    assert!(
+        saw_dial_success,
+        "DialSuccess for peer_b={peer_b} never reached A's broadcast \
+         subscribers within 15s — the per-peer dial signal is silenced \
+         (regression of the fix for translate_event's discarded \
+         SwarmEvent::DialSuccess). peer_a={peer_a}"
+    );
+    assert!(
+        saw_count,
+        "PeerCountChanged with count>=1 never reached A's subscribers — \
+         the aggregate count signal is silenced"
+    );
+    assert!(
+        dial_idx.unwrap_or(usize::MAX) < count_idx.unwrap_or(0),
+        "DialSuccess must precede PeerCountChanged on the broadcast \
+         channel so per-peer listeners see the dial outcome before the \
+         aggregate moves (dial seen at index {dial_idx:?}, count change \
+         at {count_idx:?})"
+    );
+}

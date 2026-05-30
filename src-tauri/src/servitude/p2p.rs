@@ -123,6 +123,15 @@ pub enum P2pError {
     #[error("mdns init failed: {0}")]
     MdnsInit(String),
 
+    #[error(
+        "identity invariant violated: libp2p public key {libp2p_pub:?} does not \
+         match PeerIdentity.public_key {peer_identity_pub:?} — seed pipeline broken"
+    )]
+    IdentityMismatch {
+        libp2p_pub: [u8; 32],
+        peer_identity_pub: [u8; 32],
+    },
+
     #[error("io error: {0}")]
     Io(#[from] io::Error),
 }
@@ -256,16 +265,24 @@ impl LibP2pTransport {
         // via the same Ed25519 math — if they diverge, the seed pipeline is
         // broken and Settings → Profile would show a different identity than
         // libp2p reports to peers.
+        //
+        // This check is a runtime hard-fail, not a `debug_assert_eq!`. Debug
+        // assertions strip in release builds, which is exactly when this
+        // invariant matters most: a seed-pipeline regression that ships to
+        // users would silently advertise the wrong identity to every peer,
+        // with no log, no error, and no Settings-tab clue. The cost of the
+        // check is one 32-byte compare at swarm startup — negligible.
         let libp2p_pub = keypair
             .public()
             .try_into_ed25519()
             .expect("ed25519_from_bytes always yields an ed25519 keypair")
             .to_bytes();
-        debug_assert_eq!(
-            libp2p_pub, peer_identity.public_key,
-            "libp2p public key must match PeerIdentity.public_key — both \
-             derive from the same per-install seed"
-        );
+        if libp2p_pub != peer_identity.public_key {
+            return Err(P2pError::IdentityMismatch {
+                libp2p_pub,
+                peer_identity_pub: peer_identity.public_key,
+            });
+        }
 
         let (event_tx, _event_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
@@ -500,7 +517,11 @@ impl LibP2pTransport {
                     // generic translation below handles
                     // listen-addr/peer-count/dial signals.
                     handle_mdns_event(&event, &self.event_tx);
-                    if let Some(translated) = translate_event(event, &mut connected) {
+                    // `translate_event` returns a Vec because a single raw
+                    // libp2p event can map to multiple UI-facing signals —
+                    // e.g. ConnectionEstablished emits both a DialSuccess
+                    // (per-peer signal) and a PeerCountChanged (aggregate).
+                    for translated in translate_event(event, &mut connected) {
                         // broadcast::send errors only when there are no
                         // subscribers — drop silently.
                         let _ = self.event_tx.send(translated);
@@ -558,52 +579,59 @@ fn handle_mdns_event(
     }
 }
 
-/// Translate a raw `libp2p::swarm::SwarmEvent` into our UI-friendly
-/// projection. Returns `None` for events we don't surface (the swarm event
-/// stream is large; the UI only cares about a handful).
+/// Translate a raw `libp2p::swarm::SwarmEvent` into our UI-facing projection.
+///
+/// Returns a `Vec` because a single raw event sometimes maps to multiple
+/// UI signals — most notably `ConnectionEstablished`, which fans out into
+/// both a per-peer `DialSuccess` (for code that gates on individual dial
+/// outcomes — e.g. peer-pairing flows that wait for a specific peer to
+/// connect) AND an aggregate `PeerCountChanged` (for the swarm-status
+/// header). An empty `Vec` means "ignore this raw event" — the libp2p
+/// stream is noisy and the UI only cares about a handful of variants.
 fn translate_event(
     event: LibP2pSwarmEvent<BehaviourEvent>,
     connected: &mut HashSet<PeerId>,
-) -> Option<SwarmEvent> {
+) -> Vec<SwarmEvent> {
     match event {
         LibP2pSwarmEvent::NewListenAddr { address, .. } => {
-            Some(SwarmEvent::LocalAddrChanged { addr: address })
+            vec![SwarmEvent::LocalAddrChanged { addr: address }]
         }
         LibP2pSwarmEvent::ConnectionEstablished { peer_id, .. } => {
             let was_new = connected.insert(peer_id);
             if was_new {
-                // A new peer joined — publish two events: dial-success
-                // signal, then a count update. Caller can demux by variant.
-                // We emit DialSuccess first; the count change is emitted
-                // via a follow-up call in the loop.
-                // For simplicity and to keep the function pure, we only
-                // emit one event per call — the count change wins because
-                // it's the more general signal.
-                let _ = SwarmEvent::DialSuccess { peer_id };
-                Some(SwarmEvent::PeerCountChanged {
-                    count: connected.len(),
-                })
+                // Emit DialSuccess first so per-peer listeners (e.g. the
+                // peer-pairing UI waiting for a freshly-paired peer to
+                // come online) see the dial outcome before the aggregate
+                // count moves. Order matters when the UI demuxes by variant.
+                vec![
+                    SwarmEvent::DialSuccess { peer_id },
+                    SwarmEvent::PeerCountChanged {
+                        count: connected.len(),
+                    },
+                ]
             } else {
-                None
+                // Reconnect of a peer we already track — no DialSuccess
+                // (it isn't a "new" dial outcome) and no count change.
+                vec![]
             }
         }
         LibP2pSwarmEvent::ConnectionClosed { peer_id, .. } => {
             let removed = connected.remove(&peer_id);
             if removed {
-                Some(SwarmEvent::PeerCountChanged {
+                vec![SwarmEvent::PeerCountChanged {
                     count: connected.len(),
-                })
+                }]
             } else {
-                None
+                vec![]
             }
         }
         LibP2pSwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-            Some(SwarmEvent::DialFailure {
+            vec![SwarmEvent::DialFailure {
                 peer_id,
                 reason: error.to_string(),
-            })
+            }]
         }
-        _ => None,
+        _ => vec![],
     }
 }
 
