@@ -3,6 +3,7 @@ import { useAuthStore } from "../../stores/auth";
 import { getServerUrl } from "../../api/serverUrl";
 import { servitudeStatus, isTauri, type ServitudeState } from "../../api/servitude";
 import { AdminTab } from "./AdminTab";
+import { DeploymentProfileSection } from "./DeploymentProfileSection";
 
 export type HostingStatus = "loading" | "running" | "stopped" | "error";
 
@@ -81,6 +82,14 @@ export function HostingTab() {
       </div>
 
       <AdminTab />
+
+      {/*
+        Deployment profile (Phase 7 — native default profile). Relocated
+        2026-05-30 from ProfileTab — operator-facing hosting concern, not
+        user profile. Renders the native/web toggle and the Phase-0
+        hosting status summary when the operator flips to web_first.
+      */}
+      <DeploymentProfileSection />
     </div>
   );
 }

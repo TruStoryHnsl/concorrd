@@ -942,6 +942,26 @@ The 2026-04-24 codebase audit (Developer agent) discovered that many shipped fea
 - [x] **Hosting tab (`HostingTab.tsx`) — separate from `NodeHostingTab`** — a second hosting-related settings tab beside `NodeHostingTab.tsx`. Code: `client/src/components/settings/HostingTab.tsx`. <!-- audit 2026-04-24: ambiguous — requires user decision: either declare under INS-052 or merge with NodeHostingTab. -->
 
 ## Recent Changes
+- 2026-05-30: **P2P UI relocated.** Peer identity / swarm / paired peers
+  moved from Profile → Connections; Deployment profile moved from Profile
+  → Hosting. Peer-pairing flow now reachable from the Sources panel's
+  Add Source `+` tile alongside Concord / Matrix instance discovery. The
+  `useBrowserLibp2p({ enabled: true })` swarm-boot hook moved with the
+  P2P surfaces — opening Settings → Connections now triggers the browser
+  libp2p swarm. New file:
+  `client/src/components/settings/connections/PeerConnectionsSection.tsx`
+  owns the relocated `PeerIdentitySection`, `BrowserSessionIdentityRow`,
+  `SwarmStatusSection`, `BrowserSwarmStatusBlock`, `PairedPeersSection`,
+  and `LanPeersSection`. `AddSourceModal` (in
+  `client/src/components/layout/ChatLayout.tsx`) gained a new
+  `"pair-peer"` screen + a "Pair a peer" tile on the pick screen; the
+  modal also accepts an `initialScreen` prop so the existing
+  `requestAddSource` deep-link can route straight to the scanner from
+  the new "Pair with a peer (P2P)" connection card in UserConnectionsTab.
+  Tests: relocated 3 ProfileTab.web cases out (now 2 negative cases),
+  +3 UserConnectionsTab.peer cases, +1 HostingTab.deploymentProfile
+  case, +2 AddSourceModal.pairPeer cases; baseline 496 → 501 passing.
+  Build clean — main bundle ~795 KB gzipped (unchanged).
 - 2026-05-30: **Browser P2P UI surface shipped — docker/web build now
   exposes the libp2p identity / swarm / peer store / peer-card flows.**
   Closes the gap between Phase 9 (browser is a peer) and what was
