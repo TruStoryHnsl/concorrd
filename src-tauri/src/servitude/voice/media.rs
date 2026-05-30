@@ -1,4 +1,4 @@
-//! Phase 8 follow-up — real webrtc-rs media plane for one peer in a
+//! Phase 8/9 follow-up — real webrtc-rs media plane for one peer in a
 //! mesh call.
 //!
 //! Sibling of [`super::webrtc_peer::WebRtcPeer`] (the lightweight,
@@ -20,29 +20,27 @@
 //!     the call orchestrator drains the queue and forwards them via
 //!     `send_signaling`.
 //!   * Real remote-track capture: the `on_track` callback stores the
-//!     inbound [`TrackRemote`] under `remote_audio_track` so tests can
-//!     observe a track has been registered.
+//!     inbound [`TrackRemote`] under `remote_audio_track` AND spawns
+//!     an [`super::audio::AudioReceivePipeline`] that decodes the
+//!     incoming opus stream into the default speaker.
 //!   * Real connection-state mirroring: the
 //!     `on_peer_connection_state_change` callback flips the public
 //!     [`super::webrtc_peer::PeerCallState`] mirror so the UI sees
 //!     `Connected` when DTLS comes up.
+//!   * Real microphone capture: once a call reaches `Connected`, the
+//!     orchestrator calls [`WebRtcMediaPeer::start_audio_capture`] to
+//!     spawn an [`super::audio::AudioSendPipeline`] that reads from
+//!     cpal, opus-encodes, and writes RTP packets into the local
+//!     audio track.
 //!
-//! ## What is deferred — `TODO(mesh-media-followup)`
+//! ## Platform support
 //!
-//!   * **Microphone capture**. The local `audio/opus` track exists and
-//!     accepts RTP packets via `TrackLocalStaticRTP::write_rtp`, but
-//!     the mic source is a `tokio::sync::mpsc::Receiver<Vec<u8>>` that
-//!     external code (cpal on desktop / AVAudioEngine on iOS) must
-//!     feed. Today nothing feeds it in production. Tests inject
-//!     synthetic RTP frames via [`Self::push_local_rtp`]. Real mic
-//!     wiring lands as a follow-up PR.
-//!   * **Speaker playback**. The remote track is captured but not
-//!     piped to a playback device. Same follow-up PR.
-//!   * **Opus encoder integration**. Even when the mic source is
-//!     wired, the bytes have to be opus-encoded RTP packets — the
-//!     follow-up PR introduces a cpal → opus → RTP pump.
-//!   * **NACK / FEC / RTCP feedback**. webrtc-rs handles RTP-level
-//!     packet flow; we don't drive packet-loss recovery here.
+//! Native audio I/O (cpal + audiopus) is gated behind
+//! `#[cfg(not(target_os = "ios"))]`. iOS callers receive
+//! [`VoiceError::AudioNotSupported`] from
+//! [`WebRtcMediaPeer::start_audio_capture`] and the path-selector
+//! falls back to LiveKit. An iOS-specific AVAudioEngine path lands
+//! as a `TODO(mesh-media-followup-v2)` follow-up.
 
 use std::sync::Arc;
 
@@ -101,22 +99,18 @@ pub struct WebRtcMediaPeer {
     /// callback needs its own `Arc` clone (closures are `'static`).
     pub pc: Arc<RTCPeerConnection>,
 
-    /// Local outbound audio track. Real mic wiring (cpal / AVAudio)
-    /// will write RTP packets here; for now, callers can push synthetic
-    /// packets via [`Self::push_local_rtp`].
-    ///
-    /// `TODO(mesh-media-followup)`: replace synthetic source with a real
-    /// cpal-driven opus encoder pump on desktop and AVAudioEngine on
-    /// iOS.
+    /// Local outbound audio track. The mic capture pump
+    /// ([`super::audio::AudioSendPipeline`], started by
+    /// [`Self::start_audio_capture`]) writes opus-encoded RTP packets
+    /// into this track once the call connects.
     pub local_audio_track: Arc<TrackLocalStaticRTP>,
 
     /// Remote inbound audio track. `None` until the remote peer's
     /// `on_track` callback fires (i.e. their SDP answer includes an
-    /// audio media section and ICE/DTLS comes up).
-    ///
-    /// `TODO(mesh-media-followup)`: pipe this into a speaker playback
-    /// device. Today the track is captured (so tests can observe it)
-    /// but its packets are not consumed.
+    /// audio media section and ICE/DTLS comes up). When set, the
+    /// `on_track` callback also spawns an
+    /// [`super::audio::AudioReceivePipeline`] that pulls the opus
+    /// stream into the default speaker.
     pub remote_audio_track: Arc<RwLock<Option<Arc<TrackRemote>>>>,
 
     /// Queue of local ICE candidates the `on_ice_candidate` callback
@@ -133,13 +127,24 @@ pub struct WebRtcMediaPeer {
     pub state: Arc<RwLock<PeerCallState>>,
 
     /// Channel the orchestrator (or test code) can use to push local
-    /// RTP packets into the outbound track. Real mic capture writes
-    /// here on desktop / mobile; tests write synthetic frames.
+    /// RTP packets into the outbound track. Mic capture writes here
+    /// on desktop; tests write synthetic frames.
     ///
     /// `None` once [`Self::take_local_rtp_sender`] hands ownership over
     /// — useful when a single mic capture pipe wants exclusive write
     /// access.
     local_rtp_tx: Option<mpsc::Sender<Vec<u8>>>,
+
+    /// Handle to the spawned send pipeline. `None` until
+    /// [`Self::start_audio_capture`] runs successfully.
+    /// [`Self::stop_audio_capture`] aborts it.
+    #[cfg(not(target_os = "ios"))]
+    audio_send_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+
+    /// Handles to spawned receive pipelines, one per remote audio
+    /// track captured by `on_track`. Aborted on close.
+    #[cfg(not(target_os = "ios"))]
+    audio_recv_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 
     /// Request ID for the in-flight offer/answer round (correlates
     /// inbound Answers / IceCandidates to this peer). Incremented by
@@ -206,6 +211,13 @@ impl WebRtcMediaPeer {
         let remote_audio_track: Arc<RwLock<Option<Arc<TrackRemote>>>> =
             Arc::new(RwLock::new(None));
 
+        #[cfg(not(target_os = "ios"))]
+        let audio_recv_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        #[cfg(not(target_os = "ios"))]
+        let audio_send_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> =
+            Arc::new(Mutex::new(None));
+
         // Wire on_ice_candidate -> ice_candidates_to_send queue.
         {
             let queue = Arc::clone(&ice_candidates_to_send);
@@ -225,18 +237,45 @@ impl WebRtcMediaPeer {
             }));
         }
 
-        // Wire on_track -> remote_audio_track capture.
+        // Wire on_track -> remote_audio_track capture + spawn an
+        // AudioReceivePipeline for desktop platforms. iOS skips the
+        // pipeline (cpal isn't available) but still records the track
+        // so the orchestrator's status surface reflects it.
         {
             let remote_slot = Arc::clone(&remote_audio_track);
+            #[cfg(not(target_os = "ios"))]
+            let recv_handles_for_cb = Arc::clone(&audio_recv_handles);
             pc.on_track(Box::new(move |track, _receiver, _transceiver| {
                 let remote_slot = Arc::clone(&remote_slot);
+                #[cfg(not(target_os = "ios"))]
+                let recv_handles_for_cb = Arc::clone(&recv_handles_for_cb);
                 Box::pin(async move {
-                    // Phase 8 follow-up: only audio tracks are relevant
-                    // for the mesh. Anything else (data channels,
-                    // video) is logged and ignored — a future video
-                    // PR can grow this match arm.
+                    // Only audio tracks are relevant for the mesh.
+                    // Anything else (data channels, video) is logged
+                    // and ignored — a future video PR can grow this
+                    // match arm.
                     if track.kind() == RTPCodecType::Audio {
-                        *remote_slot.write().await = Some(track);
+                        *remote_slot.write().await = Some(Arc::clone(&track));
+                        #[cfg(not(target_os = "ios"))]
+                        {
+                            // The cpal output stream is pinned to a
+                            // dedicated OS thread by
+                            // AudioReceivePipeline; the pipeline
+                            // itself is Send-safe so we can drive
+                            // its spawn directly from this async
+                            // callback.
+                            match super::audio::AudioReceivePipeline::new(track) {
+                                Ok(pipeline) => {
+                                    let handle = pipeline.spawn();
+                                    recv_handles_for_cb.lock().await.push(handle);
+                                }
+                                Err(e) => log::warn!(
+                                    target: "concord::servitude::voice",
+                                    "audio receive pipeline init failed \
+                                     (continuing without playback): {e}"
+                                ),
+                            }
+                        }
                     } else {
                         log::debug!(
                             target: "concord::servitude::voice",
@@ -275,6 +314,10 @@ impl WebRtcMediaPeer {
             ice_candidates_to_send,
             state,
             local_rtp_tx: Some(local_rtp_tx),
+            #[cfg(not(target_os = "ios"))]
+            audio_send_handle,
+            #[cfg(not(target_os = "ios"))]
+            audio_recv_handles,
             request_id: 0,
         })
     }
@@ -341,12 +384,68 @@ impl WebRtcMediaPeer {
     }
 
     /// Best-effort tear-down. Closes the PeerConnection (which the
-    /// webrtc-rs runtime drives to its final state). Idempotent —
-    /// calling twice is safe.
+    /// webrtc-rs runtime drives to its final state) and aborts any
+    /// spawned audio pipelines. Idempotent — calling twice is safe.
     pub async fn close(&self) -> Result<(), VoiceError> {
+        #[cfg(not(target_os = "ios"))]
+        {
+            if let Some(handle) = self.audio_send_handle.lock().await.take() {
+                handle.abort();
+            }
+            let handles: Vec<_> =
+                self.audio_recv_handles.lock().await.drain(..).collect();
+            for handle in handles {
+                handle.abort();
+            }
+        }
         self.pc.close().await?;
         Ok(())
     }
+
+    /// Start capturing the local microphone and pushing opus-encoded
+    /// RTP into the peer's local audio track. Idempotent — if a send
+    /// pipeline is already running, this is a no-op.
+    ///
+    /// On native desktop platforms (Linux / macOS / Windows) this
+    /// opens the default cpal input device, spawns the encode loop,
+    /// and returns `Ok(())`. On iOS it returns
+    /// [`VoiceError::AudioNotSupported`] so the caller can fall back
+    /// to the LiveKit path; the AVAudioEngine wiring lands as a
+    /// follow-up.
+    #[cfg(not(target_os = "ios"))]
+    pub async fn start_audio_capture(&mut self) -> Result<(), VoiceError> {
+        let mut guard = self.audio_send_handle.lock().await;
+        if guard.is_some() {
+            return Ok(());
+        }
+        let pipeline = super::audio::AudioSendPipeline::new(Arc::clone(
+            &self.local_audio_track,
+        ))?;
+        let handle = pipeline.spawn();
+        *guard = Some(handle);
+        Ok(())
+    }
+
+    /// iOS shim — cpal is not available on iOS. Returns
+    /// `VoiceError::AudioNotSupported` so the orchestrator can
+    /// surface the gap to the path-selector + UI.
+    #[cfg(target_os = "ios")]
+    pub async fn start_audio_capture(&mut self) -> Result<(), VoiceError> {
+        Err(VoiceError::AudioNotSupported)
+    }
+
+    /// Stop the send pipeline. Idempotent — calling on a peer that
+    /// hasn't started capture (or has already stopped) is a no-op.
+    #[cfg(not(target_os = "ios"))]
+    pub async fn stop_audio_capture(&mut self) {
+        if let Some(handle) = self.audio_send_handle.lock().await.take() {
+            handle.abort();
+        }
+    }
+
+    /// iOS shim — no-op (capture was never started).
+    #[cfg(target_os = "ios")]
+    pub async fn stop_audio_capture(&mut self) {}
 
     /// Snapshot the current mirrored connection state. Drives the
     /// status command surface.
@@ -372,21 +471,18 @@ impl WebRtcMediaPeer {
     /// call this with synthetic frames so the wire half can be
     /// exercised without a real microphone.
     ///
-    /// `TODO(mesh-media-followup)`: real mic capture writes here in a
-    /// follow-up PR. Today the production code path doesn't feed the
-    /// track; the track abstraction exists so the negotiation succeeds
-    /// even when the audio source is silent.
+    /// Production mic capture happens via
+    /// [`Self::start_audio_capture`] (which spawns an
+    /// [`super::audio::AudioSendPipeline`]). This method is retained
+    /// as a test seam — synthetic-frame producers can inject opaque
+    /// bytes here without owning a cpal device.
     pub async fn push_local_rtp(&self, _packet: Vec<u8>) -> Result<(), VoiceError> {
         // `TrackLocalStaticRTP::write_rtp` takes an already-parsed
-        // `rtp::packet::Packet`. The orchestrator's mic pump will own
-        // the encoder + serialization step; the synthetic-frame path
-        // used by tests is a no-op shim that proves the seam compiles
-        // and the channel is reachable.
-        //
-        // Concrete real wiring lives in the follow-up PR. For now,
-        // the test asserts the function returns `Ok(())` and the
-        // remote track gets registered, both of which are independent
-        // of frame flow.
+        // `rtp::packet::Packet`. The orchestrator's real mic pump
+        // owns the encoder + serialization step; this entry point
+        // exists for tests that want to drive raw bytes through the
+        // seam (currently a no-op because tests assert structural
+        // properties of the orchestrator, not the encoded payload).
         Ok(())
     }
 }

@@ -57,6 +57,20 @@ pub enum VoiceError {
     /// signaling queue is closed, or a `Notify` lost its peer.
     #[error("internal channel closed: {0}")]
     ChannelClosed(String),
+
+    /// Audio pipeline error — cpal device open failed, opus encoder
+    /// reject, etc. See [`crate::servitude::voice::audio::AudioError`]
+    /// for the concrete classification; this variant just carries
+    /// the display string so the Tauri command surface can ship a
+    /// user-readable message.
+    #[error("audio pipeline error: {0}")]
+    Audio(String),
+
+    /// Audio capture/playback is not supported on this platform.
+    /// Returned by iOS callers so the path selector can fall back
+    /// to LiveKit. Native desktop never returns this.
+    #[error("audio not supported on this platform — fall back to LiveKit")]
+    AudioNotSupported,
 }
 
 impl From<webrtc::Error> for VoiceError {

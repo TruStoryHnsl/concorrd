@@ -157,12 +157,27 @@ base64 = "0.22"
 # with unstable API). Provides `RTCPeerConnection`, SDP/ICE machinery,
 # `TrackLocalStaticRTP` for sending opus frames, and `TrackRemote` for the
 # inbound side.
-#
-# Microphone capture + speaker playback are NOT wired here yet — the local
-# audio track is fed by an in-process `tokio::sync::mpsc::Sender<Vec<u8>>`
-# that synthetic test sources can write into. Real cpal-based mic capture is
-# a separate `TODO(mesh-media-followup)` in `voice/media.rs`.
 webrtc = "0.8"
+
+# Phase 8/9 follow-up — mesh audio capture + playback pipeline.
+#
+# These crates are gated behind `#[cfg(not(target_os = "ios"))]` in
+# `src-tauri/src/servitude/voice/audio.rs` — iOS uses AVAudioEngine which
+# lands in a separate follow-up; iOS mesh callers see
+# `VoiceError::AudioNotSupported` and the path-selector falls back to LiveKit.
+#
+# `rtp = "0.8"` matches webrtc-rs 0.8's internal version (see
+# `webrtc-0.8.0/Cargo.toml::[dependencies.rtp]`). Using the same major
+# avoids the `rtp::packet::Packet` type-identity mismatch with
+# `TrackLocalStaticRTP::write_rtp`.
+#
+# `audiopus = "0.3.0-rc.0"` is the stable shape of the Opus binding for
+# the encoder/decoder split we want (`audiopus::coder::{Encoder, Decoder}`).
+# 0.2 lacks the explicit `coder` submodule layout.
+cpal = "0.15"
+audiopus = "0.3.0-rc.0"
+rtp = "0.8"
+ringbuf = "0.4"
 
 # Unix-only deps for servitude child-process management. `nix::sys::signal`
 # gives us SIGTERM for graceful shutdown — std::process::Child::kill uses
