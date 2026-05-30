@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
@@ -978,32 +979,48 @@ async fn servitude_stop(state: tauri::State<'_, ServitudeState>) -> Result<(), S
     }
 }
 
+/// Typed shape for [`servitude_status`].
+///
+/// Returned directly (not as a serde-encoded JSON string) so the
+/// TypeScript caller's `invoke<ServitudeStatusResponse>(...)` type
+/// parameter is honored by the Tauri runtime — any future field
+/// rename produces a compile error on the Rust side and a runtime
+/// shape mismatch the TS side can catch with structural narrowing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServitudeStatusResponse {
+    /// Current lifecycle state of the embedded servitude.
+    pub state: LifecycleState,
+    /// Map of transport name to failure reason for any transport that
+    /// is in a degraded state. Empty when nothing is degraded.
+    pub degraded_transports: std::collections::HashMap<String, String>,
+}
+
 /// Report the current lifecycle state of the embedded servitude.
 ///
-/// INS-024 Wave 4: Returns a JSON object with `state` (lifecycle string)
-/// and `degraded_transports` (map of transport name -> failure reason).
-/// The previous return shape was a bare JSON string; the new shape is
-/// backward-compatible at the TypeScript level because the frontend
-/// parses the response structurally.
+/// INS-024 Wave 4: Returns the [`ServitudeStatusResponse`] struct with
+/// `state` (lifecycle enum) and `degraded_transports` (map of
+/// transport name -> failure reason). If no handle exists yet (never
+/// started), returns `state = Stopped` with an empty degraded map.
 ///
-/// If no handle exists yet (never started), returns `"stopped"` with
-/// an empty degraded map.
+/// Wire shape: a typed struct, NOT a serde-encoded JSON string.
+/// The TypeScript caller invokes with `invoke<ServitudeStatusResponse>`
+/// and receives the deserialized object directly. The earlier
+/// `Result<String, String>` shape required a hand-rolled `JSON.parse`
+/// on the frontend with no compile-time check that the Rust+TS shapes
+/// agreed; any rename on either side silently broke the renderer.
 #[tauri::command]
-async fn servitude_status(state: tauri::State<'_, ServitudeState>) -> Result<String, String> {
+async fn servitude_status(
+    state: tauri::State<'_, ServitudeState>,
+) -> Result<ServitudeStatusResponse, String> {
     let guard = state.0.lock().await;
     let (state_value, degraded) = match guard.as_ref() {
-        Some(handle) => (
-            handle.status(),
-            handle.degraded_transports().clone(),
-        ),
+        Some(handle) => (handle.status(), handle.degraded_transports().clone()),
         None => (LifecycleState::Stopped, std::collections::HashMap::new()),
     };
-
-    let response = serde_json::json!({
-        "state": state_value,
-        "degraded_transports": degraded,
-    });
-    serde_json::to_string(&response).map_err(|e| e.to_string())
+    Ok(ServitudeStatusResponse {
+        state: state_value,
+        degraded_transports: degraded,
+    })
 }
 
 /// Return the embedded tuwunel's per-instance registration token.

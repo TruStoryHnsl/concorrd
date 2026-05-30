@@ -150,7 +150,14 @@ impl VoiceCallSink for RecordingVoiceSink {
         let peer = peers
             .entry(from)
             .or_insert_with(|| WebRtcPeer::new(from));
-        if let Some(response) = peer.handle_signaling(message) {
+        // Phase 8 invariant: signaling envelopes on a non-terminal
+        // peer always succeed. The terminal-state guard is exercised
+        // in the WebRtcPeer unit tests; this sink is only driven with
+        // mid-call envelopes, so we unwrap.
+        if let Some(response) = peer
+            .handle_signaling(message)
+            .expect("non-terminal peer must accept signaling")
+        {
             self.outbound.lock().unwrap().push((from, response));
         }
     }
@@ -305,7 +312,7 @@ async fn voice_signaling_round_trip_over_libp2p() {
     let peers = sink.peers.lock().unwrap();
     let peer_state = peers
         .get(&peer_a)
-        .map(|p| p.state.clone())
+        .map(|p| p.state().clone())
         .expect("sink must have created a WebRtcPeer for peer_a");
     assert_eq!(
         peer_state,
