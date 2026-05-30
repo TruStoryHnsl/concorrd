@@ -7,6 +7,10 @@
     # the `lifetime` directive on `tls { issuer internal { ... } }`.
     # Intermediate must be strictly shorter than the root's
     # default ~10y lifetime, so we stay just under that.
+    #
+    # Harmless when TLS_MODE is set to a public-ACME mode: Caddy only
+    # consults `pki` blocks when an `issuer internal` directive is
+    # active on a site.
     pki {
         ca local {
             root_cn "Concord Dev Root"
@@ -16,32 +20,80 @@
     }
 }
 
-{$SITE_ADDRESS} {
-    # TLS — Caddy's internal CA with a long-lived leaf cert.
-    #
-    # Tailscale-only dev origin: no public-internet reachability, no
-    # external CA. Operators add Caddy's root CA to their browser
-    # trust store (or accept the cert exception) once.
-    #
-    # The `lifetime` override is load-bearing: Caddy's `tls internal`
-    # default issues 12-hour leaf certs that auto-renew on a similar
-    # cadence, and every renewal invalidates the operator's browser
-    # cert exception. Plain HTTPS click-through warnings re-fire on
-    # the next load — annoying. WebSocket connections silently fail
-    # with close code 1015 (TLS handshake) because there's no UI to
-    # re-accept a cert for WSS. The result is voice rooms breaking
-    # every ~12h with "Encountered websocket error during connection
-    # establishment" even though the page itself still works.
-    #
-    # 87600h ≈ 10 years: covers the dev box's expected operational
-    # lifetime so the exception accepted on day one carries forward.
-    # Caddy still rotates the internal CA itself on its own schedule,
-    # but the leaf chains back to a stable trust anchor.
+# ── TLS_MODE snippets ──────────────────────────────────────────────────
+# Imported at the top of the {$SITE_ADDRESS} block based on the
+# TLS_MODE env var. See .env.example for the operator-facing description
+# of each mode. The site block uses `import tls_mode_{$TLS_MODE:...}` —
+# Caddy substitutes the env var at parse time, so adding new snippets
+# here is the way to extend the matrix.
+
+# Caddy's internal CA with a long-lived leaf cert (~9 years).
+#
+# Tailscale-only / LAN-only dev origin: no public-internet
+# reachability, no external CA. Operators add Caddy's root CA to
+# their browser trust store (or accept the cert exception) once.
+#
+# The `lifetime` override is load-bearing: Caddy's `tls internal`
+# default issues 12-hour leaf certs that auto-renew on a similar
+# cadence, and every renewal invalidates the operator's browser
+# cert exception. Plain HTTPS click-through warnings re-fire on
+# the next load — annoying. WebSocket connections silently fail
+# with close code 1015 (TLS handshake) because there's no UI to
+# re-accept a cert for WSS. The result is voice rooms breaking
+# every ~12h with "Encountered websocket error during connection
+# establishment" even though the page itself still works.
+#
+# 78000h ≈ 8.9 years: covers the dev box's expected operational
+# lifetime so the exception accepted on day one carries forward.
+# Caddy still rotates the internal CA itself on its own schedule,
+# but the leaf chains back to a stable trust anchor.
+(tls_mode_internal_longlived) {
     tls {
         issuer internal {
             lifetime 78000h
         }
     }
+}
+
+# Public ACME via HTTP-01.
+#
+# Requires port 80 reachable from the public internet for the
+# validation handshake. Caddy auto-issues + auto-renews. ACME_EMAIL
+# is the optional contact address Let's Encrypt uses for expiry
+# warnings; the `internal@example.invalid` fallback is harmless when
+# the operator leaves ACME_EMAIL blank (LE accepts non-existent
+# emails for account records).
+(tls_mode_letsencrypt_http01) {
+    tls {$ACME_EMAIL:internal@example.invalid}
+}
+
+# Public ACME via DNS-01 against Cloudflare.
+#
+# Proves zone control by writing transient `_acme-challenge.<host>`
+# TXT records via the Cloudflare API rather than serving an HTTP
+# challenge on port 80. No public reachability required — ideal for
+# Tailscale-only or CDN-fronted origins that still want a real CA.
+# Requires the operator to set CLOUDFLARE_API_TOKEN (see .env.example
+# for the required token scope). Same ACME_EMAIL fallback as the
+# HTTP-01 snippet.
+(tls_mode_letsencrypt_dns01_cloudflare) {
+    tls {$ACME_EMAIL:internal@example.invalid} {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
+}
+
+{$SITE_ADDRESS} {
+    # TLS strategy is operator-pickable via the TLS_MODE env var.
+    # See .env.example for the full description of each mode. The
+    # default for the dev Caddyfile is `internal_longlived` — a
+    # ~9-year Caddy-internal CA cert that survives Tailscale-only /
+    # LAN-only origins with no public ACME reachability.
+    #
+    # Caddyfile has no real `if/else`, so each mode is a named
+    # snippet defined at the top of this file and imported by name.
+    # The `{$TLS_MODE:internal_longlived}` default applies when the
+    # operator leaves TLS_MODE empty in .env.
+    import tls_mode_{$TLS_MODE:internal_longlived}
 
     encode gzip
 

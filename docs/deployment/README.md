@@ -7,6 +7,7 @@ Operator runbooks for deploying Concord. Start with the target that matches your
 | Guide | Target | When to use |
 |-------|--------|-------------|
 | [host-allowlist.md](./host-allowlist.md) | All deploys | Pre-flight — which hosts may run concord, which may not, and why. |
+| [tls-mode.md](./tls-mode.md) | All deploys | Pick a TLS strategy (`TLS_MODE`): Caddy internal CA, Let's Encrypt HTTP-01, or Let's Encrypt DNS-01 via Cloudflare. |
 | [github_bug_report_token.md](./github_bug_report_token.md) | GitHub PAT rotation | You set up `GITHUB_BUG_REPORT_TOKEN` and need to rotate the credential or audit its scope. |
 
 New environments should land their own `.md` file in this directory and link into the table above.
@@ -25,17 +26,27 @@ to anything reachable. The web container's Caddy publishes `443` on the host
 `https://dev.<your-zone>/` connects to Caddy on the Tailscale side — no public
 ingress involved.
 
-Let's Encrypt issuance for this topology uses the DNS-01 ACME challenge against
-Cloudflare instead of HTTP-01. DNS-01 proves zone control by writing a
-transient `_acme-challenge.<host>` TXT record via the Cloudflare API, which
-works even though the origin is invisible to the public internet. The `web`
-service in `docker-compose.dev.yml` injects `CLOUDFLARE_API_TOKEN` into Caddy's
-environment, and the dev Caddyfile's `tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }`
-directive consumes it. The Caddy image is built with `xcaddy` against the
-`caddy-dns/cloudflare` plugin (see `web/Dockerfile`); plain `caddy:alpine` does
-not include this provider. Set `CLOUDFLARE_API_TOKEN` in `.env` (see
-`.env.example` for the required token scope and minting steps) before bringing
-the dev stack up.
+Two TLS strategies cover this topology:
+
+- `TLS_MODE=internal_longlived` — the dev default. Caddy issues a self-signed
+  cert with a ~9-year leaf; operators accept the cert exception once per
+  device. This is what PR #91 shipped and what every Tailscale-only operator
+  is on today by default.
+- `TLS_MODE=letsencrypt_dns01_cloudflare` — public Let's Encrypt via DNS-01.
+  DNS-01 proves zone control by writing a transient `_acme-challenge.<host>`
+  TXT record via the Cloudflare API, which works even though the origin is
+  invisible to the public internet. Set `CLOUDFLARE_API_TOKEN` in `.env`
+  alongside the TLS_MODE choice (see `.env.example` for the required token
+  scope and minting steps).
+
+The base `docker-compose.yml` threads `TLS_MODE`, `ACME_EMAIL`, and
+`CLOUDFLARE_API_TOKEN` into the `web` service's environment; the dev override
+flips the default TLS_MODE to `internal_longlived`. The Caddy image is built
+with `xcaddy` against the `caddy-dns/cloudflare` plugin (see `web/Dockerfile`);
+plain `caddy:alpine` does not include this provider, so the DNS-01 mode only
+works against the project-built image.
+
+See [tls-mode.md](./tls-mode.md) for the full strategy matrix.
 
 ---
 

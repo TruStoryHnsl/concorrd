@@ -255,6 +255,28 @@ services:
       # to https://<CONDUWUIT_SERVER_NAME>. The Caddyfile uses this for
       # the m.homeserver.base_url in /.well-known/matrix/client.
       MATRIX_BASE_URL: ${PUBLIC_BASE_URL:-https://${CONDUWUIT_SERVER_NAME}}
+      # TLS strategy picker — drives the `import tls_mode_<mode>` line
+      # in both Caddyfile and Caddyfile.dev. See .env.example for the
+      # documented matrix. Empty falls back to each Caddyfile's
+      # built-in default. The prod default is `letsencrypt_http01`;
+      # the dev override (docker-compose.dev.yml) substitutes
+      # `internal_longlived` so Caddyfile.dev keeps its historical
+      # Tailscale-friendly behaviour when TLS_MODE is unset in .env.
+      TLS_MODE: ${TLS_MODE:-letsencrypt_http01}
+      # Optional ACME contact email. Consumed by the letsencrypt_*
+      # TLS_MODE snippets via Caddy's `{$ACME_EMAIL:fallback}` syntax;
+      # the fallback only fires when the env var is UNSET (not when
+      # set-to-empty), so we always pass an effective placeholder
+      # value. `internal@example.invalid` is the operator-anonymous
+      # default — Let's Encrypt accepts non-existent emails for ACME
+      # account records but won't be able to send expiry warnings.
+      # Override with a real email in .env to receive renewal alerts.
+      ACME_EMAIL: ${ACME_EMAIL:-internal@example.invalid}
+      # Cloudflare API token. Consumed by the
+      # letsencrypt_dns01_cloudflare TLS_MODE snippet. Token scope:
+      # Zone.Zone:Read + Zone.DNS:Edit on the zone hosting SITE_ADDRESS.
+      # Empty is fine when TLS_MODE is not the DNS-01 mode.
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
     depends_on:
       conduwuit:
         condition: service_started

@@ -345,6 +345,104 @@ def check_coherence(repo_root: Path) -> list[CoherenceResult]:
             )
         )
 
+    # ── 5) TLS_MODE matrix coherence ────────────────────────────────
+    # The three TLS_MODE values (internal_longlived, letsencrypt_http01,
+    # letsencrypt_dns01_cloudflare) must each have a matching
+    # `(tls_mode_<value>)` snippet in BOTH Caddyfile and Caddyfile.dev,
+    # and the ENV var must be documented in .env.example. Drift here
+    # surfaces as "snippet not found" at Caddy startup — too late.
+    findings.extend(_check_tls_mode_coherence(repo_root))
+
+    return findings
+
+
+_TLS_MODE_VALUES = (
+    "internal_longlived",
+    "letsencrypt_http01",
+    "letsencrypt_dns01_cloudflare",
+)
+
+
+def _check_tls_mode_coherence(repo_root: Path) -> list[CoherenceResult]:
+    """Verify TLS_MODE snippets exist in both Caddyfiles and that the
+    env var is documented + plumbed.
+    """
+    findings: list[CoherenceResult] = []
+
+    caddyfile_prod = repo_root / "config" / "Caddyfile"
+    caddyfile_dev = repo_root / "config" / "Caddyfile.dev"
+    env_example = repo_root / ".env.example"
+    compose_yml = repo_root / "docker-compose.yml"
+
+    for path in (caddyfile_prod, caddyfile_dev):
+        if not path.is_file():
+            continue
+        text = path.read_text()
+        for mode in _TLS_MODE_VALUES:
+            snippet_marker = f"(tls_mode_{mode})"
+            if snippet_marker not in text:
+                findings.append(
+                    CoherenceResult(
+                        file=str(path.relative_to(repo_root)),
+                        key=f"snippet {snippet_marker}",
+                        expected="defined",
+                        actual="missing",
+                        severity="error",
+                    )
+                )
+        # Every Caddyfile must import a TLS_MODE snippet.
+        if "import tls_mode_" not in text:
+            findings.append(
+                CoherenceResult(
+                    file=str(path.relative_to(repo_root)),
+                    key="import tls_mode_{$TLS_MODE:...}",
+                    expected="present",
+                    actual="missing",
+                    severity="error",
+                )
+            )
+
+    if env_example.is_file():
+        env_text = env_example.read_text()
+        for marker in ("TLS_MODE=", "ACME_EMAIL=", "CLOUDFLARE_API_TOKEN="):
+            if marker not in env_text:
+                findings.append(
+                    CoherenceResult(
+                        file=".env.example",
+                        key=marker.rstrip("="),
+                        expected="documented",
+                        actual="missing",
+                        severity="error",
+                    )
+                )
+        # Each TLS_MODE value should appear at least once in the operator-
+        # facing documentation block so the matrix is self-documenting.
+        for mode in _TLS_MODE_VALUES:
+            if mode not in env_text:
+                findings.append(
+                    CoherenceResult(
+                        file=".env.example",
+                        key=f"TLS_MODE value '{mode}'",
+                        expected="documented",
+                        actual="missing",
+                        severity="error",
+                    )
+                )
+
+    if compose_yml.is_file():
+        compose_text = compose_yml.read_text()
+        for marker in ("TLS_MODE:", "ACME_EMAIL:", "CLOUDFLARE_API_TOKEN:"):
+            if marker not in compose_text:
+                findings.append(
+                    CoherenceResult(
+                        file="docker-compose.yml",
+                        key=marker.rstrip(":"),
+                        expected="passed through to web service",
+                        actual="missing",
+                        severity="error",
+                    )
+                )
+
     return findings
 
 
