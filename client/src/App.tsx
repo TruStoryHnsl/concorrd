@@ -10,6 +10,7 @@ import { isDesktopMode } from "./api/serverUrl";
 import { joinVoiceSession } from "./components/voice/joinVoiceSession";
 import { usePlatform } from "./hooks/usePlatform";
 import { useServitudeLifecycle } from "./hooks/useServitudeLifecycle";
+import { useBrowserLibp2p } from "./hooks/useBrowserLibp2p";
 import { runStartupCheck as runUpdaterStartupCheck } from "./lib/updater";
 import { computeInitialServerConnected } from "./serverPickerGate";
 import { redeemInvite, getInstanceInfo } from "./api/concord";
@@ -51,6 +52,13 @@ export default function App() {
   // relay. No-op outside Tauri. The hook attaches its own event
   // listeners and tears them down on unmount.
   useServitudeLifecycle();
+
+  // Phase 9: spin up a per-tab js-libp2p node on web builds so the
+  // browser is a real peer in the Concord mesh (federation +
+  // voice-path selection). No-op inside Tauri — the Rust swarm IS
+  // the libp2p layer on native. Status is intentionally unrendered
+  // for now; a Settings → Profile badge lands in a Phase 9 follow-up.
+  useBrowserLibp2p();
 
   // In-app updater: native builds poll the GitHub releases listing on
   // launch (6h debounce via localStorage) and prompt if a newer per-

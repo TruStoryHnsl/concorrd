@@ -13,21 +13,27 @@
  *     (`"web_only_participant_present"`).
  *   - Otherwise → mesh (`"all_native_under_cap"`).
  *
- * Browser builds short-circuit to SFU regardless — browsers cannot
- * participate in the libp2p mesh until Phase 9 ships js-libp2p.
- * Until then the web client always rides LiveKit, and the reason
- * string `"browser_or_web_build"` makes that explicit on the wire.
+ * Phase 9 update: browsers ARE now mesh-eligible when they have a
+ * running js-libp2p node (per the Phase 9 design — js-libp2p in the
+ * browser client makes the browser a real Concord peer). The web
+ * build replicates the same selector locally:
  *
- * Phase 8 ships the DECISION + the signaling-protocol scaffolding;
- * full mesh-MEDIA over libp2p (real audio frames) is queued as a
- * Phase 8 follow-up — the integration of `webrtc-rs` for audio
- * capture / opus encoding / RTP is a sizable separate piece of
- * work. Today the selector returns `libp2p_mesh` but the
- * `joinVoiceSession` consumer logs the decision and falls through
- * to LiveKit so the working voice path stays the default behavior.
+ *   - No browser libp2p node started → SFU (`"browser_libp2p_not_running"`).
+ *   - Any participant with `peer_id === null` → SFU.
+ *   - >8 participants → SFU.
+ *   - Otherwise → mesh.
+ *
+ * Phase 8 shipped the path-selection + signaling-protocol scaffolding;
+ * the audio-MEDIA layer (real WebRTC tracks over the libp2p WebRTC
+ * transport, opus encoding, RTP) is a coordinated Phase 8/9 follow-up.
+ * Until that lands, `joinVoiceSession` still rides LiveKit even when
+ * the selector returns `libp2p_mesh` — the decision flips to "the
+ * selector says mesh is viable", but the media plane stays on the
+ * proven LiveKit code path until the audio half is real.
  */
 
 import { isTauri } from "./servitude";
+import { getNode } from "../libp2p/node";
 
 /** Stable wire form of the chosen path. */
 export type VoicePath = "libp2p_mesh" | "livekit_sfu";
@@ -55,8 +61,9 @@ export interface VoiceParticipant {
  *   - `"web_only_participant_present"` — at least one participant
  *     reachable only via the web plane, SFU forced.
  *   - `"all_native_under_cap"` — pure mesh case.
- *   - `"browser_or_web_build"` — web build short-circuit. The
- *     selector never invoked the native layer.
+ *   - `"browser_libp2p_not_running"` — web build with no js-libp2p
+ *     node started; the browser can't mesh until Phase 9's hook
+ *     finishes mounting.
  */
 export interface VoicePathSelection {
   path: VoicePath;
@@ -82,29 +89,40 @@ export interface VoicePathSelection {
 export async function selectVoicePath(
   participants: VoiceParticipant[],
 ): Promise<VoicePathSelection> {
-  // Web build / pre-Tauri-init short-circuit. The selector never
-  // invokes the native layer; LiveKit is the only path the browser
-  // can use until Phase 9.
-  if (!isTauri()) {
-    return { path: "livekit_sfu", reason: "browser_or_web_build" };
+  if (isTauri()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const raw = await invoke<VoicePathSelection>("select_voice_path", {
+        participants,
+      });
+      return {
+        path: raw.path,
+        reason: raw.reason,
+      };
+    } catch (err) {
+      // Path selection failing must NOT take the voice flow down with
+      // it. Fall back to the working LiveKit path and surface the
+      // failure shape via the reason string so callers can log it.
+      const reason =
+        err instanceof Error
+          ? `select_voice_path_error: ${err.message}`
+          : `select_voice_path_error: ${String(err)}`;
+      return { path: "livekit_sfu", reason };
+    }
   }
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const raw = await invoke<VoicePathSelection>("select_voice_path", {
-      participants,
-    });
-    return {
-      path: raw.path,
-      reason: raw.reason,
-    };
-  } catch (err) {
-    // Path selection failing must NOT take the voice flow down with
-    // it. Fall back to the working LiveKit path and surface the
-    // failure shape via the reason string so callers can log it.
-    const reason =
-      err instanceof Error
-        ? `select_voice_path_error: ${err.message}`
-        : `select_voice_path_error: ${String(err)}`;
-    return { path: "livekit_sfu", reason };
+  // Browser build (Phase 9): replicate the native selector locally.
+  // The browser is mesh-eligible ONLY when a libp2p node is running
+  // AND every participant has a resolved peerId AND the room is at or
+  // under the 8-peer cap. Otherwise — SFU.
+  const node = getNode();
+  if (!node) {
+    return { path: "livekit_sfu", reason: "browser_libp2p_not_running" };
   }
+  if (participants.length > 8) {
+    return { path: "livekit_sfu", reason: "above_cap_8" };
+  }
+  if (participants.some((p) => !p.peer_id)) {
+    return { path: "livekit_sfu", reason: "web_only_participant_present" };
+  }
+  return { path: "libp2p_mesh", reason: "all_native_under_cap" };
 }
