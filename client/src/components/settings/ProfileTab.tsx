@@ -9,6 +9,7 @@ import { PeerCardDisplay } from "../peers/PeerCardDisplay";
 import { PeerCardScanner } from "../peers/PeerCardScanner";
 import { KnownPeersList } from "../peers/KnownPeersList";
 import { DeploymentProfileSection } from "./DeploymentProfileSection";
+import { useBrowserLibp2p } from "../../hooks/useBrowserLibp2p";
 
 export function ProfileTab() {
   const client = useAuthStore((s) => s.client);
@@ -748,6 +749,13 @@ function SwarmStatusSection() {
  */
 function PairedPeersSection() {
   const [scannerOpen, setScannerOpen] = useState(false);
+
+  // Phase 9 (bundle split): the paired-peers surface is the other
+  // trigger for lazily loading the browser libp2p stack. Mounting
+  // this section means the user is actively looking at P2P state,
+  // so we kick the swarm up here. No-op on Tauri (the Rust swarm IS
+  // the libp2p layer) — see `useBrowserLibp2p` for the detect path.
+  useBrowserLibp2p({ enabled: true });
 
   return (
     <div className="border-t border-outline-variant/15 pt-6 space-y-4">
