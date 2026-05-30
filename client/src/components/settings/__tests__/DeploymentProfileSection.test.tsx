@@ -29,6 +29,18 @@ vi.mock("../../../api/servitude", async (importOriginal) => {
   };
 });
 
+// Stub the auth store to a logged-in shape so the section's
+// authenticated calls (`enableWebStack`, `fetchHostingProfile` on web)
+// have a bearer token to send. Tests that need the unauthenticated
+// path can override via setState.
+vi.mock("../../../stores/auth", () => ({
+  useAuthStore: Object.assign(
+    (selector: (s: { accessToken: string | null }) => unknown) =>
+      selector({ accessToken: "test-token" }),
+    { getState: () => ({ accessToken: "test-token" }) },
+  ),
+}));
+
 import * as hostingProfileApi from "../../../api/hostingProfile";
 import * as servitudeApi from "../../../api/servitude";
 import { DeploymentProfileSection } from "../DeploymentProfileSection";

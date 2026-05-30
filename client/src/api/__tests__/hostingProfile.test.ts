@@ -93,11 +93,13 @@ describe("hostingProfile wrapper", () => {
       ),
     );
 
-    const result = await fetchHostingProfile();
+    const result = await fetchHostingProfile("test-token");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url] = fetchMock.mock.calls[0]!;
+    const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("/api/hosting/profile");
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer test-token");
     expect(result).toEqual({
       profile: "web_first",
       webStackRunning: true,
@@ -113,7 +115,27 @@ describe("hostingProfile wrapper", () => {
       new Response("internal explosion", { status: 500 }),
     );
 
-    await expect(fetchHostingProfile()).rejects.toThrow(/500/);
+    await expect(fetchHostingProfile("test-token")).rejects.toThrow(/500/);
+  });
+
+  it("fetchHostingProfile: web path omits Authorization when no token supplied", async () => {
+    isTauriMock.mockReturnValue(false);
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          profile: "p2p_only",
+          web_stack_running: false,
+          last_changed: null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await fetchHostingProfile();
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
   });
 
   // -------------------------------------------------------------
@@ -160,12 +182,14 @@ describe("hostingProfile wrapper", () => {
       ),
     );
 
-    const result = await enableWebStack();
+    const result = await enableWebStack("test-token");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("/api/hosting/profile/enable_web_stack");
     expect((init as RequestInit).method).toBe("POST");
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer test-token");
     expect(result.profile).toBe("web_first");
     expect(result.webStackRunning).toBe(true);
     expect(result.startedServices).toEqual([
