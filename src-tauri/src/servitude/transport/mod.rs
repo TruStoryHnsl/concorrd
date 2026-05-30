@@ -235,6 +235,22 @@ impl LibP2pRuntime {
             transport.register_federation_handler(handler);
         }
 
+        // Phase 6 follow-up (INS-019b) — register the ActivityPub
+        // federation handler so inbound `/concord/activitypub/1.0.0`
+        // streams are routed through the ActivityPub dispatch surface.
+        // Phase 6 ships a `StubActivityPubClient` (501-for-everything
+        // except a documented `"Ping"` heartbeat) so the seam is plumbed
+        // end-to-end; real Mastodon / Mozilla.social interop is a
+        // follow-up. Three handlers now, all on different protocol IDs.
+        {
+            use crate::servitude::federation::{
+                ActivityPubHandler, StubActivityPubClient,
+            };
+            let api = std::sync::Arc::new(StubActivityPubClient);
+            let handler = std::sync::Arc::new(ActivityPubHandler::new(api));
+            transport.register_federation_handler(handler);
+        }
+
         // Phase 8 (INS-019b) — register the voice signaling handler so
         // inbound `/concord/voice-signaling/1.0.0` streams are routed
         // to the WebRTC negotiation layer. Phase 8 ships with a
