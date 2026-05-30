@@ -1,18 +1,29 @@
 import { useAuthStore } from "../../stores/auth";
 import { useSettingsStore } from "../../stores/settings";
 import { useSourcesStore } from "../../stores/sources";
+import { useBrowserLibp2p } from "../../hooks/useBrowserLibp2p";
 import { SourceBrandIcon } from "../sources/sourceBrand";
+import { PeerConnectionsSection } from "./connections/PeerConnectionsSection";
 
 /**
  * Per-user Connections tab.
  *
  * Each connection is personal to the caller; tiles deep-link into the
  * AddSource modal via requestAddSource.
+ *
+ * 2026-05-30: P2P surfaces (peer identity, swarm status, paired peers)
+ * relocated here from ProfileTab — they describe connectivity, not the
+ * user-profile concept. Mounting this tab boots the browser libp2p
+ * swarm (no-op on Tauri) so the swarm-status block has data to show.
  */
 export function UserConnectionsTab() {
   const accessToken = useAuthStore((s) => s.accessToken);
   const requestAddSource = useSettingsStore((s) => s.requestAddSource);
   const sources = useSourcesStore((s) => s.sources);
+
+  // Phase 9 (browser P2P UI surface): opening Settings → Connections is
+  // the trigger for booting the browser libp2p swarm. No-op on Tauri.
+  useBrowserLibp2p({ enabled: true });
 
   if (!accessToken) {
     return (
@@ -71,6 +82,14 @@ export function UserConnectionsTab() {
       />
 
       <ConnectionCard
+        brand="p2p"
+        title="Pair with a peer (P2P)"
+        subtitle="Direct device-to-device connection. No homeserver, no DNS, no server."
+        action="Pair"
+        onAction={() => requestAddSource("pair-peer")}
+      />
+
+      <ConnectionCard
         brand="slack"
         title="Slack"
         subtitle="Preloaded release target"
@@ -84,6 +103,8 @@ export function UserConnectionsTab() {
         action="Soon"
         disabled
       />
+
+      <PeerConnectionsSection />
     </div>
   );
 }
@@ -97,7 +118,7 @@ function ConnectionCard({
   disabled,
   count,
 }: {
-  brand: "concord" | "matrix" | "mozilla" | "slack" | "reticulum";
+  brand: "concord" | "matrix" | "mozilla" | "slack" | "reticulum" | "p2p";
   title: string;
   subtitle: string;
   action: string;
@@ -105,12 +126,22 @@ function ConnectionCard({
   disabled?: boolean;
   count?: number;
 }) {
-  const brandedIcon =
-    brand === "concord" || brand === "matrix" || brand === "mozilla"
-      ? <SourceBrandIcon brand={brand} size={24} />
-      : <span className="material-symbols-outlined text-on-surface-variant">
-          {brand === "slack" ? "forum" : "sensors"}
-        </span>;
+  let brandedIcon: React.ReactNode;
+  if (brand === "concord" || brand === "matrix" || brand === "mozilla") {
+    brandedIcon = <SourceBrandIcon brand={brand} size={24} />;
+  } else if (brand === "p2p") {
+    brandedIcon = (
+      <span className="material-symbols-outlined text-on-surface-variant">
+        hub
+      </span>
+    );
+  } else {
+    brandedIcon = (
+      <span className="material-symbols-outlined text-on-surface-variant">
+        {brand === "slack" ? "forum" : "sensors"}
+      </span>
+    );
+  }
 
   return (
     <div className="border border-outline-variant/20 rounded-lg overflow-hidden">

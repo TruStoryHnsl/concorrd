@@ -46,6 +46,7 @@ import ExtensionMenu from "../extension/ExtensionMenu";
 import { ExtensionCatalogModal } from "../extension/ExtensionCatalogModal";
 import { LocalHostingControl } from "../sources/LocalHostingControl";
 import { HostOnboarding } from "../onboarding/HostOnboarding";
+import { PeerCardScanner } from "../peers/PeerCardScanner";
 import { ServerSidebar } from "./ServerSidebar";
 import { ChannelSidebar, UserBar } from "./ChannelSidebar";
 import { DMSidebar } from "../dm/DMSidebar";
@@ -278,6 +279,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // App.tsx escape hatch so the hollow-shell boot can open this
   // modal from outside; internally, tiles call `setAddSourceOpen`.
   const [addSourceOpen, setAddSourceOpen] = useState(false);
+  // Pending initial-screen request from the Connections tab (or any
+  // other deep-link surface). Cleared when the modal mounts so a later
+  // open without a request defaults back to "pick".
+  const [addSourceInitialScreen, setAddSourceInitialScreen] = useState<
+    string | null
+  >(null);
   const openAddSource = useCallback(() => {
     setAddSourceOpen(true);
     onAddSource?.();
@@ -290,12 +297,15 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   // Settings panel's Connections tab can request the Add-Source modal
   // (e.g. "Connect another Concord instance"). Consume and open the
-  // modal whenever a pending request shows up.
+  // modal whenever a pending request shows up. The requested screen is
+  // forwarded to the modal as its initial state so e.g. "pair-peer"
+  // deep-links straight into the scanner UI.
   const pendingAddSourceScreen = useSettingsStore((s) => s.pendingAddSourceScreen);
   const consumeAddSourceRequest = useSettingsStore((s) => s.consumeAddSourceRequest);
   useEffect(() => {
     if (pendingAddSourceScreen !== null) {
-      consumeAddSourceRequest();
+      const requested = consumeAddSourceRequest();
+      setAddSourceInitialScreen(requested);
       setAddSourceOpen(true);
       onAddSource?.();
     }
@@ -1878,9 +1888,14 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       {/* INS-020: Add Source modal — shared between mobile + desktop native */}
       {addSourceOpen && (
         <AddSourceModal
-          onClose={() => setAddSourceOpen(false)}
+          initialScreen={addSourceInitialScreen}
+          onClose={() => {
+            setAddSourceOpen(false);
+            setAddSourceInitialScreen(null);
+          }}
           onSourceAdded={() => {
             setAddSourceOpen(false);
+            setAddSourceInitialScreen(null);
             if (scrollStripRef.current) scrollToPanel(1);
           }}
         />
@@ -2379,10 +2394,12 @@ const PAGE_PILL_META: Record<string, { icon: string; label: string }> = {
    Step 2: Validate token against the instance.
    Step 3: Show login/register form scoped to that instance.
    Step 4: On success, add the source and close. */
-function AddSourceModal({
+export function AddSourceModal({
+  initialScreen,
   onClose,
   onSourceAdded,
 }: {
+  initialScreen?: string | null;
   onClose: () => void;
   onSourceAdded: () => void;
 }) {
@@ -2393,10 +2410,29 @@ function AddSourceModal({
     | "matrix-auth"
     | "reticulum"
     | "hosting-bootstrap"
+    | "pair-peer"
     | "validating"
     | "error";
 
-  const [screen, setScreen] = useState<Screen>("pick");
+  // Only honor an `initialScreen` value that this modal actually owns
+  // (e.g. "pair-peer", "concord", "matrix"). Domain hints like
+  // "matrix.org" or "chat.mozilla.org" are handled by callers as a
+  // shortcut to open the modal — they don't map to a screen here, so we
+  // fall back to "pick" for them. Avoids surfacing an unknown-screen
+  // blank state.
+  const KNOWN_SCREENS: ReadonlySet<Screen> = new Set([
+    "pick",
+    "concord",
+    "matrix",
+    "reticulum",
+    "pair-peer",
+    "hosting-bootstrap",
+  ]);
+  const startScreen: Screen =
+    initialScreen && KNOWN_SCREENS.has(initialScreen as Screen)
+      ? (initialScreen as Screen)
+      : "pick";
+  const [screen, setScreen] = useState<Screen>(startScreen);
   const [error, setError] = useState("");
 
   // Concord form state
@@ -2687,6 +2723,22 @@ function AddSourceModal({
 
               <button
                 type="button"
+                onClick={() => setScreen("pair-peer")}
+                data-testid="add-source-tile-pair-peer"
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-primary/40 hover:bg-surface-container-high transition-all text-left group"
+              >
+                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                  <span className="material-symbols-outlined text-on-surface-variant">hub</span>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-on-surface">Pair a peer</p>
+                  <p className="text-xs text-on-surface-variant">Connect directly to another Concord install via QR, deeplink, or Matrix room.</p>
+                </div>
+                <span className="material-symbols-outlined text-on-surface-variant/40 ml-auto group-hover:text-on-surface-variant">chevron_right</span>
+              </button>
+
+              <button
+                type="button"
                 disabled
                 className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/10 bg-surface-container/40 text-left opacity-60 cursor-not-allowed"
               >
@@ -2894,6 +2946,21 @@ function AddSourceModal({
               </button>
             </div>
           </>
+        )}
+
+        {/* ── Screen: pair-peer (peer pairing flow, added 2026-05-30) ──
+            Re-uses the existing PeerCardScanner which handles camera +
+            paste + matrix-room tabs (the scanner is itself a
+            fixed-inset modal that stacks over the AddSource modal). On
+            a successful pair or explicit close the scanner calls
+            `onClose`, which here fires `onSourceAdded` to dismiss the
+            whole AddSource modal — paired peers persist via the
+            peer-store, not as a sources-store entry, so we don't add a
+            source row. */}
+        {screen === "pair-peer" && (
+          <div data-testid="add-source-screen-pair-peer">
+            <PeerCardScanner onClose={onSourceAdded} />
+          </div>
         )}
 
         {/* ── Screen: hosting-bootstrap (P0 Issue 3) ──
