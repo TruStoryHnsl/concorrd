@@ -29,7 +29,6 @@ import {
   ensureBrowserNode,
   stopBrowserNodeIfStarted,
 } from "../libp2p/lazyNode";
-import { BOOTSTRAP_MULTIADDRS } from "../libp2p/bootstrap";
 
 export type BrowserLibp2pStatus = "idle" | "starting" | "running" | "error";
 
@@ -90,7 +89,7 @@ export function useBrowserLibp2p(
     setStatus("starting");
     setError(undefined);
     try {
-      await ensureBrowserNode(BOOTSTRAP_MULTIADDRS);
+      await ensureBrowserNode();
       setStatus("running");
     } catch (err) {
       setStatus("error");
@@ -115,7 +114,7 @@ export function useBrowserLibp2p(
     let cancelled = false;
     setStatus("starting");
     setError(undefined);
-    ensureBrowserNode(BOOTSTRAP_MULTIADDRS)
+    ensureBrowserNode()
       .then(() => {
         if (!cancelled) setStatus("running");
       })

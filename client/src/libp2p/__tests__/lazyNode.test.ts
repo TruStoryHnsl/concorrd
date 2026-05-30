@@ -79,8 +79,8 @@ describe("lazyNode caching + no-fetch-when-cold semantics", () => {
     const fakeNode = { stub: "browser-libp2p-node" } as never;
     startMock.mockResolvedValue(fakeNode);
 
-    const first = await ensureBrowserNode([]);
-    const second = await ensureBrowserNode([]);
+    const first = await ensureBrowserNode();
+    const second = await ensureBrowserNode();
 
     expect(first).toBe(fakeNode);
     expect(second).toBe(fakeNode);
@@ -127,7 +127,7 @@ describe("lazyNode caching + no-fetch-when-cold semantics", () => {
     startMock.mockResolvedValue(fakeNode);
     getNodeMock.mockReturnValue(fakeNode);
 
-    await ensureBrowserNode([]);
+    await ensureBrowserNode();
     const result = await getBrowserNodeIfStarted();
 
     expect(result).toBe(fakeNode);
@@ -144,7 +144,7 @@ describe("lazyNode caching + no-fetch-when-cold semantics", () => {
     startMock.mockResolvedValue({} as never);
     stopMock.mockResolvedValue(undefined);
 
-    await ensureBrowserNode([]);
+    await ensureBrowserNode();
     await stopBrowserNodeIfStarted();
 
     expect(stopMock).toHaveBeenCalledTimes(1);

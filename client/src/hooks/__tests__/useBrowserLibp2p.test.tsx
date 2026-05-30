@@ -29,12 +29,6 @@ vi.mock("../../libp2p/lazyNode", () => ({
   stopBrowserNodeIfStarted: stopMock,
 }));
 
-vi.mock("../../libp2p/bootstrap", () => ({
-  BOOTSTRAP_MULTIADDRS: [
-    "/dns4/bootstrap1.example/udp/4001/quic-v1/p2p/12D3KooWLySgoqv8qgxuAwcVaW3R8dyFYvHTAJT6dnZxcf9PYG9W",
-  ],
-}));
-
 import { useBrowserLibp2p } from "../useBrowserLibp2p";
 
 function setTauri(present: boolean): void {

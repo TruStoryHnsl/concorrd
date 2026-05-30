@@ -2,6 +2,8 @@
 
 > **Status:** design captured 2026-05-27 from a multi-iteration conversation that refocused Concord's hosting story away from a domain-centric / TURN-on-public-IP model toward a P2P-first model for native builds. Supersedes earlier assumptions in PLAN.md that the root repo was Matrix/web-only and that the libp2p mesh lived solely in a separate repo (since renamed `conquered` and re-scoped) — native P2P now lands in this main build. This document is the spec future implementation sessions execute against.
 >
+> **2026-05-29 redirect:** Phase 4 was rewritten. The original design called for a project-run fleet of 3–5 Kademlia DHT bootstrap nodes on tiny VPSes (~$5/mo each). The user rejected that model on UX grounds — no project-run infrastructure, no third-party bootstrap dependency. Phase 4 now reads "**mDNS for LAN + Phase-5 peer cards for WAN.**" The DHT is gone; the bootstrap fleet was never provisioned; the placeholder PeerIds in `bootstrap.rs` will never be replaced with real ones. See the rewritten Phase 4 section below.
+>
 > **Audience:** orrchestrator (sequencing the implementation), agent-pm (per-PR review against the architecture), and any future contributor reading PLAN.md.
 
 ## One-line summary
@@ -20,7 +22,7 @@ Every one of those preconditions has been a silent failure mode at least once in
 
 The Phase 0 work in this branch fixes the silent-failure class for the web-compat path (auto-deriving `TURN_HOST` from `INSTANCE_DOMAIN`, refusing RFC1918 values, surfacing a hosting-health endpoint, returning 503 instead of broken ICE URLs). But fixing the web path doesn't make mobile hosting work, and mobile hosting being "feature-complete" is a stated product requirement.
 
-The only architecturally honest answer is: **native builds connect to each other peer-to-peer via libp2p, with the help of project-run DHT bootstrap nodes for first-discovery only.** Voice rides directly over the P2P link. No external paid service. No TURN relay required for native↔native voice. The web path remains as the compatibility surface for browser users.
+The only architecturally honest answer is: **native builds connect to each other peer-to-peer via libp2p, with mDNS handling LAN-local discovery and the Phase-5 peer-card flow (QR / `concord://` deeplink / Matrix-room exchange) handling WAN pairing.** Voice rides directly over the P2P link. No external paid service. No TURN relay required for native↔native voice. No project-run infrastructure. The web path remains as the compatibility surface for browser users.
 
 ## Two deployment profiles, one codebase
 
@@ -38,11 +40,14 @@ The toggle on native builds — "Enable web access (your instance becomes browse
 
 **Identity** is an Ed25519 keypair generated on first launch of any Concord install, stored in `tauri-plugin-stronghold` (already in use), surfaced to UI as a short fingerprint. The keypair IS the instance's identity. Matrix user IDs become a layered concept (one identity may carry multiple Matrix accounts across federated homeservers, but the peer key is canonical).
 
-**Peer pairing** — how two Concord instances first learn each other's keys + addresses — uses three layered mechanisms, all of which are user-visible and chosen at pairing time:
+**Peer pairing** — how two Concord instances first learn each other's keys + addresses — is layered:
 
-1. **QR code / `concord://` deeplink (manual exchange).** Each install can show its own peer card. Another install scans / clicks. No coordination service involved in first contact.
-2. **Existing federated network (Matrix room, ActivityPub mention).** If two users are already in the same Matrix room on a public homeserver, they can exchange peer cards via a custom `m.room.message` event type. Piggybacks discovery on protocols people already use.
-3. **Silent Kademlia DHT (project-run bootstrap nodes).** Once two peers know each other's keys but the address has changed, either side can query the DHT for the other's current libp2p multiaddr. This runs as a libp2p behavior inside the existing process — the operator does NOT install or configure a separate service. The DHT requires 3–5 project-run bootstrap nodes to seed; those are deployed on tiny VPS instances (~$5/mo total, bandwidth is metadata-only). Bootstrap list ships in the binary.
+- **LAN-local: mDNS.** When two native Concord instances are on the same local network (home LAN, tailnet, office Wi-Fi), libp2p's mDNS behavior discovers them silently within seconds. No user action, no peer card, no coordination service. The Settings → Profile tab surfaces discovered LAN peers in a "Peers on your LAN" section; one-click pairs any of them into the persistent Phase-5 peer store.
+- **WAN: the Phase-5 peer-card flow (always intentional).** Three converging mechanisms:
+    1. **QR code / `concord://` deeplink (manual exchange).** Each install can show its own peer card. Another install scans / clicks. No coordination service involved in first contact.
+    2. **Existing federated network (Matrix room, ActivityPub mention).** If two users are already in the same Matrix room on a public homeserver, they can exchange peer cards via a custom `m.room.message` event type. Piggybacks discovery on protocols people already use.
+
+There is **no DHT**, **no project-run bootstrap fleet**, and **no third-party discovery dependency**. The original design called for a 3–5 VPS fleet running libp2p Kademlia bootstrap nodes; that fleet was never provisioned, and on 2026-05-29 the user rejected the model on UX grounds. All WAN pairing is intentional — a user has to scan / click / post a peer card. This is by design (see the "Tradeoffs" section below).
 
 **Federation payloads** ride OVER the libp2p stream layer, not under it. The transport is protocol-agnostic by design: each stream is typed by a libp2p protocol ID, and the project ships handlers for:
 
@@ -98,19 +103,30 @@ Captures every decision in this conversation so subsequent sessions don't re-der
 - Reuse architecture lessons from the `conquered` repo (formerly `concord_beta`) libp2p prototype without inheriting its half-finished pieces.
 - Tests: swarm starts cleanly, identifies its own multiaddr, accepts an incoming connection on QUIC.
 
-### Phase 4 — Silent Kademlia DHT + project bootstrap nodes
-> **Phase 4 implementation landed** — see `src-tauri/src/servitude/bootstrap.rs` for the hardcoded multiaddr list and `src-tauri/src/servitude/p2p.rs::new_inner` + `seed_kad_bootstrap` + the retry loop in `LibP2pTransport::run` for the wiring. Operational spec for the project-run nodes lives at [`p2p-bootstrap-deployment.md`](p2p-bootstrap-deployment.md).
+### Phase 4 — Discovery: mDNS (LAN) + Phase-5 peer cards (WAN)
+
+> **Phase 4 implementation landed** under the original DHT design, then **redirected 2026-05-29** to drop Kad + the project-run bootstrap fleet entirely. The architecture is now two-layered: mDNS handles LAN-local peer discovery silently; WAN peers require explicit pairing through Phase 5. There is no DHT, no project-run infra, and no third-party bootstrap dependency.
 >
-> Pattern: hardcoded `&[&str]` multiaddrs parsed at startup; Kad defaults to `Mode::Client` on native (the docker / always-on profile flips it to `Mode::Server` in a follow-up commit — no per-profile config flag exists yet); failed bootstrap queries retry with exponential backoff starting at 5s and doubling until capped at 5 min, logged at `debug!` so a transient network drop never surfaces as a red banner in the UI; the swarm emits a new lightweight `SwarmEvent::DhtRoutingUpdated { peer_count }` whenever the routing table picks up a new peer, so the React UI can render a passive "DHT is alive, N peers known" indicator without subscribing to the full Kad event firehose.
+> Wiring: `src-tauri/src/servitude/p2p.rs` declares `mdns: libp2p::mdns::tokio::Behaviour` in the composed `Behaviour`; the swarm emits a new `SwarmEvent::MdnsPeerDiscovered { peer_id, multiaddrs }` whenever an mDNS announcement burst lands; the Tauri layer fans that out onto the `peer_lan_discovered` event bus; the React side maintains a session-scoped LAN-peer list via `client/src/api/lanPeers.ts` and surfaces it in Settings → Profile → "Peers on your LAN" with a one-click "Pair this peer" action that promotes a LAN peer into the persistent Phase-5 peer store. The browser swarm (`client/src/libp2p/node.ts`) has **no automatic discovery at all** — browsers can't speak mDNS portably, and there are no bootstrap nodes to dial; every browser peer dial is explicit, from the Phase-5 peer-card flow.
 >
-> Cross-restart: the libp2p `PeerId` derives from the same per-install Ed25519 seed that backs Phase 2's `PeerIdentity`. Cluster A's parallel commit completes the seed-persistence fix from Phase 3 — see `identity.rs` for the encrypted-sibling-file pattern.
-- Enable libp2p Kad behavior inside the swarm.
-- Hard-code 3–5 bootstrap node multiaddrs in the binary (`src-tauri/src/servitude/bootstrap.rs`).
-- Concord-api startup connects to bootstrap nodes silently; no operator setup, no per-user dialog.
-- Spec the bootstrap node deployment: tiny VPS (~$5/mo each), runs ONLY a libp2p node with Kad and Identify. Deployed and operated by the project, not by self-hosters.
-- Operator-facing docs explain that the DHT runs silently and uses negligible bandwidth (metadata-only lookups).
-- **Identity cross-restart persistence (Phase 3 follow-up):** the Ed25519 seed is now persisted in a ChaCha20-Poly1305-encrypted sibling file (`<snapshot_path>.seed.enc`, chmod 0600 on Unix) alongside the Stronghold snapshot, keyed off the same 32-byte snapshot password. This closes the Phase 3 known issue where `peer_seed()` and `sign()` returned `SeedUnavailable` after a process restart — Stronghold has no `ReadVault` procedure, so the seed bytes had no path back into memory. The sibling file decrypts on startup and rehydrates the in-handle cache, so signing and the libp2p `Keypair` survive restarts. The backward-compat path (Stronghold record present, sibling file missing) leaves the fingerprint working but signing unavailable until the next `load_or_create` rewrites both stores.
-- Tests: DHT joins the network, peer-key lookups round-trip via bootstrap, survives a bootstrap node going offline.
+> Identity invariant unchanged: the libp2p `PeerId` still derives from the same per-install Ed25519 seed that backs Phase 2's `PeerIdentity` (`src-tauri/src/servitude/identity.rs`). The seed persistence fix from the original Phase 3/4 follow-up — ChaCha20-Poly1305-encrypted sibling file alongside the Stronghold snapshot — is unaffected by the redirect.
+
+- libp2p `mdns::tokio::Behaviour` enabled in the swarm with default config; discovers LAN peers on `224.0.0.251:5353` like every other mDNS responder. No project-controlled rendezvous service.
+- `SwarmEvent::MdnsPeerDiscovered` published on the broadcast channel for every distinct peer reported in an mDNS announcement burst; multiaddrs are stringified and unioned across repeat announcements client-side (`client/src/api/lanPeers.ts`).
+- Tauri-side: `peer_lan_discovered` event channel mirrors mDNS events to the React side; the in-memory `lanPeers` cache is session-scoped (no persistence by design).
+- React-side: Settings → Profile → "Peers on your LAN" section renders the LAN list alongside the existing "Paired Peers" list; "Pair this peer" button promotes a LAN peer into the persistent peer store (where it gains all the usual Phase-5 semantics — multiaddr union dedup, `first_seen` preserved, `last_seen` advanced).
+- **Identity cross-restart persistence:** retained from the original Phase 4. The Ed25519 seed is persisted in a ChaCha20-Poly1305-encrypted sibling file (`<snapshot_path>.seed.enc`, chmod 0600 on Unix) alongside the Stronghold snapshot, keyed off the same 32-byte snapshot password. Signing and the libp2p `Keypair` survive restarts.
+- Tests: mDNS discovers a peer on the same network (two swarms in one process see each other within 15s), swarm boots cleanly with no bootstrap config of any kind, the `peer_lan_discovered` event wrapper dedupes by peer_id and unions multiaddrs across repeat announcements.
+
+#### Tradeoffs
+
+Dropping Kad + bootstrap nodes is **deliberate**. The tradeoffs:
+
+- **No random-peer discovery on the WAN.** A fresh install on a cellular hotspot can't find any other Concord instance through ambient discovery; the user has to pair intentionally via a peer card (QR / deeplink / Matrix-room exchange). This is by design — "pairing is a feature, not a limitation." Concord is not trying to be a public-discovery social network.
+- **No internet-wide peer search.** If a friend rebuilds their install and gets a fresh PeerId, the user has to re-pair via the Phase-5 flow. There is no DHT lookup that finds them under their new PeerId.
+- **mDNS only crosses the LAN.** Two native installs on the same home LAN / tailnet / office Wi-Fi see each other silently; two installs on different networks need an explicit pairing exchange.
+
+In return: **zero project-run infrastructure**, zero third-party bootstrap dependency, zero ambient-trust attack surface. Every WAN peer the user talks to is one they paired with intentionally.
 
 ### Phase 5 — Peer pairing UX
 

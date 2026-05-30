@@ -67,12 +67,14 @@ export function __resetLazyNodeForTests(): void {
  * (returns the same `Libp2p` handle on repeat calls), so reading
  * `cached` here is just a chunk-fetch optimization, not a node-
  * identity guarantee — that lives inside `node.ts`.
+ *
+ * 2026-05-29 architecture redirect: the browser swarm boots with no
+ * automatic discovery. The signature used to take a `bootstrap` list;
+ * dropped now that there is no project-run bootstrap fleet to dial.
  */
-export async function ensureBrowserNode(
-  bootstrap: readonly string[],
-): Promise<Libp2p> {
+export async function ensureBrowserNode(): Promise<Libp2p> {
   const mod = await loadNodeModule();
-  return mod.startBrowserNode(bootstrap);
+  return mod.startBrowserNode();
 }
 
 /**

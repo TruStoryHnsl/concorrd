@@ -114,13 +114,9 @@ async fn spawn_transport(label: &str) -> (LibP2pTransport, PeerId, Multiaddr) {
     let peer_identity = identity::load_or_create(&handle)
         .await
         .expect("phase 2 load_or_create must succeed");
-    let mut transport = LibP2pTransport::new_with_bootstrap_override(
-        &peer_identity,
-        &handle,
-        Vec::new(),
-    )
-    .await
-    .expect("transport must construct");
+    let mut transport = LibP2pTransport::new(&peer_identity, &handle)
+        .await
+        .expect("transport must construct");
     let peer_id = transport.local_peer_id();
 
     let raw_addr = tokio::time::timeout(Duration::from_secs(5), async {

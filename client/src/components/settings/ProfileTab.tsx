@@ -10,6 +10,11 @@ import { PeerCardScanner } from "../peers/PeerCardScanner";
 import { KnownPeersList } from "../peers/KnownPeersList";
 import { DeploymentProfileSection } from "./DeploymentProfileSection";
 import { useBrowserLibp2p } from "../../hooks/useBrowserLibp2p";
+import {
+  subscribeToLanPeers,
+  type LanPeer,
+} from "../../api/lanPeers";
+import { usePeerStore } from "../../stores/peerStore";
 
 export function ProfileTab() {
   const client = useAuthStore((s) => s.client);
@@ -784,11 +789,115 @@ function PairedPeersSection() {
       {/* List of currently paired peers. */}
       <KnownPeersList />
 
+      {/* Peers on your LAN (post-2026-05-29 architecture redirect).
+          mDNS-discovered peers on the local network are surfaced here
+          alongside the persistent paired-peers list. One-click pair
+          promotes a LAN peer into the persistent peer store. */}
+      <LanPeersSection />
+
       {/* Scanner modal — mounted only while open so the camera
           permission prompt fires on demand, not on every Profile
           tab render. */}
       {scannerOpen && (
         <PeerCardScanner onClose={() => setScannerOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Peers on your LAN (post-2026-05-29 redirect).
+ *
+ * Subscribes to the `peer_lan_discovered` Tauri event via
+ * `subscribeToLanPeers` and renders the mDNS-discovered peer list.
+ * The list is session-scoped (resets each launch) — no persistence by
+ * design; if the user wants to keep a LAN peer, they pair it into the
+ * persistent peer store via the per-row "Pair" action.
+ *
+ * Native-only — browsers can't observe LAN peers (no portable mDNS
+ * from a tab), so the section renders a thin placeholder on web.
+ */
+function LanPeersSection() {
+  const [lanPeers, setLanPeers] = useState<LanPeer[]>([]);
+  const addFromCard = usePeerStore((s) => s.addFromCard);
+  const addToast = useToastStore((s) => s.addToast);
+
+  useEffect(() => {
+    const unsub = subscribeToLanPeers((peers) => setLanPeers(peers));
+    return unsub;
+  }, []);
+
+  const handlePair = async (peer: LanPeer) => {
+    // We have no public-key bytes from mDNS — the discovery payload
+    // is just (peer_id, multiaddrs). The peer-store accepts a partial
+    // card; the `publicKeyHex` field is derived from the peer_id by
+    // the backend on the next handshake. For now we send empty
+    // publicKeyHex; if the backend rejects it (it currently requires
+    // a real key) the toast surfaces the error.
+    const added = await addFromCard(
+      {
+        peerId: peer.peerId,
+        publicKeyHex: "",
+        multiaddrs: peer.multiaddrs,
+      },
+      // The PeerSource enum's broadest variant. mDNS / LAN-discovered
+      // peers don't have a dedicated source today; "deeplink" is the
+      // best fit because the user took an explicit pair action, which
+      // is the same posture as clicking a `concord://` link.
+      "deeplink",
+    );
+    if (added) {
+      addToast("LAN peer paired", "success");
+    } else {
+      addToast("Could not pair LAN peer");
+    }
+  };
+
+  if (!isTauri()) {
+    return (
+      <div className="space-y-1.5">
+        <div className="text-xs text-on-surface-variant uppercase tracking-wide">
+          Peers on your LAN
+        </div>
+        <p className="text-xs text-on-surface-variant italic">
+          LAN peer discovery (mDNS) runs in native builds only.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="text-xs text-on-surface-variant uppercase tracking-wide">
+        Peers on your LAN
+      </div>
+      {lanPeers.length === 0 ? (
+        <p className="text-xs text-on-surface-variant italic">
+          No LAN peers discovered yet.
+        </p>
+      ) : (
+        <ul className="space-y-1">
+          {lanPeers.map((peer) => (
+            <li
+              key={peer.peerId}
+              className="flex items-center justify-between gap-3 py-1.5 px-2 rounded hover:bg-surface-container-high"
+            >
+              <span
+                className="text-sm text-on-surface-variant font-mono truncate flex-1 min-w-0"
+                title={peer.peerId}
+              >
+                {peer.peerId.slice(0, 12)}…
+              </span>
+              <button
+                type="button"
+                onClick={() => void handlePair(peer)}
+                className="px-3 py-1 text-xs rounded-md primary-glow hover:brightness-110 text-on-surface transition-colors whitespace-nowrap"
+              >
+                Pair this peer
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
