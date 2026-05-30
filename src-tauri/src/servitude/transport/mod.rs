@@ -157,12 +157,34 @@ pub struct LibP2pRuntime {
     /// Join handle for the spawned swarm event loop. Populated on
     /// `start()`, awaited on `stop()`.
     swarm_task: Option<JoinHandle<()>>,
+    /// Join handle for the voice signaling outbound drain task.
+    /// Populated on `start()` when a voice registry is wired.
+    voice_outbound_task: Option<JoinHandle<()>>,
     /// Clone of the swarm's broadcast sender. Populated on `start()` so
     /// the Tauri lib can register the same sender into managed state
     /// without having to wait on the spawned task.
     event_tx: Option<broadcast::Sender<P2pSwarmEvent>>,
     /// Local libp2p PeerId cached on start. Useful for status reporting.
     local_peer_id: Option<libp2p::PeerId>,
+    /// Phase 8 follow-up — shared voice-call registry the dispatcher
+    /// routes inbound signaling envelopes to. Wired by the Tauri
+    /// layer before `start()`; on `start()` the registry's
+    /// [`VoiceCallSinkImpl`] becomes the real signaling sink (replacing
+    /// the prior `NoopVoiceSink`). When `None`, the no-op sink is
+    /// installed for backward-compat with tests / older callers.
+    voice_registry: Option<Arc<crate::servitude::voice::VoiceCallRegistry>>,
+    /// Phase 8 follow-up — outbound voice signaling channel.
+    /// `VoiceCall` instances clone this sender; the `start()` path
+    /// spawns a drain task that forwards each envelope via
+    /// [`crate::servitude::voice::send_signaling`].
+    voice_outbound_tx:
+        tokio::sync::mpsc::Sender<(libp2p::PeerId, crate::servitude::voice::SignalingMessage)>,
+    voice_outbound_rx: Option<
+        tokio::sync::mpsc::Receiver<(
+            libp2p::PeerId,
+            crate::servitude::voice::SignalingMessage,
+        )>,
+    >,
 }
 
 impl std::fmt::Debug for LibP2pRuntime {
@@ -179,13 +201,47 @@ impl LibP2pRuntime {
     /// `StrongholdHandle`. Construction is cheap — no network and no
     /// Stronghold round trip happens until `start()`.
     pub fn new(stronghold: Arc<StrongholdHandle>) -> Self {
+        // Generous channel depth — voice signaling messages are small
+        // (SDP blocks measured in KB, ICE candidates in bytes), and a
+        // single call may emit dozens of ICE candidates during the
+        // initial gathering burst.
+        let (voice_outbound_tx, voice_outbound_rx) = tokio::sync::mpsc::channel(256);
         Self {
             stronghold,
             shutdown_tx: None,
             swarm_task: None,
+            voice_outbound_task: None,
             event_tx: None,
             local_peer_id: None,
+            voice_registry: None,
+            voice_outbound_tx,
+            voice_outbound_rx: Some(voice_outbound_rx),
         }
+    }
+
+    /// Wire the voice-call registry. MUST be called before
+    /// [`Self::start`] for the real call orchestration sink to be
+    /// installed; otherwise the Phase 8 no-op sink is used (signaling
+    /// envelopes are decoded + logged + dropped).
+    pub fn set_voice_registry(
+        &mut self,
+        registry: Arc<crate::servitude::voice::VoiceCallRegistry>,
+    ) {
+        self.voice_registry = Some(registry);
+    }
+
+    /// Clone of the outbound voice-signaling sender. The Tauri command
+    /// layer hands this to each new [`crate::servitude::voice::VoiceCall`]
+    /// so the orchestrator can push Offer/Answer/IceCandidate/Bye
+    /// envelopes onto the wire without holding a reference to the
+    /// stream control.
+    pub fn voice_outbound_sender(
+        &self,
+    ) -> tokio::sync::mpsc::Sender<(
+        libp2p::PeerId,
+        crate::servitude::voice::SignalingMessage,
+    )> {
+        self.voice_outbound_tx.clone()
     }
 
     /// Clone of the swarm's broadcast sender. Returns `None` while the
@@ -251,17 +307,17 @@ impl LibP2pRuntime {
             transport.register_federation_handler(handler);
         }
 
-        // Phase 8 (INS-019b) — register the voice signaling handler so
-        // inbound `/concord/voice-signaling/1.0.0` streams are routed
-        // to the WebRTC negotiation layer. Phase 8 ships with a
-        // `NoopVoiceSink` placeholder — the real call-orchestration
-        // sink (which routes envelopes to per-peer `WebRtcPeer`
-        // instances) lands in the Phase 8 media follow-up. Until
-        // then, an inbound signaling envelope is decoded, logged,
-        // and dropped.
+        // Phase 8 follow-up (INS-019b media plane) — register the
+        // voice signaling handler. When a `VoiceCallRegistry` has been
+        // wired into this runtime via [`Self::set_voice_registry`],
+        // we install the real [`VoiceCallSinkImpl`] sink — inbound
+        // envelopes route through the registry to the matching
+        // [`VoiceCall`] orchestrator. Otherwise we fall back to the
+        // Phase 8 `NoopVoiceSink` (decoded + logged + dropped).
+        let stream_control_for_voice = transport.stream_control();
         {
             use crate::servitude::voice::{
-                SignalingMessage, VoiceCallSink, VoiceSignalingHandler,
+                SignalingMessage, VoiceCallSink, VoiceCallSinkImpl, VoiceSignalingHandler,
             };
 
             struct NoopVoiceSink;
@@ -271,12 +327,16 @@ impl LibP2pRuntime {
                 async fn deliver(&self, from: libp2p::PeerId, message: SignalingMessage) {
                     log::debug!(
                         target: "concord::servitude::voice",
-                        "voice signaling envelope received but no sink wired (Phase 8 scaffold): from={from} message={message:?}"
+                        "voice signaling envelope received but no sink wired (no registry): from={from} message={message:?}"
                     );
                 }
             }
 
-            let sink = std::sync::Arc::new(NoopVoiceSink);
+            let sink: std::sync::Arc<dyn VoiceCallSink> = match self.voice_registry.clone()
+            {
+                Some(registry) => std::sync::Arc::new(VoiceCallSinkImpl::new(registry)),
+                None => std::sync::Arc::new(NoopVoiceSink),
+            };
             let handler = std::sync::Arc::new(VoiceSignalingHandler::new(sink));
             transport.register_federation_handler(handler);
         }
@@ -292,6 +352,33 @@ impl LibP2pRuntime {
             transport.run().await;
         });
         self.swarm_task = Some(task);
+
+        // Phase 8 follow-up — drain the outbound voice signaling
+        // channel. Each [`VoiceCall`] holds a clone of the sender
+        // returned by [`Self::voice_outbound_sender`]; envelopes
+        // pushed onto it are forwarded over the libp2p signaling
+        // protocol via `send_signaling`. The task exits when every
+        // sender is dropped, which happens when the runtime is
+        // stopped + all `VoiceCall` instances are released.
+        if let Some(mut rx) = self.voice_outbound_rx.take() {
+            let mut control = stream_control_for_voice;
+            let voice_task = tokio::spawn(async move {
+                use crate::servitude::voice::send_signaling;
+                while let Some((peer_id, message)) = rx.recv().await {
+                    if let Err(e) = send_signaling(&mut control, peer_id, message).await {
+                        log::warn!(
+                            target: "concord::servitude::voice",
+                            "voice signaling send failed to peer {peer_id}: {e}"
+                        );
+                    }
+                }
+                log::debug!(
+                    target: "concord::servitude::voice",
+                    "voice outbound drain task exiting (all senders dropped)"
+                );
+            });
+            self.voice_outbound_task = Some(voice_task);
+        }
 
         log::info!(
             target: "concord::servitude::libp2p",
@@ -316,6 +403,13 @@ impl LibP2pRuntime {
         // dead loop bottom out cleanly.
         self.event_tx = None;
         self.local_peer_id = None;
+
+        // Phase 8 follow-up — abort the voice outbound drain task.
+        // The task would exit naturally when all senders drop, but
+        // explicit abort makes shutdown deterministic.
+        if let Some(t) = self.voice_outbound_task.take() {
+            t.abort();
+        }
 
         // Wait for the spawned event loop to exit. If the task panicked
         // we surface that as a stop failure rather than silently dropping.
@@ -679,6 +773,33 @@ impl TransportRuntime {
     pub fn libp2p_local_peer_id(&self) -> Option<libp2p::PeerId> {
         match self {
             TransportRuntime::LibP2p(t) => t.local_peer_id(),
+            _ => None,
+        }
+    }
+
+    /// Phase 8 follow-up — wire the voice-call registry into the
+    /// LibP2p runtime variant. No-op for every other variant.
+    pub fn set_voice_registry(
+        &mut self,
+        registry: Arc<crate::servitude::voice::VoiceCallRegistry>,
+    ) {
+        if let TransportRuntime::LibP2p(t) = self {
+            t.set_voice_registry(registry);
+        }
+    }
+
+    /// Phase 8 follow-up — clone of the libp2p runtime's outbound
+    /// voice signaling sender. `None` for every other variant.
+    pub fn voice_outbound_sender(
+        &self,
+    ) -> Option<
+        tokio::sync::mpsc::Sender<(
+            libp2p::PeerId,
+            crate::servitude::voice::SignalingMessage,
+        )>,
+    > {
+        match self {
+            TransportRuntime::LibP2p(t) => Some(t.voice_outbound_sender()),
             _ => None,
         }
     }

@@ -18,6 +18,20 @@ export type VoiceConnectionState =
   | "reconnecting"
   | "failed";
 
+/**
+ * Phase 8 follow-up — which media plane carries the voice for this
+ * session.
+ *
+ *   - `"livekit"` — LiveKit SFU (existing path; default fallback).
+ *   - `"libp2p_mesh"` — direct peer-to-peer via libp2p WebRTC. Active
+ *     when the selector picked mesh AND the mesh-join succeeded.
+ *
+ * The UI uses this to render the right participant list: SFU pulls
+ * from LiveKit's React hooks; mesh pulls from the per-tab voice mesh
+ * registry (`client/src/libp2p/voiceMesh.ts`).
+ */
+export type VoiceTransport = "livekit" | "libp2p_mesh";
+
 interface VoiceSession {
   serverId: string;
   serverName?: string | null;
@@ -32,6 +46,11 @@ interface VoiceState {
   connected: boolean;
   connectionState: VoiceConnectionState;
   reconnectAttempt: number;
+  /** Phase 8 follow-up: which media plane is in use for this session.
+   *  Defaults to `"livekit"` when no session is active. Set by
+   *  `connect()` to `"libp2p_mesh"` when the path selector picked
+   *  mesh AND the mesh-join succeeded. */
+  transport: VoiceTransport;
   token: string | null;
   livekitUrl: string | null;
   iceServers: RTCIceServer[];
@@ -63,6 +82,10 @@ interface VoiceState {
     returnChannelName?: string | null;
     micGranted: boolean;
     channelType?: "place" | "voice";
+    /** Phase 8 follow-up — defaults to `"livekit"` when omitted. The
+     *  mesh-mode `joinVoiceSession` path passes `"libp2p_mesh"` so
+     *  the UI can branch. */
+    transport?: VoiceTransport;
   }) => void;
   disconnect: () => void;
   setConnectionState: (state: VoiceConnectionState) => void;
@@ -109,6 +132,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   connected: false,
   connectionState: "disconnected",
   reconnectAttempt: 0,
+  transport: "livekit",
   token: null,
   livekitUrl: null,
   iceServers: [],
@@ -160,6 +184,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       connectionState: "connected",
       reconnectAttempt: 0,
       channelType: params.channelType ?? "voice",
+      transport: params.transport ?? "livekit",
       ...params,
     });
 
@@ -193,6 +218,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       connected: false,
       connectionState: "disconnected",
       reconnectAttempt: 0,
+      transport: "livekit",
       token: null,
       livekitUrl: null,
       iceServers: [],

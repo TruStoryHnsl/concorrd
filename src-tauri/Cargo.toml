@@ -152,6 +152,18 @@ chrono = { version = "0.4", features = ["serde"] }
 # handler can name the URL_SAFE_NO_PAD engine directly.
 base64 = "0.22"
 
+# Phase 8 follow-up (voice media plane) — pure-Rust WebRTC stack. Pinned to
+# 0.8.0 (the latest stable major as of 2026-05; 0.9+ are alpha pre-releases
+# with unstable API). Provides `RTCPeerConnection`, SDP/ICE machinery,
+# `TrackLocalStaticRTP` for sending opus frames, and `TrackRemote` for the
+# inbound side.
+#
+# Microphone capture + speaker playback are NOT wired here yet — the local
+# audio track is fed by an in-process `tokio::sync::mpsc::Sender<Vec<u8>>`
+# that synthetic test sources can write into. Real cpal-based mic capture is
+# a separate `TODO(mesh-media-followup)` in `voice/media.rs`.
+webrtc = "0.8"
+
 # Unix-only deps for servitude child-process management. `nix::sys::signal`
 # gives us SIGTERM for graceful shutdown — std::process::Child::kill uses
 # SIGKILL only, which doesn't let tuwunel flush its RocksDB on exit.

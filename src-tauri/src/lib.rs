@@ -431,6 +431,156 @@ async fn select_voice_path(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Phase 8 follow-up — voice mesh call orchestration commands
+// ---------------------------------------------------------------------------
+
+/// Tauri-managed state wrapping the shared voice-call registry.
+///
+/// One [`VoiceCallRegistry`](servitude::voice::VoiceCallRegistry) per
+/// app process. The registry holds every active mesh-mode voice call
+/// keyed by `room_id`, and serves as the [`VoiceCallSink`](servitude::voice::VoiceCallSink)
+/// the libp2p signaling handler routes inbound envelopes through.
+pub struct VoiceMeshState(pub std::sync::Arc<servitude::voice::VoiceCallRegistry>);
+
+/// Per-peer connection status surfaced to the React side via
+/// [`voice_mesh_status`]. Snake_case on the wire.
+#[derive(serde::Serialize, Debug, Clone)]
+struct VoicePeerStatus {
+    peer_id: String,
+    state: String,
+}
+
+/// Aggregate status of a single mesh-mode call.
+#[derive(serde::Serialize, Debug, Clone)]
+struct VoiceMeshStatus {
+    room_id: String,
+    /// `"active"` while the call is up; `"closed"` between teardown
+    /// and the next status poll (the registry removes closed calls).
+    state: String,
+    peers: Vec<VoicePeerStatus>,
+}
+
+/// Phase 8 follow-up — join (or create) a mesh-mode voice call.
+///
+/// For each `peer_id` in `participants` the orchestrator builds a real
+/// [`WebRtcMediaPeer`](servitude::voice::WebRtcMediaPeer), creates an
+/// Offer, and forwards it over the libp2p voice-signaling protocol.
+/// The remote peer's call registry receives the Offer, generates an
+/// Answer, and the SDP / ICE round-trip continues until DTLS comes up.
+///
+/// Mic capture is NOT wired here yet — the local audio track exists
+/// but is fed by an internal channel. See `voice/media.rs` module-doc
+/// for the `TODO(mesh-media-followup)` boundary.
+#[tauri::command]
+async fn voice_mesh_join(
+    room_id: String,
+    participants: Vec<String>,
+    ice_servers: Vec<String>,
+    state: tauri::State<'_, ServitudeState>,
+    mesh: tauri::State<'_, VoiceMeshState>,
+) -> Result<(), String> {
+    let (outbound_sender, local_peer_id) = {
+        let guard = state.0.lock().await;
+        let handle = guard
+            .as_ref()
+            .ok_or_else(|| "servitude not started — cannot join mesh".to_string())?;
+        let tx = handle
+            .voice_outbound_sender()
+            .ok_or_else(|| "libp2p runtime not started — cannot join mesh".to_string())?;
+        let pid = handle
+            .libp2p_local_peer_id()
+            .ok_or_else(|| "libp2p local peer_id not available".to_string())?;
+        (tx, pid)
+    };
+
+    // Parse remote peer ids.
+    let mut parsed_peers: Vec<libp2p::PeerId> = Vec::with_capacity(participants.len());
+    for s in &participants {
+        let pid = s
+            .parse::<libp2p::PeerId>()
+            .map_err(|e| format!("voice_mesh_join: invalid peer_id {s:?}: {e}"))?;
+        if pid != local_peer_id {
+            parsed_peers.push(pid);
+        }
+    }
+
+    // Build the call. New call per room — the registry rejects duplicates.
+    let mut call = servitude::voice::VoiceCall::new(
+        room_id.clone(),
+        local_peer_id,
+        outbound_sender,
+        ice_servers,
+    )
+    .map_err(|e| format!("voice_mesh_join: build call: {e}"))?;
+
+    // Initiator path — push an Offer to every known remote.
+    for pid in parsed_peers {
+        if let Err(e) = call.add_peer_as_initiator(pid).await {
+            // Don't abort the entire join on a per-peer add failure —
+            // log it + continue so the other peers in the room still
+            // get an Offer. The orchestrator's state machine will
+            // surface the per-peer status via `voice_mesh_status`.
+            log::warn!(
+                target: "concord::voice",
+                "voice_mesh_join: add_peer({pid}) failed: {e}"
+            );
+        }
+    }
+
+    mesh.0
+        .insert(call)
+        .await
+        .map_err(|e| format!("voice_mesh_join: registry insert: {e}"))?;
+    Ok(())
+}
+
+/// Phase 8 follow-up — leave a mesh-mode voice call.
+///
+/// Closes every [`WebRtcMediaPeer`](servitude::voice::WebRtcMediaPeer)
+/// associated with the room, emits a `Bye` over the signaling wire to
+/// every remote, and removes the call from the registry.
+#[tauri::command]
+async fn voice_mesh_leave(
+    room_id: String,
+    mesh: tauri::State<'_, VoiceMeshState>,
+) -> Result<(), String> {
+    mesh.0
+        .remove(&room_id)
+        .await
+        .map_err(|e| format!("voice_mesh_leave: {e}"))
+}
+
+/// Phase 8 follow-up — snapshot the per-peer call state for the UI.
+///
+/// Returns `Err(_)` if no call is active for `room_id`. The React side
+/// uses this to render a "Bob: connected / Carol: connecting" panel
+/// next to the participant list.
+#[tauri::command]
+async fn voice_mesh_status(
+    room_id: String,
+    mesh: tauri::State<'_, VoiceMeshState>,
+) -> Result<VoiceMeshStatus, String> {
+    let snap = mesh
+        .0
+        .snapshot_status(&room_id)
+        .await
+        .map_err(|e| format!("voice_mesh_status: {e}"))?;
+    let peers = snap
+        .peers
+        .into_iter()
+        .map(|(pid, st)| VoicePeerStatus {
+            peer_id: pid.to_string(),
+            state: format!("{:?}", st),
+        })
+        .collect();
+    Ok(VoiceMeshStatus {
+        room_id,
+        state: snap.state,
+        peers,
+    })
+}
+
 /// Spawn a background task that mirrors the running libp2p swarm's
 /// broadcast events into the shared [`SwarmStateCache`] AND re-emits each
 /// event onto Tauri's app-wide event bus under the `"peer_swarm_event"`
@@ -772,6 +922,7 @@ fn set_server_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
 async fn servitude_start(
     state: tauri::State<'_, ServitudeState>,
     identity_state: tauri::State<'_, PeerIdentityState>,
+    mesh_state: tauri::State<'_, VoiceMeshState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Load config OUTSIDE the lock so the (very cheap) store access never
@@ -797,10 +948,16 @@ async fn servitude_start(
         Some(handle) => handle.status() == LifecycleState::Stopped,
     };
     if should_recreate {
-        *guard = Some(
-            ServitudeHandle::new_with_identity(config, Some(stronghold))
-                .map_err(|e| e.to_string())?,
-        );
+        let mut handle = ServitudeHandle::new_with_identity(config, Some(stronghold))
+            .map_err(|e| e.to_string())?;
+        // Phase 8 follow-up — wire the shared voice-mesh registry
+        // into the libp2p runtime BEFORE start() so the signaling
+        // handler's sink is the real call orchestrator rather than
+        // the Phase 8 NoopVoiceSink. Idempotent — setting the
+        // registry on a fresh runtime has no side effects until
+        // start() consumes it.
+        handle.set_voice_registry(mesh_state.0.clone());
+        *guard = Some(handle);
     }
 
     let handle = guard
@@ -1034,6 +1191,14 @@ pub fn run() {
         .manage(ServitudeState(Mutex::new(None)))
         .manage(PeerIdentityState(Mutex::new(None)))
         .manage(SwarmEventChannel(swarm_cache.clone()))
+        // Phase 8 follow-up — shared voice-mesh registry. One per
+        // process; every `voice_mesh_join` Tauri command inserts a
+        // new `VoiceCall` keyed by `room_id`. The libp2p runtime is
+        // wired with the same registry as its signaling sink in
+        // `servitude_start` below.
+        .manage(VoiceMeshState(std::sync::Arc::new(
+            servitude::voice::VoiceCallRegistry::new(),
+        )))
         .setup(move |app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -1214,6 +1379,9 @@ pub fn run() {
             peer_store_add,
             peer_store_remove,
             select_voice_path,
+            voice_mesh_join,
+            voice_mesh_leave,
+            voice_mesh_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
