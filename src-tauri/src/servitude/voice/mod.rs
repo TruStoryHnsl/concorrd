@@ -27,6 +27,8 @@
 //! same property as the Phase 8 design doc's "What's NOT in scope"
 //! note on CGNAT + no-docker mobile-mobile calls.
 
+#[cfg(not(target_os = "ios"))]
+pub mod audio;
 pub mod call;
 pub mod error;
 pub mod media;

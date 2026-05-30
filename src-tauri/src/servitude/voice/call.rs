@@ -223,7 +223,10 @@ impl VoiceCall {
                 }
             }
             SignalingMessage::Bye { request_id: _ } => {
-                // Remote left. Tear down our side cleanly.
+                // Remote left. Stop our mic pump first (so we don't
+                // keep writing into a doomed track), then close the
+                // PC, which aborts the receive pipeline too.
+                peer.stop_audio_capture().await;
                 let _ = peer.close().await;
                 self.peers.remove(&from);
             }
@@ -234,7 +237,45 @@ impl VoiceCall {
         // callback may have queued candidates between the start of
         // this method and now.
         self.drain_pending_outbound(from).await?;
+
+        // If the PC just transitioned to Connected, start the mic
+        // pump. Idempotent — the audio module no-ops if a pipeline
+        // is already running for this peer.
+        self.maybe_start_audio_capture(from).await;
         Ok(())
+    }
+
+    /// Check the per-peer state — if the PeerConnection has reached
+    /// `Connected`, spawn the audio send pipeline (if not already
+    /// running). Called from both the inbound dispatch path and from
+    /// [`Self::tick`] so a Connected transition triggered by ICE
+    /// gathering (no inbound envelope) is also picked up.
+    async fn maybe_start_audio_capture(&mut self, peer_id: PeerId) {
+        let peer = match self.peers.get_mut(&peer_id) {
+            Some(p) => p,
+            None => return,
+        };
+        let state = peer.current_state().await;
+        if !matches!(state, PeerCallState::Connected) {
+            return;
+        }
+        if let Err(e) = peer.start_audio_capture().await {
+            // AudioNotSupported on iOS is expected; lower-severity log.
+            // Other errors (no input device, opus init failure) are
+            // worth a warn — the call still functions but the local
+            // user sends silence.
+            match &e {
+                VoiceError::AudioNotSupported => log::debug!(
+                    target: "concord::servitude::voice",
+                    "audio capture not supported on this platform; \
+                     remote will receive silence from {peer_id}"
+                ),
+                other => log::warn!(
+                    target: "concord::servitude::voice",
+                    "start_audio_capture({peer_id}) failed: {other}"
+                ),
+            }
+        }
     }
 
     /// Drain ICE candidates from a single peer and push them onto the
@@ -255,25 +296,30 @@ impl VoiceCall {
         Ok(())
     }
 
-    /// Periodic tick — drain ICE candidates from every peer. Called by
-    /// the orchestrator's status / drain loop on a 200ms cadence in
-    /// production.
+    /// Periodic tick — drain ICE candidates from every peer + start
+    /// the mic pump on any peer that reached Connected since the last
+    /// tick. Called by the orchestrator's status / drain loop on a
+    /// 200ms cadence in production.
     pub async fn tick(&mut self) -> Result<(), VoiceError> {
         let peer_ids: Vec<PeerId> = self.peers.keys().copied().collect();
         for pid in peer_ids {
             self.drain_pending_outbound(pid).await?;
+            self.maybe_start_audio_capture(pid).await;
         }
         Ok(())
     }
 
-    /// Tear down the call. Closes every PeerConnection, marks state
-    /// Closed, and emits Bye to every remote so they can do the same.
+    /// Tear down the call. Stops mic capture on every peer, closes
+    /// every PeerConnection (which aborts the receive pipelines via
+    /// `WebRtcMediaPeer::close`), marks state Closed, and emits Bye
+    /// to every remote so they can do the same.
     pub async fn leave(&mut self) -> Result<(), VoiceError> {
-        for (pid, peer) in self.peers.iter() {
+        for (pid, peer) in self.peers.iter_mut() {
             let _ = self
                 .signaling_outbound
                 .send((*pid, SignalingMessage::Bye { request_id: 0 }))
                 .await;
+            peer.stop_audio_capture().await;
             let _ = peer.close().await;
         }
         self.peers.clear();

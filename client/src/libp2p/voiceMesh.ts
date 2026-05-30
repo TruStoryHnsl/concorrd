@@ -9,14 +9,19 @@
  *
  * ## What lands
  *
- *   - `joinMesh(roomId, participants)` — for each known peer, opens a
- *     `RTCPeerConnection`, attaches the local microphone audio track,
- *     sends an Offer over the `/concord/voice-signaling/1.0.0` libp2p
- *     stream, and wires the answer + ICE candidate exchange.
- *   - `leaveMesh(roomId)` — closes every PeerConnection and removes
- *     the room from the per-tab registry.
+ *   - `joinMesh(roomId, participants)` — acquires the local mic via
+ *     `getUserMedia({ audio: true })`, then for each known peer opens
+ *     a `RTCPeerConnection`, attaches every mic audio track via
+ *     `addTrack`, sends an Offer over the `/concord/voice-signaling/
+ *     1.0.0` libp2p stream, and wires the answer + ICE candidate
+ *     exchange. Inbound `ontrack` events spawn `<audio>` elements
+ *     pinned to the captured `MediaStream` so remote audio plays.
+ *   - `leaveMesh(roomId)` — closes every PeerConnection, stops every
+ *     local mic track (releasing the OS-level mic indicator), and
+ *     detaches every remote `<audio>` element so the browser stops
+ *     decoding inbound packets.
  *
- * ## What is deferred — `TODO(mesh-media-followup)`
+ * ## What is deferred — `TODO(mesh-media-followup-v2)`
  *
  *   - **No automatic dial of the remote multiaddr.** The browser
  *     swarm only dials peers it knows about. Production code is
@@ -24,15 +29,14 @@
  *     (QR / deeplink / Matrix-room) has populated the peer store and
  *     the swarm has a connection in hand. The voice mesh code does
  *     not perform peer discovery.
- *   - **No playback wiring.** The remote tracks are captured into the
- *     per-peer state record (so a future `<audio>` element render
- *     pass can attach them to a `MediaStream`), but this module does
- *     NOT attach them to a DOM element. A follow-up PR ships the
- *     playback half — same scope as cpal on native.
  *   - **No reconnection / NAT-hole-punching retry loop.** A single
  *     Offer/Answer round-trip is performed per peer; if it fails, the
  *     orchestrator surfaces the error via `getMeshStatus` and the UI
  *     can fall back to LiveKit.
+ *   - **No echo cancellation / noise suppression / AGC.**
+ *     `getUserMedia` is called with `{ audio: true }`; the browser
+ *     applies its own default constraints. Tuning happens in a
+ *     follow-up.
  */
 
 import type { Libp2p, PeerId } from "@libp2p/interface";
@@ -54,9 +58,15 @@ interface MeshRoom {
   roomId: string;
   /** Map of remote-peer-id-string → `RTCPeerConnection`. */
   peers: Map<string, RTCPeerConnection>;
-  /** Captured remote audio MediaStream per peer. Drives the future
-   *  `<audio>`-tag render pass. */
+  /** Captured remote audio MediaStream per peer. */
   remoteStreams: Map<string, MediaStream>;
+  /** Per-track `<audio>` elements that drive playback. Keyed by
+   *  `MediaStreamTrack.id` so we can detach + null `srcObject` on
+   *  leave. Mesh-mode remote audio is rendered headlessly — the
+   *  `Audio` element is appended to the document only for
+   *  autoplay-policy purposes; the audible output is the OS default
+   *  speaker. */
+  remoteAudio: Map<string, HTMLAudioElement>;
   /** Local outbound audio MediaStream — the same getUserMedia
    *  output is attached to every PeerConnection's audio sender. */
   localStream: MediaStream | null;
@@ -102,6 +112,7 @@ export async function joinMesh(
 
   const peers = new Map<string, RTCPeerConnection>();
   const remoteStreams = new Map<string, MediaStream>();
+  const remoteAudio = new Map<string, HTMLAudioElement>();
 
   // Inbound signaling handler — accepts `/concord/voice-signaling/1.0.0`
   // streams from remote peers and routes envelopes to the matching PC.
@@ -133,6 +144,7 @@ export async function joinMesh(
     roomId,
     peers,
     remoteStreams,
+    remoteAudio,
     localStream,
     unhandle: async () => {
       try {
@@ -152,12 +164,17 @@ export async function joinMesh(
     try {
       const pc = createPeerConnection(roomId, remoteId, localStream);
       peers.set(remoteId, pc);
-      // Wire on_track to capture remote audio.
+      // Wire on_track to capture remote audio AND attach an
+      // <audio> element so the browser actually plays it. Tracks
+      // arrive one at a time (per the WebRTC spec); we de-dup
+      // against the per-peer MediaStream so a re-add doesn't blow
+      // up the audio graph.
       pc.ontrack = (event) => {
-        const ms = remoteStreams.get(remoteId) ?? new MediaStream();
-        event.streams[0]?.getTracks().forEach((t) => ms.addTrack(t));
+        const ms =
+          remoteStreams.get(remoteId) ?? event.streams[0] ?? new MediaStream();
         if (!event.streams[0]) ms.addTrack(event.track);
         remoteStreams.set(remoteId, ms);
+        attachRemoteAudio(remoteAudio, event.track.id, ms);
       };
       // Wire on_ice_candidate to forward over signaling wire.
       pc.onicecandidate = (event) => {
@@ -193,7 +210,10 @@ export async function joinMesh(
 
 /**
  * Leave a mesh-mode voice call. Closes every PeerConnection in the
- * room, stops the local mic, and removes the room from the registry.
+ * room, stops every local mic track (releasing the OS-level mic
+ * indicator), detaches every remote `<audio>` element so the browser
+ * stops decoding inbound packets, and removes the room from the
+ * registry.
  *
  * Idempotent — leaving an unknown room is a no-op.
  */
@@ -214,6 +234,69 @@ export async function leaveMesh(roomId: string): Promise<void> {
       track.stop();
     }
   }
+  for (const audio of room.remoteAudio.values()) {
+    try {
+      audio.pause();
+    } catch {
+      /* idempotent — pause on a torn-down element is harmless */
+    }
+    audio.srcObject = null;
+    if (audio.parentNode) {
+      audio.parentNode.removeChild(audio);
+    }
+  }
+  room.remoteAudio.clear();
+}
+
+/**
+ * Attach (or reuse) an `<audio>` element bound to a remote track.
+ *
+ * Browser autoplay policy: a `MediaStream` produced by a peer
+ * connection that the user explicitly initiated does NOT require a
+ * user gesture to play (it counts as continuation of the active mic
+ * session). Setting `autoplay = true` is sufficient.
+ *
+ * The element is appended to `document.body` when available so the
+ * media graph keeps it alive across React renders; in test
+ * environments (jsdom without a body, headless harnesses) we keep
+ * the element off-DOM and rely on `autoplay` alone.
+ */
+function attachRemoteAudio(
+  bucket: Map<string, HTMLAudioElement>,
+  trackId: string,
+  stream: MediaStream,
+): void {
+  let audio = bucket.get(trackId);
+  if (audio) {
+    if (audio.srcObject !== stream) {
+      audio.srcObject = stream;
+    }
+    return;
+  }
+  audio = new Audio();
+  audio.srcObject = stream;
+  audio.autoplay = true;
+  // Mesh-mode playback is monaural voice; mark the element so a
+  // future UI can locate + style it if needed.
+  audio.dataset.concordMeshTrack = trackId;
+  // Append to the document so the playback survives React renders.
+  // We guard against the test seam where `Audio` is a plain class
+  // (not a real `HTMLAudioElement` subclass), in which case the
+  // browser DOM rejects it as a non-Node — autoplay still works
+  // without DOM attachment.
+  try {
+    if (
+      typeof document !== "undefined" &&
+      document.body &&
+      typeof Node !== "undefined" &&
+      audio instanceof Node
+    ) {
+      document.body.appendChild(audio);
+    }
+  } catch {
+    /* off-DOM playback is acceptable; jsdom test seams hit this. */
+  }
+  bucket.set(trackId, audio);
 }
 
 /** Read the current per-tab mesh state for `roomId`. */
@@ -264,10 +347,13 @@ async function handleInbound(
         pc = createPeerConnection(roomId, remoteId, localStream);
         room.peers.set(remoteId, pc);
         pc.ontrack = (event) => {
-          const ms = room.remoteStreams.get(remoteId) ?? new MediaStream();
-          event.streams[0]?.getTracks().forEach((t) => ms.addTrack(t));
+          const ms =
+            room.remoteStreams.get(remoteId) ??
+            event.streams[0] ??
+            new MediaStream();
           if (!event.streams[0]) ms.addTrack(event.track);
           room.remoteStreams.set(remoteId, ms);
+          attachRemoteAudio(room.remoteAudio, event.track.id, ms);
         };
         pc.onicecandidate = (event) => {
           if (event.candidate) {
