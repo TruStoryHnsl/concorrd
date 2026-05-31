@@ -129,15 +129,58 @@ export function ProfileTab() {
       {/* Two-factor authentication */}
       <TOTPSection />
 
-      <div className="border-t border-outline-variant/15 pt-6">
+      <div className="border-t border-outline-variant/15 pt-6 flex flex-wrap gap-3">
         <button
           onClick={logout}
           className="text-error border border-error/30 rounded px-4 py-2 hover:bg-error/10 transition-colors text-sm font-label font-medium min-h-[44px]"
         >
           Logout
         </button>
+        <CloseConcordButton />
       </div>
     </div>
+  );
+}
+
+/**
+ * Close Concord — quits the native window. `tauri.conf.json` ships
+ * with `decorations: false` (the user runs their compositor with
+ * system decorations off, so the OS-painted title bar would render
+ * either oversized or in the wrong colour). Without decorations
+ * there's no system X button; this row gives the user an explicit
+ * way to quit from inside the app.
+ *
+ * Web build: self-hides. Web sessions are tabs; the tab close lives
+ * in the browser chrome.
+ */
+function CloseConcordButton() {
+  const [supported, setSupported] = useState(false);
+
+  useEffect(() => {
+    setSupported(
+      typeof window !== "undefined" && "__TAURI_INTERNALS__" in window,
+    );
+  }, []);
+
+  if (!supported) return null;
+
+  const handleClose = async () => {
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().close();
+    } catch (err) {
+      console.warn("[profile] close window failed", err);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleClose}
+      className="text-on-surface-variant border border-outline-variant/40 rounded px-4 py-2 hover:bg-surface-container-high transition-colors text-sm font-label font-medium min-h-[44px]"
+      data-testid="close-concord-button"
+    >
+      Close Concord
+    </button>
   );
 }
 

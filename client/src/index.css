@@ -253,16 +253,6 @@ html {
   height: 100%;
 }
 
-/* Tauri custom titlebar (decorations: false in tauri.conf.json).
- * `TauriTitlebar` is rendered as a position:fixed strip at the top
- * of the viewport; push the rest of the app down by its height so
- * the titlebar doesn't paint over real content. The .tauri class
- * is added by main.tsx before React mounts so this rule never
- * fires in web builds. */
-html.tauri body {
-  padding-top: 2rem;
-  box-sizing: border-box;
-}
 
 /* ── Mobile Layout Fixes ──
  * overflow-x:hidden prevents stray wide content from scrolling the
