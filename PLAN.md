@@ -954,6 +954,26 @@ The 2026-04-24 codebase audit (Developer agent) discovered that many shipped fea
 - [x] **Hosting tab (`HostingTab.tsx`) — separate from `NodeHostingTab`** — a second hosting-related settings tab beside `NodeHostingTab.tsx`. Code: `client/src/components/settings/HostingTab.tsx`. <!-- audit 2026-04-24: ambiguous — requires user decision: either declare under INS-052 or merge with NodeHostingTab. -->
 
 ## Recent Changes
+- 2026-05-31: **Porch Sources-rail integration (Phase A follow-up).** The
+  Phase A deferral on the Sources-rail closed — the per-install local
+  porch is now a first-class intrinsic tile at the top of
+  `SourcesPanel.tsx`. NOT in `useSourcesStore.sources` (porch is
+  local, not a remote connection); rendered above all sortable source
+  tiles on both desktop and mobile, even when sources is empty. Uses the
+  user's Matrix avatar via the existing `useAvatarUrl` hook when a
+  homeserver session exists, falls back to a `home` material symbol on
+  P2P-only profiles. A small `home`-glyph badge in the bottom-right
+  visually distinguishes "your porch" from a friend's porch (mirrors
+  the `source-owner-badge` star pattern). Online indicator dot reflects
+  whether any paired peer has a `lastSeen` within the last 60s. The
+  tile is NOT draggable (outside the `SortableContext`) and NOT
+  removable (right-click does NOT open the destructive
+  `SourceContextMenu`). Clicking invokes a new `onPorchOpen` prop wired
+  in `ChatLayout.tsx` to a full-screen overlay rendering
+  `<PorchView mode="self" />`. Tests: 5 cases in
+  `client/src/components/layout/__tests__/SourcesPanel.porch-tile.test.tsx`.
+  Docs updated in `docs/architecture/porch-design.md` § "Porch is now a
+  Source tile".
 - 2026-05-30: **Porch Phase A — per-install local server + visit
   protocol.** Each install now runs an embedded SQLite-backed porch
   with one default `Porch` channel created on first boot at

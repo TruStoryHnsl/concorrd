@@ -21,6 +21,8 @@ import { CSS } from "@dnd-kit/utilities";
 import { useAuthStore } from "../../stores/auth";
 import { useSettingsStore } from "../../stores/settings";
 import { useSourcesStore, type ConcordSource } from "../../stores/sources";
+import { usePeerStore } from "../../stores/peerStore";
+import { useAvatarUrl } from "../../hooks/usePresence";
 import {
   SourceBrandIcon,
   inferSourceBrand,
@@ -229,6 +231,168 @@ function SortableSourceTile({
   );
 }
 
+/**
+ * Porch tile — synthetic, intrinsic Sources-rail entry for the local
+ * install's porch (per-install local server + lobby; design doc:
+ * `docs/architecture/porch-design.md`). NOT in `useSourcesStore.sources`
+ * because that store represents external connections — the porch is local
+ * and exists from first boot.
+ *
+ * Visual contract:
+ *  - Fixed at the TOP of the rail (above sortable sources).
+ *  - Renders even with zero sources.
+ *  - Avatar = user's Matrix profile picture when available, else a
+ *    `home` material symbol (P2P-only profile / no Matrix session).
+ *  - Bottom-right "home" badge so the user knows this is THEIR porch
+ *    (NOT a friend's). Mirrors the `source-owner-badge` star pattern.
+ *  - Online dot in corner: green when at least one paired peer's
+ *    `lastSeen` is recent (≤60s), gray otherwise.
+ *  - NOT draggable / NOT removable. Right-click → "Open" only.
+ */
+function PorchTile({
+  onPorchOpen,
+}: {
+  onPorchOpen?: () => void;
+}) {
+  const userId = useAuthStore((s) => s.userId);
+  const avatarUrl = useAvatarUrl(userId);
+  // Peer list drives the "any paired peer online" dot. Loaded once
+  // here so the tile reflects current state without forcing every
+  // mount to re-IPC. The store is shared; `load()` is idempotent and
+  // sets `error: 'native-only'` on web builds (we tolerate that).
+  const knownPeers = usePeerStore((s) => s.knownPeers);
+  const loadPeers = usePeerStore((s) => s.load);
+  useEffect(() => {
+    void loadPeers();
+  }, [loadPeers]);
+
+  // A peer is "online" when its `lastSeen` is within the last 60s.
+  // The libp2p swarm-event mirror that lights this up live is a Phase
+  // follow-up; in the meantime `lastSeen` is the cheapest signal that
+  // does not require an additional IPC round-trip on every render.
+  const anyPeerOnline = useMemo(() => {
+    const now = Date.now();
+    return knownPeers.some((peer) => {
+      const t = Date.parse(peer.lastSeen);
+      if (Number.isNaN(t)) return false;
+      return now - t < 60_000;
+    });
+  }, [knownPeers]);
+
+  return (
+    <div
+      className="w-full flex items-center justify-center flex-shrink-0"
+      data-testid="porch-tile-wrapper"
+    >
+      <button
+        type="button"
+        onClick={() => onPorchOpen?.()}
+        title="Your porch"
+        data-testid="porch-tile"
+        className="group relative w-8 h-8 flex items-center justify-center rounded-xl shadow-lg scale-100 text-on-surface bg-surface-container-high ring-1 ring-primary/40 transition-all duration-150 hover:ring-primary/60"
+        style={{
+          // Subtle inset tint so the porch reads as "local / mine" vs
+          // the neutral remote-source tiles. Uses the primary token so
+          // it follows the active theme.
+          backgroundColor:
+            "color-mix(in srgb, var(--color-primary, #4f9eff) 14%, var(--color-surface-container-high))",
+        }}
+      >
+        {avatarUrl ? (
+          <img
+            src={avatarUrl}
+            alt=""
+            className="w-7 h-7 rounded-lg object-cover"
+            data-testid="porch-tile-avatar"
+          />
+        ) : (
+          <span
+            className="material-symbols-outlined text-lg text-on-surface"
+            data-testid="porch-tile-home-icon"
+          >
+            home
+          </span>
+        )}
+        {/* Home badge — overlapping bottom-right so the user knows
+            this is *their* porch (not a friend's). Mirrors the
+            `source-owner-badge` star pattern, different icon. */}
+        <span
+          data-testid="porch-tile-home-badge"
+          className="absolute -bottom-1 -right-1 w-3 h-3 rounded-full bg-primary ring-2 ring-surface flex items-center justify-center"
+          title="Your porch"
+          aria-label="Your porch"
+        >
+          <span className="material-symbols-outlined text-on-primary" style={{ fontSize: "8px" }}>
+            home
+          </span>
+        </span>
+        {/* Online indicator — green when at least one paired peer is
+            currently online via libp2p (Phase 5+ peer-store). */}
+        <span
+          data-testid={`porch-tile-online-${anyPeerOnline ? "yes" : "no"}`}
+          className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full ring-2 ring-surface ${
+            anyPeerOnline ? "bg-green-500" : "bg-on-surface-variant/50"
+          }`}
+          aria-label={anyPeerOnline ? "Peer online" : "No peers online"}
+        />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Mobile porch row — same intrinsic-tile semantics as the desktop
+ * PorchTile but rendered as a list row, matching the mobile source
+ * list visual contract.
+ */
+function MobilePorchRow({ onPorchOpen }: { onPorchOpen?: () => void }) {
+  const userId = useAuthStore((s) => s.userId);
+  const avatarUrl = useAvatarUrl(userId);
+  const knownPeers = usePeerStore((s) => s.knownPeers);
+  const loadPeers = usePeerStore((s) => s.load);
+  useEffect(() => {
+    void loadPeers();
+  }, [loadPeers]);
+  const anyPeerOnline = useMemo(() => {
+    const now = Date.now();
+    return knownPeers.some((peer) => {
+      const t = Date.parse(peer.lastSeen);
+      if (Number.isNaN(t)) return false;
+      return now - t < 60_000;
+    });
+  }, [knownPeers]);
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onPorchOpen?.()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onPorchOpen?.();
+        }
+      }}
+      data-testid="porch-tile-mobile"
+      className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-container-high transition-colors cursor-pointer border-l-2 border-primary/40"
+    >
+      <span
+        className={`w-2 h-2 rounded-full flex-shrink-0 ${
+          anyPeerOnline ? "bg-green-500" : "bg-on-surface-variant/50"
+        }`}
+      />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium text-on-surface truncate">
+          Your porch
+        </div>
+        <div className="text-xs text-on-surface-variant truncate">
+          {avatarUrl ? "Local lobby" : "Local lobby (sign in for avatar)"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function statusDot(source: ConcordSource) {
   switch (source.status) {
     case "connected":
@@ -246,6 +410,7 @@ export function SourcesPanel({
   onAddSource,
   onSourceSelect,
   onSourceOpen,
+  onPorchOpen,
   onExplore,
   mobile = false,
 }: {
@@ -253,6 +418,14 @@ export function SourcesPanel({
   onSourceSelect?: (sourceId: string) => void;
   /** Called when a tile is clicked — opens the source browser for that source. */
   onSourceOpen?: (sourceId: string) => void;
+  /**
+   * Called when the intrinsic Porch tile is clicked. The porch is local
+   * to this install — see `docs/architecture/porch-design.md` — so the
+   * parent should route the main view to the local `PorchView` rather
+   * than the SourceServerBrowser modal. Optional so existing test
+   * mounts still work without supplying the callback.
+   */
+  onPorchOpen?: () => void;
   onExplore?: () => void;
   mobile?: boolean;
 }) {
@@ -459,6 +632,9 @@ export function SourcesPanel({
 
         {/* Source list */}
         <div className="flex-1 min-h-0 overflow-y-auto">
+          {/* Intrinsic Porch row — always FIRST, even when sources is empty.
+              Local-only; not part of useSourcesStore.sources. */}
+          <MobilePorchRow onPorchOpen={onPorchOpen} />
           {sources.map((source) => {
             // Outer container: <div role="button"> instead of <button>. HTML
             // forbids interactive elements nested inside <button>, and the
@@ -549,6 +725,14 @@ export function SourcesPanel({
       {(onExplore || sources.length > 0) && (
         <div className="w-8 h-px bg-outline-variant/20 flex-shrink-0 my-1" />
       )}
+
+      {/* Intrinsic Porch tile — always rendered at the TOP of the rail,
+          above the sortable sources. NOT a row in useSourcesStore.sources
+          (the porch is local, not a remote connection). NOT draggable —
+          intentionally outside the SortableContext below. */}
+      <div className="w-full flex flex-col items-center gap-1.5 pb-1.5 flex-shrink-0">
+        <PorchTile onPorchOpen={onPorchOpen} />
+      </div>
 
       {/* Source tiles — scrollable, top-down */}
       <DndContext
