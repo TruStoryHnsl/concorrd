@@ -41,6 +41,18 @@ vi.mock("../../../libp2p/lazyNode", () => ({
   getBrowserNodeIfStarted: getBrowserNodeIfStartedMock,
 }));
 
+// The PeerCardDisplay component self-triggers swarm startup via
+// `useBrowserLibp2p({ enabled: true })`. Stub the hook so the test
+// doesn't try to dynamically import the real libp2p tree under jsdom.
+vi.mock("../../../hooks/useBrowserLibp2p", () => ({
+  useBrowserLibp2p: () => ({
+    status: "running",
+    error: undefined,
+    start: vi.fn(),
+    stop: vi.fn(),
+  }),
+}));
+
 // QR encoding is synchronous; mock to bypass the canvas dep entirely.
 vi.mock("qrcode", () => ({
   default: { toDataURL: qrcodeToDataURLMock },
