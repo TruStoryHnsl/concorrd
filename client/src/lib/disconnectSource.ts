@@ -1,47 +1,78 @@
 /**
- * disconnectSource — teardown for a source connection.
+ * disconnectSource — full teardown for a source connection.
  *
- * The plain `useSourcesStore.removeSource(id)` only removes the row
- * from the rail/list. It does NOT:
- *   - stop the matrix-js-sdk client (the live Matrix client keeps
- *     syncing, so cached rooms and servers stay populated long after
- *     the tile is gone),
- *   - clear `useServerStore.servers` (Sources rail's content area
- *     still renders the same channels),
- *   - clear the cached session credentials in localStorage
- *     (`concord_session`), so the next launch silently restores.
- *
- * Result: the user "disconnects" but the chats stay visible — they
- * just lose the disconnect button. Reported as:
+ * Reported (the bug this exists to fix):
  *
  *   "The source icon disappeared but the content did not. I still see
  *    all three servers being served by concorrd.com."
  *
- * This helper does the right thing: if the disconnected source is
- * tied to the currently-active Matrix session, it triggers the full
- * `logout()` flow (which stops the client, resets the server store,
- * clears localStorage, AND removes sources tied to the prior user via
- * `bindToUser(null)`). For any other source — not tied to the active
- * session — it falls back to `removeSource(id)` so the row is dropped
- * without disturbing the live session.
+ * And, after the first iteration (which only called logout for active
+ * sessions):
+ *
+ *   "No change in behavior. The tile disappears but the connection is
+ *    never removed. When I restart the app the tile comes back. You
+ *    need to ACTUALLY disconnect."
+ *
+ * The reason a half-measure didn't work: a Concord source with an
+ * empty inviteToken is treated as the install's "primary source" by
+ * `useSourcesStore.bindToUser()`. `logout()` calls `bindToUser(null)`
+ * which intentionally PRESERVES primary source rows (it just nulls
+ * the ownerUserId). The whole point of preservation is so a docker
+ * install's homeserver tile survives every logout — but it's exactly
+ * the wrong behaviour when the user explicitly asked to disconnect
+ * that source. On top of that, `useServerConfigStore.config` still
+ * held the host, and on next launch `migrateFromSession` re-created
+ * the primary source from that config. Tile came back.
+ *
+ * Full nuke (this version):
+ *
+ *   1. If the source matches the currently-active Matrix session
+ *      (`source.userId === auth.userId`), run `logout()` so the
+ *      matrix-js-sdk client stops syncing, the server cache is
+ *      reset, and `concord_session` localStorage is cleared.
+ *
+ *   2. Call `removeSource(id)` unconditionally — preserves primary
+ *      sources is the wrong behaviour for an explicit disconnect.
+ *
+ *   3. If the now-removed source's host equals the host stored in
+ *      `useServerConfigStore.config`, clear that config too. Without
+ *      this step, the next launch's `migrateFromSession()` resurrects
+ *      a primary source row from the cached config and the tile is
+ *      back as if nothing happened.
+ *
+ * After all three: the source is gone from every persisted layer.
+ * Next launch starts clean.
  */
 
 import { useAuthStore } from "../stores/auth";
+import { useServerConfigStore } from "../stores/serverConfig";
 import { useSourcesStore } from "../stores/sources";
 
 export function disconnectSource(sourceId: string): void {
-  const source = useSourcesStore
-    .getState()
-    .sources.find((s) => s.id === sourceId);
-  const { userId, logout } = useAuthStore.getState();
+  const sources = useSourcesStore.getState();
+  const source = sources.sources.find((s) => s.id === sourceId);
+  if (!source) return;
 
-  // Active-session match: the disconnected source is the one whose
-  // Matrix session is live. Full teardown.
-  if (source && userId && source.userId === userId) {
-    logout();
-    return;
+  const auth = useAuthStore.getState();
+
+  // 1) Tear down the live Matrix session if this source owns it.
+  if (auth.userId && source.userId === auth.userId) {
+    auth.logout();
   }
 
-  // Fallback: drop the row only.
+  // 2) Drop the source row unconditionally. logout() preserves
+  //    primary sources via bindToUser; that's the wrong behaviour
+  //    for an explicit disconnect.
   useSourcesStore.getState().removeSource(sourceId);
+
+  // 3) If the persisted homeserver config points at the same host
+  //    we just disconnected, clear it so `migrateFromSession()` on
+  //    the next launch doesn't resurrect a primary source row from
+  //    it. setServerUrl(\"\") inside clearHomeserver also flushes the
+  //    in-process cache so any code path still reading the legacy
+  //    `getHomeserverUrl()` sees an empty value.
+  const config = useServerConfigStore.getState().config;
+  if (config && config.host.toLowerCase() === source.host.toLowerCase()) {
+    useServerConfigStore.getState().clearHomeserver();
+  }
 }
