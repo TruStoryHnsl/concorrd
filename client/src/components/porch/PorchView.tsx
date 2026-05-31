@@ -14,7 +14,7 @@
  * per-channel theming lands.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { usePorchStore } from "../../stores/porchStore";
 import { useVisitorStore } from "../../stores/visitorStore";
 import type {
@@ -30,6 +30,13 @@ import {
   porchVisitGetTheme,
 } from "../../api/porch";
 import { applyTheme } from "./themeRenderer";
+
+// Phase D — lazy-load the vault browser; only mounted when a visitor
+// selects an obsidian-kind channel, so the markdown renderer chunk
+// (~50 KB) doesn't load until needed.
+const VaultBrowser = lazy(() =>
+  import("./VaultBrowser").then((m) => ({ default: m.VaultBrowser })),
+);
 
 export type PorchViewMode = "self" | "visit";
 
@@ -271,7 +278,40 @@ export function PorchView({ mode, title }: PorchViewProps) {
         </ul>
       </aside>
 
-      {/* Messages + composer */}
+      {/* Messages + composer — OR vault browser, for obsidian channels in visit mode. */}
+      {mode === "visit" && (() => {
+        const row = visit.rows.find((r) => r.id === visit.selectedChannelId);
+        return row && row.kind === "obsidian";
+      })() && visit.currentPeerId && visit.selectedChannelId ? (
+        <section
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 0,
+          }}
+        >
+          <Suspense
+            fallback={
+              <div
+                data-testid="vault-browser-suspense"
+                style={{ padding: 16, opacity: 0.7 }}
+              >
+                Loading vault…
+              </div>
+            }
+          >
+            <VaultBrowser
+              key={`${visit.currentPeerId}::${visit.selectedChannelId}`}
+              peerId={visit.currentPeerId}
+              channelId={visit.selectedChannelId}
+              channelName={
+                visit.rows.find((r) => r.id === visit.selectedChannelId)?.name
+              }
+            />
+          </Suspense>
+        </section>
+      ) : (
       <section
         style={{
           flex: 1,
@@ -384,6 +424,7 @@ export function PorchView({ mode, title }: PorchViewProps) {
           </button>
         </form>
       </section>
+      )}
     </div>
   );
 }

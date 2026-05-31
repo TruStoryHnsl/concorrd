@@ -32,6 +32,15 @@ const ChannelThemeEditor = lazy(() =>
   })),
 );
 
+// Phase D — lazy-load the obsidian editor too. The file picker + the
+// markdown renderer aren't needed unless the owner actually has an
+// obsidian channel to configure.
+const ObsidianChannelEditor = lazy(() =>
+  import("./ObsidianChannelEditor").then((m) => ({
+    default: m.ObsidianChannelEditor,
+  })),
+);
+
 type ManagementTab = "channels" | "themes";
 
 export function PorchManagement() {
@@ -43,6 +52,10 @@ export function PorchManagement() {
   const [createErr, setCreateErr] = useState<string | null>(null);
   const [tab, setTab] = useState<ManagementTab>("channels");
   const [themedChannelId, setThemedChannelId] = useState<string | null>(null);
+  // Phase D — when the owner clicks "Configure" on an obsidian-kind
+  // channel, the editor opens inline below the channel list. `null`
+  // hides it.
+  const [obsidianChannelId, setObsidianChannelId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!porch.isLoaded && !porch.isLoading) {
@@ -296,6 +309,31 @@ export function PorchManagement() {
               : "No channels yet."}
           </div>
         ) : (
+          <>
+          {obsidianChannelId &&
+            porch.channels.some(
+              (c) => c.id === obsidianChannelId && c.kind === "obsidian",
+            ) && (
+              <Suspense
+                fallback={
+                  <div
+                    data-testid="obsidian-editor-suspense"
+                    style={{ fontSize: 12 }}
+                  >
+                    Loading vault editor…
+                  </div>
+                }
+              >
+                <ObsidianChannelEditor
+                  key={obsidianChannelId}
+                  channelId={obsidianChannelId}
+                  channelName={
+                    porch.channels.find((c) => c.id === obsidianChannelId)
+                      ?.name ?? "vault"
+                  }
+                />
+              </Suspense>
+            )}
           <ul
             style={{
               listStyle: "none",
@@ -324,9 +362,32 @@ export function PorchManagement() {
                 <span style={{ fontSize: 11, opacity: 0.5 }}>
                   {c.kind} · {c.acl_mode}
                 </span>
+                {c.kind === "obsidian" && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setObsidianChannelId(
+                        obsidianChannelId === c.id ? null : c.id,
+                      )
+                    }
+                    data-testid={`obsidian-configure-${c.id}`}
+                    style={{
+                      fontSize: 11,
+                      background: "transparent",
+                      border: "1px solid var(--outline-variant, #2a2c30)",
+                      color: "inherit",
+                      padding: "2px 8px",
+                      borderRadius: 4,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {obsidianChannelId === c.id ? "Hide" : "Configure"}
+                  </button>
+                )}
               </li>
             ))}
           </ul>
+          </>
         )}
       </section>
         </>

@@ -432,3 +432,144 @@ export async function porchVisitGetAssetBytes(
   const mod = await import("../libp2p/porch");
   return await mod.browserVisitGetAssetBytes(peerId, assetId);
 }
+
+// ---------------------------------------------------------------------------
+// Phase D — Obsidian channel: vault binding, browse, file reads
+// ---------------------------------------------------------------------------
+
+/** Phase D — kind discriminator on a single vault entry returned by
+ *  ListVault. Mirrors Rust's `EntryKind`. */
+export type EntryKind = "file" | "directory";
+
+/** Phase D — one row inside a vault directory listing. */
+export interface VaultEntry {
+  /** Forward-slash-normalized path, relative to the effective root. */
+  path: string;
+  kind: EntryKind;
+  /** Bytes for files; `null` for directories. */
+  size: number | null;
+  /** Unix milliseconds (file mtime), or `null`. */
+  modified_at: number | null;
+}
+
+/** Phase D — obsidian binding row carried over the wire. The owner sets
+ *  `vault_root` via the file-picker; `subfolder` optionally narrows the
+ *  surface to a sub-tree. `follow_symlinks` defaults off — see the Rust
+ *  module docs for the threat model. */
+export interface ObsidianChannelConfig {
+  channel_id: string;
+  /** Absolute, canonicalized path. The renderer never opens this
+   *  directly — it's surfaced for display only. */
+  vault_root: string;
+  /** Relative subfolder within the vault root, or `null`. */
+  subfolder: string | null;
+  follow_symlinks: boolean;
+}
+
+/** Phase D — `GetVaultFile` response. Tagged union; mirrors Rust's
+ *  `VaultFileResponse`. `Inline` carries base64 bytes inline (under the
+ *  256 KiB cap); `TooLarge` carries the metadata so the renderer can
+ *  show a placeholder. */
+export type VaultFileResponse =
+  | {
+      kind: "inline";
+      path: string;
+      mime_type: string;
+      bytes_b64: string;
+      size: number;
+    }
+  | {
+      kind: "too_large";
+      path: string;
+      mime_type: string;
+      size: number;
+    };
+
+/** Owner-side: bind a channel to a vault directory. Native only. */
+export async function porchSetObsidianConfig(
+  channelId: string,
+  vaultRoot: string,
+  subfolder: string | null,
+  followSymlinks: boolean,
+): Promise<ObsidianChannelConfig> {
+  if (!isTauri()) {
+    throw new Error("porch_set_obsidian_config is native-only");
+  }
+  return await invoke<ObsidianChannelConfig>("porch_set_obsidian_config", {
+    channelId,
+    vaultRoot,
+    subfolder,
+    followSymlinks,
+  });
+}
+
+/** Owner-side: fetch the binding for a channel (or `null` if none). */
+export async function porchGetObsidianConfig(
+  channelId: string,
+): Promise<ObsidianChannelConfig | null> {
+  if (!isTauri()) return null;
+  return await invoke<ObsidianChannelConfig | null>("porch_get_obsidian_config", {
+    channelId,
+  });
+}
+
+/** Owner-side: list a folder inside the host's own obsidian-bound
+ *  channel. Skips the ACL check — the owner sees their own vault
+ *  unconditionally. */
+export async function porchListVault(
+  channelId: string,
+  path: string,
+): Promise<VaultEntry[]> {
+  if (!isTauri()) return [];
+  return await invoke<VaultEntry[]>("porch_list_vault", { channelId, path });
+}
+
+/** Owner-side: read a single file out of the host's own
+ *  obsidian-bound channel. */
+export async function porchReadVaultFile(
+  channelId: string,
+  path: string,
+): Promise<VaultFileResponse> {
+  if (!isTauri()) throw new Error("porch_read_vault_file is native-only");
+  return await invoke<VaultFileResponse>("porch_read_vault_file", {
+    channelId,
+    path,
+  });
+}
+
+/** Visitor-side: list a folder inside a peer's obsidian-bound
+ *  channel. Native + web. */
+export async function porchVisitListVault(
+  peerId: string,
+  channelId: string,
+  path: string,
+): Promise<VaultEntry[]> {
+  if (isTauri()) {
+    return await invoke<VaultEntry[]>("porch_visit_list_vault", {
+      peerId,
+      channelId,
+      path,
+    });
+  }
+  const mod = await import("../libp2p/porch");
+  return await mod.browserVisitListVault(peerId, channelId, path);
+}
+
+/** Visitor-side: fetch a single file from a peer's obsidian-bound
+ *  channel. Returns the envelope so callers can render the
+ *  "too_large" placeholder when needed. */
+export async function porchVisitGetVaultFile(
+  peerId: string,
+  channelId: string,
+  path: string,
+): Promise<VaultFileResponse> {
+  if (isTauri()) {
+    return await invoke<VaultFileResponse>("porch_visit_get_vault_file", {
+      peerId,
+      channelId,
+      path,
+    });
+  }
+  const mod = await import("../libp2p/porch");
+  return await mod.browserVisitGetVaultFile(peerId, channelId, path);
+}

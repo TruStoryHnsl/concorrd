@@ -29,6 +29,7 @@
     "@livekit/components-styles": "^1.2.0",
     "@multiformats/multiaddr": "^13.0.3",
     "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "chart.js": "^4.5.1",
     "jsqr": "^1.4.0",
     "libp2p": "^3.3.2",

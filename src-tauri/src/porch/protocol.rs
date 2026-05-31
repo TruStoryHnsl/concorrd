@@ -25,10 +25,11 @@ use crate::servitude::federation::{
 };
 
 use super::acl::can_visit;
-use super::channel::{AclMode, ChannelMessage, PorchChannel};
+use super::channel::{AclMode, ChannelKind, ChannelMessage, PorchChannel};
 use super::db::Porch;
 use super::error::PorchError;
 use super::knock::{Knock, KnockStatus};
+use super::obsidian::VaultEntry;
 use super::theme::{ChannelTheme, ThemeSummary, MAX_INLINE_ASSET_BYTES};
 
 /// libp2p stream protocol ID for porch traffic. Distinct namespace from
@@ -109,6 +110,17 @@ pub enum PorchRequest {
     /// the visitor's client can render "image too large to preview"
     /// without retrying.
     GetAssetBytes { asset_id: String },
+    /// Phase D — list the contents of a path inside an Obsidian-backed
+    /// channel's vault directory. `path = ""` lists the effective
+    /// root. ACL-gated against the channel; non-Obsidian channels
+    /// return a typed error.
+    ListVault { channel_id: String, path: String },
+    /// Phase D — read a single file out of an Obsidian-backed
+    /// channel's vault. Same ACL + kind gating as `ListVault`. Bytes
+    /// are returned inline as base64 under the 256 KiB cap; larger
+    /// files surface a `too_large` marker so the visitor's UI can
+    /// render "ask the owner to share directly" rather than retry.
+    GetVaultFile { channel_id: String, path: String },
 }
 
 /// Phase B — per-channel row returned by `ListChannels`. Carries the
@@ -193,6 +205,34 @@ pub enum AssetBytesResponse {
         asset_id: String,
         mime_type: String,
         bytes: u64,
+    },
+}
+
+/// Phase D — `GetVaultFile` response. Mirrors the Phase C asset
+/// response shape: inline base64 bytes under the same 256 KiB cap, or
+/// a `too_large` marker carrying the file's size + MIME so the
+/// visitor's UI can render a friendly "ask the owner to share directly"
+/// message.
+///
+/// Serialized as:
+///
+/// ```json
+/// {"kind":"inline","path":"note.md","mime_type":"text/markdown","bytes_b64":"...","size":1234}
+/// {"kind":"too_large","path":"video.png","mime_type":"image/png","size":12345678}
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VaultFileResponse {
+    Inline {
+        path: String,
+        mime_type: String,
+        bytes_b64: String,
+        size: u64,
+    },
+    TooLarge {
+        path: String,
+        mime_type: String,
+        size: u64,
     },
 }
 
@@ -422,7 +462,64 @@ impl PorchHandler {
                 };
                 Ok(serde_json::to_value(resp)?)
             }
+            PorchRequest::ListVault { channel_id, path } => {
+                let ch = self.gate_obsidian(&visitor, &channel_id)?;
+                let _ = ch; // borrow held only for the gate side-effects.
+                let entries = self.porch.list_vault(&channel_id, &path)?;
+                Ok(serde_json::to_value(entries)?)
+            }
+            PorchRequest::GetVaultFile { channel_id, path } => {
+                let ch = self.gate_obsidian(&visitor, &channel_id)?;
+                let _ = ch;
+                let (bytes, mime) = self.porch.read_vault_file(&channel_id, &path)?;
+                let size = bytes.len() as u64;
+                if size > MAX_INLINE_ASSET_BYTES as u64 {
+                    let resp = VaultFileResponse::TooLarge {
+                        path,
+                        mime_type: mime,
+                        size,
+                    };
+                    return Ok(serde_json::to_value(resp)?);
+                }
+                use base64::Engine;
+                let bytes_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let resp = VaultFileResponse::Inline {
+                    path,
+                    mime_type: mime,
+                    bytes_b64,
+                    size,
+                };
+                Ok(serde_json::to_value(resp)?)
+            }
         }
+    }
+
+    /// Phase D — shared gate for ListVault / GetVaultFile. Asserts the
+    /// channel exists, is of kind=Obsidian, and the visitor has
+    /// `can_visit` access. Returns the resolved channel record so the
+    /// caller can extract metadata without a second query.
+    fn gate_obsidian(
+        &self,
+        visitor: &str,
+        channel_id: &str,
+    ) -> Result<PorchChannel, PorchError> {
+        let ch = self
+            .porch
+            .get_channel(channel_id)?
+            .ok_or_else(|| PorchError::ChannelNotFound {
+                channel_id: channel_id.to_string(),
+            })?;
+        if !matches!(ch.kind, ChannelKind::Obsidian) {
+            return Err(PorchError::InvalidInput(format!(
+                "channel {channel_id} is not an obsidian channel"
+            )));
+        }
+        if !can_visit(&self.porch, visitor, &ch)? {
+            return Err(PorchError::AccessDenied {
+                channel_id: channel_id.to_string(),
+            });
+        }
+        Ok(ch)
     }
 }
 
@@ -656,6 +753,44 @@ pub async fn visit_get_asset_bytes(
             "asset too large to preview inline: {bytes} bytes"
         ))),
     }
+}
+
+/// Phase D — visit a peer's porch and list a folder inside an
+/// obsidian-bound channel. `path` is forward-slash form relative to
+/// the channel's effective vault root; `""` lists the root.
+pub async fn visit_list_vault(
+    control: &mut Control,
+    peer_id: PeerId,
+    channel_id: String,
+    path: String,
+) -> Result<Vec<VaultEntry>, PorchError> {
+    let response = send_one(
+        control,
+        peer_id,
+        PorchRequest::ListVault { channel_id, path },
+    )
+    .await?;
+    decode_or_error::<Vec<VaultEntry>>(response)
+}
+
+/// Phase D — visit a peer's porch and read a file out of an
+/// obsidian-bound channel. Returns the decoded `VaultFileResponse`
+/// envelope — `Inline` carries the bytes directly, `TooLarge` carries
+/// just the metadata so the visitor's UI can render a friendly
+/// placeholder.
+pub async fn visit_read_vault_file(
+    control: &mut Control,
+    peer_id: PeerId,
+    channel_id: String,
+    path: String,
+) -> Result<VaultFileResponse, PorchError> {
+    let response = send_one(
+        control,
+        peer_id,
+        PorchRequest::GetVaultFile { channel_id, path },
+    )
+    .await?;
+    decode_or_error::<VaultFileResponse>(response)
 }
 
 /// Visit a peer's porch and post a message to one of their channels.
