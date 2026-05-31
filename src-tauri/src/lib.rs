@@ -3,6 +3,7 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
 
+pub mod porch;
 pub mod servitude;
 
 use servitude::config::Profile;
@@ -79,6 +80,13 @@ pub struct SwarmStateCache(std::sync::Mutex<SwarmStatus>);
 /// `peer_swarm_status`; written by the background mirror task spawned in
 /// `run()`.
 pub struct SwarmEventChannel(pub std::sync::Arc<SwarmStateCache>);
+
+/// Porch Phase A — shared local porch backing the host's own porch
+/// commands and the inbound `/concord/porch/1.0.0` libp2p handler. The
+/// state is opened lazily on the first porch Tauri command call (so a
+/// build that never opens the porch surface doesn't pay the
+/// migration cost) and reused for the process lifetime.
+pub struct PorchState(pub Mutex<Option<std::sync::Arc<porch::Porch>>>);
 
 // ---------------------------------------------------------------------------
 // Phase 5 — peer-store IPC shapes
@@ -356,6 +364,163 @@ async fn peer_store_remove(
 ) -> Result<bool, String> {
     let stronghold = get_or_open_peer_identity(&state, &app).await?;
     peer_store::remove(&stronghold, &peer_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Porch Phase A — local-server + visit commands
+// ---------------------------------------------------------------------------
+
+/// Open (or return the already-open) shared porch. Lazy so the porch
+/// SQLite migration only runs on demand. Also wires the porch into the
+/// running servitude handle's libp2p runtime via `set_porch` — when
+/// the runtime restarts, the same porch instance is reused so the
+/// inbound `/concord/porch/1.0.0` handler dispatches against the same
+/// SQLite the host's own commands operate on.
+async fn get_or_open_porch(
+    porch_state: &tauri::State<'_, PorchState>,
+    servitude_state: &tauri::State<'_, ServitudeState>,
+    app: &tauri::AppHandle,
+) -> Result<std::sync::Arc<porch::Porch>, String> {
+    let mut guard = porch_state.0.lock().await;
+    if let Some(p) = guard.as_ref() {
+        return Ok(p.clone());
+    }
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("no app_local_data_dir: {e}"))?;
+    let porch = porch::Porch::open(&data_dir).map_err(|e| e.to_string())?;
+    let porch_arc = std::sync::Arc::new(porch);
+    *guard = Some(porch_arc.clone());
+    drop(guard);
+    // Best-effort: wire the freshly-opened porch into the running
+    // servitude so the inbound libp2p handler picks it up. If no
+    // runtime exists yet, the next `servitude_start` call grabs the
+    // porch from `PorchState` directly — see `servitude_start` for
+    // the eager wiring path.
+    let mut servitude_guard = servitude_state.0.lock().await;
+    if let Some(handle) = servitude_guard.as_mut() {
+        handle.set_porch(porch_arc.clone());
+    }
+    Ok(porch_arc)
+}
+
+/// List channels on the LOCAL porch (this install's). Always returns
+/// every channel, regardless of ACL — the host sees their own porch in
+/// full.
+#[tauri::command]
+async fn porch_list_my_channels(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<porch::PorchChannel>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.list_channels().map_err(|e| e.to_string())
+}
+
+/// Read messages from a channel on the LOCAL porch.
+#[tauri::command]
+async fn porch_get_messages(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    channel_id: String,
+    since: Option<i64>,
+    limit: u32,
+) -> Result<Vec<porch::ChannelMessage>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch
+        .get_messages(&channel_id, since, limit)
+        .map_err(|e| e.to_string())
+}
+
+/// Append a message to a LOCAL porch channel. The author is stamped as
+/// the local libp2p PeerId (read from the running servitude); if no
+/// libp2p runtime is up, falls back to the literal string `"local"`
+/// so the host can still post while offline.
+#[tauri::command]
+async fn porch_post_message(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    channel_id: String,
+    body: String,
+) -> Result<porch::ChannelMessage, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    // Resolve the local PeerId for author attribution. If the libp2p
+    // runtime isn't up, fall back to "local" — the host's own UI
+    // shouldn't be blocked by transport state.
+    let author = {
+        let guard = servitude_state.0.lock().await;
+        guard
+            .as_ref()
+            .and_then(|h| h.libp2p_local_peer_id().map(|p| p.to_base58()))
+            .unwrap_or_else(|| "local".to_string())
+    };
+    porch
+        .post_message(&channel_id, &author, &body)
+        .map_err(|e| e.to_string())
+}
+
+/// Resolve a libp2p stream control + peer-id for a visit. Returns the
+/// control + parsed PeerId, or an error string suitable for `Result`.
+async fn resolve_visit_control(
+    servitude_state: &tauri::State<'_, ServitudeState>,
+    peer_id_str: &str,
+) -> Result<(libp2p_stream::Control, libp2p::PeerId), String> {
+    let peer_id: libp2p::PeerId = peer_id_str
+        .parse()
+        .map_err(|e| format!("invalid peer_id: {e}"))?;
+    let guard = servitude_state.0.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| "servitude is not running".to_string())?;
+    let control = handle
+        .porch_stream_control()
+        .ok_or_else(|| "libp2p runtime is not running".to_string())?;
+    Ok((control, peer_id))
+}
+
+/// Visit a paired peer's porch. Dials over libp2p, opens a stream on
+/// `/concord/porch/1.0.0`, sends `ListChannels`, returns the response.
+#[tauri::command]
+async fn porch_visit_peer(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+) -> Result<Vec<porch::PorchChannel>, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::visit_list_channels(&mut control, peer)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Visit a peer's porch and page messages from one of their channels.
+#[tauri::command]
+async fn porch_visit_get_messages(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+    channel_id: String,
+    since: Option<i64>,
+    limit: u32,
+) -> Result<Vec<porch::ChannelMessage>, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::visit_get_messages(&mut control, peer, channel_id, since, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Visit a peer's porch and post a message into one of their channels.
+#[tauri::command]
+async fn porch_visit_post_message(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+    channel_id: String,
+    body: String,
+) -> Result<porch::ChannelMessage, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::visit_post_message(&mut control, peer, channel_id, body)
         .await
         .map_err(|e| e.to_string())
 }
@@ -924,6 +1089,7 @@ async fn servitude_start(
     state: tauri::State<'_, ServitudeState>,
     identity_state: tauri::State<'_, PeerIdentityState>,
     mesh_state: tauri::State<'_, VoiceMeshState>,
+    porch_state: tauri::State<'_, PorchState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Load config OUTSIDE the lock so the (very cheap) store access never
@@ -935,6 +1101,26 @@ async fn servitude_start(
     // the same per-install Ed25519 seed — see `servitude/identity.rs`
     // for the architectural unification note.
     let stronghold = get_or_open_peer_identity(&identity_state, &app).await?;
+
+    // Porch Phase A — open (or reuse) the shared porch BEFORE we grab
+    // the servitude lock. The porch is wired into the libp2p runtime
+    // via `set_porch` below so its inbound handler is registered the
+    // moment the swarm starts.
+    let porch_arc = {
+        let mut guard = porch_state.0.lock().await;
+        if let Some(p) = guard.as_ref() {
+            p.clone()
+        } else {
+            let data_dir = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|e| format!("no app_local_data_dir: {e}"))?;
+            let porch = porch::Porch::open(&data_dir).map_err(|e| e.to_string())?;
+            let porch_arc = std::sync::Arc::new(porch);
+            *guard = Some(porch_arc.clone());
+            porch_arc
+        }
+    };
 
     let mut guard = state.0.lock().await;
 
@@ -958,6 +1144,10 @@ async fn servitude_start(
         // registry on a fresh runtime has no side effects until
         // start() consumes it.
         handle.set_voice_registry(mesh_state.0.clone());
+        // Porch Phase A — wire the shared porch into the libp2p
+        // runtime so the inbound `/concord/porch/1.0.0` handler is
+        // registered when the swarm starts. Idempotent.
+        handle.set_porch(porch_arc.clone());
         *guard = Some(handle);
     }
 
@@ -1216,6 +1406,10 @@ pub fn run() {
         .manage(VoiceMeshState(std::sync::Arc::new(
             servitude::voice::VoiceCallRegistry::new(),
         )))
+        // Porch Phase A — lazily-opened shared porch. The first
+        // `porch_*` Tauri command opens the SQLite DB; subsequent calls
+        // reuse the same instance.
+        .manage(PorchState(Mutex::new(None)))
         .setup(move |app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -1399,6 +1593,12 @@ pub fn run() {
             voice_mesh_join,
             voice_mesh_leave,
             voice_mesh_status,
+            porch_list_my_channels,
+            porch_get_messages,
+            porch_post_message,
+            porch_visit_peer,
+            porch_visit_get_messages,
+            porch_visit_post_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

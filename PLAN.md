@@ -247,6 +247,18 @@ No direct anonymous mode. Instead: **private browsing via disposable user node**
 
 **Sequencing notes for orrchestrator:** Phase 2 is the foundation everything builds on. Phases 4 (DHT) and 5 (Pairing UX) are parallel after Phase 3. Phase 6 (federation payload) blocks Phase 8 (voice uses the same stream abstraction). Phase 9 (browser libp2p) is genuinely independent after Phase 3 and can be parallelized. agent-pm reviews each PR against `docs/architecture/p2p-design.md`; deviations require a doc update first, not silent code drift.
 
+### Porch (local server per install)
+
+**Source of truth: [`docs/architecture/porch-design.md`](docs/architecture/porch-design.md).** Each install runs its own porch — a small local server backed by SQLite, surfaced to paired peers over a dedicated libp2p protocol. The porch's default `Porch` channel is the user's "front door"; inner channels (Phase B) are gated by ACL; later phases add per-channel theming, Obsidian-vault channels, encrypted backups, multi-device sync, and WireGuard-tunneled hardening. Phases A–D are implementation phases; E/F/G are design-only in this PR and require their own follow-up sprints.
+
+- [x] **Phase A — local porch + default channel + visit protocol.** Embedded `rusqlite` (bundled) at `<app_local_data_dir>/porch.sqlite`. Schema: `porch_channels`, `channel_acl`, `channel_messages` with a `schema_version` migration table. Default `Porch` channel inserted on first boot. `/concord/porch/1.0.0` libp2p protocol via the Phase 6 `FederationHandler` trait, 4-byte BE length-prefixed JSON envelopes, 1 MiB cap. Six Tauri commands: `porch_list_my_channels` / `porch_get_messages` / `porch_post_message` for the local porch; `porch_visit_peer` / `porch_visit_get_messages` / `porch_visit_post_message` for visiting a paired peer. TS API wrappers + zustand stores for own porch + visited peer. Browser-side visitor support over the Phase 9 libp2p stack (`client/src/libp2p/porch.ts` mirrors `federation.ts`'s framing). One PorchSource tile per paired peer; Phase A surfaces the visit through a modal opened from the Paired Peers list (full Sources-rail integration deferred — see design doc).
+- [ ] **Phase B — inner channels + ACL UI + knock protocol.** Surface `kind = 'inner'` and `acl_mode = 'allowlist'` to the host UI. Add `porch_create_channel` / `porch_grant_acl` / `porch_revoke_acl` Tauri commands. New `PorchRequest::RequestAccess { channel_id }` variant lets a visitor "knock" on a private channel; the owner's UI surfaces the knock and can grant/deny. New `porch_access_requests` table.
+- [ ] **Phase C — per-channel aesthetic customization.** `channel_theme` table (surface color, accent color, body/mono fonts, banner image). Host UI: theme editor inside channel settings. Visitor UI: themes apply client-side with a per-visitor privacy/a11y opt-out. New `PorchRequest::GetChannelTheme` method. Banner image hosting deferred to a `/concord/porch-blob/1.0.0` protocol (also needed by Phase D).
+- [ ] **Phase D — Obsidian channel type.** `kind = 'obsidian'` channels bind to a vault folder. Background indexer crawls markdown; `/concord/porch-obsidian/1.0.0` protocol streams notes + attachments to ACL-granted peers. Visitor renders Obsidian-flavored markdown (wikilinks, embeds, callouts). Read-only in Phase D — multi-writer Obsidian lands with the Phase F CRDT.
+- [ ] **Phase E — docker-build-as-backup (DESIGN ONLY in current PR).** Encrypted, ZSTD-compressed SQLite dump shipped to a trusted peer or self-hosted Concord docker stack over `/concord/porch-backup/1.0.0`. Key recovery envelope encrypted under a user-supplied passphrase. Backup peer sees only ciphertext. Recovery from a fresh install via the same protocol. Wire shape sketch + threat model in design doc; NO code in this PR.
+- [ ] **Phase F — multi-device sync (DESIGN ONLY in current PR).** Two peers tagged `device_tier = 'personal'` keep the same porch state via a CRDT replicating the SQLite dataset. Likely hand-rolled per-table CRDT (append-only messages, OR-set ACL, register-style metadata). Decision deferred to implementation. Wire protocol sketch in design doc; NO code in this PR.
+- [ ] **Phase G — WireGuard-tunneled p2p hardening (DESIGN ONLY in current PR).** Paired personal-device peers exchange WireGuard public keys; bundled userspace WireGuard (`boringtun`-style) spoofs a "same LAN" between each pair. Custom `libp2p::core::Transport` accepts only connections from inside the tunnel CIDR. iOS Network Extension entitlement is the main adoption blocker — design doc enumerates fallbacks. NO code in this PR.
+
 ### PRIORITY (must build soon): Docker/server self-update process + in-UI admin update button (routed 2026-05-28)
 
 **Status: planned — not yet built. Build soon.** Discovered 2026-05-28 while auditing prod (orr1on): **there is no server-side update process.** The only "update button" in the app today is the **desktop** client updater (`client/src/lib/updater.ts`, #72) — it polls the GitHub releases API and opens an installer download URL; it is native-only (`__TAURI_INTERNALS__`-gated) and **never touches server containers**. `server/services/docker_control.py` can only **restart** a compose service via docker-socket-proxy (it explicitly notes pull/build/prune are not implemented). Production deploys are manual (rsync + selective `docker compose build <svc>` + `up -d`), so a deploy can rebuild only the service that changed and silently leave others on an old image.
@@ -942,6 +954,49 @@ The 2026-04-24 codebase audit (Developer agent) discovered that many shipped fea
 - [x] **Hosting tab (`HostingTab.tsx`) — separate from `NodeHostingTab`** — a second hosting-related settings tab beside `NodeHostingTab.tsx`. Code: `client/src/components/settings/HostingTab.tsx`. <!-- audit 2026-04-24: ambiguous — requires user decision: either declare under INS-052 or merge with NodeHostingTab. -->
 
 ## Recent Changes
+- 2026-05-30: **Porch Phase A — per-install local server + visit
+  protocol.** Each install now runs an embedded SQLite-backed porch
+  with one default `Porch` channel created on first boot at
+  `<app_local_data_dir>/porch.sqlite`. New module
+  `src-tauri/src/porch/` (`db.rs`, `channel.rs`, `acl.rs`,
+  `protocol.rs`, `error.rs`) with `Porch` owning a `rusqlite::Connection`
+  and an idempotent `schema_version` migration table. Schema:
+  `porch_channels` / `channel_acl` / `channel_messages` (ULID ids on
+  messages, `(channel_id, created_at)` index). New libp2p protocol
+  `/concord/porch/1.0.0` registered via the Phase 6 `FederationHandler`
+  trait — 4-byte BE length-prefixed JSON envelopes, 1 MiB cap (vs the
+  16 MiB cap on Matrix federation). `PorchRequest` is
+  `#[serde(tag = "method", content = "params")]` over
+  `ListChannels` / `GetMessages { channel_id, since, limit }` /
+  `PostMessage { channel_id, body }`; `PorchResponse` carries
+  `ok` + `result` + optional structured `error`. Handler enforces ACL
+  on every method — `Open` always allows, `Allowlist` consults
+  `channel_acl`, `OwnerOnly` rejects visitors. Six new Tauri commands:
+  `porch_list_my_channels` / `porch_get_messages` / `porch_post_message`
+  for the host's own porch (SQLite-direct), and
+  `porch_visit_peer` / `porch_visit_get_messages` /
+  `porch_visit_post_message` for visiting paired peers (dial + libp2p
+  stream + JSON-RPC). Browser visitor support over the Phase 9 libp2p
+  stack via `client/src/libp2p/porch.ts` (mirrors
+  `federation.ts`'s 4-byte BE framing); the visitor TS API in
+  `client/src/api/porch.ts` picks native (Tauri) vs web (browser
+  libp2p) automatically. Two new zustand stores —
+  `client/src/stores/porchStore.ts` (own porch, native-only) and
+  `client/src/stores/visitorStore.ts` (visit a peer, works on
+  native + web). React UI: `PorchView` channel-list + message-list +
+  send-input; `PorchSource` tile renders a paired peer with an
+  online/offline indicator. Sources-panel integration deferred to a
+  follow-up — Phase A surfaces the visit through a modal opened from
+  the Paired Peers list (see design doc § "Implementation pointers"
+  for the rationale). Tests: 4 cases in
+  `src-tauri/tests/porch_test.rs` (first-boot default channel, ACL
+  filter, message-order, two-swarm visit round-trip), 3 cases in
+  `client/src/api/__tests__/porch.test.ts` (native dispatch, web
+  dispatch over libp2p, web error when libp2p is down). New dep
+  `rusqlite = { version = "0.36", features = ["bundled"] }`. Design
+  doc at `docs/architecture/porch-design.md` covers all seven phases
+  (A–G); Phases E/F/G are documentation-only in this PR with wire
+  shapes + threat models sketched out for follow-up sprints.
 - 2026-05-30: **P2P UI relocated.** Peer identity / swarm / paired peers
   moved from Profile → Connections; Deployment profile moved from Profile
   → Hosting. Peer-pairing flow now reachable from the Sources panel's

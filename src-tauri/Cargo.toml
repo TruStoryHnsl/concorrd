@@ -183,6 +183,18 @@ audiopus = "0.3.0-rc.0"
 rtp = "0.8"
 ringbuf = "0.4"
 
+# Porch Phase A — embedded local server backed by SQLite. `bundled`
+# pulls in the sqlite C source and compiles it as part of the build so
+# the runtime has no system-libsqlite3 dependency. Cross-platform
+# requirement (macOS Catalina ships an old libsqlite3; Windows has none
+# by default). The build pays a one-time C-compile cost; the resulting
+# binary is fully self-contained.
+rusqlite = { version = "0.36", features = ["bundled"] }
+# ULID generator for porch message IDs. Lexicographically sortable +
+# monotonic-per-process so `ORDER BY id` is a stable tiebreaker when
+# two messages land in the same millisecond.
+ulid = "1"
+
 # Unix-only deps for servitude child-process management. `nix::sys::signal`
 # gives us SIGTERM for graceful shutdown — std::process::Child::kill uses
 # SIGKILL only, which doesn't let tuwunel flush its RocksDB on exit.

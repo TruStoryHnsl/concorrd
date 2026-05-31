@@ -330,6 +330,27 @@ impl ServitudeHandle {
         None
     }
 
+    /// Porch Phase A — wire the shared [`crate::porch::Porch`] into the
+    /// libp2p runtime so the `/concord/porch/1.0.0` handler dispatches
+    /// against it. MUST be called BEFORE `start()`.
+    pub fn set_porch(&mut self, porch: std::sync::Arc<crate::porch::Porch>) {
+        for runtime in &mut self.transports {
+            runtime.set_porch(porch.clone());
+        }
+    }
+
+    /// Porch Phase A — clone of the libp2p stream control captured at
+    /// `start()`, suitable for opening outbound porch streams. `None`
+    /// while no libp2p runtime has been started.
+    pub fn porch_stream_control(&self) -> Option<libp2p_stream::Control> {
+        for runtime in &self.transports {
+            if let Some(c) = runtime.porch_stream_control() {
+                return Some(c);
+            }
+        }
+        None
+    }
+
     /// Drive the state machine `Stopped -> Starting -> Running`, bringing
     /// up each enabled transport in config order.
     ///
