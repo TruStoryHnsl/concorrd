@@ -195,6 +195,12 @@ pub struct LibP2pRuntime {
     /// `start()` so the Tauri visit commands can open outbound streams
     /// to remote peers without grabbing a fresh `Control` per call.
     porch_stream_control: Option<libp2p_stream::Control>,
+    /// Phase G — shared inbound-gate state. Wired before `start()` so
+    /// the swarm comes up with the operator's persisted tunnel-only
+    /// preferences already in effect. When `None`, the swarm builds
+    /// a permissive default (enforce=false) — backward-compatible
+    /// with tests and pre-Phase-G installs.
+    gate_state: Option<crate::servitude::network::connection_gate::GateState>,
 }
 
 impl std::fmt::Debug for LibP2pRuntime {
@@ -228,7 +234,31 @@ impl LibP2pRuntime {
             voice_outbound_rx: Some(voice_outbound_rx),
             porch: None,
             porch_stream_control: None,
+            gate_state: None,
         }
+    }
+
+    /// Phase G — wire the inbound-gate state. Must be called BEFORE
+    /// [`Self::start`] for the operator's persisted enforce flag and
+    /// extras to take effect on the swarm's first listen. Calling
+    /// after `start()` is harmless — the swarm runs with whatever
+    /// state was wired in — but won't retroactively apply.
+    pub fn set_gate_state(
+        &mut self,
+        state: crate::servitude::network::connection_gate::GateState,
+    ) {
+        self.gate_state = Some(state);
+    }
+
+    /// Snapshot of the wired gate state. Returns `None` when the
+    /// Tauri layer hasn't called [`Self::set_gate_state`] (e.g. tests
+    /// that bypass the wiring path). The Tauri tunnel-config commands
+    /// `update(...)` this clone to push a config change into the
+    /// running swarm without a restart.
+    pub fn gate_state(
+        &self,
+    ) -> Option<crate::servitude::network::connection_gate::GateState> {
+        self.gate_state.clone()
     }
 
     /// Wire the porch. MUST be called before [`Self::start`] for the
@@ -296,7 +326,25 @@ impl LibP2pRuntime {
             .await
             .map_err(|e| TransportError::StartFailed(format!("identity load: {e}")))?;
 
-        let mut transport = LibP2pTransport::new(&peer_identity, &self.stronghold).await?;
+        // Phase G — if the Tauri layer wired a gate state (the common
+        // production path), use it; otherwise fall back to a
+        // permissive default (the test-only and pre-G path). Cloning
+        // the state once here means the runtime's stored handle stays
+        // wired to the SAME Arc the swarm observes, so subsequent
+        // `update(...)` calls hot-swap as expected.
+        let mut transport = match self.gate_state.clone() {
+            Some(state) => {
+                LibP2pTransport::new_with_gate(&peer_identity, &self.stronghold, state).await?
+            }
+            None => LibP2pTransport::new(&peer_identity, &self.stronghold).await?,
+        };
+
+        // If we hadn't wired a gate, capture the swarm's default
+        // permissive gate so callers asking `gate_state()` always get
+        // back a handle that lines up with what's running.
+        if self.gate_state.is_none() {
+            self.gate_state = Some(transport.gate_state());
+        }
 
         // Phase 6 (INS-019b) — register the Matrix federation handler so
         // inbound `/concord/matrix-federation/1.0.0` streams are routed
@@ -882,6 +930,29 @@ impl TransportRuntime {
     pub fn porch_stream_control(&self) -> Option<libp2p_stream::Control> {
         match self {
             TransportRuntime::LibP2p(t) => t.porch_stream_control(),
+            _ => None,
+        }
+    }
+
+    /// Phase G — wire the inbound-gate state into the LibP2p runtime
+    /// variant. No-op for every other variant.
+    pub fn set_gate_state(
+        &mut self,
+        state: crate::servitude::network::connection_gate::GateState,
+    ) {
+        if let TransportRuntime::LibP2p(t) = self {
+            t.set_gate_state(state);
+        }
+    }
+
+    /// Phase G — clone of the libp2p runtime's gate state. `None` for
+    /// every other variant or while the runtime hasn't had a state
+    /// wired/started.
+    pub fn gate_state(
+        &self,
+    ) -> Option<crate::servitude::network::connection_gate::GateState> {
+        match self {
+            TransportRuntime::LibP2p(t) => t.gate_state(),
             _ => None,
         }
     }

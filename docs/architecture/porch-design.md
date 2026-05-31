@@ -891,6 +891,89 @@ Open questions:
    peer-id allowlist + opportunistic NAT punching" path that doesn't
    require the OS entitlement.
 
+> **Phase G implementation landed (2026-05-31).** The first slice
+> of Phase G ships the **inbound connection gate** without the
+> bundled-WireGuard half: the gate enforces "incoming connection
+> source IP must be on a trusted tunnel CIDR" at the libp2p
+> `NetworkBehaviour` layer, but the WireGuard tunnel itself is the
+> operator's responsibility (WireGuard or Tailscale running on the
+> host, or an operator-supplied extra CIDR via Settings → Connections
+> → Tunnel hardening). Bundling a userspace WireGuard impl
+> (`boringtun`) for the desktop builds is the next slice; the iOS
+> NetworkExtension path is a follow-up after that.
+>
+> New module: `src-tauri/src/servitude/network/` with three
+> submodules — `tunnel_detect` (per-platform interface probe;
+> Linux/macOS use `getifaddrs(3)`, Windows is a stub returning
+> loopback only, iOS is an explicit no-op so the build succeeds),
+> `tunnel_config` (JSON-persisted operator preferences at
+> `<app_local_data_dir>/tunnel_config.json`), and `connection_gate`
+> (a `NetworkBehaviour` impl that returns `Err(ConnectionDenied)`
+> from `handle_pending_inbound_connection` when the source IP isn't
+> on the allow-list).
+>
+> **Multi-layer defense.** The gate is the OUTERMOST perimeter. A
+> non-tunnel inbound is rejected BEFORE the noise handshake fires —
+> the dialing peer sees an `OutgoingConnectionError` and never
+> learns the local install's PeerId. Behind the gate, the existing
+> noise / yamux / behaviour-level authentication still runs
+> (defence-in-depth: even a trusted-CIDR peer must still complete
+> the libp2p handshake). The gate operates on TCP and QUIC source
+> IPs identically because the libp2p multiaddr stack surfaces the
+> `/ip4` or `/ip6` component first for both transports.
+>
+> **enforce defaults to `false`.** Existing installs upgrading to
+> Phase G don't lose connectivity on the upgrade. The Settings
+> panel ships a "Tunnel-only mode" toggle, an auto-detected CIDRs
+> read-only list (WireGuard `wg*` / Tailscale `tailscale*` /
+> `utun*` w/ CGNAT prefix / loopback), and an editable extras list
+> for operators running a non-standard VPN (e.g. a custom 10.42.0.0/16).
+> Loopback (`127.0.0.0/8` + `::1/128`) is trusted unconditionally
+> so the local React UI can never lock itself out of its own porch
+> and the existing two-swarm `p2p_test` harness keeps working under
+> enforce=true.
+>
+> **Circuit-relay v2 caveat.** When peer B reaches peer A through a
+> relay R, the source IP A sees IS the relay R's IP. The gate
+> trusts the relay only if the relay itself sits on a trusted
+> tunnel CIDR — which means circuit-relayed connections are NOT
+> reachable under tunnel-only mode unless the relay is colocated on
+> the same tunnel as the local install (e.g. a Tailnet-hosted
+> relay). This is acceptable for Phase G's "lock the porch down to
+> a tunnel-only mesh" promise; users who want broad relay-mediated
+> reachability disable enforce.
+>
+> **iOS NetworkExtension follow-up.** iOS sandboxing prevents
+> arbitrary system-interface enumeration from an app, so the
+> per-platform probe is a no-op on iOS. The full fix is a Network
+> Extension of type `packet-tunnel-provider` (entitlement
+> `com.apple.developer.networking.networkextension`) — the app
+> owns its own tunnel device, both ends of the libp2p connection
+> route through it, and the gate sees a known iOS-tunnel CIDR. App
+> Store review requires the entitlement be approved by Apple
+> Developer Relations as part of an annual review. For Phase G we
+> ship the gate code path (so the iOS build compiles cleanly) and
+> defer the entitlement work. iOS users CAN pair with native peers
+> and visit other porches — the gate only constrains INBOUND
+> connections — they just can't be inbound peers under tunnel-only
+> mode.
+>
+> **Hot-swap.** The `TunnelConfig` is stored behind an Arc<RwLock>
+> shared between the swarm's gate behaviour and the Tauri
+> `tunnel_set_config` command. Toggling enforce or editing the
+> extras list takes effect on the running swarm without a restart;
+> the next inbound dial is gated under the new policy.
+>
+> Tests:
+> `src-tauri/tests/tunnel_test.rs` (5 cases: config round-trip,
+> CIDR matching, loopback-trusted-by-default, report partitioning,
+> default-enforce-off) plus `src-tauri/tests/tunnel_gate_test.rs`
+> (1 case: two-swarm enforce-rejects-loopback-dial) plus inline
+> module unit tests in `tunnel_detect.rs` (4 cases) and
+> `connection_gate.rs` (7 cases) and `tunnel_config.rs` (4 cases).
+> Vitest: 3 cases in
+> `client/src/components/settings/__tests__/TunnelHardeningSection.test.tsx`.
+
 ## Implementation pointers (Phase A)
 
 - Module: `src-tauri/src/porch/` (NEW).
