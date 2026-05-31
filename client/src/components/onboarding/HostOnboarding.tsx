@@ -29,6 +29,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { servitudeStatus, type ServitudeStatusResponse } from "../../api/servitude";
 import { useSourcesStore } from "../../stores/sources";
 import { useServerConfigStore } from "../../stores/serverConfig";
 
@@ -72,28 +73,25 @@ const debugLog = (...args: unknown[]) => {
   }
 };
 
-/**
- * Servitude status payload shape from the Rust side. Keep this in
- * sync with `servitude_status` in src-tauri/src/lib.rs.
- */
-interface ServitudeStatusPayload {
-  state: "Stopped" | "Starting" | "Running" | "Stopping" | "Failed";
-  degraded_transports: Record<string, string>;
-}
-
 async function pollUntilRunning(
   timeoutMs: number,
   intervalMs: number,
-  onTick: (status: ServitudeStatusPayload) => void,
+  onTick: (status: ServitudeStatusResponse) => void,
 ): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const raw = await invoke<string>("servitude_status");
-    const parsed = JSON.parse(raw) as ServitudeStatusPayload;
+    // PR #101 promoted `servitude_status` to return a typed
+    // `ServitudeStatusResponse` instead of a JSON-encoded string.
+    // The legacy `JSON.parse(invoke<string>(...))` here was
+    // double-decoding — Tauri already gave us the object, and
+    // `JSON.parse([object Object])` errored with "Unexpected
+    // identifier object" on the Hosting Failed screen. Use the
+    // existing TS wrapper so we ride the same typed contract.
+    const parsed = await servitudeStatus();
     onTick(parsed);
     debugLog("servitude_status", parsed);
-    if (parsed.state === "Running") return;
-    if (parsed.state === "Failed" || parsed.state === "Stopped") {
+    if (parsed.state === "running") return;
+    if (parsed.state === "stopped") {
       throw new Error(
         `servitude entered terminal state ${parsed.state} during startup`,
       );
