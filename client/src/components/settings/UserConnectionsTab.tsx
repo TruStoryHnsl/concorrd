@@ -1,6 +1,7 @@
 import { useAuthStore } from "../../stores/auth";
 import { useSettingsStore } from "../../stores/settings";
 import { useSourcesStore } from "../../stores/sources";
+import { disconnectSource } from "../../lib/disconnectSource";
 import { useBrowserLibp2p } from "../../hooks/useBrowserLibp2p";
 import { SourceBrandIcon } from "../sources/sourceBrand";
 import { PeerConnectionsSection } from "./connections/PeerConnectionsSection";
@@ -121,7 +122,6 @@ export function UserConnectionsTab() {
  */
 function ConnectedAccountsList() {
   const sources = useSourcesStore((s) => s.sources);
-  const removeSource = useSourcesStore((s) => s.removeSource);
 
   if (sources.length === 0) return null;
 
@@ -177,7 +177,7 @@ function ConnectedAccountsList() {
               </div>
               <button
                 type="button"
-                onClick={() => removeSource(source.id)}
+                onClick={() => disconnectSource(source.id)}
                 data-testid={`connected-account-disconnect-${source.id}`}
                 className="px-3 py-1.5 text-xs rounded-md text-error border border-error/30 hover:bg-error/10 transition-colors min-h-[32px]"
               >

@@ -27,6 +27,7 @@ import {
   type SourceBrand,
 } from "../sources/sourceBrand";
 import { SourceContextMenu } from "./SourceContextMenu";
+import { disconnectSource } from "../../lib/disconnectSource";
 
 const SOURCE_RAIL_STORAGE_KEY_PREFIX = "concord_source_rail_order";
 const ADD_SOURCE_TILE_ID = "__add_source_tile__";
@@ -261,7 +262,6 @@ export function SourcesPanel({
   const toggleSource = useSourcesStore((s) => s.toggleSource);
   const setSourceOrder = useSourcesStore((s) => s.setSourceOrder);
   const updateSource = useSourcesStore((s) => s.updateSource);
-  const removeSource = useSourcesStore((s) => s.removeSource);
   const openServerSettings = useSettingsStore((s) => s.openServerSettings);
   const openSettings = useSettingsStore((s) => s.openSettings);
 
@@ -417,12 +417,14 @@ export function SourcesPanel({
   // tree we place it; we mount it inside both layouts so the parent
   // doesn't need to know about it.
   const handleCloseConnection = (sourceId: string) => {
-    removeSource(sourceId);
-    // `removeSource` already drops the rail tile + any selection state
-    // tied to the source via the store. Any matrix-js-sdk client tied
-    // to the homeserver lives in its own session-scoped store and is
-    // GC'd when the user reloads; aggressive purge of cached events
-    // is a follow-up if it becomes load-bearing.
+    // `disconnectSource` does the right thing whether the source is
+    // the active Matrix session (full logout: stop client, reset
+    // servers, clear localStorage, bindToUser(null)) or just one of
+    // many catalog entries (drop the row). See its docstring for the
+    // bug it was added to fix — without the session-aware teardown,
+    // disconnecting the source-you-logged-in-with left the chats
+    // visible because the live MatrixClient kept syncing.
+    disconnectSource(sourceId);
   };
   const handleOpenSettings = (source: ConcordSource) => {
     if (source.platform === "concord") {
