@@ -19,12 +19,14 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useAuthStore } from "../../stores/auth";
+import { useSettingsStore } from "../../stores/settings";
 import { useSourcesStore, type ConcordSource } from "../../stores/sources";
 import {
   SourceBrandIcon,
   inferSourceBrand,
   type SourceBrand,
 } from "../sources/sourceBrand";
+import { SourceContextMenu } from "./SourceContextMenu";
 
 const SOURCE_RAIL_STORAGE_KEY_PREFIX = "concord_source_rail_order";
 const ADD_SOURCE_TILE_ID = "__add_source_tile__";
@@ -165,11 +167,18 @@ function sourceTile(source: ConcordSource): {
 function SortableSourceTile({
   source,
   onToggle,
-  onSourceOpen,
+  onContextMenu,
 }: {
   source: ConcordSource;
   onToggle: (id: string) => void;
-  onSourceOpen?: (sourceId: string) => void;
+  /**
+   * Fired on right-click (or long-press on touch). Receives the source
+   * and viewport-relative cursor coords so the parent can position a
+   * context menu. The previous behavior — context-click opens the
+   * source browser — moves to the menu's "Open" entry, which makes
+   * the destructive "Close connection" entry safer to surface.
+   */
+  onContextMenu: (source: ConcordSource, x: number, y: number) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: source.id });
@@ -193,7 +202,7 @@ function SortableSourceTile({
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          onSourceOpen?.(source.id);
+          onContextMenu(source, event.clientX, event.clientY);
         }}
         title={source.isOwner ? `${label} (owner)` : label}
         data-testid={`source-tile-${source.id}`}
@@ -252,6 +261,18 @@ export function SourcesPanel({
   const toggleSource = useSourcesStore((s) => s.toggleSource);
   const setSourceOrder = useSourcesStore((s) => s.setSourceOrder);
   const updateSource = useSourcesStore((s) => s.updateSource);
+  const removeSource = useSourcesStore((s) => s.removeSource);
+  const openServerSettings = useSettingsStore((s) => s.openServerSettings);
+  const openSettings = useSettingsStore((s) => s.openSettings);
+
+  // Right-click / long-press surface. We keep the menu state local
+  // because nothing else in the app needs to inspect "is a source
+  // context menu open" — it's purely a per-panel affordance.
+  const [contextMenu, setContextMenu] = useState<{
+    source: ConcordSource;
+    x: number;
+    y: number;
+  } | null>(null);
 
   const sources = rawSources;
 
@@ -386,10 +407,47 @@ export function SourcesPanel({
         key={source.id}
         source={source}
         onToggle={handleToggle}
-        onSourceOpen={onSourceOpen}
+        onContextMenu={(src, x, y) => setContextMenu({ source: src, x, y })}
       />
     );
   };
+
+  // Shared between desktop + mobile returns. Position:fixed inside the
+  // menu means it renders at viewport coords regardless of where in the
+  // tree we place it; we mount it inside both layouts so the parent
+  // doesn't need to know about it.
+  const handleCloseConnection = (sourceId: string) => {
+    removeSource(sourceId);
+    // `removeSource` already drops the rail tile + any selection state
+    // tied to the source via the store. Any matrix-js-sdk client tied
+    // to the homeserver lives in its own session-scoped store and is
+    // GC'd when the user reloads; aggressive purge of cached events
+    // is a follow-up if it becomes load-bearing.
+  };
+  const handleOpenSettings = (source: ConcordSource) => {
+    if (source.platform === "concord") {
+      openServerSettings(source.id);
+    } else {
+      // Matrix / Reticulum / other: route to the Connections tab,
+      // where the per-source row lives. The user can adjust from
+      // there until per-source detail panes exist for those platforms.
+      openSettings("connections");
+    }
+  };
+  const contextMenuOverlay = contextMenu ? (
+    <SourceContextMenu
+      source={contextMenu.source}
+      x={contextMenu.x}
+      y={contextMenu.y}
+      onClose={() => setContextMenu(null)}
+      onOpen={(id) => onSourceOpen?.(id)}
+      onOpenSettings={(id) => {
+        const src = sources.find((s) => s.id === id);
+        if (src) handleOpenSettings(src);
+      }}
+      onCloseConnection={handleCloseConnection}
+    />
+  ) : null;
 
   if (mobile) {
     return (
@@ -469,6 +527,7 @@ export function SourcesPanel({
             Add Source
           </button>
         </div>
+        {contextMenuOverlay}
       </div>
     );
   }
@@ -513,6 +572,7 @@ export function SourcesPanel({
           </div>
         </SortableContext>
       </DndContext>
+      {contextMenuOverlay}
     </div>
   );
 }
