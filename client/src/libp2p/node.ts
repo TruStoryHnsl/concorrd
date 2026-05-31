@@ -47,6 +47,7 @@
 import { createLibp2p } from "libp2p";
 import { webRTC } from "@libp2p/webrtc";
 import { webSockets } from "@libp2p/websockets";
+import { circuitRelayTransport } from "@libp2p/circuit-relay-v2";
 import { noise } from "@chainsafe/libp2p-noise";
 import { yamux } from "@chainsafe/libp2p-yamux";
 import { identify } from "@libp2p/identify";
@@ -119,7 +120,15 @@ export async function startBrowserNode(): Promise<Libp2p> {
     // `createLibp2p` infers the right `ServiceMap` from the literal.
     const created = await createLibp2pImpl({
       privateKey: identity.privateKey,
-      transports: [webRTC(), webSockets()],
+      // `@libp2p/webrtc` v6 requires `@libp2p/circuit-relay-v2` to be
+      // present in the transport list. The signaling channel for an
+      // inbound WebRTC dial rides on a relayed connection, so without
+      // the relay-v2 transport, libp2p's capability check refuses to
+      // start the node ("Service '@libp2p/webrtc' required capability
+      // '@libp2p/circuit-relay-v2-transport' but it was not provided
+      // by any component"). The relay transport is small and runs as
+      // a client only — we never act as a relay ourselves.
+      transports: [webRTC(), webSockets(), circuitRelayTransport()],
       connectionEncrypters: [noise()],
       streamMuxers: [yamux()],
       services: {
