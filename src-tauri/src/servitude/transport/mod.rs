@@ -185,6 +185,16 @@ pub struct LibP2pRuntime {
             crate::servitude::voice::SignalingMessage,
         )>,
     >,
+    /// Porch Phase A — shared local porch the libp2p handler dispatches
+    /// inbound `/concord/porch/1.0.0` envelopes against. Wired by the
+    /// Tauri layer before `start()` so the same `Porch` instance backs
+    /// both the host's own Tauri commands AND the inbound visit path.
+    /// `None` means no porch handler is registered (test-only path).
+    porch: Option<Arc<crate::porch::Porch>>,
+    /// Porch Phase A — clone of the libp2p stream control, captured at
+    /// `start()` so the Tauri visit commands can open outbound streams
+    /// to remote peers without grabbing a fresh `Control` per call.
+    porch_stream_control: Option<libp2p_stream::Control>,
 }
 
 impl std::fmt::Debug for LibP2pRuntime {
@@ -216,7 +226,24 @@ impl LibP2pRuntime {
             voice_registry: None,
             voice_outbound_tx,
             voice_outbound_rx: Some(voice_outbound_rx),
+            porch: None,
+            porch_stream_control: None,
         }
+    }
+
+    /// Wire the porch. MUST be called before [`Self::start`] for the
+    /// inbound `/concord/porch/1.0.0` handler to be registered;
+    /// otherwise no porch traffic is accepted (the libp2p layer
+    /// returns `protocol not supported` to the dialer).
+    pub fn set_porch(&mut self, porch: Arc<crate::porch::Porch>) {
+        self.porch = Some(porch);
+    }
+
+    /// Clone of the libp2p stream control captured at `start()`. The
+    /// Tauri visit commands use this to open outbound porch streams.
+    /// Returns `None` while the runtime is stopped.
+    pub fn porch_stream_control(&self) -> Option<libp2p_stream::Control> {
+        self.porch_stream_control.clone()
     }
 
     /// Wire the voice-call registry. MUST be called before
@@ -341,6 +368,24 @@ impl LibP2pRuntime {
             transport.register_federation_handler(handler);
         }
 
+        // Porch Phase A — register the porch handler if a `Porch` was
+        // wired into this runtime. The handler dispatches inbound
+        // `/concord/porch/1.0.0` envelopes against the same `Porch`
+        // instance the host's own Tauri commands operate on, so a
+        // visitor's PostMessage is visible to the host's UI on the
+        // next get_messages call (and vice versa). When no porch is
+        // wired (test-only path), no handler is registered and the
+        // libp2p layer returns "protocol not supported" to dialers.
+        if let Some(porch) = self.porch.clone() {
+            let handler = std::sync::Arc::new(crate::porch::PorchHandler::new(porch));
+            transport.register_federation_handler(handler);
+        }
+
+        // Capture the stream control before run() consumes the
+        // transport so the porch visit commands can open outbound
+        // streams. Held until stop() clears it.
+        self.porch_stream_control = Some(transport.stream_control());
+
         self.local_peer_id = Some(transport.local_peer_id());
         self.event_tx = Some(transport.event_sender());
         self.shutdown_tx = Some(transport.shutdown_handle());
@@ -403,6 +448,9 @@ impl LibP2pRuntime {
         // dead loop bottom out cleanly.
         self.event_tx = None;
         self.local_peer_id = None;
+        // Drop the cached porch stream control — outbound visit calls
+        // made after stop() will see `None` and surface a typed error.
+        self.porch_stream_control = None;
 
         // Phase 8 follow-up — abort the voice outbound drain task.
         // The task would exit naturally when all senders drop, but
@@ -800,6 +848,24 @@ impl TransportRuntime {
     > {
         match self {
             TransportRuntime::LibP2p(t) => Some(t.voice_outbound_sender()),
+            _ => None,
+        }
+    }
+
+    /// Porch Phase A — wire the porch into the LibP2p runtime variant.
+    /// No-op for every other variant.
+    pub fn set_porch(&mut self, porch: Arc<crate::porch::Porch>) {
+        if let TransportRuntime::LibP2p(t) = self {
+            t.set_porch(porch);
+        }
+    }
+
+    /// Porch Phase A — clone of the libp2p stream control captured at
+    /// `start()`, suitable for opening outbound porch streams. `None`
+    /// for every other variant or while the swarm is stopped.
+    pub fn porch_stream_control(&self) -> Option<libp2p_stream::Control> {
+        match self {
+            TransportRuntime::LibP2p(t) => t.porch_stream_control(),
             _ => None,
         }
     }
