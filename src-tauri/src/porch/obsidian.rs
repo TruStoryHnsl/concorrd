@@ -38,8 +38,9 @@ use std::path::{Component, Path, PathBuf};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use super::db::{unix_millis, Porch};
+use super::db::{device_id_unchecked, unix_millis, Porch};
 use super::error::PorchError;
+use super::sync::clock::next_lamport;
 
 /// Hard cap on a single vault file read. 5 MiB matches the design
 /// doc's guidance (markdown is small; attached images are the big
@@ -189,15 +190,27 @@ impl Porch {
 
         let now = unix_millis();
         let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        // Phase F — Obsidian channel binding is LWW per channel_id.
+        // The vault_root path is DEVICE-LOCAL by design — a vault that
+        // exists on laptop A doesn't necessarily exist at the same
+        // path on laptop B. Sync DOES replicate the row across
+        // personal devices so the channel kind is consistent, but the
+        // path-on-disk is a per-device user choice.
+        let device_id = device_id_unchecked(&conn)?;
+        let lamport = next_lamport(&conn)?;
         conn.execute(
             "INSERT INTO obsidian_channels
-                (channel_id, vault_root, subfolder, follow_symlinks, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+                (channel_id, vault_root, subfolder, follow_symlinks, updated_at,
+                 sync_device_id, sync_lamport, sync_tombstone)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
              ON CONFLICT(channel_id) DO UPDATE SET
                  vault_root = excluded.vault_root,
                  subfolder = excluded.subfolder,
                  follow_symlinks = excluded.follow_symlinks,
-                 updated_at = excluded.updated_at",
+                 updated_at = excluded.updated_at,
+                 sync_device_id = excluded.sync_device_id,
+                 sync_lamport = excluded.sync_lamport,
+                 sync_tombstone = 0",
             params![
                 channel_id,
                 canonical_root.to_string_lossy().to_string(),
@@ -206,6 +219,8 @@ impl Porch {
                     .map(|p| p.to_string_lossy().to_string()),
                 if follow_symlinks { 1_i64 } else { 0 },
                 now,
+                device_id,
+                lamport,
             ],
         )?;
         Ok(ObsidianChannelConfig {

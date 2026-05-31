@@ -30,7 +30,16 @@ use super::DEFAULT_PORCH_CHANNEL_ID;
 /// * `5` — Phase E: `backup_targets` (per backing-up side, who we
 ///   send our backup to) + `received_backups` (per backup-peer side,
 ///   opaque ciphertext blobs keyed by uploader peer-id).
-pub const SCHEMA_VERSION: i64 = 5;
+/// * `6` — Phase F: `device_identity` (this install's stable device-id
+///   ULID, generated once on first F-boot), `device_links` (peers
+///   bilaterally upgraded to "personal device" status — sync is gated
+///   on a row existing here), plus `sync_device_id` / `sync_lamport` /
+///   `sync_tombstone` columns added to every CRDT-tracked table
+///   (`porch_channels`, `channel_messages`, `channel_acl`,
+///   `channel_knocks`, `channel_themes`, `porch_assets`,
+///   `obsidian_channels`). Pre-Phase-F rows are backfilled with this
+///   install's `device_id` and `sync_lamport = 0`.
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Subdirectory under the porch data dir where uploaded theme assets
 /// (image bytes) live. The DB stores the relative file path
@@ -361,6 +370,102 @@ impl Porch {
                 COMMIT;",
             )?;
         }
+        if current < 6 {
+            // Phase F migration. Two new tables + sync metadata columns
+            // on every CRDT-tracked table. The migration is idempotent
+            // across both fresh installs (where the v1-v5 tables were
+            // just created above) and pre-Phase-F DBs (where rows
+            // already exist and need backfilling).
+            //
+            // Backfill semantics: every pre-Phase-F row is treated as
+            // having been authored by THIS install's device-id at
+            // lamport 0. That gives merge.rs a stable LWW basis — a
+            // newer write on any device produces a strictly larger
+            // lamport, so backfilled rows never spuriously win against
+            // legitimate post-migration writes.
+            //
+            // The device_id is generated here (a ULID) the first time
+            // the migration runs and persisted in `device_identity`.
+            // Subsequent migrations are a no-op because `current >= 6`.
+            let device_id = Ulid::new().to_string();
+            let now = unix_millis();
+            conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE device_identity (
+                    device_id TEXT PRIMARY KEY,
+                    created_at INTEGER NOT NULL,
+                    label TEXT
+                );
+                CREATE TABLE device_links (
+                    peer_id TEXT PRIMARY KEY,
+                    device_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('personal_device')),
+                    linked_at INTEGER NOT NULL,
+                    last_sync_at INTEGER,
+                    last_sync_lamport INTEGER NOT NULL DEFAULT 0,
+                    label TEXT
+                );
+                COMMIT;",
+            )?;
+            conn.execute(
+                "INSERT INTO device_identity (device_id, created_at, label)
+                 VALUES (?1, ?2, NULL)",
+                params![device_id, now],
+            )?;
+
+            // ALTER TABLE … ADD COLUMN: rusqlite executes one statement
+            // per call. The columns may already exist if a prior
+            // partial migration ran — guard with a PRAGMA table_info
+            // check so this stays idempotent on top of half-applied
+            // databases.
+            for table in [
+                "porch_channels",
+                "channel_messages",
+                "channel_acl",
+                "channel_knocks",
+                "channel_themes",
+                "porch_assets",
+                "obsidian_channels",
+            ] {
+                add_sync_columns_if_missing(&conn, table)?;
+            }
+
+            // Backfill: every existing row gets stamped with this
+            // install's device-id at lamport 0. Tombstone defaults to
+            // 0 (alive) per the ADD COLUMN default.
+            for table in [
+                "porch_channels",
+                "channel_messages",
+                "channel_acl",
+                "channel_knocks",
+                "channel_themes",
+                "porch_assets",
+                "obsidian_channels",
+            ] {
+                let sql = format!(
+                    "UPDATE {table} SET sync_device_id = ?1
+                     WHERE sync_device_id IS NULL"
+                );
+                conn.execute(&sql, params![device_id])?;
+            }
+
+            // Per-table sync indexes for "give me everything newer
+            // than X" queries that drive PullDelta. Lamport is
+            // monotonically increasing per-device, so the index is
+            // a useful B-tree.
+            conn.execute_batch(
+                "BEGIN;
+                CREATE INDEX IF NOT EXISTS idx_channels_sync   ON porch_channels(sync_lamport);
+                CREATE INDEX IF NOT EXISTS idx_messages_sync   ON channel_messages(sync_lamport);
+                CREATE INDEX IF NOT EXISTS idx_acl_sync        ON channel_acl(sync_lamport);
+                CREATE INDEX IF NOT EXISTS idx_knocks_sync     ON channel_knocks(sync_lamport);
+                CREATE INDEX IF NOT EXISTS idx_themes_sync     ON channel_themes(sync_lamport);
+                CREATE INDEX IF NOT EXISTS idx_assets_sync     ON porch_assets(sync_lamport);
+                CREATE INDEX IF NOT EXISTS idx_obsidian_sync   ON obsidian_channels(sync_lamport);
+                INSERT INTO schema_version (version) VALUES (6);
+                COMMIT;",
+            )?;
+        }
         // Future migrations: branch on `current` and apply incremental
         // batches here.
         Ok(())
@@ -377,22 +482,53 @@ impl Porch {
             conn.query_row("SELECT COUNT(*) FROM porch_channels", [], |r| r.get(0))?;
         if count == 0 {
             let now = unix_millis();
+            // Phase F — stamp the row with this install's device-id at
+            // the next lamport value. The default-channel insert is the
+            // very first row written; if no other row is on disk, the
+            // lamport ends up at 1 (next_lamport adds 1 to the
+            // observed max of 0). The insert-ordering matters because
+            // the LWW comparator in merge.rs uses (lamport, device_id)
+            // — a fresh local edit must strictly exceed this baseline.
+            let device_id = device_id_unchecked(&conn)?;
+            let lamport = crate::porch::sync::clock::next_lamport(&conn)?;
             conn.execute(
-                "INSERT INTO porch_channels (id, name, kind, acl_mode, created_at)
-                 VALUES (?1, ?2, 'porch', 'open', ?3)",
-                params![DEFAULT_PORCH_CHANNEL_ID, DEFAULT_PORCH_CHANNEL_NAME, now],
+                "INSERT INTO porch_channels
+                    (id, name, kind, acl_mode, created_at,
+                     sync_device_id, sync_lamport, sync_tombstone)
+                 VALUES (?1, ?2, 'porch', 'open', ?3, ?4, ?5, 0)",
+                params![
+                    DEFAULT_PORCH_CHANNEL_ID,
+                    DEFAULT_PORCH_CHANNEL_NAME,
+                    now,
+                    device_id,
+                    lamport,
+                ],
             )?;
         }
         Ok(())
+    }
+
+    /// Test-only escape hatch: hand back the locked `Connection` so
+    /// integration tests can inspect/poke CRDT metadata without going
+    /// through the public Porch API. Hidden behind the `test-support`
+    /// feature in production builds; integration tests always have
+    /// `cfg(test)` so they see it too.
+    #[doc(hidden)]
+    pub fn conn_for_test(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().expect("porch conn mutex poisoned")
     }
 
     /// List every channel in the porch. Sorted by `created_at` so the
     /// default `Porch` row reliably sits first.
     pub fn list_channels(&self) -> Result<Vec<PorchChannel>, PorchError> {
         let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        // Phase F — tombstoned channels (from a delete on another
+        // device synced over) are hidden from the listing surface so
+        // the UI doesn't show deleted rooms.
         let mut stmt = conn.prepare(
             "SELECT id, name, kind, acl_mode, created_at
              FROM porch_channels
+             WHERE sync_tombstone = 0
              ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -475,10 +611,19 @@ impl Porch {
         let id = Ulid::new().to_string();
         let now = unix_millis();
         let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        // Phase F — stamp every new message with this install's
+        // (device_id, next_lamport) so the row is correctly attributed
+        // for CRDT merge. Messages are insert-only in Phase F (deletes
+        // are tombstones, not implemented yet) so sync_tombstone is
+        // hard-coded to 0.
+        let device_id = device_id_unchecked(&conn)?;
+        let lamport = crate::porch::sync::clock::next_lamport(&conn)?;
         conn.execute(
-            "INSERT INTO channel_messages (id, channel_id, author_peer_id, body, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, channel_id, author_peer_id, body, now],
+            "INSERT INTO channel_messages
+                (id, channel_id, author_peer_id, body, created_at,
+                 sync_device_id, sync_lamport, sync_tombstone)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+            params![id, channel_id, author_peer_id, body, now, device_id, lamport],
         )?;
         Ok(ChannelMessage {
             id,
@@ -547,23 +692,48 @@ impl Porch {
         }
         let now = unix_millis();
         let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        // Phase F — stamp the ACL row with this install's
+        // (device_id, next_lamport). The CRDT shape on ACL is LWW per
+        // (channel_id, peer_id, role); both fresh inserts and
+        // role-updates carry a fresh stamp because the design treats
+        // role-change as a new write.
+        let device_id = device_id_unchecked(&conn)?;
+        let lamport = crate::porch::sync::clock::next_lamport(&conn)?;
         conn.execute(
-            "INSERT INTO channel_acl (channel_id, peer_id, role, granted_at)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO channel_acl
+                (channel_id, peer_id, role, granted_at,
+                 sync_device_id, sync_lamport, sync_tombstone)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
              ON CONFLICT(channel_id, peer_id) DO UPDATE SET
                  role = excluded.role,
-                 granted_at = excluded.granted_at",
-            params![channel_id, peer_id, role.as_str(), now],
+                 granted_at = excluded.granted_at,
+                 sync_device_id = excluded.sync_device_id,
+                 sync_lamport = excluded.sync_lamport,
+                 sync_tombstone = 0",
+            params![channel_id, peer_id, role.as_str(), now, device_id, lamport],
         )?;
         Ok(())
     }
 
     /// Revoke an ACL row. Returns true if a row was removed.
+    ///
+    /// Phase F — revoke is a TOMBSTONE in the CRDT: the row stays in
+    /// the table with `sync_tombstone = 1` so a later sync from a
+    /// device that hasn't yet seen the revoke will lose to it under
+    /// LWW. The wire path treats tombstoned ACL rows as absent —
+    /// `lookup_acl` filters them. This preserves the "delete-wins-on-
+    /// later-write" semantics without losing the LWW basis.
     pub fn revoke_acl(&self, channel_id: &str, peer_id: &str) -> Result<bool, PorchError> {
         let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        let device_id = device_id_unchecked(&conn)?;
+        let lamport = crate::porch::sync::clock::next_lamport(&conn)?;
         let n = conn.execute(
-            "DELETE FROM channel_acl WHERE channel_id = ?1 AND peer_id = ?2",
-            params![channel_id, peer_id],
+            "UPDATE channel_acl
+             SET sync_tombstone = 1,
+                 sync_device_id = ?3,
+                 sync_lamport = ?4
+             WHERE channel_id = ?1 AND peer_id = ?2 AND sync_tombstone = 0",
+            params![channel_id, peer_id, device_id, lamport],
         )?;
         Ok(n > 0)
     }
@@ -585,11 +755,23 @@ impl Porch {
     ) -> Result<PorchChannel, PorchError> {
         let now = unix_millis();
         let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        let device_id = device_id_unchecked(&conn)?;
+        let lamport = crate::porch::sync::clock::next_lamport(&conn)?;
         conn.execute(
-            "INSERT INTO porch_channels (id, name, kind, acl_mode, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO porch_channels
+                (id, name, kind, acl_mode, created_at,
+                 sync_device_id, sync_lamport, sync_tombstone)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
              ON CONFLICT(id) DO NOTHING",
-            params![id, name, kind.as_str(), acl_mode.as_str(), now],
+            params![
+                id,
+                name,
+                kind.as_str(),
+                acl_mode.as_str(),
+                now,
+                device_id,
+                lamport,
+            ],
         )?;
         Ok(PorchChannel {
             id: id.to_string(),
@@ -608,15 +790,78 @@ impl Porch {
         peer_id: &str,
     ) -> Result<Option<AclRole>, PorchError> {
         let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        // Phase F — tombstoned ACL rows are treated as absent so a
+        // revoke takes effect immediately even though the row still
+        // physically exists (the row is kept for CRDT LWW basis).
         let role: Option<String> = conn
             .query_row(
-                "SELECT role FROM channel_acl WHERE channel_id = ?1 AND peer_id = ?2",
+                "SELECT role FROM channel_acl
+                 WHERE channel_id = ?1 AND peer_id = ?2 AND sync_tombstone = 0",
                 params![channel_id, peer_id],
                 |r| r.get(0),
             )
             .optional()?;
         Ok(role.and_then(|s| AclRole::from_str(&s)))
     }
+}
+
+/// Phase F — read the install's device-id directly from a connection.
+/// Used inside write helpers that already hold the porch mutex; calling
+/// `Porch::device_id` would deadlock because it re-locks.
+pub(super) fn device_id_unchecked(conn: &Connection) -> Result<String, PorchError> {
+    let id: Option<String> = conn
+        .query_row("SELECT device_id FROM device_identity LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .ok();
+    id.ok_or_else(|| {
+        PorchError::InvalidInput(
+            "device_identity row missing — Phase F migration did not run".to_string(),
+        )
+    })
+}
+
+/// Phase F — check whether `column` exists on `table` via PRAGMA
+/// `table_info` and ADD it idempotently. The columns are nullable
+/// (no NOT NULL constraint at the SQL level) because ALTER TABLE …
+/// ADD COLUMN against a populated table cannot retroactively enforce
+/// NOT NULL — the application-layer write helpers (`clock::next_lamport`
+/// + the stamped INSERT/UPDATE helpers) are what guarantee no live row
+/// carries `NULL` after the backfill.
+fn add_sync_columns_if_missing(
+    conn: &Connection,
+    table: &str,
+) -> Result<(), PorchError> {
+    let cols = read_columns(conn, table)?;
+    if !cols.iter().any(|c| c == "sync_device_id") {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN sync_device_id TEXT;"
+        ))?;
+    }
+    if !cols.iter().any(|c| c == "sync_lamport") {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN sync_lamport INTEGER NOT NULL DEFAULT 0;"
+        ))?;
+    }
+    if !cols.iter().any(|c| c == "sync_tombstone") {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN sync_tombstone INTEGER NOT NULL DEFAULT 0;"
+        ))?;
+    }
+    Ok(())
+}
+
+/// Read the list of column names for a table via `PRAGMA table_info`.
+/// Returns an empty vec for a missing table (caller's responsibility to
+/// validate beforehand if that's an error).
+fn read_columns(conn: &Connection, table: &str) -> Result<Vec<String>, PorchError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 /// Current unix time in milliseconds. Used as the `created_at` /

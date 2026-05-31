@@ -434,8 +434,15 @@ impl LibP2pRuntime {
             // hardened install can opt-out of either independently in
             // a future config knob without protocol-level surgery.
             let backup_handler =
-                std::sync::Arc::new(crate::porch::BackupHandler::new(porch));
+                std::sync::Arc::new(crate::porch::BackupHandler::new(porch.clone()));
             transport.register_federation_handler(backup_handler);
+            // Porch Phase F — register the sync-protocol handler.
+            // Distinct protocol ID `/concord/porch-sync/1.0.0` —
+            // trust boundary is "linked personal device" (enforced
+            // inside the handler against `device_links`).
+            let sync_handler =
+                std::sync::Arc::new(crate::porch::SyncHandler::new(porch));
+            transport.register_federation_handler(sync_handler);
         }
 
         // Capture the stream control before run() consumes the

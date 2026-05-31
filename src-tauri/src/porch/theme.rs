@@ -40,8 +40,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ulid::Ulid;
 
-use super::db::{unix_millis, Porch};
+use super::db::{device_id_unchecked, unix_millis, Porch};
 use super::error::PorchError;
+use super::sync::clock::next_lamport;
 
 /// Max raw bytes accepted by [`Porch::upload_asset`]. Anything larger
 /// is rejected with `PorchError::InvalidInput` — themes should reuse
@@ -282,12 +283,16 @@ impl Porch {
         let font_str = theme.font_family.as_str();
 
         let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        // Phase F — stamp every theme write with this install's
+        // (device_id, next_lamport). Themes are LWW per channel_id.
+        let device_id = device_id_unchecked(&conn)?;
+        let lamport = next_lamport(&conn)?;
         conn.execute(
             "INSERT INTO channel_themes
                 (channel_id, primary_color, surface_color, on_surface_color,
                  accent_color, font_family, background_kind, background_value,
-                 updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 updated_at, sync_device_id, sync_lamport, sync_tombstone)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0)
              ON CONFLICT(channel_id) DO UPDATE SET
                  primary_color = excluded.primary_color,
                  surface_color = excluded.surface_color,
@@ -296,7 +301,10 @@ impl Porch {
                  font_family = excluded.font_family,
                  background_kind = excluded.background_kind,
                  background_value = excluded.background_value,
-                 updated_at = excluded.updated_at",
+                 updated_at = excluded.updated_at,
+                 sync_device_id = excluded.sync_device_id,
+                 sync_lamport = excluded.sync_lamport,
+                 sync_tombstone = 0",
             params![
                 theme.channel_id,
                 theme.primary_color,
@@ -307,6 +315,8 @@ impl Porch {
                 bg_kind,
                 bg_value,
                 now,
+                device_id,
+                lamport,
             ],
         )?;
         Ok(ChannelTheme {
@@ -394,10 +404,13 @@ impl Porch {
 
         let now = unix_millis();
         let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        let device_id = device_id_unchecked(&conn)?;
+        let lamport = next_lamport(&conn)?;
         conn.execute(
             "INSERT INTO porch_assets
-                (id, channel_id, mime_type, file_path, bytes, sha256, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (id, channel_id, mime_type, file_path, bytes, sha256, created_at,
+                 sync_device_id, sync_lamport, sync_tombstone)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
             params![
                 id,
                 channel_id,
@@ -406,6 +419,8 @@ impl Porch {
                 bytes.len() as i64,
                 sha,
                 now,
+                device_id,
+                lamport,
             ],
         )?;
         Ok(PorchAsset {

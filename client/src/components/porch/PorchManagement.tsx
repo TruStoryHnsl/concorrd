@@ -50,7 +50,16 @@ const BackupSettings = lazy(() =>
   })),
 );
 
-type ManagementTab = "channels" | "themes" | "backup";
+// Phase F — lazy-load the personal-devices tab. The background
+// auto-sync timer fires every 60s while mounted, so deferring keeps
+// it inert when the user isn't looking.
+const PersonalDevices = lazy(() =>
+  import("./PersonalDevices").then((m) => ({
+    default: m.PersonalDevices,
+  })),
+);
+
+type ManagementTab = "channels" | "themes" | "backup" | "devices";
 
 export function PorchManagement() {
   const porch = usePorchStore();
@@ -138,9 +147,28 @@ export function PorchManagement() {
           onClick={() => setTab("backup")}
           testId="porch-tab-backup"
         />
+        <ManagementTabButton
+          label="Devices"
+          active={tab === "devices"}
+          onClick={() => setTab("devices")}
+          testId="porch-tab-devices"
+        />
       </div>
 
-      {tab === "backup" ? (
+      {tab === "devices" ? (
+        <Suspense
+          fallback={
+            <div
+              data-testid="personal-devices-suspense"
+              style={{ fontSize: 12 }}
+            >
+              Loading personal devices…
+            </div>
+          }
+        >
+          <PersonalDevices />
+        </Suspense>
+      ) : tab === "backup" ? (
         <Suspense
           fallback={
             <div
