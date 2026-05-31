@@ -25,7 +25,9 @@ use super::DEFAULT_PORCH_CHANNEL_ID;
 ///   for inner channels with `acl_mode = 'allowlist'`).
 /// * `3` — Phase C: `channel_themes` (per-channel aesthetic theme rows)
 ///   plus `porch_assets` (uploaded image blobs referenced by themes).
-pub const SCHEMA_VERSION: i64 = 3;
+/// * `4` — Phase D: `obsidian_channels` (per-channel vault-root binding
+///   for `kind = 'obsidian'` channels).
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Subdirectory under the porch data dir where uploaded theme assets
 /// (image bytes) live. The DB stores the relative file path
@@ -246,6 +248,30 @@ impl Porch {
                 );
                 CREATE INDEX idx_assets_channel ON porch_assets(channel_id);
                 INSERT INTO schema_version (version) VALUES (3);
+                COMMIT;",
+            )?;
+        }
+        if current < 4 {
+            // Phase D migration. `obsidian_channels` binds a channel of
+            // `kind = 'obsidian'` to a vault directory on the owner's
+            // disk. `vault_root` is canonicalized (realpath) on insert
+            // so future security checks can prefix-compare directly. A
+            // `subfolder` (optional, relative to vault_root) lets the
+            // owner expose only a sub-tree of a larger vault.
+            // `follow_symlinks` is OFF by default — a symlink pointing
+            // out of the vault would otherwise be a trivial sandbox
+            // escape (the design doc's Phase D open-question #1).
+            conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE obsidian_channels (
+                    channel_id TEXT PRIMARY KEY,
+                    vault_root TEXT NOT NULL,
+                    subfolder TEXT,
+                    follow_symlinks INTEGER NOT NULL CHECK (follow_symlinks IN (0, 1)),
+                    updated_at INTEGER NOT NULL,
+                    FOREIGN KEY (channel_id) REFERENCES porch_channels(id) ON DELETE CASCADE
+                );
+                INSERT INTO schema_version (version) VALUES (4);
                 COMMIT;",
             )?;
         }

@@ -412,6 +412,95 @@ Open questions:
 
 ### Phase D — Obsidian channel type
 
+> **Phase D implementation landed (2026-05-31).** Schema bumped to v4
+> with one new table: `obsidian_channels`. Each row binds a channel
+> of `kind = 'obsidian'` to a directory on the owner's filesystem.
+>
+> **Security model — the load-bearing boundary.** Every read/list
+> request goes through three independent gates:
+>
+> 1. **Canonicalization at config time.** `set_obsidian_config`
+>    calls `std::fs::canonicalize` on the supplied `vault_root` and
+>    stores the canonical (`..`-resolved, symlink-resolved) absolute
+>    form. Optional `subfolder` is canonicalized against the canonical
+>    root and rejected if it escapes. Non-existent paths refuse.
+> 2. **Prefix check on every access.** `list_vault` and
+>    `read_vault_file` reject any wire path containing a `..`
+>    component up front, then canonicalize the resolved absolute path
+>    and assert it starts with the stored canonical `vault_root`.
+>    Symlink-escape attempts are caught on the way down — unless the
+>    owner has explicitly opted into `follow_symlinks`. A regression
+>    here is CVE-class (see `path_traversal_rejected` in
+>    `src-tauri/tests/porch_obsidian_test.rs`).
+> 3. **MIME allow-list on reads.** Only `text/markdown`, `text/plain`,
+>    `image/png`, `image/jpeg`, `image/webp`, `image/gif`,
+>    `image/svg+xml`, `application/pdf` are ever served. Everything
+>    else (executables, binary blobs, archives) is refused with a
+>    typed error. Hidden entries (leading `.`) are filtered from
+>    listings so `.obsidian/`, `.git/`, etc. never leak.
+>
+> Per-file size cap is 5 MiB; the wire layer applies the existing
+> 256 KiB inline cap and serializes a `too_large` marker for anything
+> bigger so the visitor's UI can render "ask the owner to share
+> directly" rather than retrying.
+>
+> **Wire protocol stays `/concord/porch/1.0.0`** — additive
+> `ListVault { channel_id, path }` and `GetVaultFile { channel_id,
+> path }` request variants. Both gate on `can_visit` (the same ACL
+> check Phase B/C use) AND on the channel being kind=Obsidian; the
+> kind mismatch returns a typed `InvalidInput` rather than leaking a
+> dispatch path for non-obsidian channels. The `VaultFileResponse`
+> envelope mirrors Phase C's `AssetBytesResponse` shape — `Inline`
+> bytes under 256 KiB, otherwise `TooLarge` with metadata.
+>
+> Tauri commands: owner-side `porch_set_obsidian_config` /
+> `porch_get_obsidian_config` / `porch_list_vault` /
+> `porch_read_vault_file`; visitor-side `porch_visit_list_vault` /
+> `porch_visit_get_vault_file`. The visitor commands have browser-
+> libp2p counterparts in `client/src/libp2p/porch.ts`. The owner-side
+> dialog uses `@tauri-apps/plugin-dialog` (added in this PR) to surface
+> the OS-native folder picker.
+>
+> React surface: `client/src/components/porch/ObsidianChannelEditor.tsx`
+> (lazy-loaded inside `PorchManagement`) lets the owner pick a vault
+> root + optional subfolder + toggle `follow_symlinks`.
+> `client/src/components/porch/VaultBrowser.tsx` (lazy-loaded inside
+> `PorchView` when a visitor selects an obsidian-kind channel) renders
+> a two-pane file tree + content view. Markdown renders via the
+> lazy-loaded `vaultMarkdown.tsx` module which uses `react-markdown`
+> + `remark-gfm` (both already in `client/package.json` from prior
+> work — no new bundle weight). Embedded image markdown
+> (`![alt](path)`) is resolved through `porch_visit_get_vault_file`
+> → blob URL. Plain text renders in a `<pre>`; images render in
+> `<img>`; PDFs render inside an `<iframe>` of a blob URL.
+>
+> **Wikilinks** (`[[Note Title]]`) render as styled but non-clickable
+> text. Following a wikilink would require a separate
+> "resolve-wikilink-to-path" round-trip + UI navigation — that's
+> flagged as a Phase D follow-up.
+>
+> **Vault file-watch** (auto-refresh of a visitor's open file when the
+> owner saves) is also deferred — Phase D ships read-on-demand. A
+> visitor refresh button + ETag-style cache invalidation are the
+> natural Phase D follow-up.
+>
+> Out of scope (still deferred to later phases):
+>
+> - **Sources-panel rail integration.** Still through the modal.
+> - **Multi-writer Obsidian.** Phase F's CRDT lands first.
+> - **Background indexer + ListNotes/GetNote.** The original Phase D
+>   plan envisioned a separate `/concord/porch-obsidian/1.0.0`
+>   protocol with `ListNotes` / `GetNote` / `GetAttachment`. The
+>   shipped implementation folds those into the existing
+>   `/concord/porch/1.0.0` protocol via `ListVault` /
+>   `GetVaultFile` — simpler, no second protocol id, ACL surface
+>   unified.
+> - **Chunked attachment streaming.** The 256 KiB inline cap is shared
+>   with Phase C; a future `/concord/porch-blob/1.0.0` streaming
+>   protocol lifts both.
+
+The original Phase D plan is captured below for historical reference:
+
 In scope:
 
 - Host can mark a channel as `kind = 'obsidian'` and bind it to a vault

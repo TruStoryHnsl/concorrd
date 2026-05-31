@@ -769,6 +769,139 @@ async fn porch_visit_get_asset_bytes(
 }
 
 // ---------------------------------------------------------------------------
+// Porch Phase D — Obsidian channel: vault binding + browse + read
+// ---------------------------------------------------------------------------
+
+/// Phase D — owner-side: bind a channel of `kind = 'obsidian'` to a
+/// vault directory on disk. `vault_root` is canonicalized (realpath)
+/// before being stored so future security checks compare against the
+/// canonical form directly. Optional `subfolder` narrows the surface
+/// to a sub-tree of a larger vault.
+///
+/// Returns the persisted [`porch::ObsidianChannelConfig`].
+#[tauri::command]
+async fn porch_set_obsidian_config(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    channel_id: String,
+    vault_root: String,
+    subfolder: Option<String>,
+    follow_symlinks: bool,
+) -> Result<porch::ObsidianChannelConfig, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let root = std::path::PathBuf::from(vault_root);
+    let sub = subfolder.map(std::path::PathBuf::from);
+    porch
+        .set_obsidian_config(
+            &channel_id,
+            &root,
+            sub.as_deref(),
+            follow_symlinks,
+        )
+        .map_err(|e| e.to_string())
+}
+
+/// Phase D — owner-side: read the obsidian binding for a channel, or
+/// `null` if the channel isn't yet bound to a vault.
+#[tauri::command]
+async fn porch_get_obsidian_config(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    channel_id: String,
+) -> Result<Option<porch::ObsidianChannelConfig>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch
+        .get_obsidian_config(&channel_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Phase D — owner-side: list the contents of `path` inside a local
+/// obsidian-bound channel's vault. Equivalent of the wire-protocol
+/// `ListVault` but skipping the ACL check (the owner sees their own
+/// vault unconditionally).
+#[tauri::command]
+async fn porch_list_vault(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    channel_id: String,
+    path: String,
+) -> Result<Vec<porch::VaultEntry>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch
+        .list_vault(&channel_id, &path)
+        .map_err(|e| e.to_string())
+}
+
+/// Phase D — owner-side: read raw bytes + mime of a file inside a
+/// local obsidian-bound channel's vault. Returns the inline `Inline`
+/// variant unless the file exceeds the inline cap, in which case the
+/// `TooLarge` variant carries the metadata + size for the UI to
+/// render a placeholder.
+#[tauri::command]
+async fn porch_read_vault_file(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    channel_id: String,
+    path: String,
+) -> Result<porch::VaultFileResponse, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let (bytes, mime) = porch
+        .read_vault_file(&channel_id, &path)
+        .map_err(|e| e.to_string())?;
+    let size = bytes.len() as u64;
+    if size > porch::MAX_INLINE_ASSET_BYTES as u64 {
+        return Ok(porch::VaultFileResponse::TooLarge {
+            path,
+            mime_type: mime,
+            size,
+        });
+    }
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(porch::VaultFileResponse::Inline {
+        path,
+        mime_type: mime,
+        bytes_b64: b64,
+        size,
+    })
+}
+
+/// Phase D — visitor-side: list a folder inside a peer's
+/// obsidian-bound channel.
+#[tauri::command]
+async fn porch_visit_list_vault(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+    channel_id: String,
+    path: String,
+) -> Result<Vec<porch::VaultEntry>, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::visit_list_vault(&mut control, peer, channel_id, path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Phase D — visitor-side: read a single file from a peer's
+/// obsidian-bound channel. Returns the inline-bytes envelope (or
+/// `TooLarge`).
+#[tauri::command]
+async fn porch_visit_get_vault_file(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+    channel_id: String,
+    path: String,
+) -> Result<porch::VaultFileResponse, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::visit_read_vault_file(&mut control, peer, channel_id, path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Phase 8 — voice path selection
 // ---------------------------------------------------------------------------
 
@@ -1638,6 +1771,10 @@ pub fn run() {
         // turns those events into peer-store writes + emit_all signals
         // to the renderer.
         .plugin(tauri_plugin_deep_link::init())
+        // Porch Phase D — native folder picker. The owner taps "pick
+        // vault" in the Obsidian channel editor; this plugin surfaces
+        // the OS-native directory chooser back to the JS layer.
+        .plugin(tauri_plugin_dialog::init())
         .manage(ServitudeState(Mutex::new(None)))
         .manage(PeerIdentityState(Mutex::new(None)))
         .manage(SwarmEventChannel(swarm_cache.clone()))
@@ -1859,6 +1996,13 @@ pub fn run() {
             porch_list_assets,
             porch_visit_get_theme,
             porch_visit_get_asset_bytes,
+            // Phase D — obsidian vault binding + browse + read.
+            porch_set_obsidian_config,
+            porch_get_obsidian_config,
+            porch_list_vault,
+            porch_read_vault_file,
+            porch_visit_list_vault,
+            porch_visit_get_vault_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -50,6 +50,10 @@ tauri-plugin-stronghold = { version = "2", features = ["kdf"] }
 # The plugin parses incoming custom-scheme URLs and dispatches them into a
 # Rust callback registered at app build time. See `peer_store::deeplink`.
 tauri-plugin-deep-link = "2"
+# Porch Phase D — native folder picker for the Obsidian vault binding
+# UX. The owner picks a vault directory via `@tauri-apps/plugin-dialog`
+# on the JS side; this is the matching Rust-side plugin registration.
+tauri-plugin-dialog = "2"
 # Servitude embedded module dependencies
 toml = "0.8"
 thiserror = "1.0"
@@ -273,3 +277,7 @@ ed25519-zebra = "4"
 zeroize = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 serde_json = "1"
+# Porch Phase D — vault directory creation in tests. Already in the
+# transitive graph (tauri's webview deps pull it in); declared here so
+# `porch_obsidian_test.rs` can name `tempfile::TempDir` directly.
+tempfile = "3"

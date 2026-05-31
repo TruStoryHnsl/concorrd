@@ -32,6 +32,7 @@ pub mod channel;
 pub mod db;
 pub mod error;
 pub mod knock;
+pub mod obsidian;
 pub mod protocol;
 pub mod theme;
 
@@ -39,11 +40,14 @@ pub use channel::{AclMode, AclRole, ChannelKind, ChannelMessage, PorchChannel};
 pub use db::Porch;
 pub use error::PorchError;
 pub use knock::{Knock, KnockStatus};
+pub use obsidian::{
+    EntryKind, ObsidianChannelConfig, VaultEntry, MAX_VAULT_FILE_BYTES,
+};
 pub use protocol::{
     visit_get_asset_bytes, visit_get_messages, visit_get_theme, visit_knock, visit_knock_status,
-    visit_list_channels, visit_post_message, visit_withdraw_knock, ChannelVisibility,
-    PorchErrorBody, PorchHandler, PorchListChannelRow, PorchRequest, PorchResponse,
-    PORCH_PROTOCOL_ID,
+    visit_list_channels, visit_list_vault, visit_post_message, visit_read_vault_file,
+    visit_withdraw_knock, ChannelVisibility, PorchErrorBody, PorchHandler, PorchListChannelRow,
+    PorchRequest, PorchResponse, VaultFileResponse, PORCH_PROTOCOL_ID,
 };
 pub use theme::{
     Background, ChannelTheme, FontFamily, PorchAsset, ThemeSummary, MAX_ASSET_UPLOAD_BYTES,

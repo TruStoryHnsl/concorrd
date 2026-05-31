@@ -27,6 +27,8 @@ import type {
   ChannelTheme,
   Knock,
   PorchListChannelRow,
+  VaultEntry,
+  VaultFileResponse,
 } from "../api/porch";
 
 /** libp2p protocol id — MUST match the Rust `PORCH_PROTOCOL_ID`. */
@@ -53,7 +55,10 @@ export type PorchRequest =
   | { method: "WithdrawKnock"; params: { knock_id: string } }
   // Phase C — per-channel theming + asset storage.
   | { method: "GetTheme"; params: { channel_id: string } }
-  | { method: "GetAssetBytes"; params: { asset_id: string } };
+  | { method: "GetAssetBytes"; params: { asset_id: string } }
+  // Phase D — obsidian vault browsing + file reads.
+  | { method: "ListVault"; params: { channel_id: string; path: string } }
+  | { method: "GetVaultFile"; params: { channel_id: string; path: string } };
 
 /** Phase C — `GetAssetBytes` response. Tagged union mirroring the
  *  Rust `AssetBytesResponse`. */
@@ -283,4 +288,41 @@ export async function browserVisitGetAssetBytes(
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return bytes;
+}
+
+// ---------------------------------------------------------------------------
+// Phase D — Obsidian vault browsing
+// ---------------------------------------------------------------------------
+
+/** Browser visitor: ListVault. Lists the contents of `path` inside a
+ *  peer's obsidian-bound channel; `""` lists the effective root. */
+export async function browserVisitListVault(
+  peerIdStr: string,
+  channelId: string,
+  path: string,
+): Promise<VaultEntry[]> {
+  const node = await getRunningNode();
+  const peerId = peerIdFromString(peerIdStr);
+  const response = await sendPorchRequest(node, peerId, {
+    method: "ListVault",
+    params: { channel_id: channelId, path },
+  });
+  return unwrapResponse<VaultEntry[]>(response);
+}
+
+/** Browser visitor: GetVaultFile. Returns the decoded envelope —
+ *  callers branch on `kind` to render either the inline bytes or a
+ *  "too large" placeholder. */
+export async function browserVisitGetVaultFile(
+  peerIdStr: string,
+  channelId: string,
+  path: string,
+): Promise<VaultFileResponse> {
+  const node = await getRunningNode();
+  const peerId = peerIdFromString(peerIdStr);
+  const response = await sendPorchRequest(node, peerId, {
+    method: "GetVaultFile",
+    params: { channel_id: channelId, path },
+  });
+  return unwrapResponse<VaultFileResponse>(response);
 }
