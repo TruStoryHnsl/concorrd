@@ -573,3 +573,100 @@ export async function porchVisitGetVaultFile(
   const mod = await import("../libp2p/porch");
   return await mod.browserVisitGetVaultFile(peerId, channelId, path);
 }
+
+// ---------------------------------------------------------------------------
+// Phase E — encrypted backup pipeline
+// ---------------------------------------------------------------------------
+
+/** Phase E — one configured backup target (a peer we push our backup
+ *  to). Mirrors Rust's `BackupTarget`. */
+export interface BackupTarget {
+  peer_id: string;
+  label: string | null;
+  added_at: number;
+  last_success_at: number | null;
+  last_failure_at: number | null;
+  last_failure_reason: string | null;
+}
+
+/** Phase E — summary returned by `porch_backup_check_remote_info` and
+ *  `porch_backup_list_received`. Mirrors Rust's `ReceivedBackupSummary`. */
+export interface ReceivedBackupSummary {
+  uploader_peer_id: string;
+  schema_version: number;
+  blob_size: number;
+  blob_sha256: string;
+  received_at: number;
+}
+
+/** Phase E — `porch_backup_restore_from` response. */
+export interface RestoreResult {
+  schema_version: number;
+}
+
+/** Add a backup target. Idempotent on `peerId` — re-adding updates the
+ *  label. Native only — browsers don't host a porch. */
+export async function porchBackupAddTarget(
+  peerId: string,
+  label: string | null,
+): Promise<BackupTarget> {
+  if (!isTauri()) throw new Error("porch_backup_add_target is native-only");
+  return await invoke<BackupTarget>("porch_backup_add_target", {
+    peerId,
+    label,
+  });
+}
+
+/** Remove a backup target. Throws on the web build, or if the peer
+ *  wasn't on the list. */
+export async function porchBackupRemoveTarget(peerId: string): Promise<void> {
+  if (!isTauri()) throw new Error("porch_backup_remove_target is native-only");
+  await invoke<void>("porch_backup_remove_target", { peerId });
+}
+
+/** List every configured backup target. Browsers return an empty list. */
+export async function porchBackupListTargets(): Promise<BackupTarget[]> {
+  if (!isTauri()) return [];
+  return await invoke<BackupTarget[]>("porch_backup_list_targets");
+}
+
+/** Manually push a fresh backup to `peerId`. Updates the target's
+ *  `last_success_at` / `last_failure_*` server-side. Native only. */
+export async function porchBackupPushNow(peerId: string): Promise<void> {
+  if (!isTauri()) throw new Error("porch_backup_push_now is native-only");
+  await invoke<void>("porch_backup_push_now", { peerId });
+}
+
+/** Ask the backup peer what they're holding for us. Returns `null` if
+ *  the peer isn't storing a backup for our peer-id yet. */
+export async function porchBackupCheckRemoteInfo(
+  peerId: string,
+): Promise<ReceivedBackupSummary | null> {
+  if (!isTauri()) return null;
+  return await invoke<ReceivedBackupSummary | null>(
+    "porch_backup_check_remote_info",
+    { peerId },
+  );
+}
+
+/** DESTRUCTIVE — pull the stored backup off `peerId`, decrypt with the
+ *  local Stronghold seed, and OVERWRITE the local porch DB. The
+ *  backend requires `confirm: true` as a guard against accidental
+ *  invocation. */
+export async function porchBackupRestoreFrom(
+  peerId: string,
+  confirm: boolean,
+): Promise<RestoreResult> {
+  if (!isTauri()) throw new Error("porch_backup_restore_from is native-only");
+  return await invoke<RestoreResult>("porch_backup_restore_from", {
+    peerId,
+    confirm,
+  });
+}
+
+/** List the uploaders we're currently storing backups for (our role as
+ *  a backup-peer). */
+export async function porchBackupListReceived(): Promise<ReceivedBackupSummary[]> {
+  if (!isTauri()) return [];
+  return await invoke<ReceivedBackupSummary[]>("porch_backup_list_received");
+}

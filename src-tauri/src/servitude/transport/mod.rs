@@ -377,8 +377,17 @@ impl LibP2pRuntime {
         // wired (test-only path), no handler is registered and the
         // libp2p layer returns "protocol not supported" to dialers.
         if let Some(porch) = self.porch.clone() {
-            let handler = std::sync::Arc::new(crate::porch::PorchHandler::new(porch));
+            let handler = std::sync::Arc::new(crate::porch::PorchHandler::new(porch.clone()));
             transport.register_federation_handler(handler);
+            // Porch Phase E — register the backup-protocol handler
+            // alongside. Same shared `Arc<Porch>` so inbound uploads
+            // land in the same SQLite the host's own UI reads. Distinct
+            // protocol ID (`/concord/porch-backup/1.0.0`) means a
+            // hardened install can opt-out of either independently in
+            // a future config knob without protocol-level surgery.
+            let backup_handler =
+                std::sync::Arc::new(crate::porch::BackupHandler::new(porch));
+            transport.register_federation_handler(backup_handler);
         }
 
         // Capture the stream control before run() consumes the

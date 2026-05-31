@@ -199,6 +199,19 @@ rusqlite = { version = "0.36", features = ["bundled"] }
 # two messages land in the same millisecond.
 ulid = "1"
 
+# Porch Phase E — encrypted-backup pipeline.
+#
+# `zstd` compresses the SQLite dump before encryption (typical compression
+# ratio 6-10x on chat-heavy databases). `chacha20poly1305` is already pulled
+# in above for the Phase 4 sibling-file seed persistence — we reuse the
+# same crate for AEAD on the backup blob (re-listing for documentation; cargo
+# de-dupes the dependency). `hkdf` derives the per-blob encryption key from
+# the Stronghold seed via HKDF-SHA256 with a versioned info string
+# (`concord/porch-backup/v1`); a future format bump issues a v2 info string
+# and v1 readers reject v2 blobs by construction.
+zstd = "0.13"
+hkdf = "0.12"
+
 # Unix-only deps for servitude child-process management. `nix::sys::signal`
 # gives us SIGTERM for graceful shutdown — std::process::Child::kill uses
 # SIGKILL only, which doesn't let tuwunel flush its RocksDB on exit.

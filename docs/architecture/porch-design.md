@@ -600,6 +600,55 @@ Open questions:
    tmp blob, verifies a SHA-256 the host included in the trailer, then
    renames into place.
 
+> **Phase E implementation landed (2026-05-31).**
+>
+> The Phase E surface is the encrypt → upload → store → download →
+> decrypt → restore pipeline. Implementation choices:
+>
+> - **Wire protocol**: `/concord/porch-backup/1.0.0` is a dedicated
+>   stream protocol distinct from `/concord/porch/1.0.0`. Trust
+>   boundaries diverge — a backup peer may refuse content access while
+>   accepting uploads (and vice versa), so separate protocol IDs let
+>   the federation layer enforce that opt-in independently per role.
+>   See `src-tauri/src/porch/backup_protocol.rs`.
+> - **Encryption**: ChaCha20-Poly1305 AEAD over `ZSTD(VACUUM INTO
+>   snapshot)`. Key derivation is HKDF-SHA256 over the Stronghold
+>   Ed25519 seed bytes with the info string
+>   `b"concord/porch-backup/v1"` — the v1 marker IS the format
+>   version. A future format revision bumps the info string and a v1
+>   reader rejects v2 blobs by construction (AEAD verification fails
+>   because the derived key differs). See
+>   `src-tauri/src/porch/backup.rs::HKDF_INFO_V1` + `derive_backup_key`.
+> - **Storage on the backup peer**: per-uploader-keyed
+>   (`received_backups.uploader_peer_id` is the PRIMARY KEY); only the
+>   latest blob is retained, replays overwrite in-place. Bytes live at
+>   `<data_dir>/porch_backups/<uploader>.bin` in
+>   `[12 nonce bytes][ciphertext]` layout. Revision pruning beyond
+>   "latest only" is a Phase E follow-up.
+> - **Per-uploader ACL**: `GetMyBackup` / `GetMyBackupInfo` key on the
+>   connected libp2p `PeerId`. Peer A's blob is only retrievable by
+>   peer A; peer C dialing in receives `None`. The handler also
+>   refuses `UploadBackup` envelopes whose `uploader_peer_id` doesn't
+>   match the connected peer-id — otherwise A could overwrite B's
+>   slot with garbage.
+> - **Cross-device restore prerequisite**: the SAME Stronghold seed
+>   must be in the in-memory cache / sibling file on the restoring
+>   device. Today that's the same install (the Phase 4 sibling-file
+>   layer survives normal restarts). True cross-device — losing the
+>   old phone, installing on a new one — is gated on a **separate
+>   seed-mnemonic export/import flow** that lands as `feat:
+>   stronghold-seed-mnemonic`. Phase E ships the backup mechanics; the
+>   mnemonic flow unlocks the cross-device restore from a true loss
+>   event.
+> - **Auto-scheduler**: deferred. Phase E ships the manual
+>   `porch_backup_push_now` command + UI button. A periodic
+>   "push-once-per-hour-per-target, push-on-startup-if-stale" loop
+>   lands in a follow-up PR.
+> - **Schema migration**: schema v5 added two tables — `backup_targets`
+>   (backing-up side) and `received_backups` (backup-peer side). The
+>   migration is additive and forward-compatible with the Phase A–D
+>   tests; no existing rows were touched.
+
 ### Phase F — multi-device sync
 
 DOCUMENT ONLY in Phase A.
