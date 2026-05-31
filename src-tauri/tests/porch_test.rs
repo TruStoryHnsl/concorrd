@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use app_lib::porch::{
-    AclMode, AclRole, ChannelKind, ChannelMessage, Porch, PorchChannel, PorchHandler,
-    PorchRequest, DEFAULT_PORCH_CHANNEL_ID, PORCH_PROTOCOL_ID,
+    AclMode, AclRole, ChannelKind, ChannelMessage, ChannelVisibility, Porch, PorchHandler,
+    PorchListChannelRow, PorchRequest, DEFAULT_PORCH_CHANNEL_ID, PORCH_PROTOCOL_ID,
 };
 use app_lib::servitude::identity::{self, StrongholdHandle};
 use app_lib::servitude::p2p::LibP2pTransport;
@@ -67,36 +67,49 @@ fn list_channels_filters_by_visitor_acl() {
     let all = porch.list_channels().expect("list ok");
     assert_eq!(all.len(), 2, "host must see all channels, got: {all:?}");
 
-    // Visitor view via the handler — no ACL row, so the inner channel
-    // must be filtered out.
+    // Visitor view via the handler — Phase B exposes BOTH channels but
+    // marks the gated one `NeedsKnock` so the visitor's UI can render
+    // a knock affordance instead of hiding the room entirely.
     let handler = PorchHandler::new(porch.clone());
     let visitor = fake_peer_id();
     let response = handler.dispatch(visitor, PorchRequest::ListChannels);
     assert!(response.ok, "ListChannels must succeed");
-    let visible: Vec<PorchChannel> =
+    let rows: Vec<PorchListChannelRow> =
         serde_json::from_value(response.result.unwrap()).unwrap();
-    let ids: Vec<&str> = visible.iter().map(|c| c.id.as_str()).collect();
-    assert_eq!(
-        ids,
-        vec![DEFAULT_PORCH_CHANNEL_ID],
-        "visitor without ACL must only see the open default porch"
+    let mut by_id: std::collections::HashMap<&str, &ChannelVisibility> = std::collections::HashMap::new();
+    for r in &rows {
+        by_id.insert(r.channel.id.as_str(), &r.visibility);
+    }
+    assert!(
+        matches!(by_id.get(DEFAULT_PORCH_CHANNEL_ID), Some(ChannelVisibility::Visible)),
+        "open default porch must be Visible"
+    );
+    assert!(
+        matches!(
+            by_id.get("inner-test"),
+            Some(ChannelVisibility::NeedsKnock { existing_knock: None })
+        ),
+        "gated inner channel must be NeedsKnock with no existing knock yet"
     );
 
     // Grant the visitor `member` on the inner channel — they now see
-    // it.
+    // the inner channel as Visible.
     porch
         .grant_acl("inner-test", &visitor.to_base58(), AclRole::Member)
         .expect("grant ok");
     let response2 = handler.dispatch(visitor, PorchRequest::ListChannels);
-    let visible2: Vec<PorchChannel> =
+    let rows2: Vec<PorchListChannelRow> =
         serde_json::from_value(response2.result.unwrap()).unwrap();
-    let mut ids2: Vec<String> = visible2.iter().map(|c| c.id.clone()).collect();
-    ids2.sort();
-    let mut expected = vec![DEFAULT_PORCH_CHANNEL_ID.to_string(), "inner-test".to_string()];
-    expected.sort();
-    assert_eq!(
-        ids2, expected,
-        "post-grant, visitor must see both channels"
+    let mut by_id2: std::collections::HashMap<&str, &ChannelVisibility> = std::collections::HashMap::new();
+    for r in &rows2 {
+        by_id2.insert(r.channel.id.as_str(), &r.visibility);
+    }
+    assert!(
+        matches!(by_id2.get(DEFAULT_PORCH_CHANNEL_ID), Some(ChannelVisibility::Visible)),
+    );
+    assert!(
+        matches!(by_id2.get("inner-test"), Some(ChannelVisibility::Visible)),
+        "post-grant, visitor must see the inner channel as Visible"
     );
 }
 
@@ -186,7 +199,7 @@ async fn two_swarm_visit_round_trip() {
     // Open a porch visit stream and round-trip the ListChannels
     // request. The visit helper opens the stream, sends one request,
     // reads one response, closes.
-    let channels = tokio::time::timeout(
+    let rows = tokio::time::timeout(
         Duration::from_secs(10),
         app_lib::porch::visit_list_channels(&mut control_a, peer_b),
     )
@@ -194,10 +207,14 @@ async fn two_swarm_visit_round_trip() {
     .expect("visit_list_channels timed out — A could not reach B within 10s")
     .expect("visit_list_channels returned an error");
 
-    assert_eq!(channels.len(), 1, "B's porch must report exactly one default channel");
-    assert_eq!(channels[0].id, DEFAULT_PORCH_CHANNEL_ID);
-    assert_eq!(channels[0].kind, ChannelKind::Porch);
-    assert_eq!(channels[0].acl_mode, AclMode::Open);
+    assert_eq!(rows.len(), 1, "B's porch must report exactly one default channel");
+    assert_eq!(rows[0].channel.id, DEFAULT_PORCH_CHANNEL_ID);
+    assert_eq!(rows[0].channel.kind, ChannelKind::Porch);
+    assert_eq!(rows[0].channel.acl_mode, AclMode::Open);
+    assert!(
+        matches!(rows[0].visibility, ChannelVisibility::Visible),
+        "default porch must be Visible over the wire"
+    );
 
     // Now post a message via the visit path and verify it lands in
     // B's local porch (sanity-check the write side of the protocol).

@@ -19,7 +19,11 @@ use super::error::PorchError;
 use super::DEFAULT_PORCH_CHANNEL_ID;
 
 /// Current schema version. Bump whenever a migration lands.
-const SCHEMA_VERSION: i64 = 1;
+///
+/// * `1` — Phase A: `porch_channels`, `channel_acl`, `channel_messages`.
+/// * `2` — Phase B: `channel_knocks` (knock-to-enter pending requests
+///   for inner channels with `acl_mode = 'allowlist'`).
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Default porch channel display name. Cosmetic — the id is the stable
 /// reference.
@@ -44,7 +48,10 @@ pub const MAX_MESSAGES_PER_QUERY: u32 = 500;
 /// queries (cursor iteration) materialize results into Vec eagerly so
 /// the lock isn't held across `.await` points.
 pub struct Porch {
-    conn: Mutex<Connection>,
+    /// `pub(super)` so sibling modules in `crate::porch` (e.g.
+    /// [`crate::porch::knock`]) can drive the underlying connection
+    /// without re-exposing it to the rest of the crate.
+    pub(super) conn: Mutex<Connection>,
 }
 
 impl std::fmt::Debug for Porch {
@@ -133,6 +140,35 @@ impl Porch {
                 CREATE INDEX idx_messages_channel_time ON channel_messages(channel_id, created_at);
                 CREATE INDEX idx_acl_peer ON channel_acl(peer_id);
                 INSERT INTO schema_version (version) VALUES (1);
+                COMMIT;",
+            )?;
+        }
+        if current < 2 {
+            // Phase B migration. `channel_knocks` carries the
+            // knock-to-enter request lifecycle. The partial unique index
+            // enforces "at most one open knock per (channel, peer)";
+            // withdraw/reject closes the slot so a peer can knock again
+            // later. Re-knocking while a `pending` row already exists is
+            // a no-op at the application layer (returns the existing
+            // row) — see `Porch::knock`.
+            conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE channel_knocks (
+                    id TEXT PRIMARY KEY,
+                    channel_id TEXT NOT NULL,
+                    knocker_peer_id TEXT NOT NULL,
+                    message TEXT,
+                    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected', 'withdrawn')),
+                    created_at INTEGER NOT NULL,
+                    resolved_at INTEGER,
+                    FOREIGN KEY (channel_id) REFERENCES porch_channels(id) ON DELETE CASCADE
+                );
+                CREATE UNIQUE INDEX idx_knock_pending_one_per_pair
+                    ON channel_knocks(channel_id, knocker_peer_id)
+                    WHERE status = 'pending';
+                CREATE INDEX idx_knock_channel ON channel_knocks(channel_id);
+                CREATE INDEX idx_knock_status ON channel_knocks(status);
+                INSERT INTO schema_version (version) VALUES (2);
                 COMMIT;",
             )?;
         }
@@ -397,7 +433,7 @@ impl Porch {
 /// Current unix time in milliseconds. Used as the `created_at` /
 /// `granted_at` source of truth. Saturates to 0 on the (impossible)
 /// case of a negative `SystemTime::now()`.
-fn unix_millis() -> i64 {
+pub(super) fn unix_millis() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

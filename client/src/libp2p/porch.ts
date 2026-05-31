@@ -22,7 +22,11 @@ import {
   readLengthPrefixedEnvelope,
 } from "./federation";
 
-import type { ChannelMessage, PorchChannel } from "../api/porch";
+import type {
+  ChannelMessage,
+  Knock,
+  PorchListChannelRow,
+} from "../api/porch";
 
 /** libp2p protocol id — MUST match the Rust `PORCH_PROTOCOL_ID`. */
 export const CONCORD_PORCH_PROTOCOL = "/concord/porch/1.0.0";
@@ -38,7 +42,14 @@ export type PorchRequest =
       method: "GetMessages";
       params: { channel_id: string; since: number | null; limit: number };
     }
-  | { method: "PostMessage"; params: { channel_id: string; body: string } };
+  | { method: "PostMessage"; params: { channel_id: string; body: string } }
+  // Phase B — knock-to-enter.
+  | {
+      method: "Knock";
+      params: { channel_id: string; message: string | null };
+    }
+  | { method: "KnockStatus"; params: { channel_id: string } }
+  | { method: "WithdrawKnock"; params: { knock_id: string } };
 
 /** Wire shape of a porch response. */
 export interface PorchResponse {
@@ -113,17 +124,20 @@ async function getRunningNode(): Promise<Libp2p> {
   return node;
 }
 
-/** Browser visitor: ListChannels. */
+/** Browser visitor: ListChannels.
+ *
+ *  Phase B: returns visibility-aware rows so the UI can render a
+ *  Knock affordance for gated channels. */
 export async function browserVisitListChannels(
   peerIdStr: string,
-): Promise<PorchChannel[]> {
+): Promise<PorchListChannelRow[]> {
   const node = await getRunningNode();
   const peerId = peerIdFromString(peerIdStr);
   const response = await sendPorchRequest(node, peerId, {
     method: "ListChannels",
     params: null,
   });
-  return unwrapResponse<PorchChannel[]>(response);
+  return unwrapResponse<PorchListChannelRow[]>(response);
 }
 
 /** Browser visitor: GetMessages. */
@@ -155,4 +169,51 @@ export async function browserVisitPostMessage(
     params: { channel_id: channelId, body },
   });
   return unwrapResponse<ChannelMessage>(response);
+}
+
+// ---------------------------------------------------------------------------
+// Phase B — knock-to-enter
+// ---------------------------------------------------------------------------
+
+/** Browser visitor: Knock. */
+export async function browserVisitKnock(
+  peerIdStr: string,
+  channelId: string,
+  message: string | null,
+): Promise<Knock> {
+  const node = await getRunningNode();
+  const peerId = peerIdFromString(peerIdStr);
+  const response = await sendPorchRequest(node, peerId, {
+    method: "Knock",
+    params: { channel_id: channelId, message },
+  });
+  return unwrapResponse<Knock>(response);
+}
+
+/** Browser visitor: KnockStatus. */
+export async function browserVisitKnockStatus(
+  peerIdStr: string,
+  channelId: string,
+): Promise<Knock | null> {
+  const node = await getRunningNode();
+  const peerId = peerIdFromString(peerIdStr);
+  const response = await sendPorchRequest(node, peerId, {
+    method: "KnockStatus",
+    params: { channel_id: channelId },
+  });
+  return unwrapResponse<Knock | null>(response);
+}
+
+/** Browser visitor: WithdrawKnock. */
+export async function browserVisitWithdrawKnock(
+  peerIdStr: string,
+  knockId: string,
+): Promise<Knock> {
+  const node = await getRunningNode();
+  const peerId = peerIdFromString(peerIdStr);
+  const response = await sendPorchRequest(node, peerId, {
+    method: "WithdrawKnock",
+    params: { knock_id: knockId },
+  });
+  return unwrapResponse<Knock>(response);
 }

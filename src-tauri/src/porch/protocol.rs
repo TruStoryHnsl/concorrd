@@ -25,9 +25,10 @@ use crate::servitude::federation::{
 };
 
 use super::acl::can_visit;
-use super::channel::{ChannelMessage, PorchChannel};
+use super::channel::{AclMode, ChannelMessage, PorchChannel};
 use super::db::Porch;
 use super::error::PorchError;
+use super::knock::{Knock, KnockStatus};
 
 /// libp2p stream protocol ID for porch traffic. Distinct namespace from
 /// the Matrix / ActivityPub / voice-signaling protocols.
@@ -47,6 +48,9 @@ pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 /// {"method":"ListChannels","params":null}
 /// {"method":"GetMessages","params":{"channel_id":"...","since":null,"limit":50}}
 /// {"method":"PostMessage","params":{"channel_id":"...","body":"hello"}}
+/// {"method":"Knock","params":{"channel_id":"...","message":"let me in"}}
+/// {"method":"KnockStatus","params":{"channel_id":"..."}}
+/// {"method":"WithdrawKnock","params":{"knock_id":"..."}}
 /// ```
 ///
 /// Forward compatibility: adding a new variant is backward-compatible
@@ -55,7 +59,12 @@ pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum PorchRequest {
-    /// List channels the visitor is allowed to see.
+    /// List channels the visitor is allowed to see, PLUS gated
+    /// channels the visitor can knock on (with current knock status).
+    /// Phase B changes the response shape from `Vec<PorchChannel>` to
+    /// `Vec<PorchListChannelRow>` — additive on each row, not a wire
+    /// break (old clients fail to deserialize the new `visibility`
+    /// field and just see no channels rather than crashing).
     ListChannels,
     /// Page messages from `channel_id`. `since` is an exclusive
     /// lower-bound on `created_at`; `limit` is capped server-side.
@@ -69,6 +78,53 @@ pub enum PorchRequest {
     /// `author_peer_id` with the connected libp2p PeerId — visitors
     /// cannot spoof their author.
     PostMessage { channel_id: String, body: String },
+    /// Phase B — knock on a gated channel. The host records a pending
+    /// knock against the connected visitor's PeerId and returns the
+    /// `Knock` row. Re-knocking while a previous knock is still
+    /// pending returns the existing row.
+    Knock {
+        channel_id: String,
+        #[serde(default)]
+        message: Option<String>,
+    },
+    /// Phase B — read the visitor's own current knock status for a
+    /// channel (so the UI can render Knock / Pending / Accepted /
+    /// Rejected). Returns `null` if the visitor has never knocked.
+    KnockStatus { channel_id: String },
+    /// Phase B — withdraw a pending knock owned by the connected
+    /// visitor. Only the original knocker can withdraw their own row.
+    WithdrawKnock { knock_id: String },
+}
+
+/// Phase B — per-channel row returned by `ListChannels`. Carries the
+/// channel record plus a `visibility` hint so the visitor's UI can
+/// render a Knock affordance for channels they don't yet have access
+/// to. The channel itself is always disclosed (Phase B intentionally
+/// exposes the *existence* of inner rooms so guests know what they can
+/// ask for); only message read/write is gated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PorchListChannelRow {
+    #[serde(flatten)]
+    pub channel: PorchChannel,
+    pub visibility: ChannelVisibility,
+}
+
+/// Phase B — what the visitor can do with a channel.
+///
+/// * `Visible` — the visitor is already inside; standard click-to-enter.
+/// * `NeedsKnock { existing_knock }` — the channel is gated and the
+///   visitor isn't a member. `existing_knock` is the visitor's most
+///   recent knock status (or `None` if they haven't knocked yet).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChannelVisibility {
+    Visible,
+    NeedsKnock {
+        /// Most recent knock status for this visitor on this channel.
+        /// `None` means the visitor has never knocked.
+        #[serde(default)]
+        existing_knock: Option<KnockStatus>,
+    },
 }
 
 /// Response envelope. Exactly one of `result` and `error` is populated
@@ -146,15 +202,37 @@ impl PorchHandler {
         let visitor = visitor_peer_id.to_base58();
         match request {
             PorchRequest::ListChannels => {
-                // Filter to channels this visitor is allowed to see.
+                // Phase B: return ALL channels with a per-row
+                // visibility hint, EXCEPT `OwnerOnly` channels which
+                // remain entirely invisible to non-owners (the porch
+                // owner sees their own owner-only channels via the
+                // local Tauri `porch_list_my_channels` command — the
+                // libp2p path is for visitors only).
                 let all = self.porch.list_channels()?;
-                let mut visible = Vec::with_capacity(all.len());
+                let mut rows = Vec::with_capacity(all.len());
                 for ch in all {
-                    if can_visit(&self.porch, &visitor, &ch)? {
-                        visible.push(ch);
+                    // Owner-only channels stay hidden over the wire.
+                    if matches!(ch.acl_mode, AclMode::OwnerOnly) {
+                        continue;
                     }
+                    let visibility = if can_visit(&self.porch, &visitor, &ch)? {
+                        ChannelVisibility::Visible
+                    } else {
+                        // Gated: surface existence + the visitor's own
+                        // current knock status so their UI can render
+                        // Knock / Pending / Rejected.
+                        let existing_knock = self
+                            .porch
+                            .knock_status_for(&ch.id, &visitor)?
+                            .map(|k| k.status);
+                        ChannelVisibility::NeedsKnock { existing_knock }
+                    };
+                    rows.push(PorchListChannelRow {
+                        channel: ch,
+                        visibility,
+                    });
                 }
-                Ok(serde_json::to_value(visible)?)
+                Ok(serde_json::to_value(rows)?)
             }
             PorchRequest::GetMessages {
                 channel_id,
@@ -189,6 +267,50 @@ impl PorchHandler {
                 }
                 let message = self.porch.post_message(&channel_id, &visitor, &body)?;
                 Ok(serde_json::to_value(message)?)
+            }
+            PorchRequest::Knock { channel_id, message } => {
+                let ch = self
+                    .porch
+                    .get_channel(&channel_id)?
+                    .ok_or_else(|| PorchError::ChannelNotFound {
+                        channel_id: channel_id.clone(),
+                    })?;
+                // Knocking on an `Open` channel is meaningless — the
+                // visitor already has access. Mirror the wire-level
+                // 400 for an `OwnerOnly` channel so the host doesn't
+                // leak that the channel exists.
+                match ch.acl_mode {
+                    AclMode::Open => {
+                        return Err(PorchError::InvalidInput(
+                            "channel is already open — no knock required".to_string(),
+                        ));
+                    }
+                    AclMode::OwnerOnly => {
+                        // Hide existence by returning a 404, same as if
+                        // the channel didn't exist.
+                        return Err(PorchError::ChannelNotFound {
+                            channel_id: channel_id.clone(),
+                        });
+                    }
+                    AclMode::Allowlist => {}
+                }
+                let knock = self
+                    .porch
+                    .knock(&channel_id, &visitor, message.as_deref())?;
+                Ok(serde_json::to_value(knock)?)
+            }
+            PorchRequest::KnockStatus { channel_id } => {
+                // Don't require the channel to exist — KnockStatus is
+                // a cheap status check the visitor's UI runs on every
+                // ListChannels row, and a missing channel just means
+                // `None`.
+                let status: Option<Knock> =
+                    self.porch.knock_status_for(&channel_id, &visitor)?;
+                Ok(serde_json::to_value(status)?)
+            }
+            PorchRequest::WithdrawKnock { knock_id } => {
+                let withdrawn = self.porch.withdraw_knock(&knock_id, &visitor)?;
+                Ok(serde_json::to_value(withdrawn)?)
             }
         }
     }
@@ -312,14 +434,58 @@ async fn send_one(
     Ok(response)
 }
 
-/// Visit a peer's porch and read their channel list. Returns the list
-/// of channels the visitor is allowed to see.
+/// Visit a peer's porch and read their channel list. Phase B returns
+/// rows that include a per-channel `visibility` hint — `Visible` means
+/// the visitor is already in, `NeedsKnock` exposes the existence of a
+/// gated channel so the visitor's UI can render a Knock affordance.
 pub async fn visit_list_channels(
     control: &mut Control,
     peer_id: PeerId,
-) -> Result<Vec<PorchChannel>, PorchError> {
+) -> Result<Vec<PorchListChannelRow>, PorchError> {
     let response = send_one(control, peer_id, PorchRequest::ListChannels).await?;
-    decode_or_error::<Vec<PorchChannel>>(response)
+    decode_or_error::<Vec<PorchListChannelRow>>(response)
+}
+
+/// Phase B — knock on a gated channel. Returns the resulting `Knock`
+/// row. Re-knocking while the visitor's previous knock is still
+/// pending returns that same row.
+pub async fn visit_knock(
+    control: &mut Control,
+    peer_id: PeerId,
+    channel_id: String,
+    message: Option<String>,
+) -> Result<Knock, PorchError> {
+    let response = send_one(
+        control,
+        peer_id,
+        PorchRequest::Knock {
+            channel_id,
+            message,
+        },
+    )
+    .await?;
+    decode_or_error::<Knock>(response)
+}
+
+/// Phase B — read the visitor's own current knock status on a channel
+/// (or `None` if they haven't knocked yet).
+pub async fn visit_knock_status(
+    control: &mut Control,
+    peer_id: PeerId,
+    channel_id: String,
+) -> Result<Option<Knock>, PorchError> {
+    let response = send_one(control, peer_id, PorchRequest::KnockStatus { channel_id }).await?;
+    decode_or_error::<Option<Knock>>(response)
+}
+
+/// Phase B — withdraw a knock the visitor previously filed.
+pub async fn visit_withdraw_knock(
+    control: &mut Control,
+    peer_id: PeerId,
+    knock_id: String,
+) -> Result<Knock, PorchError> {
+    let response = send_one(control, peer_id, PorchRequest::WithdrawKnock { knock_id }).await?;
+    decode_or_error::<Knock>(response)
 }
 
 /// Visit a peer's porch and page messages from a channel.
@@ -409,11 +575,15 @@ mod tests {
         let handler = PorchHandler::new(porch);
         let response = handler.dispatch(fake_peer_id(), PorchRequest::ListChannels);
         assert!(response.ok, "ListChannels must succeed");
-        let channels: Vec<PorchChannel> =
+        let rows: Vec<PorchListChannelRow> =
             serde_json::from_value(response.result.unwrap()).unwrap();
-        assert_eq!(channels.len(), 1);
-        assert_eq!(channels[0].id, DEFAULT_PORCH_CHANNEL_ID);
-        assert_eq!(channels[0].acl_mode, AclMode::Open);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].channel.id, DEFAULT_PORCH_CHANNEL_ID);
+        assert_eq!(rows[0].channel.acl_mode, AclMode::Open);
+        assert!(
+            matches!(rows[0].visibility, ChannelVisibility::Visible),
+            "open default porch must be Visible to any visitor"
+        );
     }
 
     #[test]

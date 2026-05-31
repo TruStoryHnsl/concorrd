@@ -213,6 +213,69 @@ Open questions:
 
 ### Phase B — inner channels + ACL UI
 
+> **Phase B implementation landed (2026-05-30).** This PR adds inner
+> channels behind ACL plus the knock-to-enter approval flow.
+>
+> What ships:
+>
+> - **Schema bumped to v2.** New `channel_knocks` table with the
+>   knock lifecycle (`pending` / `accepted` / `rejected` / `withdrawn`).
+>   A partial unique index on `(channel_id, knocker_peer_id) WHERE
+>   status = 'pending'` enforces "at most one open knock per pair";
+>   re-knocking after withdraw/reject is allowed.
+> - **`src-tauri/src/porch/knock.rs`** carries the knock state machine.
+>   `Porch::knock` dedupes against an existing pending row (so the wire
+>   handler can be idempotent under network jitter). `accept_knock`
+>   atomically flips status AND inserts a `member` ACL row in one
+>   transaction. `reject_knock` flips status without ACL change.
+>   `withdraw_knock` is restricted to the original knocker.
+> - **Wire protocol stays `/concord/porch/1.0.0`** — additive
+>   methods, no version bump. New `Knock` / `KnockStatus` /
+>   `WithdrawKnock` variants on `PorchRequest`.
+> - **`ListChannels` is now visibility-aware.** The response shape
+>   changed from `Vec<PorchChannel>` to `Vec<PorchListChannelRow>`,
+>   where each row carries a `visibility` discriminator: `Visible`
+>   means the visitor is inside; `NeedsKnock { existing_knock }`
+>   exposes the *existence* of a gated channel so the visitor's UI can
+>   render a Knock affordance (and report their own knock status if
+>   they've already filed one). `OwnerOnly` channels stay hidden over
+>   the wire. This is what addresses the user feedback "don't HIDE
+>   inner rooms; expose their existence so guests know what they can
+>   ask for".
+> - **Owner-side Tauri commands**: `porch_pending_knocks`,
+>   `porch_accept_knock`, `porch_reject_knock`, `porch_create_channel`
+>   (mints a new channel with a ULID id), `porch_grant_member`,
+>   `porch_revoke_member`.
+> - **Visitor-side Tauri commands**: `porch_visit_knock`,
+>   `porch_visit_knock_status`, `porch_visit_withdraw_knock` — and
+>   their browser-libp2p counterparts in `client/src/libp2p/porch.ts`.
+> - **UI surfaces**: `KnocksAtTheDoor` polls `porch_pending_knocks`
+>   every 10s and renders each pending visitor with Accept / Reject
+>   buttons; the empty state reads "Nobody knocking right now." Wired
+>   into `PorchManagement`, which sits at the top of the porch modal
+>   (above the host's own channel list, which now has a "+ New"
+>   affordance for minting inner / owner-only channels). `PorchView`
+>   in visit mode renders ALL channels — visible ones click to enter
+>   as before; gated channels render a Knock button; pending knocks
+>   render a "Waiting on host" badge + Withdraw; accepted knocks
+>   surface a Refresh link to re-fetch the channel list.
+>
+> Out of scope (still deferred):
+>
+> - **Sources-panel rail integration.** The porch is still surfaced
+>   via the modal Phase A introduced; the right rail still doesn't
+>   accept a non-Concord source tile. Push to a later phase.
+> - **Offline-knock delivery.** When peer A knocks while peer B is
+>   offline, the knock is dropped — A has to re-knock on reconnect.
+>   The "retry silently" / "ride a federated bridge" decision is left
+>   to a future sprint.
+> - **`visitor` ACL role refinement.** Phase B's accept inserts
+>   `member` directly. A "read-only acknowledged knocker" tier
+>   (`visitor` role) is still unused; Phase B's UI doesn't yet
+>   distinguish.
+
+The original Phase B plan is captured below for historical reference:
+
 In scope:
 
 - Tauri commands for `porch_create_channel(name, kind, acl_mode)` and
