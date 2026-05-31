@@ -632,9 +632,15 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
   // scopes DPAD navigation to this screen only. The extra class is
   // additive — desktop / mobile viewports render identically to the
   // pre-TV layout.
+  // `min-h-screen` + `overflow-y-auto` so the screen scrolls when the
+  // join-options list is taller than the viewport (small notebooks,
+  // mobile in landscape, etc). `items-start sm:items-center` centers
+  // vertically on roomy screens but starts at the top on short ones —
+  // a strict `items-center` would push the first options above the
+  // viewport top with no way to scroll up.
   const rootClassName = isTV
-    ? "h-screen bg-surface flex items-center justify-center mesh-background tv-server-picker"
-    : "h-screen bg-surface flex items-center justify-center mesh-background";
+    ? "min-h-screen overflow-y-auto bg-surface flex items-start sm:items-center justify-center py-8 mesh-background tv-server-picker"
+    : "min-h-screen overflow-y-auto bg-surface flex items-start sm:items-center justify-center py-8 mesh-background";
   const tvFocusProps = isTV
     ? { "data-focusable": "true", "data-focus-group": "tv-server-picker" }
     : {};
