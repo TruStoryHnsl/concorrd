@@ -3,7 +3,11 @@ name = "concord"
 version = "0.1.0"
 description = "Concord — Decentralized Communication Platform"
 authors = ["Colton Orr"]
-license = "MIT"
+# Fair Source: Functional Source License 1.1, converts to Apache-2.0 two years
+# after each release. Not an OSI/crates.io standard SPDX id, so expressed as a
+# LicenseRef pointing at the root LICENSE file. This crate is not published to
+# crates.io. See ../LICENSE and ../TRADEMARKS.md.
+license = "LicenseRef-FSL-1.1-Apache-2.0"
 edition = "2021"
 rust-version = "1.77.2"
 

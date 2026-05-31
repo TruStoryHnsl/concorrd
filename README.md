@@ -294,4 +294,17 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md). Conventional commits + feature branche
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+**Fair Source.** Concord is licensed under the Functional Source License,
+Version 1.1 (`FSL-1.1-Apache-2.0`) — see [LICENSE](./LICENSE). You may freely
+use, modify, self-host, and share it for any purpose **except a Competing Use**
+(reselling Concord, or offering it to others as a paid/managed service). **Each
+release automatically converts to the Apache License 2.0 two years after it is
+published**, at which point that version becomes true open source with no
+restrictions.
+
+The Concord name and logo are trademarks and are **not** covered by the code
+license — see [TRADEMARKS.md](./TRADEMARKS.md). Contributions are accepted under
+the [Contributor License Agreement](./CLA.md).
+
+> Code released under prior MIT-tagged versions remains available under the MIT
+> License; the FSL applies to releases from the relicense forward.
