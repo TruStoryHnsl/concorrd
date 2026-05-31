@@ -238,12 +238,19 @@ jobs:
             libsoup-3.0-dev \
             libssl-dev \
             libjavascriptcoregtk-4.1-dev \
+            libasound2-dev \
+            libopus-dev \
             patchelf \
             build-essential \
             curl \
             file \
             wget \
             xdg-utils
+          # libasound2-dev: cpal links against ALSA for mic capture +
+          # speaker playback in the libp2p-mesh voice path (shipped in
+          # PR #102). libopus-dev: audiopus links against libopus for
+          # the 48 kHz opus encode/decode in the same pipeline. Without
+          # both, `cargo build --release` fails at link time on Linux.
 
       - name: Sync version into tauri.conf.json
         env:
