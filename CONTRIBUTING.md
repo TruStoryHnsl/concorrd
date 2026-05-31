@@ -103,4 +103,13 @@ Concord-beta (the mesh research fork) is a separate, more experimental project.
 
 ## License
 
-By contributing, you agree your contributions are licensed under the [MIT License](./LICENSE) of this repo.
+Concord is **Fair Source** — licensed under the Functional Source License 1.1
+(`FSL-1.1-Apache-2.0`), which converts each release to Apache-2.0 two years after
+publication. See [LICENSE](./LICENSE).
+
+By contributing, you agree to the [Contributor License Agreement](./CLA.md):
+you keep copyright in your contribution and grant the maintainer the rights
+needed to distribute it under the FSL, relicense it under the Apache-2.0 future
+grant, and use it commercially. **Opening a PR constitutes acceptance of the
+CLA.** The Concord name and logo are trademarks and are not covered by the code
+license — see [TRADEMARKS.md](./TRADEMARKS.md).

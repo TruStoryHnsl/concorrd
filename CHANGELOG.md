@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — relicensed MIT → Fair Source (FSL-1.1-Apache-2.0)
+- **Concord is now licensed under the Functional Source License 1.1 with an Apache-2.0 future grant (`FSL-1.1-Apache-2.0`).** Users may freely use, modify, self-host, and share Concord for any purpose **except a Competing Use** — reselling it, or offering it to third parties as a paid/managed service. The Licensor (maintainer) is exempt and retains the sole right to commercialize (paid signed builds, paid hosting). **Each release auto-converts to the Apache License 2.0 two years after publication**, becoming unrestricted open source. Code from prior MIT-tagged releases stays MIT.
+- Added `TRADEMARKS.md` — the "Concord"/"Concorrd" name and logo are reserved and not granted by the code license.
+- Added `CLA.md` — contributors license their contributions to the maintainer so the Apache future-grant and commercial rights remain enforceable.
+- `src-tauri/Cargo.toml` license field updated; `README.md`, `CONTRIBUTING.md`, and `client/MONETIZATION_PROPOSAL.md` note the new posture. The donation-only end-user model is unchanged — the FSL governs *third-party* monetization, a separate axis.
+
 ## [0.7.11] - 2026-05-13
 
 ### Fixed — macos-intel cross-compile: bump min-macOS 10.12 → 11.0
