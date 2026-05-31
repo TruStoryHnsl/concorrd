@@ -30,6 +30,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { servitudeStatus, type ServitudeStatusResponse } from "../../api/servitude";
+import { startHostingServitude } from "../../api/hostingProfile";
 import { useSourcesStore } from "../../stores/sources";
 import { useServerConfigStore } from "../../stores/serverConfig";
 
@@ -165,8 +166,15 @@ export function HostOnboarding({
 
   const handleBringUp = useCallback(async () => {
     setSpinnerStatus({ phase: "starting_servitude" });
-    debugLog("invoke servitude_start");
-    await invoke<void>("servitude_start");
+    // Hosting needs the embedded Matrix homeserver, which the default
+    // `p2p_only` profile does NOT materialize. `startHostingServitude`
+    // flips the persisted profile to the host-capable `web_first` BEFORE
+    // starting so the homeserver comes up — otherwise the
+    // `servitude_register_owner` call below fails with "no
+    // MatrixFederation transport configured for register_owner". See the
+    // helper's doc-comment for the full Phase-7 rationale.
+    debugLog("start hosting servitude (web_first + start)");
+    await startHostingServitude();
 
     setSpinnerStatus({ phase: "waiting_for_running" });
     await pollUntilRunning(60_000, 500, (s) => {

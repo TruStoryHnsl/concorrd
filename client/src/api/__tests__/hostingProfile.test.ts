@@ -34,6 +34,7 @@ import {
   fetchHostingProfile,
   setHostingProfile,
   enableWebStack,
+  startHostingServitude,
 } from "../hostingProfile";
 
 const isTauriMock = vi.mocked(servitudeApi.isTauri);
@@ -161,6 +162,43 @@ describe("hostingProfile wrapper", () => {
     );
     expect(invokeMock).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------
+  // startHostingServitude
+  // -------------------------------------------------------------
+
+  it("startHostingServitude: persists web_first BEFORE starting servitude", async () => {
+    isTauriMock.mockReturnValue(true);
+    // `servitudeStart` guards on its module-local `isTauri`, which reads
+    // the real global (not the mocked export), so stub it too.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValue(undefined);
+
+    try {
+      await startHostingServitude();
+
+      // Both IPC calls fired, in the right order. The homeserver
+      // (MatrixFederation transport) only materializes if `web_first` is
+      // persisted before the handle is built by `servitude_start`.
+      const commands = invokeMock.mock.calls.map((c) => c[0]);
+      expect(commands).toEqual(["set_servitude_profile", "servitude_start"]);
+      expect(invokeMock).toHaveBeenNthCalledWith(1, "set_servitude_profile", {
+        profile: "web_first",
+      });
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (window as any).__TAURI_INTERNALS__;
+    }
+  });
+
+  it("startHostingServitude: rejects on a web build without touching the lifecycle", async () => {
+    isTauriMock.mockReturnValue(false);
+
+    await expect(startHostingServitude()).rejects.toThrow(/CONCORD_PROFILE/);
+    // Profile flip rejected up front; servitude_start never reached.
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------

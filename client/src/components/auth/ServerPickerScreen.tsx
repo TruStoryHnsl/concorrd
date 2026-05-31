@@ -13,10 +13,10 @@ import { usePlatform } from "../../hooks/usePlatform";
 import { ConcordLogo } from "../brand/ConcordLogo";
 import {
   isTauri as isTauriRuntime,
-  servitudeStart,
   servitudeStatus,
   type ServitudeState,
 } from "../../api/servitude";
+import { startHostingServitude } from "../../api/hostingProfile";
 import { GuestPairingScanner } from "../pairing/GuestPairingScanner";
 import { createGuestSession } from "../../api/concord";
 
@@ -420,7 +420,11 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
     // itself rejects we surface that to the failed sub-state.
     void (async () => {
       try {
-        await servitudeStart();
+        // Host-capable start: flips to the `web_first` profile so the
+        // bundled tuwunel homeserver actually materializes before we
+        // poll for Running. A bare servitudeStart on the default
+        // `p2p_only` profile would report Running with no homeserver.
+        await startHostingServitude();
       } catch (err) {
         if (hostingGenerationRef.current !== generation) return;
         setState({

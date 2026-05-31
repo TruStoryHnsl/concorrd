@@ -24,7 +24,7 @@
  * belong) is silently dropped rather than propagated.
  */
 
-import { isTauri } from "./servitude";
+import { isTauri, servitudeStart } from "./servitude";
 
 /**
  * Deployment profile wire form. Matches the Rust ``Profile`` enum
@@ -183,6 +183,36 @@ export async function setHostingProfile(
   }
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("set_servitude_profile", { profile });
+}
+
+/**
+ * Bring the embedded servitude up in HOST mode.
+ *
+ * Hosting a Concord instance requires the embedded Matrix homeserver —
+ * the `MatrixFederation` transport (bundled tuwunel). Owner
+ * registration, rooms, and invites all live there. The native default
+ * deployment profile is `p2p_only`, which materializes ONLY the libp2p
+ * baseline transport and SKIPS the homeserver (Phase 7 gating in
+ * `src-tauri/src/servitude/mod.rs::new_with_identity`). A bare
+ * {@link servitudeStart} on a fresh `p2p_only` install therefore brings
+ * up a node with no homeserver, and the very next `servitude_register_owner`
+ * fails with "no MatrixFederation transport configured for register_owner".
+ *
+ * This helper flips the persisted profile to the host-capable
+ * `web_first` FIRST, so the handle materializes the homeserver, then
+ * starts the lifecycle. Every "start hosting" entry point (the Host
+ * onboarding wizard, the Node-hosting toggle, the server picker's
+ * "Host your own", the local-hosting control) must call this rather
+ * than {@link servitudeStart} directly. Choosing to host IS the opt-in;
+ * the persisted `web_first` is what the Settings →
+ * "Make this instance web-accessible" toggle reflects afterward.
+ *
+ * Native-only: rejects in a browser build (via {@link setHostingProfile}'s
+ * own guard) — embedded hosting requires the Tauri shell.
+ */
+export async function startHostingServitude(): Promise<void> {
+  await setHostingProfile("web_first");
+  await servitudeStart();
 }
 
 /**
