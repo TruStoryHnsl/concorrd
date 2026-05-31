@@ -34,11 +34,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePlatform } from "../../hooks/usePlatform";
 import {
-  servitudeStart,
   servitudeStatus,
   servitudeStop,
   type ServitudeState,
 } from "../../api/servitude";
+import { startHostingServitude } from "../../api/hostingProfile";
 import { useSourcesStore } from "../../stores/sources";
 
 const POLL_INTERVAL_MS = 1500;
@@ -127,9 +127,11 @@ export function LocalHostingControl({
       }
       // We already have an owner record from a previous session — just
       // restart the daemon. The existing source record will reconnect on
-      // the next sync cycle.
+      // the next sync cycle. Use the host-capable start so the embedded
+      // homeserver is materialized (the `web_first` profile) rather than
+      // a bare libp2p-only node.
       setUi({ kind: "starting" });
-      await servitudeStart();
+      await startHostingServitude();
     } catch (err) {
       setUi({
         kind: "error",
