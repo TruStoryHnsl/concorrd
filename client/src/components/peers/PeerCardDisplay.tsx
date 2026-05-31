@@ -37,6 +37,7 @@ import {
 } from "../../lib/peerCard";
 import { getBrowserIdentity } from "../../libp2p/identity";
 import { getBrowserNodeIfStarted } from "../../libp2p/lazyNode";
+import { useBrowserLibp2p } from "../../hooks/useBrowserLibp2p";
 
 /**
  * Matrix msgtype we use to broadcast a peer card into a room. The
@@ -169,9 +170,17 @@ export function PeerCardDisplay() {
 
   // Phase 9 (browser P2P UI surface): on web, derive the card from the
   // browser libp2p identity + the running libp2p node's multiaddrs.
-  // Polled lazily — `getBrowserNodeIfStarted` short-circuits when the
-  // node hasn't been started yet so this hook doesn't trigger the
-  // libp2p chunk fetch on its own.
+  //
+  // Self-trigger swarm startup. The hook is idempotent; mounting this
+  // surface is itself a signal that the user wants to see / share
+  // their card. Without the self-trigger, the card stays in
+  // "preparing…" forever on any surface that doesn't separately call
+  // `useBrowserLibp2p({ enabled: true })`.
+  const {
+    status: browserLibp2pStatus,
+    error: browserLibp2pError,
+  } = useBrowserLibp2p({ enabled: true });
+
   const [browserCard, setBrowserCard] = useState<PeerCard | null>(null);
 
   useEffect(() => {
@@ -183,18 +192,20 @@ export function PeerCardDisplay() {
         const node = await getBrowserNodeIfStarted();
         if (cancelled) return;
         if (!node) {
-          // Node not running yet — keep waiting; the parent ProfileTab
-          // calls `useBrowserLibp2p({ enabled: true })` so it should
-          // come up within a second.
+          // Node not running yet — keep waiting; the hook above
+          // (useBrowserLibp2p enabled) is bringing it up.
           setBrowserCard(null);
           return;
         }
+        // Browser libp2p nodes typically have ZERO listen multiaddrs:
+        // the WebRTC transport is dial-only by design (no inbound
+        // dials without a relay), and the WebSockets transport
+        // doesn't listen from a tab either. That's not a failure —
+        // browsers are clients in the mesh. The card still
+        // identifies the peer (peerId + publicKeyHex) so a paired
+        // native peer knows who's calling it; the browser dials OUT
+        // when it wants to talk to a known peer.
         const multiaddrs = node.getMultiaddrs().map((m) => m.toString());
-        if (multiaddrs.length === 0) {
-          // Node up but not yet listening on anything dialable.
-          setBrowserCard(null);
-          return;
-        }
         setBrowserCard({
           peerId: identity.peerId,
           publicKeyHex: identity.publicKeyHex,
@@ -207,13 +218,27 @@ export function PeerCardDisplay() {
         );
       }
     };
+
     void refresh();
-    // Same 5s cadence as the swarm-status block — keeps the multiaddr
-    // list in sync as the browser node discovers / loses listen addrs.
-    const id = setInterval(() => void refresh(), 5000);
+    // Poll fast at first so the UI catches the swarm coming online
+    // without making the user wait a full 5-second cycle. Then
+    // settle into the steady 5s cadence.
+    let fastPolls = 0;
+    let intervalId: ReturnType<typeof setInterval>;
+    const schedule = (delay: number) => {
+      intervalId = setInterval(() => {
+        void refresh();
+        fastPolls += 1;
+        if (fastPolls === 10) {
+          clearInterval(intervalId);
+          schedule(5000);
+        }
+      }, delay);
+    };
+    schedule(1000);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      clearInterval(intervalId);
     };
   }, []);
 
@@ -289,15 +314,32 @@ export function PeerCardDisplay() {
 
   // ── Card not yet assembled (loading / swarm starting up) ────────
   if (!card) {
+    // Surface real status so the user sees what's happening instead
+    // of a generic "waiting…" that hides a chunk-load failure or a
+    // libp2p init error.
+    let detail: string;
+    let detailClass = "text-on-surface-variant italic";
+    if (!isTauri()) {
+      if (browserLibp2pStatus === "starting") {
+        detail = "Starting browser swarm…";
+      } else if (browserLibp2pStatus === "error") {
+        detail = `Swarm start failed: ${browserLibp2pError ?? "unknown error"}`;
+        detailClass = "text-error";
+      } else if (browserLibp2pStatus === "running") {
+        detail = "Browser swarm up — generating your peer card…";
+      } else {
+        detail = "Preparing your peer card…";
+      }
+    } else {
+      detail = "Preparing your peer card… (waiting for the swarm to come up)";
+    }
     return (
       <div
         className="border-t border-outline-variant/15 pt-6 space-y-2"
         data-testid="peer-card-display"
       >
         <h4 className="text-sm font-medium text-on-surface">Your Peer Card</h4>
-        <p className="text-xs text-on-surface-variant italic">
-          Preparing your peer card… (waiting for the swarm to come up)
-        </p>
+        <p className={`text-xs ${detailClass}`}>{detail}</p>
       </div>
     );
   }

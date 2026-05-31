@@ -30,6 +30,7 @@ import { subscribeToLanPeers, type LanPeer } from "../../../api/lanPeers";
 import { getBrowserIdentity } from "../../../libp2p/identity";
 import { getBrowserNodeIfStarted } from "../../../libp2p/lazyNode";
 import { fingerprintForHex } from "../../../libp2p/fingerprint";
+import { useBrowserLibp2p } from "../../../hooks/useBrowserLibp2p";
 
 import { PeerCardDisplay } from "../../peers/PeerCardDisplay";
 import { PeerCardScanner } from "../../peers/PeerCardScanner";
@@ -505,6 +506,17 @@ export function LanPeersSection() {
  * instead of the `peer_swarm_status` Tauri command.
  */
 export function BrowserSwarmStatusBlock() {
+  // Self-trigger the swarm startup. Mounting this block is itself a
+  // signal that the user wants to see swarm state, so we make sure
+  // the node starts even if no sibling surface fired
+  // `useBrowserLibp2p({ enabled: true })`. The hook is idempotent —
+  // multiple mounts share the same lazy singleton inside `node.ts`.
+  // Surfacing the hook's status here is what lets the UI show
+  // "starting…" / "error: <msg>" instead of a misleading "not
+  // started" while the libp2p chunk is fetching + initializing.
+  const { status: libp2pStatus, error: libp2pError } = useBrowserLibp2p({
+    enabled: true,
+  });
   const [node, setNode] = useState<Libp2p | null>(null);
   const [peerId, setPeerId] = useState<string | null>(null);
   const [multiaddrs, setMultiaddrs] = useState<string[]>([]);
@@ -535,10 +547,25 @@ export function BrowserSwarmStatusBlock() {
       }
     };
 
+    // Poll fast for the first ~10s so the UI catches the swarm coming
+    // online without making the user wait a full 5-second cycle. Then
+    // settle into the steady-state 5s cadence — peer count + last
+    // event get push updates via the listeners below, so the poll is
+    // really only a fallback for stale-state correction.
     void refresh();
-    const intervalId = setInterval(() => {
-      void refresh();
-    }, 5000);
+    let fastPolls = 0;
+    let intervalId: ReturnType<typeof setInterval>;
+    const schedule = (delay: number) => {
+      intervalId = setInterval(() => {
+        void refresh();
+        fastPolls += 1;
+        if (fastPolls === 10) {
+          clearInterval(intervalId);
+          schedule(5000);
+        }
+      }, delay);
+    };
+    schedule(1000);
 
     return () => {
       cancelled = true;
@@ -581,16 +608,41 @@ export function BrowserSwarmStatusBlock() {
   }, [node]);
 
   if (!node) {
+    // Surface the hook's status so the UI tells the user what's
+    // actually happening: chunk fetching ("starting…"), init failure
+    // ("error: <msg>"), or the legacy "idle" state for the brief
+    // window before the effect fires.
+    let detail: string;
+    if (libp2pStatus === "starting") {
+      detail = "Starting browser swarm…";
+    } else if (libp2pStatus === "error") {
+      detail = `Swarm start failed: ${libp2pError ?? "unknown error"}`;
+    } else if (libp2pStatus === "running") {
+      // Hook says running but `getBrowserNodeIfStarted()` returned
+      // null — should be a transient race; the next poll will
+      // refresh. Telling the user "loading" here is honest.
+      detail = "Loading swarm state…";
+    } else {
+      detail = "Swarm idle";
+    }
     return (
       <div className="space-y-2 py-2">
         <div className="flex items-center justify-between gap-3">
           <span className="text-sm text-on-surface-variant">Swarm</span>
           <span
-            className="text-xs text-on-surface-variant italic text-right"
-            title="The browser libp2p swarm is started on demand. Open a voice channel or paired-peers section to spin it up."
+            className={
+              "text-xs text-right " +
+              (libp2pStatus === "error"
+                ? "text-error"
+                : "text-on-surface-variant italic")
+            }
+            title={
+              libp2pStatus === "error"
+                ? libp2pError ?? undefined
+                : "The browser libp2p swarm is loaded on demand. First start can take a few seconds while the chunk downloads."
+            }
           >
-            Browser swarm not started — open a voice channel or
-            paired-peers section to start it.
+            {detail}
           </span>
         </div>
       </div>
