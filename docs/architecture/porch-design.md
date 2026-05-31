@@ -988,3 +988,52 @@ Open questions:
   sortable-rail mechanics in `SourcesPanel.tsx` accept a non-Concord
   source tile. Phase A surfaces the porch visit through a modal opened
   via the Paired Peers list.
+
+## Porch is now a Source tile (post-Phase A follow-up)
+
+The Phase A note above deferred the Sources-rail integration until the
+sortable-rail mechanics could accept a non-Concord tile. That follow-up
+has shipped:
+
+- `client/src/components/layout/SourcesPanel.tsx` now renders an
+  intrinsic `PorchTile` at the TOP of the rail, above the sortable
+  sources list. The tile is NOT a row in `useSourcesStore.sources` —
+  that store represents external connections, and the porch is local
+  to this install (it exists from first boot per Phase A).
+- The tile uses the user's Matrix avatar as its icon when a
+  `MatrixClient` session is available (via the existing `useAvatarUrl`
+  hook in `client/src/hooks/usePresence.ts`). When no Matrix session
+  exists (P2P-only profile, user never logged into a homeserver), the
+  tile falls back to a `home` material symbol. The fallback is the
+  steady state for native installs that boot straight into the local
+  porch without a homeserver login.
+- An "intrinsic" badge — a small `home`-glyph circle overlapping the
+  bottom-right corner of the tile, mirroring the existing
+  `source-owner-badge` star pattern — distinguishes the porch from a
+  remote source so users intuitively read it as "this is mine, this is
+  local" instead of "this is a friend's porch."
+- An online indicator dot in the top-right corner lights green when at
+  least one paired peer has a recent `lastSeen` (`<60s`) in the
+  peer-store. Otherwise the dot is gray. The real libp2p swarm-event
+  mirror is a follow-up to this follow-up; until then `lastSeen` is the
+  cheapest signal that doesn't require an extra IPC round-trip per
+  render.
+- The tile is **NOT draggable** — it sits OUTSIDE the rail's
+  `SortableContext` — and **NOT removable**. Right-clicking it does
+  NOT open the regular `SourceContextMenu` (that menu's "Close
+  connection" entry doesn't apply to an intrinsic install-local
+  surface).
+- Clicking the tile invokes `onPorchOpen()` (a new
+  `SourcesPanel` prop), wired in `ChatLayout.tsx` to a full-screen
+  overlay that renders `<PorchView mode="self" />`. The local porch
+  loads via the existing `porchStore` `loadChannels()` flow, which
+  calls the `porch_list_my_channels` Tauri command shipped in Phase A.
+
+Mobile mirrors the desktop contract: the Sources panel renders a
+`MobilePorchRow` at the top of its source list with the same intrinsic
+semantics (always-on, non-removable, click → `onPorchOpen`).
+
+Tests covering the integration live in
+`client/src/components/layout/__tests__/SourcesPanel.porch-tile.test.tsx`
+(5 cases: empty-sources render, top-of-rail ordering, no-disconnect
+context menu, home-icon fallback, click → callback).
