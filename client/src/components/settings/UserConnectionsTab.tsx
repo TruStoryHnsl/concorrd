@@ -105,8 +105,88 @@ export function UserConnectionsTab() {
         disabled
       />
 
+      <ConnectedAccountsList />
       <PeerConnectionsSection />
       <TunnelHardeningSection />
+    </div>
+  );
+}
+
+/**
+ * Per-source row with a Disconnect affordance. The right-click context
+ * menu on the Sources rail offers the same action (PR #112), but the
+ * user's mental model is "Settings → Connections is where I add and
+ * remove things", so we also surface it here. Renders nothing when
+ * there are no sources — keeps the tab clean on a fresh install.
+ */
+function ConnectedAccountsList() {
+  const sources = useSourcesStore((s) => s.sources);
+  const removeSource = useSourcesStore((s) => s.removeSource);
+
+  if (sources.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <h4 className="text-sm font-semibold text-on-surface">
+        Connected accounts
+      </h4>
+      <p className="text-xs text-on-surface-variant">
+        Currently-active connections. Disconnect to remove the source
+        and its cached state from this install.
+      </p>
+      <ul className="space-y-1.5" data-testid="connected-accounts-list">
+        {sources.map((source) => {
+          const label =
+            source.instanceName ||
+            source.host ||
+            source.id;
+          const subtitle = source.host && source.instanceName ? source.host : source.platform;
+          const brand =
+            source.platform === "concord"
+              ? "concord"
+              : source.platform === "matrix"
+                ? "matrix"
+                : null;
+          return (
+            <li
+              key={source.id}
+              className="flex items-center gap-3 px-3 py-2 rounded-lg border border-outline-variant/20 bg-surface-container-low/40"
+            >
+              <div className="w-7 h-7 rounded-md bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                {brand ? (
+                  <SourceBrandIcon brand={brand} size={18} />
+                ) : (
+                  <span className="material-symbols-outlined text-on-surface-variant text-base">
+                    public
+                  </span>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p
+                  className="text-sm text-on-surface truncate"
+                  title={label}
+                >
+                  {label}
+                </p>
+                <p
+                  className="text-xs text-on-surface-variant truncate font-mono"
+                  title={subtitle}
+                >
+                  {subtitle}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => removeSource(source.id)}
+                data-testid={`connected-account-disconnect-${source.id}`}
+                className="px-3 py-1.5 text-xs rounded-md text-error border border-error/30 hover:bg-error/10 transition-colors min-h-[32px]"
+              >
+                Disconnect
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
