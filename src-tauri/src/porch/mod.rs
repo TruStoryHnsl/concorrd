@@ -31,13 +31,16 @@ pub mod acl;
 pub mod channel;
 pub mod db;
 pub mod error;
+pub mod knock;
 pub mod protocol;
 
 pub use channel::{AclMode, AclRole, ChannelKind, ChannelMessage, PorchChannel};
 pub use db::Porch;
 pub use error::PorchError;
+pub use knock::{Knock, KnockStatus};
 pub use protocol::{
-    visit_get_messages, visit_list_channels, visit_post_message, PorchErrorBody, PorchHandler,
+    visit_get_messages, visit_knock, visit_knock_status, visit_list_channels, visit_post_message,
+    visit_withdraw_knock, ChannelVisibility, PorchErrorBody, PorchHandler, PorchListChannelRow,
     PorchRequest, PorchResponse, PORCH_PROTOCOL_ID,
 };
 

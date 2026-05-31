@@ -53,6 +53,41 @@ export interface ChannelMessage {
   created_at: number;
 }
 
+/** Phase B — knock lifecycle status. Mirrors Rust's `KnockStatus`. */
+export type KnockStatus = "pending" | "accepted" | "rejected" | "withdrawn";
+
+/** Phase B — a single knock row. Mirrors Rust's `Knock`. */
+export interface Knock {
+  id: string;
+  channel_id: string;
+  knocker_peer_id: string;
+  message: string | null;
+  status: KnockStatus;
+  /** Unix milliseconds. */
+  created_at: number;
+  /** Unix milliseconds. `null` while still pending. */
+  resolved_at: number | null;
+}
+
+/** Phase B — per-row visibility on a `ListChannels` response. */
+export type ChannelVisibility =
+  | { kind: "visible" }
+  | {
+      kind: "needs_knock";
+      /** Most recent knock status for this visitor; `null` if they've never knocked. */
+      existing_knock?: KnockStatus | null;
+    };
+
+/** Phase B — flattened row returned by `ListChannels`. */
+export interface PorchListChannelRow {
+  id: string;
+  name: string;
+  kind: ChannelKind;
+  acl_mode: AclMode;
+  created_at: number;
+  visibility: ChannelVisibility;
+}
+
 // ---------------------------------------------------------------------------
 // Local (host's own porch) — native only
 // ---------------------------------------------------------------------------
@@ -97,10 +132,13 @@ export async function postLocalMessage(
 // ---------------------------------------------------------------------------
 
 /** Visit a paired peer's porch and read their channel list. Picks
- *  Tauri vs browser libp2p based on `isTauri()`. */
-export async function visitPeer(peerId: string): Promise<PorchChannel[]> {
+ *  Tauri vs browser libp2p based on `isTauri()`.
+ *
+ *  Phase B: returns visibility-aware rows so the UI can render a
+ *  Knock affordance for gated channels. */
+export async function visitPeer(peerId: string): Promise<PorchListChannelRow[]> {
   if (isTauri()) {
-    return await invoke<PorchChannel[]>("porch_visit_peer", { peerId });
+    return await invoke<PorchListChannelRow[]>("porch_visit_peer", { peerId });
   }
   // Web build — dial over the browser libp2p stack. Loaded lazily so
   // the libp2p chunk only fetches when a visit is attempted.
@@ -142,4 +180,107 @@ export async function visitPostMessage(
   }
   const mod = await import("../libp2p/porch");
   return await mod.browserVisitPostMessage(peerId, channelId, body);
+}
+
+// ---------------------------------------------------------------------------
+// Phase B — knock-to-enter
+// ---------------------------------------------------------------------------
+
+/** Owner-side: list every pending knock across this install's channels.
+ *  Native only — browsers don't host a porch. */
+export async function porchPendingKnocks(): Promise<Knock[]> {
+  if (!isTauri()) return [];
+  return await invoke<Knock[]>("porch_pending_knocks");
+}
+
+/** Owner-side: accept a pending knock. Atomically grants the visitor
+ *  `member` ACL on the channel. */
+export async function porchAcceptKnock(knockId: string): Promise<Knock> {
+  if (!isTauri()) throw new Error("porch_accept_knock is native-only");
+  return await invoke<Knock>("porch_accept_knock", { knockId });
+}
+
+/** Owner-side: reject a pending knock. No ACL change. */
+export async function porchRejectKnock(knockId: string): Promise<Knock> {
+  if (!isTauri()) throw new Error("porch_reject_knock is native-only");
+  return await invoke<Knock>("porch_reject_knock", { knockId });
+}
+
+/** Owner-side: mint a new channel on this install's porch. */
+export async function porchCreateChannel(
+  name: string,
+  kind: ChannelKind,
+  aclMode: AclMode,
+): Promise<PorchChannel> {
+  if (!isTauri()) throw new Error("porch_create_channel is native-only");
+  return await invoke<PorchChannel>("porch_create_channel", {
+    name,
+    kind,
+    aclMode,
+  });
+}
+
+/** Owner-side: grant `member` on a channel. Idempotent. */
+export async function porchGrantMember(
+  channelId: string,
+  peerId: string,
+): Promise<void> {
+  if (!isTauri()) throw new Error("porch_grant_member is native-only");
+  await invoke<void>("porch_grant_member", { channelId, peerId });
+}
+
+/** Owner-side: revoke a channel ACL row. */
+export async function porchRevokeMember(
+  channelId: string,
+  peerId: string,
+): Promise<void> {
+  if (!isTauri()) throw new Error("porch_revoke_member is native-only");
+  await invoke<void>("porch_revoke_member", { channelId, peerId });
+}
+
+/** Visitor-side: knock on a paired peer's gated channel. Native + web. */
+export async function porchVisitKnock(
+  peerId: string,
+  channelId: string,
+  message: string | null,
+): Promise<Knock> {
+  if (isTauri()) {
+    return await invoke<Knock>("porch_visit_knock", {
+      peerId,
+      channelId,
+      message,
+    });
+  }
+  const mod = await import("../libp2p/porch");
+  return await mod.browserVisitKnock(peerId, channelId, message);
+}
+
+/** Visitor-side: poll their own current knock status on a channel. */
+export async function porchVisitKnockStatus(
+  peerId: string,
+  channelId: string,
+): Promise<Knock | null> {
+  if (isTauri()) {
+    return await invoke<Knock | null>("porch_visit_knock_status", {
+      peerId,
+      channelId,
+    });
+  }
+  const mod = await import("../libp2p/porch");
+  return await mod.browserVisitKnockStatus(peerId, channelId);
+}
+
+/** Visitor-side: withdraw a previously-filed knock. */
+export async function porchVisitWithdrawKnock(
+  peerId: string,
+  knockId: string,
+): Promise<Knock> {
+  if (isTauri()) {
+    return await invoke<Knock>("porch_visit_withdraw_knock", {
+      peerId,
+      knockId,
+    });
+  }
+  const mod = await import("../libp2p/porch");
+  return await mod.browserVisitWithdrawKnock(peerId, knockId);
 }

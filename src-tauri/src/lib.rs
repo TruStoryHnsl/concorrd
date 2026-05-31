@@ -485,11 +485,14 @@ async fn resolve_visit_control(
 
 /// Visit a paired peer's porch. Dials over libp2p, opens a stream on
 /// `/concord/porch/1.0.0`, sends `ListChannels`, returns the response.
+///
+/// Phase B: response rows now carry a `visibility` discriminator so the
+/// visitor's UI can render a Knock affordance on gated channels.
 #[tauri::command]
 async fn porch_visit_peer(
     servitude_state: tauri::State<'_, ServitudeState>,
     peer_id: String,
-) -> Result<Vec<porch::PorchChannel>, String> {
+) -> Result<Vec<porch::PorchListChannelRow>, String> {
     let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
     porch::visit_list_channels(&mut control, peer)
         .await
@@ -521,6 +524,143 @@ async fn porch_visit_post_message(
 ) -> Result<porch::ChannelMessage, String> {
     let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
     porch::visit_post_message(&mut control, peer, channel_id, body)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Porch Phase B — knock-to-enter + inner channel management
+// ---------------------------------------------------------------------------
+
+/// Phase B — owner-side: list every pending knock across all of this
+/// install's channels. The host UI polls this to render the "people at
+/// the door" surface.
+#[tauri::command]
+async fn porch_pending_knocks(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<porch::Knock>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.pending_knocks().map_err(|e| e.to_string())
+}
+
+/// Phase B — owner-side: accept a pending knock. Flips the knock to
+/// `accepted` AND inserts a `member` ACL grant atomically.
+#[tauri::command]
+async fn porch_accept_knock(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    knock_id: String,
+) -> Result<porch::Knock, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.accept_knock(&knock_id).map_err(|e| e.to_string())
+}
+
+/// Phase B — owner-side: reject a pending knock. Flips the knock to
+/// `rejected`; no ACL change.
+#[tauri::command]
+async fn porch_reject_knock(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    knock_id: String,
+) -> Result<porch::Knock, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.reject_knock(&knock_id).map_err(|e| e.to_string())
+}
+
+/// Phase B — owner-side: mint a new channel. Phase A's `insert_channel`
+/// is exposed here as a Tauri command so the host UI can add inner /
+/// allowlist channels without dropping to SQL.
+#[tauri::command]
+async fn porch_create_channel(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    name: String,
+    kind: porch::ChannelKind,
+    acl_mode: porch::AclMode,
+) -> Result<porch::PorchChannel, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    // Mint a ULID id so two channels with the same display name don't
+    // collide on the PRIMARY KEY.
+    let id = ulid::Ulid::new().to_string();
+    porch
+        .insert_channel(&id, &name, kind, acl_mode)
+        .map_err(|e| e.to_string())
+}
+
+/// Phase B — owner-side: grant `member` on a channel. Idempotent.
+#[tauri::command]
+async fn porch_grant_member(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    channel_id: String,
+    peer_id: String,
+) -> Result<(), String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch
+        .grant_acl(&channel_id, &peer_id, porch::AclRole::Member)
+        .map_err(|e| e.to_string())
+}
+
+/// Phase B — owner-side: revoke a channel ACL row.
+#[tauri::command]
+async fn porch_revoke_member(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    channel_id: String,
+    peer_id: String,
+) -> Result<(), String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch
+        .revoke_acl(&channel_id, &peer_id)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Phase B — visitor-side: knock on a paired peer's gated channel.
+/// Returns the recorded `Knock` row.
+#[tauri::command]
+async fn porch_visit_knock(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+    channel_id: String,
+    message: Option<String>,
+) -> Result<porch::Knock, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::visit_knock(&mut control, peer, channel_id, message)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Phase B — visitor-side: read the visitor's own current knock status
+/// for a channel (or `null` if they've never knocked).
+#[tauri::command]
+async fn porch_visit_knock_status(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+    channel_id: String,
+) -> Result<Option<porch::Knock>, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::visit_knock_status(&mut control, peer, channel_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Phase B — visitor-side: withdraw a pending knock the visitor filed.
+#[tauri::command]
+async fn porch_visit_withdraw_knock(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+    knock_id: String,
+) -> Result<porch::Knock, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::visit_withdraw_knock(&mut control, peer, knock_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1599,6 +1739,16 @@ pub fn run() {
             porch_visit_peer,
             porch_visit_get_messages,
             porch_visit_post_message,
+            // Phase B — inner-channel + knock management.
+            porch_pending_knocks,
+            porch_accept_knock,
+            porch_reject_knock,
+            porch_create_channel,
+            porch_grant_member,
+            porch_revoke_member,
+            porch_visit_knock,
+            porch_visit_knock_status,
+            porch_visit_withdraw_knock,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
