@@ -28,6 +28,7 @@ import { ToastContainer } from "./components/ui/Toast";
 import { VoiceConnectionBar } from "./components/voice/VoiceConnectionBar";
 import { DirectInviteBanner } from "./components/DirectInviteBanner";
 import { CustomAudioRenderer } from "./components/voice/CustomAudioRenderer";
+import { classifyVoiceError } from "./components/voice/classifyVoiceError";
 import { FloatingVideoTiles } from "./components/voice/FloatingVideoTiles";
 import { buildLiveKitAudioCaptureOptions } from "./voice/noiseGate";
 
@@ -242,7 +243,7 @@ export default function App() {
 
   const handleVoiceError = useCallback((error: Error) => {
     console.error("LiveKit connection error:", error);
-    addToast(`Voice failed: ${error.message}`, "error");
+    addToast(`Voice failed: ${classifyVoiceError(error)}`, "error");
     voiceDisconnect();
   }, [voiceDisconnect, addToast]);
 
@@ -381,8 +382,18 @@ export default function App() {
   // ever causes a setState->re-render cycle, the unstable ref turns
   // it into an infinite loop. Memoizing keeps the dep stable.
   const handleLaunchDone = useCallback(() => setLaunchDone(true), []);
+  // Native builds get a longer splash-visibility floor so the
+  // animation plays as a proper launch animation rather than a
+  // sub-second flash. Web sessions keep the brief 1.5s floor so
+  // the chat is in the user's face fast; native users have a real
+  // "I just opened the app" moment that the animation should fill.
+  const launchMinDurationMs = isTauri ? 3000 : 1500;
   const launchOverlay = !launchDone ? (
-    <LaunchAnimation isLoading={isLoading} onDone={handleLaunchDone} />
+    <LaunchAnimation
+      isLoading={isLoading}
+      onDone={handleLaunchDone}
+      minDurationMs={launchMinDurationMs}
+    />
   ) : null;
 
   // Public submit page — no auth required

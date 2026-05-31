@@ -6,7 +6,7 @@ at runtime.
 
 | Host  | Role                | Always-on   | Notes                                          |
 |-------|---------------------|-------------|------------------------------------------------|
-| `orr1on` | **Production**   | yes         | AWS EC2. Serves `concorrd.com`. Pulls from `main` releases only. |
+| `orr1on` | **Production**   | yes         | AWS EC2. Pulls from `main` releases only. |
 | `orrion` | **Development**  | yes (dev)   | User's daily-driver workstation. Runs real-time-tested branches against the user's own client. |
 
 ## Forbidden hosts
