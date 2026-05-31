@@ -1086,6 +1086,83 @@ struct RestoreResult {
 }
 
 // ---------------------------------------------------------------------------
+// Phase G — tunnel-only inbound hardening
+//
+// Three commands let the React Settings panel read + mutate
+// `<app_local_data_dir>/tunnel_config.json` and ask the running swarm
+// for a snapshot of which CIDRs it currently trusts. The mutation
+// command persists the JSON file AND hot-swaps the running swarm's
+// gate state via the shared Arc, so a toggle takes effect without
+// restarting the servitude.
+// ---------------------------------------------------------------------------
+
+/// Read the current tunnel config from disk. Returns the default
+/// permissive config (`enforce=false`, empty extras) if no file
+/// exists yet — that's the first-boot posture.
+#[tauri::command]
+async fn tunnel_get_config(
+    app: tauri::AppHandle,
+) -> Result<servitude::network::TunnelConfig, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("no app_local_data_dir: {e}"))?;
+    servitude::network::TunnelConfig::load(&data_dir).map_err(|e| e.to_string())
+}
+
+/// Persist a new tunnel config to disk AND push it into the running
+/// swarm's gate state (if one is up). The pushed state takes effect
+/// immediately — subsequent inbound connections are gated by the new
+/// flags. Outbound dials remain unchanged regardless.
+#[tauri::command]
+async fn tunnel_set_config(
+    state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    config: servitude::network::TunnelConfig,
+) -> Result<servitude::network::TunnelConfig, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("no app_local_data_dir: {e}"))?;
+    config.save(&data_dir).map_err(|e| e.to_string())?;
+
+    // Hot-swap the running swarm's gate, if any. Falling through to
+    // the next servitude_start is fine — the config will be loaded
+    // off disk at that point.
+    let extras = config.parsed_extras();
+    let interfaces = servitude::network::TunnelInterfaces::detect(&extras);
+    {
+        let guard = state.0.lock().await;
+        if let Some(handle) = guard.as_ref() {
+            if let Some(gate_state) = handle.gate_state() {
+                gate_state.update(config.enforce, interfaces);
+            }
+        }
+    }
+    Ok(config)
+}
+
+/// Snapshot of the currently-trusted tunnel CIDRs + the operator's
+/// enforce flag. Reads the persisted config off disk for the
+/// authoritative `enforce` value (matches the swarm post-set), and
+/// runs a fresh detect() against the operator's extras for the
+/// effective CIDR set the next swarm start would use.
+#[tauri::command]
+async fn tunnel_detect_interfaces(
+    app: tauri::AppHandle,
+) -> Result<servitude::network::TunnelDetectionReport, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("no app_local_data_dir: {e}"))?;
+    let cfg =
+        servitude::network::TunnelConfig::load(&data_dir).map_err(|e| e.to_string())?;
+    let extras = cfg.parsed_extras();
+    let interfaces = servitude::network::TunnelInterfaces::detect(&extras);
+    Ok(interfaces.report(cfg.enforce, &extras))
+}
+
+// ---------------------------------------------------------------------------
 // Phase 8 — voice path selection
 // ---------------------------------------------------------------------------
 
@@ -1708,6 +1785,25 @@ async fn servitude_start(
         // runtime so the inbound `/concord/porch/1.0.0` handler is
         // registered when the swarm starts. Idempotent.
         handle.set_porch(porch_arc.clone());
+        // Phase G — load the persisted tunnel config and wire the
+        // operator's enforce flag + extras CIDRs into the libp2p
+        // runtime's gate BEFORE start() so the swarm's first listen
+        // accepts/rejects inbound peers under the operator's policy
+        // from the very first packet. First-boot returns the default
+        // permissive config (enforce=false).
+        let data_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| format!("no app_local_data_dir: {e}"))?;
+        let tunnel_cfg = servitude::network::TunnelConfig::load(&data_dir)
+            .map_err(|e| format!("load tunnel_config: {e}"))?;
+        let extras = tunnel_cfg.parsed_extras();
+        let interfaces = servitude::network::TunnelInterfaces::detect(&extras);
+        let gate_state = servitude::network::connection_gate::GateState::new(
+            tunnel_cfg.enforce,
+            interfaces,
+        );
+        handle.set_gate_state(gate_state);
         *guard = Some(handle);
     }
 
@@ -2195,6 +2291,10 @@ pub fn run() {
             porch_backup_check_remote_info,
             porch_backup_restore_from,
             porch_backup_list_received,
+            // Phase G — tunnel-only inbound hardening.
+            tunnel_get_config,
+            tunnel_set_config,
+            tunnel_detect_interfaces,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

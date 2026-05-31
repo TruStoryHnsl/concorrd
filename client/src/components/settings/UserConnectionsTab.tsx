@@ -4,6 +4,7 @@ import { useSourcesStore } from "../../stores/sources";
 import { useBrowserLibp2p } from "../../hooks/useBrowserLibp2p";
 import { SourceBrandIcon } from "../sources/sourceBrand";
 import { PeerConnectionsSection } from "./connections/PeerConnectionsSection";
+import { TunnelHardeningSection } from "./connections/TunnelHardeningSection";
 
 /**
  * Per-user Connections tab.
@@ -105,6 +106,7 @@ export function UserConnectionsTab() {
       />
 
       <PeerConnectionsSection />
+      <TunnelHardeningSection />
     </div>
   );
 }
