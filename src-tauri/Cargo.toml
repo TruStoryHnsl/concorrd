@@ -212,11 +212,26 @@ ulid = "1"
 zstd = "0.13"
 hkdf = "0.12"
 
+# Porch Phase G — tunnel-only inbound hardening. `ipnet` parses + matches
+# CIDR blocks (IPv4 + IPv6) for the WireGuard / Tailscale interface CIDR
+# allow-list. Tiny dep (~13 KB compiled, no transitive crates) — picked
+# over `pnet_datalink` because we only need the CIDR math, not link-layer
+# packet parsing. Interface enumeration uses a hand-rolled probe in
+# `servitude/network/tunnel_detect.rs` (Linux: `/sys/class/net`,
+# macOS: `getifaddrs`, Windows: `GetAdaptersAddresses`).
+ipnet = { version = "2", features = ["serde"] }
+
 # Unix-only deps for servitude child-process management. `nix::sys::signal`
 # gives us SIGTERM for graceful shutdown — std::process::Child::kill uses
 # SIGKILL only, which doesn't let tuwunel flush its RocksDB on exit.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }
+# Phase G — direct getifaddrs(3) for tunnel-interface enumeration on
+# Linux + macOS (see `servitude/network/tunnel_detect.rs`). `libc` is
+# already in the transitive graph (tokio, mio, etc.) — declared here
+# explicitly so the tunnel-detect probe can name `libc::ifaddrs`
+# without leaning on an internal-API name.
+libc = "0.2"
 
 # Linux-specific deps (handled transitively by tauri/webkit2gtk in normal builds,
 # this section is reserved for Linux-only crates Concord may add later).

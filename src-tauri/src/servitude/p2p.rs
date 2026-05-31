@@ -70,6 +70,8 @@ use tokio::sync::broadcast;
 
 use crate::servitude::federation::FederationHandler;
 use crate::servitude::identity::{self, PeerIdentity, StrongholdHandle};
+use crate::servitude::network::connection_gate::{ConnectionGate, GateState};
+use crate::servitude::network::tunnel_detect::TunnelInterfaces;
 
 /// Identify protocol-version string. Pinned to the package version at
 /// build time so Phase 3 nodes observe each other's exact Concord release.
@@ -178,6 +180,17 @@ pub enum SwarmEvent {
 /// implementing [`libp2p::swarm::NetworkBehaviour`] over each field.
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
+    /// Phase G — tunnel-only inbound gate. Listed FIRST so the
+    /// derive-macro composes its `handle_pending_inbound_connection`
+    /// before any other field allocates upgrade resources. When the
+    /// gate rejects, the swarm short-circuits and never spins up
+    /// noise / yamux / behaviour-specific handlers for the rejected
+    /// connection.
+    ///
+    /// The gate is a no-op when `enforce` is off (Phase G's default
+    /// posture so existing installs aren't disrupted). Operators
+    /// toggle it from Settings → Connections → Tunnel hardening.
+    pub connection_gate: ConnectionGate,
     /// LAN-local peer discovery via multicast DNS. Replaces the prior
     /// Kademlia DHT (removed 2026-05-29) — see module docs.
     pub mdns: mdns::tokio::Behaviour,
@@ -221,6 +234,10 @@ pub struct LibP2pTransport {
     /// [`Self::stream_control`] so they can `open_stream(peer, proto)`
     /// without needing `&mut swarm`.
     stream_control: libp2p_stream::Control,
+    /// Phase G — clone of the inbound-gate state so the Tauri
+    /// command layer can hot-swap the enforce flag + extras CIDRs
+    /// without restarting the swarm.
+    gate_state: GateState,
 }
 
 impl LibP2pTransport {
@@ -235,6 +252,24 @@ impl LibP2pTransport {
     pub async fn new(
         peer_identity: &PeerIdentity,
         stronghold: &StrongholdHandle,
+    ) -> Result<Self, P2pError> {
+        // Default to a permissive (enforce=false) gate. Callers that
+        // want tunnel-only mode wire it in via
+        // [`Self::new_with_gate`].
+        let gate = GateState::new(false, TunnelInterfaces::detect(&[]));
+        Self::new_with_gate(peer_identity, stronghold, gate).await
+    }
+
+    /// Phase G — same as [`Self::new`] but takes a pre-built
+    /// [`GateState`] so the caller (servitude runtime) can wire the
+    /// operator's persisted tunnel-config in BEFORE the listeners
+    /// come up. The state is `Arc`-shared, so subsequent
+    /// `state.update(...)` calls on the same handle are observable
+    /// immediately by the gate behaviour inside the swarm.
+    pub async fn new_with_gate(
+        peer_identity: &PeerIdentity,
+        stronghold: &StrongholdHandle,
+        gate: GateState,
     ) -> Result<Self, P2pError> {
         // Pull the per-install seed out of the identity module's cache.
         // Bytes are wrapped in `Zeroizing` so they wipe themselves when the
@@ -287,6 +322,13 @@ impl LibP2pTransport {
         let (event_tx, _event_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
 
+        // Clone the gate state once for the behaviour-builder closure
+        // and once more for the LibP2pTransport handle we hand back.
+        // GateState is Arc-backed, so both clones see the same inner
+        // state — `update()` from the Tauri layer is observed by the
+        // running behaviour without restarting the swarm.
+        let gate_for_closure = gate.clone();
+
         // Build the swarm using libp2p's typestate builder. `with_tokio()`
         // selects the Tokio executor; `with_quic()`/`with_tcp()` set up the
         // transport stack; `with_relay_client()` injects the client-side
@@ -303,6 +345,15 @@ impl LibP2pTransport {
             .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)?
             .with_behaviour(|key, relay_client| -> Result<Behaviour, Box<dyn std::error::Error + Send + Sync>> {
                 let local_id = PeerId::from_public_key(&key.public());
+
+                // Phase G — install the inbound-gate behaviour FIRST
+                // so the derive-macro's composed
+                // `handle_pending_inbound_connection` runs it before
+                // any other field allocates upgrade resources. The
+                // gate is built around the (Arc-shared) state passed
+                // in by the caller; default callers ship a permissive
+                // gate (enforce=false).
+                let connection_gate = ConnectionGate::new(gate_for_closure.clone());
 
                 // mDNS: LAN-local discovery. Default config matches the
                 // standard libp2p multicast interval; no rendezvous
@@ -347,6 +398,7 @@ impl LibP2pTransport {
                 let stream = libp2p_stream::Behaviour::new();
 
                 Ok(Behaviour {
+                    connection_gate,
                     mdns,
                     identify,
                     ping,
@@ -387,7 +439,16 @@ impl LibP2pTransport {
             shutdown_tx,
             federation_handlers: Vec::new(),
             stream_control,
+            gate_state: gate,
         })
+    }
+
+    /// Phase G — clone of the inbound-gate state. Tauri command
+    /// `tunnel_set_config` calls `state.update(...)` on this clone
+    /// after persisting the new config; the change is observed by
+    /// the running swarm without a restart.
+    pub fn gate_state(&self) -> GateState {
+        self.gate_state.clone()
     }
 
     /// Local peer id (deterministic function of the libp2p seed).

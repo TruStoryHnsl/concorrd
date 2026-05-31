@@ -42,6 +42,7 @@ pub mod config;
 pub mod federation;
 pub mod identity;
 pub mod lifecycle;
+pub mod network;
 pub mod p2p;
 pub mod peer_store;
 pub mod transport;
@@ -346,6 +347,35 @@ impl ServitudeHandle {
         for runtime in &self.transports {
             if let Some(c) = runtime.porch_stream_control() {
                 return Some(c);
+            }
+        }
+        None
+    }
+
+    /// Phase G — wire the inbound-gate state into the libp2p runtime.
+    /// MUST be called BEFORE `start()` for the operator's persisted
+    /// tunnel-only preferences to be in effect when the swarm comes
+    /// up. Calling later is a soft no-op (the running swarm keeps
+    /// whatever state was wired before start).
+    pub fn set_gate_state(
+        &mut self,
+        state: crate::servitude::network::connection_gate::GateState,
+    ) {
+        for runtime in &mut self.transports {
+            runtime.set_gate_state(state.clone());
+        }
+    }
+
+    /// Phase G — clone of the libp2p runtime's inbound-gate state.
+    /// `None` when no libp2p runtime is started or wired. The Tauri
+    /// `tunnel_set_config` command uses this to hot-swap the running
+    /// swarm's gate without restarting it.
+    pub fn gate_state(
+        &self,
+    ) -> Option<crate::servitude::network::connection_gate::GateState> {
+        for runtime in &self.transports {
+            if let Some(s) = runtime.gate_state() {
+                return Some(s);
             }
         }
         None
