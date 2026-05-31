@@ -53,3 +53,4 @@ None.
 - [ ] No secrets, tokens, or `.env` values committed
 - [ ] CHANGELOG.md updated if user-visible
 - [ ] Docs updated if behavior or config changed
+- [ ] I have read and agree to the [Contributor License Agreement](../CLA.md) (required — opening this PR constitutes acceptance)
