@@ -146,7 +146,17 @@ pub struct ServitudeConfig {
     pub allow_privileged_port: bool,
 
     /// Layered transports this node will speak. At least one must be enabled.
-    #[serde(default = "default_transports")]
+    ///
+    /// Deserialized via [`deserialize_tolerant_transports`] so a stored
+    /// config from an older build that contains a now-removed variant
+    /// (e.g. `discord_bridge`, the deprecated bridge that shipped in
+    /// 0.4) does NOT brick the app at startup. Unknown variants are
+    /// logged + dropped; if every entry is unknown the field falls
+    /// back to [`default_transports`].
+    #[serde(
+        default = "default_transports",
+        deserialize_with = "deserialize_tolerant_transports"
+    )]
     pub enabled_transports: Vec<Transport>,
 
     /// Deployment profile. Native Tauri builds default to
@@ -163,6 +173,57 @@ pub struct ServitudeConfig {
 
 fn default_transports() -> Vec<Transport> {
     vec![Transport::MatrixFederation]
+}
+
+/// Deserialize `enabled_transports` while tolerating unknown variants.
+///
+/// Older builds shipped transport variants that no longer exist (the
+/// most common offender is `discord_bridge`, removed pre-0.5 — a
+/// stored settings.json carrying it would fail the strict
+/// `Vec<Transport>` derive deserialize with a TOML/JSON parse error
+/// and brick the app on startup). Tolerant deserialization fixes
+/// that: every entry is read as a string, mapped to its `Transport`
+/// variant if known, and dropped with a warning if not. When the
+/// filter leaves the list empty (every entry was unknown) the field
+/// falls back to [`default_transports`] so the user's instance still
+/// comes up with a working transport set.
+fn deserialize_tolerant_transports<'de, D>(
+    d: D,
+) -> Result<Vec<Transport>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Vec<String> = Vec::<String>::deserialize(d)?;
+    let parsed: Vec<Transport> = raw
+        .into_iter()
+        .filter_map(|s| match s.as_str() {
+            "wire_guard" => Some(Transport::WireGuard),
+            "mesh" => Some(Transport::Mesh),
+            "tunnel" => Some(Transport::Tunnel),
+            "matrix_federation" => Some(Transport::MatrixFederation),
+            #[cfg(feature = "reticulum")]
+            "reticulum" => Some(Transport::Reticulum),
+            other => {
+                log::warn!(
+                    target: "concord::config",
+                    "skipping unknown enabled_transports variant {other:?} \
+                     (likely from a removed or feature-gated transport); \
+                     update the stored settings to silence this warning"
+                );
+                None
+            }
+        })
+        .collect();
+    if parsed.is_empty() {
+        log::warn!(
+            target: "concord::config",
+            "no recognized transports in enabled_transports; falling back \
+             to default ({:?})",
+            default_transports()
+        );
+        return Ok(default_transports());
+    }
+    Ok(parsed)
 }
 
 impl Default for ServitudeConfig {
@@ -532,6 +593,39 @@ listen_port = -1
         let err =
             ServitudeConfig::from_toml_str(raw).expect_err("negative port should fail validation");
         assert!(matches!(err, ConfigError::PortOutOfRange(-1)));
+    }
+
+    /// Regression: a stored config from an older build that contains
+    /// `discord_bridge` (or any other removed transport variant) MUST
+    /// NOT brick startup. The tolerant deserializer drops the unknown
+    /// and keeps the recognized variants.
+    #[test]
+    fn unknown_transport_variants_are_dropped_with_warning() {
+        let raw = r#"
+display_name = "stale-config"
+max_peers = 8
+listen_port = 8765
+enabled_transports = ["matrix_federation", "discord_bridge"]
+"#;
+        let cfg = ServitudeConfig::from_toml_str(raw)
+            .expect("stored config with one stale transport variant must still parse");
+        assert_eq!(cfg.enabled_transports, vec![Transport::MatrixFederation]);
+    }
+
+    /// Regression: a stored config whose ENTIRE `enabled_transports`
+    /// list is unknown variants falls back to the default rather than
+    /// failing validation with "at least one transport must be enabled".
+    #[test]
+    fn all_unknown_transport_variants_fall_back_to_default() {
+        let raw = r#"
+display_name = "everything-stale"
+max_peers = 8
+listen_port = 8765
+enabled_transports = ["discord_bridge", "icq_relay"]
+"#;
+        let cfg = ServitudeConfig::from_toml_str(raw)
+            .expect("all-unknown variants must fall back to the default");
+        assert_eq!(cfg.enabled_transports, default_transports());
     }
 
     #[test]

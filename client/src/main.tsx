@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App";
+import { TauriTitlebar } from "./components/layout/TauriTitlebar";
 
 // Service worker was removed. The pre-React inline script in
 // index.html already unregisters any leftover SW from a previous
@@ -104,6 +105,7 @@ initServerUrl().then(() => {
   try {
     createRoot(rootEl).render(
       <StrictMode>
+        <TauriTitlebar />
         <App />
       </StrictMode>,
     );
