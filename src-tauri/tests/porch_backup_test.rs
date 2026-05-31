@@ -64,7 +64,11 @@ fn backup_round_trip_local() {
     let db2_path = dir2.path().join("porch.sqlite");
     let restored_version =
         backup::restore_from_blob(&db2_path, &blob, &seed).expect("restore ok");
-    assert_eq!(restored_version, 5, "Phase E ships schema v5");
+    assert_eq!(
+        restored_version,
+        app_lib::porch::SCHEMA_VERSION,
+        "restored schema version must match the current SCHEMA_VERSION"
+    );
 
     let porch2 = Porch::open(dir2.path()).expect("re-open ok");
     let msgs = porch2
@@ -296,7 +300,7 @@ async fn two_swarm_backup_upload() {
         .expect("info ok")
         .expect("must be present");
     assert_eq!(info.uploader_peer_id, peer_a.to_base58());
-    assert_eq!(info.schema_version, 5);
+    assert_eq!(info.schema_version, app_lib::porch::SCHEMA_VERSION);
     assert!(info.blob_size > 0, "blob must have been persisted");
 }
 

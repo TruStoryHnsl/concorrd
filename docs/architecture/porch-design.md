@@ -699,6 +699,129 @@ Open questions:
    may opt into "read-only mirror" mode where it pulls but doesn't
    push.
 
+> **Phase F implementation landed (2026-05-31).**
+>
+> Hand-rolled per-table CRDT shipped (no Automerge / Yjs dep). The
+> rationale documented in the implementation prompt:
+>
+> * Automerge's binary format would make the SQLite schema opaque to
+>   inspection — and we want `sqlite3 porch.sqlite` to keep working.
+> * Yjs is built around collaborative text, not relational tables.
+> * Our data shape (channels, messages, ACL grants, knocks, themes,
+>   obsidian bindings, assets) maps cleanly to per-row tombstone-LWW.
+>
+> **Schema v6.** The migration adds two new tables and seven sync
+> metadata column triples:
+>
+> ```sql
+> CREATE TABLE device_identity (device_id PRIMARY KEY, created_at, label);
+> CREATE TABLE device_links (peer_id PRIMARY KEY, device_id, role, ...);
+> ALTER TABLE porch_channels   ADD COLUMN sync_device_id / sync_lamport / sync_tombstone;
+> -- ditto for channel_messages, channel_acl, channel_knocks,
+> -- channel_themes, porch_assets, obsidian_channels
+> ```
+>
+> Pre-Phase-F rows are backfilled with this install's freshly-minted
+> device-id (a ULID) at `sync_lamport = 0`. Indexes on `sync_lamport`
+> back the "give me everything since X" PullDelta path.
+>
+> **LWW comparator: `(sync_lamport, sync_device_id)` — lamport first,
+> device-id tiebreak for total ordering.** This tiebreak is the
+> load-bearing detail; without it, two devices writing at the same
+> logical lamport tick would converge non-deterministically and the
+> CRDT property would break. `porch_sync_test::lww_tiebreak_device_id`
+> verifies it.
+>
+> **Tombstones, not hard deletes.** When `revoke_acl` runs, the
+> row is updated to `sync_tombstone = 1` and its
+> `(sync_device_id, sync_lamport)` is bumped. The row stays on disk
+> so a later sync from a device that hasn't yet seen the revoke
+> loses LWW against it. The application surface filters
+> tombstoned rows: `lookup_acl` treats them as absent so the revoke
+> takes effect immediately for the host's UI. The
+> `sync_tombstone` column exists for every CRDT-tracked table, but
+> Phase F only fires it from `revoke_acl`. Message delete is a Phase
+> F follow-up; the column exists so the protocol doesn't break when
+> that ships.
+>
+> **Wire protocol: `/concord/porch-sync/1.0.0`.** Three methods:
+>
+> * `LinkRequest { my_device_id, label }` — bootstrap. Both peers
+>   independently call this during pairing; each side learns the
+>   other's `(peer_id, device_id)` and records it in `device_links`
+>   via a separate Tauri command (`porch_link_personal_device`). The
+>   handler does NOT auto-insert into the responder's `device_links`
+>   — the user on the responder side has to also click "link" on
+>   their own UI. This is the consent gate.
+> * `PullDelta { since: SyncCursor }` — caller asks for rows with
+>   `sync_lamport > since[table]` per CRDT-tracked table. Refused
+>   with 403 if the caller isn't in `device_links`.
+> * `PushDelta { delta: SyncDelta }` — caller ships rows; responder
+>   applies via `merge::apply_remote_*` inside one transaction;
+>   returns per-table counts of rows that actually changed (rows that
+>   lost LWW silently drop).
+>
+> 32 MiB envelope cap — enough for any realistic porch DB; a future
+> chunked-streaming protocol can lift it without breaking the wire
+> shape (the cap is per-envelope, not per-protocol).
+>
+> **Per-table apply functions.** Each `apply_remote_<table>` follows
+> the same shape: look up the local row by PK; if absent, insert
+> verbatim (including tombstones — a remote tombstone for a row we
+> never had is still a tombstone we want to remember, so a delayed
+> in-flight insert can't accidentally resurrect it); if present,
+> compare `(remote_lamport, remote_device_id)` vs `(local_lamport,
+> local_device_id)`; larger wins. `porch_sync_test::
+> tombstone_for_unknown_row_inserted_as_tombstone` covers the
+> tombstone-resurrection edge.
+>
+> **Sync mechanics.** `sync_now(porch, control, peer)` runs one
+> pull-then-push round and returns a `SyncReport` with per-table
+> counts. `porch_sync_all_personal_devices` iterates every linked
+> device. The frontend `PersonalDevices.tsx` tab kicks
+> `porch_sync_all_personal_devices` every 60s while mounted —
+> background convergence without the user having to mash buttons.
+> Errors per-peer surface inside each `SyncReport` rather than
+> aborting the loop (one offline phone doesn't block sync with the
+> desktop).
+>
+> **Trust boundary.** `/concord/porch-sync/1.0.0` is separate from
+> the porch + backup protocols so an install can refuse sync access
+> while still accepting porch visits / backup uploads (and vice
+> versa). The handler's first action on any non-LinkRequest method
+> is `assert_linked(requester)` which returns 403 if the requester
+> isn't in `device_links`. `porch_sync_test::sync_rejects_non_linked_peer`
+> verifies the 403.
+>
+> **Obsidian vault_root is intentionally per-device.** The
+> `obsidian_channels` row syncs (so all devices agree on which
+> channels are obsidian-kind) but the `vault_root` path is
+> device-local in practice — `/home/corr/Notes` on laptop A is not
+> the same path as `/Documents/Notes` on phone B. The CRDT applies
+> LWW on the row as-shipped; the user manually re-binds the vault
+> per device. Documenting this here so a future contributor doesn't
+> "fix" it by trying to sync paths across heterogeneous filesystems.
+>
+> **Auto-sync interval shipped: 60s while the Personal Devices tab
+> is mounted.** A globally-resident 5-minute cadence is the natural
+> follow-up; the spec deferred that decision to the implementer and
+> 60s-while-visible is the lighter footprint.
+>
+> Out of scope (still deferred to later phases):
+>
+> * **Message-delete UI.** The tombstone column exists; the user-
+>   facing "delete a message" affordance is a follow-up that wires
+>   into `apply_remote_message` (already tombstone-aware).
+> * **Read-only mirror tier.** The original design's "phone pulls
+>   but doesn't push" idea is still open — Phase F ships symmetric
+>   sync. A future `device_links.role = 'read_only_mirror'` would
+>   gate the PushDelta path.
+> * **WireGuard hardening.** Phase G.
+> * **Conflict surfacing UI.** The CRDT converges automatically but
+>   the user has no UI to see "your channel name changed because
+>   another device renamed it later". The data is there
+>   (`sync_device_id` per row); the surface is a follow-up.
+
 ### Phase G — WireGuard-tunneled hardening
 
 DOCUMENT ONLY in Phase A.

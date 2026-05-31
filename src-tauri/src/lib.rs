@@ -1086,6 +1086,106 @@ struct RestoreResult {
 }
 
 // ---------------------------------------------------------------------------
+// Porch Phase F — multi-device sync (personal-device tier)
+// ---------------------------------------------------------------------------
+
+/// Phase F — return this install's stable device-id (a ULID).
+#[tauri::command]
+async fn porch_my_device_id(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.device_id().map_err(|e| e.to_string())
+}
+
+/// Phase F — promote `peer_id` to "personal device" status. Dials the
+/// remote, exchanges device-ids, commits the local side of the link.
+/// The remote user MUST independently call its own equivalent before
+/// sync runs in the other direction.
+#[tauri::command]
+async fn porch_link_personal_device(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    peer_id: String,
+    label: Option<String>,
+) -> Result<porch::DeviceLink, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::sync::link::link_and_record(&porch, &mut control, peer, label)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Phase F — remove a personal-device link. Subsequent sync requests
+/// from this peer will be refused.
+#[tauri::command]
+async fn porch_unlink_device(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    peer_id: String,
+) -> Result<(), String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.unlink_device(&peer_id).map_err(|e| e.to_string())
+}
+
+/// Phase F — list every linked personal device.
+#[tauri::command]
+async fn porch_list_device_links(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<porch::DeviceLink>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.list_device_links().map_err(|e| e.to_string())
+}
+
+/// Phase F — run a single pull-then-push round against one linked
+/// personal device. Returns a SyncReport with per-table counts.
+#[tauri::command]
+async fn porch_sync_now(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    peer_id: String,
+) -> Result<porch::SyncReport, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    Ok(porch::sync_now(&porch, &mut control, peer).await)
+}
+
+/// Phase F — sync against every linked personal device in turn.
+/// Returns per-peer SyncReports; errors are recorded inside each report
+/// (rather than aborting the loop) so a transient failure with one
+/// device doesn't block the others.
+#[tauri::command]
+async fn porch_sync_all_personal_devices(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<porch::SyncReport>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let links = porch.list_device_links().map_err(|e| e.to_string())?;
+    let mut reports = Vec::with_capacity(links.len());
+    for link in links {
+        match resolve_visit_control(&servitude_state, &link.peer_id).await {
+            Ok((mut control, peer)) => {
+                reports.push(porch::sync_now(&porch, &mut control, peer).await);
+            }
+            Err(e) => {
+                let mut report = porch::SyncReport::empty(link.peer_id.clone());
+                report.error = Some(e);
+                reports.push(report);
+            }
+        }
+    }
+    Ok(reports)
+}
+
+// ---------------------------------------------------------------------------
 // Phase 8 — voice path selection
 // ---------------------------------------------------------------------------
 
@@ -2195,6 +2295,13 @@ pub fn run() {
             porch_backup_check_remote_info,
             porch_backup_restore_from,
             porch_backup_list_received,
+            // Phase F — multi-device sync.
+            porch_my_device_id,
+            porch_link_personal_device,
+            porch_unlink_device,
+            porch_list_device_links,
+            porch_sync_now,
+            porch_sync_all_personal_devices,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

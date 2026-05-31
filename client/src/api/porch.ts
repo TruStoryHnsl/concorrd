@@ -670,3 +670,82 @@ export async function porchBackupListReceived(): Promise<ReceivedBackupSummary[]
   if (!isTauri()) return [];
   return await invoke<ReceivedBackupSummary[]>("porch_backup_list_received");
 }
+
+// ---------------------------------------------------------------------------
+// Phase F — multi-device sync (personal-device tier)
+// ---------------------------------------------------------------------------
+
+/** Phase F — one linked personal device. Mirrors Rust's `DeviceLink`. */
+export interface DeviceLink {
+  peer_id: string;
+  device_id: string;
+  /** Always `"personal_device"` in Phase F. */
+  role: string;
+  linked_at: number;
+  /** Unix milliseconds of the most recent successful sync round, or `null`. */
+  last_sync_at: number | null;
+  /** Highest `sync_lamport` ever observed from this device. */
+  last_sync_lamport: number;
+  label: string | null;
+}
+
+/** Phase F — per-peer sync report returned by `porch_sync_now` and
+ *  `porch_sync_all_personal_devices`. */
+export interface SyncReport {
+  peer_id: string;
+  pulled_count_per_table: Record<string, number>;
+  pushed_count_per_table: Record<string, number>;
+  error: string | null;
+}
+
+/** Phase F — return this install's stable device-id (a ULID). */
+export async function porchMyDeviceId(): Promise<string> {
+  if (!isTauri()) {
+    throw new Error("porch_my_device_id is native-only");
+  }
+  return await invoke<string>("porch_my_device_id");
+}
+
+/** Phase F — promote `peerId` to "personal device" status. Dials the
+ *  remote, exchanges device-ids, commits the local side of the link. */
+export async function porchLinkPersonalDevice(
+  peerId: string,
+  label: string | null,
+): Promise<DeviceLink> {
+  if (!isTauri()) {
+    throw new Error("porch_link_personal_device is native-only");
+  }
+  return await invoke<DeviceLink>("porch_link_personal_device", {
+    peerId,
+    label,
+  });
+}
+
+/** Phase F — remove a personal-device link. */
+export async function porchUnlinkDevice(peerId: string): Promise<void> {
+  if (!isTauri()) {
+    throw new Error("porch_unlink_device is native-only");
+  }
+  await invoke<void>("porch_unlink_device", { peerId });
+}
+
+/** Phase F — list every linked personal device. */
+export async function porchListDeviceLinks(): Promise<DeviceLink[]> {
+  if (!isTauri()) return [];
+  return await invoke<DeviceLink[]>("porch_list_device_links");
+}
+
+/** Phase F — run one pull-then-push round against one linked personal
+ *  device. */
+export async function porchSyncNow(peerId: string): Promise<SyncReport> {
+  if (!isTauri()) {
+    throw new Error("porch_sync_now is native-only");
+  }
+  return await invoke<SyncReport>("porch_sync_now", { peerId });
+}
+
+/** Phase F — sync against every linked personal device in turn. */
+export async function porchSyncAllPersonalDevices(): Promise<SyncReport[]> {
+  if (!isTauri()) return [];
+  return await invoke<SyncReport[]>("porch_sync_all_personal_devices");
+}

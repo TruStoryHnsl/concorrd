@@ -27,8 +27,9 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use super::channel::AclRole;
-use super::db::{unix_millis, Porch};
+use super::db::{device_id_unchecked, unix_millis, Porch};
 use super::error::PorchError;
+use super::sync::clock::next_lamport;
 
 /// Current status of a knock row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,11 +124,14 @@ impl Porch {
 
         let id = Ulid::new().to_string();
         let now = unix_millis();
+        let device_id = device_id_unchecked(&conn)?;
+        let lamport = next_lamport(&conn)?;
         conn.execute(
             "INSERT INTO channel_knocks
-                (id, channel_id, knocker_peer_id, message, status, created_at, resolved_at)
-             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, NULL)",
-            params![id, channel_id, knocker_peer_id, message, now],
+                (id, channel_id, knocker_peer_id, message, status, created_at, resolved_at,
+                 sync_device_id, sync_lamport, sync_tombstone)
+             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, NULL, ?6, ?7, 0)",
+            params![id, channel_id, knocker_peer_id, message, now, device_id, lamport],
         )?;
         Ok(Knock {
             id,
@@ -185,26 +189,39 @@ impl Porch {
             )));
         }
         let now = unix_millis();
+        let device_id = device_id_unchecked(&tx)?;
+        let knock_lamport = next_lamport(&tx)?;
         tx.execute(
             "UPDATE channel_knocks
-                SET status = 'accepted', resolved_at = ?1
+                SET status = 'accepted', resolved_at = ?1,
+                    sync_device_id = ?3, sync_lamport = ?4
                 WHERE id = ?2",
-            params![now, knock_id],
+            params![now, knock_id, device_id, knock_lamport],
         )?;
         // Insert (or upgrade) the ACL row. Same ON CONFLICT shape as
         // `grant_acl`, kept inline so the whole accept fires in one
-        // transaction (no Phase-A vs Phase-B locking race).
+        // transaction (no Phase-A vs Phase-B locking race). Phase F —
+        // a fresh lamport on the ACL row distinct from the knock's so
+        // both rows independently win LWW vs any remote state.
+        let acl_lamport = knock_lamport + 1;
         tx.execute(
-            "INSERT INTO channel_acl (channel_id, peer_id, role, granted_at)
-                VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO channel_acl
+                (channel_id, peer_id, role, granted_at,
+                 sync_device_id, sync_lamport, sync_tombstone)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
                 ON CONFLICT(channel_id, peer_id) DO UPDATE SET
                     role = excluded.role,
-                    granted_at = excluded.granted_at",
+                    granted_at = excluded.granted_at,
+                    sync_device_id = excluded.sync_device_id,
+                    sync_lamport = excluded.sync_lamport,
+                    sync_tombstone = 0",
             params![
                 knock.channel_id,
                 knock.knocker_peer_id,
                 AclRole::Member.as_str(),
-                now
+                now,
+                device_id,
+                acl_lamport,
             ],
         )?;
         tx.commit()?;
@@ -234,11 +251,14 @@ impl Porch {
             )));
         }
         let now = unix_millis();
+        let device_id = device_id_unchecked(&conn)?;
+        let lamport = next_lamport(&conn)?;
         conn.execute(
             "UPDATE channel_knocks
-                SET status = 'rejected', resolved_at = ?1
+                SET status = 'rejected', resolved_at = ?1,
+                    sync_device_id = ?3, sync_lamport = ?4
                 WHERE id = ?2",
-            params![now, knock_id],
+            params![now, knock_id, device_id, lamport],
         )?;
         Ok(Knock {
             status: KnockStatus::Rejected,
@@ -276,11 +296,14 @@ impl Porch {
             )));
         }
         let now = unix_millis();
+        let device_id = device_id_unchecked(&conn)?;
+        let lamport = next_lamport(&conn)?;
         conn.execute(
             "UPDATE channel_knocks
-                SET status = 'withdrawn', resolved_at = ?1
+                SET status = 'withdrawn', resolved_at = ?1,
+                    sync_device_id = ?3, sync_lamport = ?4
                 WHERE id = ?2",
-            params![now, knock_id],
+            params![now, knock_id, device_id, lamport],
         )?;
         Ok(Knock {
             status: KnockStatus::Withdrawn,

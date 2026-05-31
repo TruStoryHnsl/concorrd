@@ -36,6 +36,7 @@ pub mod error;
 pub mod knock;
 pub mod obsidian;
 pub mod protocol;
+pub mod sync;
 pub mod theme;
 
 pub use backup::{
@@ -48,7 +49,7 @@ pub use backup_protocol::{
     BackupErrorBody, BackupHandler, BackupRequest, BackupResponse, BACKUP_PROTOCOL_ID,
 };
 pub use channel::{AclMode, AclRole, ChannelKind, ChannelMessage, PorchChannel};
-pub use db::Porch;
+pub use db::{Porch, SCHEMA_VERSION};
 pub use error::PorchError;
 pub use knock::{Knock, KnockStatus};
 pub use obsidian::{
@@ -59,6 +60,11 @@ pub use protocol::{
     visit_list_channels, visit_list_vault, visit_post_message, visit_read_vault_file,
     visit_withdraw_knock, ChannelVisibility, PorchErrorBody, PorchHandler, PorchListChannelRow,
     PorchRequest, PorchResponse, VaultFileResponse, PORCH_PROTOCOL_ID,
+};
+pub use sync::{
+    apply_sync_batch, local_cursor, sync_now, visit_link_request, visit_pull_delta,
+    visit_push_delta, DeviceLink, LinkResponse, PushResult, SyncCursor, SyncDelta,
+    SyncHandler, SyncReport, SyncRequest, SyncResponse, SYNC_PROTOCOL_ID,
 };
 pub use theme::{
     Background, ChannelTheme, FontFamily, PorchAsset, ThemeSummary, MAX_ASSET_UPLOAD_BYTES,
