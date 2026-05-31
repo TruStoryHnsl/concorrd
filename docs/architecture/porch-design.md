@@ -318,6 +318,62 @@ Open questions:
 
 ### Phase C — per-channel aesthetic customization
 
+> **Phase C implementation landed (2026-05-30).** Schema bumped to v3
+> with two new tables: `channel_themes` (one row per channel; primary
+> / surface / on_surface / accent color anchors, font_family enum,
+> tagged-union background of `none` / `solid` / `gradient` /
+> `image{asset_id}`) and `porch_assets` (per-channel uploaded image
+> blob metadata — the bytes live on disk under
+> `<data_dir>/porch_assets/<asset_id>.<ext>` with SHA-256 + 5 MiB
+> upload cap; the DB row carries only metadata).
+>
+> Wire protocol stays `/concord/porch/1.0.0` — `GetTheme {
+> channel_id }` and `GetAssetBytes { asset_id }` variants land
+> additively. `ListChannels` rows now carry an optional
+> `theme_summary` (primary + accent only) so the visitor's rail can
+> render small color swatches without per-row GetTheme roundtrips.
+> `GetAssetBytes` is gated by the asset's owning channel ACL
+> (verified by `get_asset_bytes_respects_acl` integration test) and
+> serializes via a `kind: "inline" | "too_large"` envelope — inline
+> bytes capped at 256 KiB; larger assets surface a typed placeholder
+> marker so the visitor's client can render "image too large to
+> preview" without retrying. A dedicated `/concord/porch-asset/1.0.0`
+> streaming protocol for larger assets is deferred to a later phase.
+>
+> Tauri commands: owner-side `porch_get_theme` / `porch_set_theme` /
+> `porch_upload_asset` / `porch_list_assets`; visitor-side
+> `porch_visit_get_theme` / `porch_visit_get_asset_bytes`. The
+> visitor commands also have browser-libp2p counterparts in
+> `client/src/libp2p/porch.ts`.
+>
+> React surface: `client/src/components/porch/themeRenderer.ts`
+> emits CSS custom properties (`--porch-surface`, `--porch-primary`,
+> etc.) the porch view scopes to itself (no global Tailwind override)
+> and ships a small WCAG-ish contrast floor; `ChannelThemeEditor.tsx`
+> is lazy-loaded into `PorchManagement` under a new Themes tab and
+> covers color pickers + a font dropdown + a background tab strip +
+> an in-place file upload + a live preview. `PorchView` (visitor
+> mode) resolves and caches the per-channel theme via
+> `porch_visit_get_theme`, fetches image backgrounds through
+> `porch_visit_get_asset_bytes` → blob URL, and paints the whole
+> channel view through `applyTheme()`.
+>
+> Out of scope (still deferred to later phases):
+>
+> - **Sources-panel rail integration.** As in Phase A/B, the porch is
+>   still surfaced via the modal, not the right rail.
+> - **Large image streaming.** Inline GetAssetBytes is capped at 256
+>   KiB; bigger assets surface a placeholder. A
+>   `/concord/porch-asset/1.0.0` chunked protocol is a follow-up.
+> - **Self-mode image background.** The host's own porch view doesn't
+>   yet stream its own image backgrounds (the theme editor preview is
+>   the canonical view); only the visitor path resolves blob URLs.
+> - **Per-visitor remote-theme opt-out.** The original Phase C plan
+>   included a "disable remote themes for a11y / privacy" toggle;
+>   ship as a settings option in a follow-up.
+
+The original Phase C plan is captured below for historical reference:
+
 In scope:
 
 - New `channel_theme` table keyed on `channel_id`. Stores CSS-variable

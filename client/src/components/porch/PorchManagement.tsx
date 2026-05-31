@@ -13,7 +13,7 @@
  * exposed to browsers.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
   porchCreateChannel,
   type AclMode,
@@ -22,6 +22,18 @@ import {
 import { usePorchStore } from "../../stores/porchStore";
 import { KnocksAtTheDoor } from "./KnocksAtTheDoor";
 
+// Lazy-load the theme editor so the color-picker / file-upload surface
+// only pulls into the bundle when the owner actually opens the Themes
+// tab. Keeps the main porch-management chunk tight for the common
+// "view knocks + create channel" flow.
+const ChannelThemeEditor = lazy(() =>
+  import("./ChannelThemeEditor").then((m) => ({
+    default: m.ChannelThemeEditor,
+  })),
+);
+
+type ManagementTab = "channels" | "themes";
+
 export function PorchManagement() {
   const porch = usePorchStore();
   const [creating, setCreating] = useState(false);
@@ -29,6 +41,8 @@ export function PorchManagement() {
   const [draftKind, setDraftKind] = useState<ChannelKind>("inner");
   const [draftAcl, setDraftAcl] = useState<AclMode>("allowlist");
   const [createErr, setCreateErr] = useState<string | null>(null);
+  const [tab, setTab] = useState<ManagementTab>("channels");
+  const [themedChannelId, setThemedChannelId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!porch.isLoaded && !porch.isLoading) {
@@ -62,6 +76,11 @@ export function PorchManagement() {
     }
   };
 
+  // Default the themed-channel selector to the first available channel
+  // when the user first switches to the Themes tab.
+  const activeThemeChannelId =
+    themedChannelId ?? porch.channels[0]?.id ?? null;
+
   return (
     <div
       data-testid="porch-management"
@@ -74,6 +93,33 @@ export function PorchManagement() {
         color: "var(--on-surface, #e3e4e6)",
       }}
     >
+      <div
+        role="tablist"
+        aria-label="Porch management sections"
+        style={{ display: "flex", gap: 4 }}
+      >
+        <ManagementTabButton
+          label="Channels"
+          active={tab === "channels"}
+          onClick={() => setTab("channels")}
+          testId="porch-tab-channels"
+        />
+        <ManagementTabButton
+          label="Themes"
+          active={tab === "themes"}
+          onClick={() => setTab("themes")}
+          testId="porch-tab-themes"
+        />
+      </div>
+
+      {tab === "themes" ? (
+        <ThemesPanel
+          channels={porch.channels.map((c) => ({ id: c.id, name: c.name }))}
+          activeChannelId={activeThemeChannelId}
+          onSelectChannel={setThemedChannelId}
+        />
+      ) : (
+        <>
       <KnocksAtTheDoor
         channelNames={channelNames}
         onChange={() => void porch.loadChannels()}
@@ -283,7 +329,116 @@ export function PorchManagement() {
           </ul>
         )}
       </section>
+        </>
+      )}
     </div>
+  );
+}
+
+function ManagementTabButton({
+  label,
+  active,
+  onClick,
+  testId,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  testId: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      data-testid={testId}
+      style={{
+        padding: "4px 12px",
+        fontSize: 12,
+        background: active ? "var(--primary, #4f9eff)" : "transparent",
+        color: active ? "white" : "inherit",
+        border: "1px solid var(--outline-variant, #2a2c30)",
+        borderRadius: 4,
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function ThemesPanel({
+  channels,
+  activeChannelId,
+  onSelectChannel,
+}: {
+  channels: { id: string; name: string }[];
+  activeChannelId: string | null;
+  onSelectChannel: (id: string) => void;
+}) {
+  if (channels.length === 0) {
+    return (
+      <section
+        data-testid="themes-panel-empty"
+        style={{
+          background: "var(--surface-container, #1f2125)",
+          border: "1px solid var(--outline-variant, #2a2c30)",
+          borderRadius: 8,
+          padding: 12,
+          fontSize: 13,
+          fontStyle: "italic",
+          opacity: 0.7,
+        }}
+      >
+        No channels to theme yet. Create a channel in the Channels tab
+        first.
+      </section>
+    );
+  }
+  const active = channels.find((c) => c.id === activeChannelId) ?? channels[0];
+  return (
+    <section
+      data-testid="themes-panel"
+      style={{ display: "flex", flexDirection: "column", gap: 8 }}
+    >
+      <label style={{ fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}>
+        <span style={{ opacity: 0.8 }}>Channel:</span>
+        <select
+          data-testid="theme-channel-select"
+          value={active.id}
+          onChange={(e) => onSelectChannel(e.target.value)}
+          style={{
+            flex: 1,
+            padding: "4px 6px",
+            background: "var(--surface, #18191c)",
+            color: "inherit",
+            border: "1px solid var(--outline-variant, #2a2c30)",
+            borderRadius: 4,
+            fontSize: 12,
+          }}
+        >
+          {channels.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <Suspense
+        fallback={
+          <div data-testid="theme-editor-suspense" style={{ fontSize: 12 }}>
+            Loading editor…
+          </div>
+        }
+      >
+        <ChannelThemeEditor
+          key={active.id}
+          channelId={active.id}
+          channelName={active.name}
+        />
+      </Suspense>
+    </section>
   );
 }
 

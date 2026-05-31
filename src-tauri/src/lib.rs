@@ -666,6 +666,109 @@ async fn porch_visit_withdraw_knock(
 }
 
 // ---------------------------------------------------------------------------
+// Porch Phase C — per-channel theming + asset storage
+// ---------------------------------------------------------------------------
+
+/// Phase C — owner-side: read the theme stored for one of the host's
+/// own channels. Returns the persisted theme, or the default theme
+/// (see `ChannelTheme::default_for`) if the owner hasn't customized.
+/// The React side never has to deal with a `null` here — the default
+/// is substituted server-side.
+#[tauri::command]
+async fn porch_get_theme(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    channel_id: String,
+) -> Result<porch::ChannelTheme, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let theme = porch
+        .get_theme(&channel_id)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| porch::ChannelTheme::default_for(&channel_id));
+    Ok(theme)
+}
+
+/// Phase C — owner-side: persist the given theme for its channel.
+/// Validates color hex, font enum, and Image-background asset binding
+/// before hitting the DB so errors are user-friendly. Returns the
+/// persisted theme (with `updated_at` stamped).
+#[tauri::command]
+async fn porch_set_theme(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    theme: porch::ChannelTheme,
+) -> Result<porch::ChannelTheme, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.set_theme(theme).map_err(|e| e.to_string())
+}
+
+/// Phase C — owner-side: upload an image asset for `channel_id`. The
+/// renderer side passes the file as standard-base64 (NOT base64url —
+/// the wire encoding mirrors the inline-asset response). 5 MiB cap
+/// enforced at the storage layer.
+#[tauri::command]
+async fn porch_upload_asset(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    channel_id: String,
+    mime_type: String,
+    base64_bytes: String,
+) -> Result<porch::PorchAsset, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_bytes.as_bytes())
+        .map_err(|e| format!("base64 decode: {e}"))?;
+    porch
+        .upload_asset(&channel_id, &mime_type, &bytes)
+        .map_err(|e| e.to_string())
+}
+
+/// Phase C — owner-side: list every asset uploaded for a channel.
+#[tauri::command]
+async fn porch_list_assets(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    channel_id: String,
+) -> Result<Vec<porch::PorchAsset>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.list_assets(&channel_id).map_err(|e| e.to_string())
+}
+
+/// Phase C — visitor-side: fetch the owner-set theme for a channel on
+/// a paired peer's porch.
+#[tauri::command]
+async fn porch_visit_get_theme(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+    channel_id: String,
+) -> Result<porch::ChannelTheme, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::visit_get_theme(&mut control, peer, channel_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Phase C — visitor-side: fetch raw bytes of an image asset off a
+/// peer's porch. Returns the decoded bytes; throws if the asset is
+/// over the 256 KiB inline cap.
+#[tauri::command]
+async fn porch_visit_get_asset_bytes(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+    asset_id: String,
+) -> Result<Vec<u8>, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::visit_get_asset_bytes(&mut control, peer, asset_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Phase 8 — voice path selection
 // ---------------------------------------------------------------------------
 
@@ -1749,6 +1852,13 @@ pub fn run() {
             porch_visit_knock,
             porch_visit_knock_status,
             porch_visit_withdraw_knock,
+            // Phase C — per-channel theming + asset uploads.
+            porch_get_theme,
+            porch_set_theme,
+            porch_upload_asset,
+            porch_list_assets,
+            porch_visit_get_theme,
+            porch_visit_get_asset_bytes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

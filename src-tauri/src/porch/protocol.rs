@@ -29,6 +29,7 @@ use super::channel::{AclMode, ChannelMessage, PorchChannel};
 use super::db::Porch;
 use super::error::PorchError;
 use super::knock::{Knock, KnockStatus};
+use super::theme::{ChannelTheme, ThemeSummary, MAX_INLINE_ASSET_BYTES};
 
 /// libp2p stream protocol ID for porch traffic. Distinct namespace from
 /// the Matrix / ActivityPub / voice-signaling protocols.
@@ -94,6 +95,20 @@ pub enum PorchRequest {
     /// Phase B — withdraw a pending knock owned by the connected
     /// visitor. Only the original knocker can withdraw their own row.
     WithdrawKnock { knock_id: String },
+    /// Phase C — fetch the owner-set theme for a channel the visitor
+    /// has access to. Returns the persisted theme row, or the default
+    /// (see [`ChannelTheme::default_for`]) if the owner hasn't set
+    /// one. ACL-gated: same as `GetMessages` — owner-only channels
+    /// stay invisible; gated channels surface 403 to non-members.
+    GetTheme { channel_id: String },
+    /// Phase C — fetch the raw bytes of an uploaded image asset. The
+    /// host returns the bytes inline as base64 in the response. ACL
+    /// follows the asset's owning channel — visitor must be able to
+    /// visit that channel. Inline cap is [`MAX_INLINE_ASSET_BYTES`]
+    /// (256 KiB); larger assets are rejected with a typed marker so
+    /// the visitor's client can render "image too large to preview"
+    /// without retrying.
+    GetAssetBytes { asset_id: String },
 }
 
 /// Phase B — per-channel row returned by `ListChannels`. Carries the
@@ -107,6 +122,12 @@ pub struct PorchListChannelRow {
     #[serde(flatten)]
     pub channel: PorchChannel,
     pub visibility: ChannelVisibility,
+    /// Phase C — compact theme summary so the visitor's channel rail
+    /// can render color swatches without a per-row GetTheme round-trip.
+    /// `None` if the owner hasn't customized the channel — the
+    /// visitor's client can substitute the default-theme summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_summary: Option<ThemeSummary>,
 }
 
 /// Phase B — what the visitor can do with a channel.
@@ -144,6 +165,35 @@ pub struct PorchResponse {
 pub struct PorchErrorBody {
     pub code: i32,
     pub message: String,
+}
+
+/// Phase C — `GetAssetBytes` response payload. Either the bytes inline
+/// (under [`MAX_INLINE_ASSET_BYTES`]) or a typed "too large" marker
+/// the visitor's UI renders as a placeholder. Tagged union so future
+/// chunked-streaming variants slot in additively.
+///
+/// Serialized as:
+///
+/// ```json
+/// {"kind":"inline","asset_id":"01J...","mime_type":"image/png","bytes_b64":"..."}
+/// {"kind":"too_large","asset_id":"01J...","mime_type":"image/png","bytes":1234567}
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AssetBytesResponse {
+    Inline {
+        asset_id: String,
+        mime_type: String,
+        /// Standard base64 (RFC 4648) — the browser side decodes via
+        /// `atob` / TextDecoder fallback. Sized by
+        /// [`MAX_INLINE_ASSET_BYTES`].
+        bytes_b64: String,
+    },
+    TooLarge {
+        asset_id: String,
+        mime_type: String,
+        bytes: u64,
+    },
 }
 
 impl PorchResponse {
@@ -227,9 +277,14 @@ impl PorchHandler {
                             .map(|k| k.status);
                         ChannelVisibility::NeedsKnock { existing_knock }
                     };
+                    // Phase C — attach the per-channel theme summary so
+                    // the visitor's rail can render swatches without a
+                    // per-row GetTheme round-trip.
+                    let theme_summary = self.porch.get_theme_summary(&ch.id)?;
                     rows.push(PorchListChannelRow {
                         channel: ch,
                         visibility,
+                        theme_summary,
                     });
                 }
                 Ok(serde_json::to_value(rows)?)
@@ -311,6 +366,61 @@ impl PorchHandler {
             PorchRequest::WithdrawKnock { knock_id } => {
                 let withdrawn = self.porch.withdraw_knock(&knock_id, &visitor)?;
                 Ok(serde_json::to_value(withdrawn)?)
+            }
+            PorchRequest::GetTheme { channel_id } => {
+                let ch = self
+                    .porch
+                    .get_channel(&channel_id)?
+                    .ok_or_else(|| PorchError::ChannelNotFound {
+                        channel_id: channel_id.clone(),
+                    })?;
+                if !can_visit(&self.porch, &visitor, &ch)? {
+                    return Err(PorchError::AccessDenied {
+                        channel_id: channel_id.clone(),
+                    });
+                }
+                // Substitute the default theme if the owner hasn't
+                // customized — the visitor never sees a null response.
+                let theme = self
+                    .porch
+                    .get_theme(&channel_id)?
+                    .unwrap_or_else(|| ChannelTheme::default_for(&channel_id));
+                Ok(serde_json::to_value(theme)?)
+            }
+            PorchRequest::GetAssetBytes { asset_id } => {
+                let asset =
+                    self.porch
+                        .get_asset(&asset_id)?
+                        .ok_or_else(|| PorchError::ChannelNotFound {
+                            channel_id: asset_id.clone(),
+                        })?;
+                let ch = self.porch.get_channel(&asset.channel_id)?.ok_or_else(
+                    || PorchError::ChannelNotFound {
+                        channel_id: asset.channel_id.clone(),
+                    },
+                )?;
+                if !can_visit(&self.porch, &visitor, &ch)? {
+                    return Err(PorchError::AccessDenied {
+                        channel_id: asset.channel_id.clone(),
+                    });
+                }
+                if (asset.bytes as usize) > MAX_INLINE_ASSET_BYTES {
+                    let resp = AssetBytesResponse::TooLarge {
+                        asset_id: asset.id.clone(),
+                        mime_type: asset.mime_type.clone(),
+                        bytes: asset.bytes,
+                    };
+                    return Ok(serde_json::to_value(resp)?);
+                }
+                let (asset, bytes) = self.porch.read_asset_bytes(&asset_id)?;
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let resp = AssetBytesResponse::Inline {
+                    asset_id: asset.id,
+                    mime_type: asset.mime_type,
+                    bytes_b64: b64,
+                };
+                Ok(serde_json::to_value(resp)?)
             }
         }
     }
@@ -507,6 +617,45 @@ pub async fn visit_get_messages(
     )
     .await?;
     decode_or_error::<Vec<ChannelMessage>>(response)
+}
+
+/// Phase C — visit a peer's porch and read the owner-set theme for a
+/// channel the visitor has access to. Substitutes the default theme
+/// if no row exists.
+pub async fn visit_get_theme(
+    control: &mut Control,
+    peer_id: PeerId,
+    channel_id: String,
+) -> Result<ChannelTheme, PorchError> {
+    let response = send_one(control, peer_id, PorchRequest::GetTheme { channel_id }).await?;
+    decode_or_error::<ChannelTheme>(response)
+}
+
+/// Phase C — visit a peer's porch and fetch the raw bytes of an image
+/// asset. The response is either inline bytes (under
+/// [`MAX_INLINE_ASSET_BYTES`]) or a `TooLarge` marker. Returns the raw
+/// decoded bytes on the inline path, or `PorchError::InvalidInput`
+/// with a typed marker message on `TooLarge`.
+pub async fn visit_get_asset_bytes(
+    control: &mut Control,
+    peer_id: PeerId,
+    asset_id: String,
+) -> Result<Vec<u8>, PorchError> {
+    let response = send_one(control, peer_id, PorchRequest::GetAssetBytes { asset_id }).await?;
+    let resp = decode_or_error::<AssetBytesResponse>(response)?;
+    match resp {
+        AssetBytesResponse::Inline { bytes_b64, .. } => {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .decode(bytes_b64)
+                .map_err(|e| {
+                    PorchError::MalformedEnvelope(format!("asset bytes base64 decode: {e}"))
+                })
+        }
+        AssetBytesResponse::TooLarge { bytes, .. } => Err(PorchError::InvalidInput(format!(
+            "asset too large to preview inline: {bytes} bytes"
+        ))),
+    }
 }
 
 /// Visit a peer's porch and post a message to one of their channels.

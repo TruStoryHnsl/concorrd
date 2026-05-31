@@ -33,15 +33,21 @@ pub mod db;
 pub mod error;
 pub mod knock;
 pub mod protocol;
+pub mod theme;
 
 pub use channel::{AclMode, AclRole, ChannelKind, ChannelMessage, PorchChannel};
 pub use db::Porch;
 pub use error::PorchError;
 pub use knock::{Knock, KnockStatus};
 pub use protocol::{
-    visit_get_messages, visit_knock, visit_knock_status, visit_list_channels, visit_post_message,
-    visit_withdraw_knock, ChannelVisibility, PorchErrorBody, PorchHandler, PorchListChannelRow,
-    PorchRequest, PorchResponse, PORCH_PROTOCOL_ID,
+    visit_get_asset_bytes, visit_get_messages, visit_get_theme, visit_knock, visit_knock_status,
+    visit_list_channels, visit_post_message, visit_withdraw_knock, ChannelVisibility,
+    PorchErrorBody, PorchHandler, PorchListChannelRow, PorchRequest, PorchResponse,
+    PORCH_PROTOCOL_ID,
+};
+pub use theme::{
+    Background, ChannelTheme, FontFamily, PorchAsset, ThemeSummary, MAX_ASSET_UPLOAD_BYTES,
+    MAX_INLINE_ASSET_BYTES,
 };
 
 /// The id of the default porch channel created on first boot. Stable

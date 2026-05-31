@@ -420,7 +420,7 @@ select {
      pb-*/py-*/p-* utilities and applies uniformly. Previously this was
      `env(safe-area-inset-bottom, 0px)` alone, which silently zeroed the
      bottom padding of every .safe-bottom element on desktop and slammed
-     content flush to the container's bottom edge (Explore Sources modal,
+     content flush to the container bottom edge (Explore Sources modal,
      VoiceConnectionBar). 0.75rem matches the floor used inline in
      PlaceVoiceBanner.tsx. */
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
