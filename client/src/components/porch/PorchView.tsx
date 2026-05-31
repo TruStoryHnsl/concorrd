@@ -14,14 +14,22 @@
  * per-channel theming lands.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePorchStore } from "../../stores/porchStore";
 import { useVisitorStore } from "../../stores/visitorStore";
 import type {
   ChannelMessage,
+  ChannelTheme,
   PorchChannel,
   PorchListChannelRow,
 } from "../../api/porch";
+import {
+  defaultChannelTheme,
+  porchGetTheme,
+  porchVisitGetAssetBytes,
+  porchVisitGetTheme,
+} from "../../api/porch";
+import { applyTheme } from "./themeRenderer";
 
 export type PorchViewMode = "self" | "visit";
 
@@ -50,6 +58,92 @@ export function PorchView({ mode, title }: PorchViewProps) {
   const store: CommonStore = mode === "self" ? self : visit;
 
   const [draft, setDraft] = useState("");
+  // Phase C — per-channel theme for the currently-selected channel.
+  // Cached in a local map keyed by `${peer ?? "self"}::${channelId}` so
+  // re-selecting a channel doesn't refetch.
+  const [themeCache, setThemeCache] = useState<Record<string, ChannelTheme>>(
+    {},
+  );
+  const [bgUrl, setBgUrl] = useState<string | null>(null);
+  const visitPeer = mode === "visit" ? visit.currentPeerId : null;
+  const selectedId = store.selectedChannelId;
+  const themeKey = `${visitPeer ?? "self"}::${selectedId ?? ""}`;
+  const activeTheme: ChannelTheme | null = useMemo(() => {
+    if (!selectedId) return null;
+    return themeCache[themeKey] ?? null;
+  }, [themeCache, themeKey, selectedId]);
+
+  // Fetch + cache the theme whenever the selected channel changes.
+  useEffect(() => {
+    if (!selectedId) return;
+    if (themeCache[themeKey]) return; // already cached
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const t =
+          mode === "self"
+            ? await porchGetTheme(selectedId)
+            : visitPeer
+              ? await porchVisitGetTheme(visitPeer, selectedId)
+              : defaultChannelTheme(selectedId);
+        if (!cancelled) {
+          setThemeCache((prev) => ({ ...prev, [themeKey]: t }));
+        }
+      } catch {
+        // Theme fetch is best-effort — fall back to default on error.
+        if (!cancelled) {
+          setThemeCache((prev) => ({
+            ...prev,
+            [themeKey]: defaultChannelTheme(selectedId),
+          }));
+        }
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [themeKey, themeCache, selectedId, mode, visitPeer]);
+
+  // Resolve image background → blob URL. The blob URL is revoked on
+  // unmount / change so we don't leak memory.
+  useEffect(() => {
+    setBgUrl(null);
+    if (!activeTheme) return;
+    if (activeTheme.background.kind !== "image") return;
+    const assetId = activeTheme.background.value.asset_id;
+    if (!assetId) return;
+    let cancelled = false;
+    let url: string | null = null;
+    const load = async () => {
+      try {
+        const bytes =
+          mode === "self"
+            ? // The host's own assets aren't loaded here in Phase C —
+              // the editor preview is the canonical view. Fall back to
+              // the solid surface color until self-mode background
+              // streaming lands.
+              null
+            : visitPeer
+              ? await porchVisitGetAssetBytes(visitPeer, assetId)
+              : null;
+        if (!cancelled && bytes) {
+          const blob = new Blob([bytes as BlobPart], {
+            type: "image/*",
+          });
+          url = URL.createObjectURL(blob);
+          setBgUrl(url);
+        }
+      } catch {
+        // Best effort — keep the solid-color fallback.
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [activeTheme, mode, visitPeer]);
 
   // Trigger an initial load when the component mounts in self mode.
   // The visit mode is driven by an explicit `openVisit` call from
@@ -71,9 +165,14 @@ export function PorchView({ mode, title }: PorchViewProps) {
     setDraft("");
   };
 
+  const themedStyle = applyTheme(activeTheme, {
+    imageBackgroundUrl: bgUrl ?? undefined,
+  });
+
   return (
     <div
       className="porch-view"
+      data-testid="porch-view"
       style={{
         display: "flex",
         flexDirection: "row",
@@ -81,6 +180,9 @@ export function PorchView({ mode, title }: PorchViewProps) {
         width: "100%",
         background: "var(--surface, #18191c)",
         color: "var(--on-surface, #e3e4e6)",
+        // Phase C — themed surface overrides the defaults above when
+        // an active theme is loaded for the selected channel.
+        ...themedStyle,
       }}
     >
       {/* Channel list */}
@@ -369,6 +471,7 @@ function VisitorChannelRow({
           <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {row.name}
           </span>
+          <ThemeSwatch row={row} />
         </button>
       </li>
     );
@@ -401,6 +504,7 @@ function VisitorChannelRow({
           >
             {row.name}
           </span>
+          <ThemeSwatch row={row} />
         </div>
 
         {existing === "pending" ? (
@@ -540,6 +644,45 @@ function VisitorChannelRow({
         )}
       </div>
     </li>
+  );
+}
+
+/**
+ * Phase C — two small color dots next to a channel name in the
+ * visitor's rail, so the visitor sees a porch's character before
+ * clicking into a channel. Falls back to the default-theme swatch
+ * when the host hasn't customized.
+ */
+function ThemeSwatch({ row }: { row: PorchListChannelRow }) {
+  const summary = row.theme_summary ?? null;
+  // Default-theme summary for unstyled channels.
+  const primary = summary?.primary_color ?? "#4f9eff";
+  const accent = summary?.accent_color ?? "#7c4dff";
+  return (
+    <span
+      data-testid={`theme-swatch-${row.id}`}
+      aria-hidden
+      style={{ display: "inline-flex", gap: 2 }}
+    >
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: primary,
+          display: "inline-block",
+        }}
+      />
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: accent,
+          display: "inline-block",
+        }}
+      />
+    </span>
   );
 }
 

@@ -86,6 +86,78 @@ export interface PorchListChannelRow {
   acl_mode: AclMode;
   created_at: number;
   visibility: ChannelVisibility;
+  /** Phase C — compact theme swatch for the channel-rail preview.
+   *  `null`/absent if the owner hasn't customized; the UI substitutes
+   *  the default-theme summary. */
+  theme_summary?: ThemeSummary | null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase C — per-channel theming + asset storage
+// ---------------------------------------------------------------------------
+
+/** Phase C — font-family enum on a channel theme. The renderer maps
+ *  each variant to a concrete `font-family` CSS stack. */
+export type FontFamily = "system" | "serif" | "mono" | "display";
+
+/** Phase C — background descriptor on a channel theme. Tagged union:
+ *  the `kind` discriminator picks the variant and `value` carries its
+ *  payload (hex string for solid, CSS gradient string for gradient,
+ *  asset-id binding for image). */
+export type Background =
+  | { kind: "none"; value?: null }
+  | { kind: "solid"; value: string }
+  | { kind: "gradient"; value: string }
+  | { kind: "image"; value: { asset_id: string } };
+
+/** Phase C — full theme row for a channel. Mirrors Rust's `ChannelTheme`. */
+export interface ChannelTheme {
+  channel_id: string;
+  primary_color: string;
+  surface_color: string;
+  on_surface_color: string;
+  accent_color: string;
+  font_family: FontFamily;
+  background: Background;
+  /** Unix milliseconds — server-stamped on every save. */
+  updated_at: number;
+}
+
+/** Phase C — compact theme summary embedded in `ListChannels` rows. */
+export interface ThemeSummary {
+  primary_color: string;
+  accent_color: string;
+}
+
+/** Phase C — uploaded image asset metadata. The raw bytes live on
+ *  disk under `<data_dir>/porch_assets/<file_path>`; fetch them via
+ *  the visit-side helper. */
+export interface PorchAsset {
+  id: string;
+  channel_id: string;
+  mime_type: string;
+  /** Path relative to `<data_dir>/porch_assets/`. */
+  file_path: string;
+  bytes: number;
+  sha256: string;
+  created_at: number;
+}
+
+/** Phase C — sensible default theme. Used as a fallback when the
+ *  owner hasn't customized a channel. Mirrors Rust's
+ *  `ChannelTheme::default_for` so the client and server agree on what
+ *  "unset" looks like. */
+export function defaultChannelTheme(channelId: string): ChannelTheme {
+  return {
+    channel_id: channelId,
+    primary_color: "#4f9eff",
+    surface_color: "#18191c",
+    on_surface_color: "#e3e4e6",
+    accent_color: "#7c4dff",
+    font_family: "system",
+    background: { kind: "none" },
+    updated_at: 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -283,4 +355,80 @@ export async function porchVisitWithdrawKnock(
   }
   const mod = await import("../libp2p/porch");
   return await mod.browserVisitWithdrawKnock(peerId, knockId);
+}
+
+// ---------------------------------------------------------------------------
+// Phase C — per-channel theming + asset storage
+// ---------------------------------------------------------------------------
+
+/** Owner-side: read the theme stored for one of this install's
+ *  channels. Returns the persisted theme or the default if the owner
+ *  hasn't customized. Native only — browsers don't host a porch. */
+export async function porchGetTheme(channelId: string): Promise<ChannelTheme> {
+  if (!isTauri()) return defaultChannelTheme(channelId);
+  return await invoke<ChannelTheme>("porch_get_theme", { channelId });
+}
+
+/** Owner-side: persist the given theme. Returns the server-stamped
+ *  copy (with `updated_at` populated). */
+export async function porchSetTheme(theme: ChannelTheme): Promise<ChannelTheme> {
+  if (!isTauri()) throw new Error("porch_set_theme is native-only");
+  return await invoke<ChannelTheme>("porch_set_theme", { theme });
+}
+
+/** Owner-side: upload an image asset for a channel. The renderer
+ *  passes the file as standard-base64 (RFC 4648); the storage layer
+ *  enforces a 5 MiB cap and a MIME allow-list (PNG/JPEG/WebP/GIF). */
+export async function porchUploadAsset(
+  channelId: string,
+  mimeType: string,
+  base64Bytes: string,
+): Promise<PorchAsset> {
+  if (!isTauri()) throw new Error("porch_upload_asset is native-only");
+  return await invoke<PorchAsset>("porch_upload_asset", {
+    channelId,
+    mimeType,
+    base64Bytes,
+  });
+}
+
+/** Owner-side: list every asset uploaded for a channel. */
+export async function porchListAssets(channelId: string): Promise<PorchAsset[]> {
+  if (!isTauri()) return [];
+  return await invoke<PorchAsset[]>("porch_list_assets", { channelId });
+}
+
+/** Visitor-side: fetch the theme set by the owner of a peer's
+ *  channel. Native + web. */
+export async function porchVisitGetTheme(
+  peerId: string,
+  channelId: string,
+): Promise<ChannelTheme> {
+  if (isTauri()) {
+    return await invoke<ChannelTheme>("porch_visit_get_theme", {
+      peerId,
+      channelId,
+    });
+  }
+  const mod = await import("../libp2p/porch");
+  return await mod.browserVisitGetTheme(peerId, channelId);
+}
+
+/** Visitor-side: fetch raw bytes of an image asset off the peer's
+ *  porch. Returns a Uint8Array of decoded bytes. Throws if the asset
+ *  exceeds the 256 KiB inline cap (the visitor's UI should render a
+ *  placeholder in that case). */
+export async function porchVisitGetAssetBytes(
+  peerId: string,
+  assetId: string,
+): Promise<Uint8Array> {
+  if (isTauri()) {
+    const raw = await invoke<number[] | Uint8Array>("porch_visit_get_asset_bytes", {
+      peerId,
+      assetId,
+    });
+    return raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+  }
+  const mod = await import("../libp2p/porch");
+  return await mod.browserVisitGetAssetBytes(peerId, assetId);
 }

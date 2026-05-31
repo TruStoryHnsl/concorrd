@@ -24,6 +24,7 @@ import {
 
 import type {
   ChannelMessage,
+  ChannelTheme,
   Knock,
   PorchListChannelRow,
 } from "../api/porch";
@@ -49,7 +50,26 @@ export type PorchRequest =
       params: { channel_id: string; message: string | null };
     }
   | { method: "KnockStatus"; params: { channel_id: string } }
-  | { method: "WithdrawKnock"; params: { knock_id: string } };
+  | { method: "WithdrawKnock"; params: { knock_id: string } }
+  // Phase C — per-channel theming + asset storage.
+  | { method: "GetTheme"; params: { channel_id: string } }
+  | { method: "GetAssetBytes"; params: { asset_id: string } };
+
+/** Phase C — `GetAssetBytes` response. Tagged union mirroring the
+ *  Rust `AssetBytesResponse`. */
+export type AssetBytesResponse =
+  | {
+      kind: "inline";
+      asset_id: string;
+      mime_type: string;
+      bytes_b64: string;
+    }
+  | {
+      kind: "too_large";
+      asset_id: string;
+      mime_type: string;
+      bytes: number;
+    };
 
 /** Wire shape of a porch response. */
 export interface PorchResponse {
@@ -216,4 +236,51 @@ export async function browserVisitWithdrawKnock(
     params: { knock_id: knockId },
   });
   return unwrapResponse<Knock>(response);
+}
+
+// ---------------------------------------------------------------------------
+// Phase C — per-channel theming + asset storage
+// ---------------------------------------------------------------------------
+
+/** Browser visitor: GetTheme. */
+export async function browserVisitGetTheme(
+  peerIdStr: string,
+  channelId: string,
+): Promise<ChannelTheme> {
+  const node = await getRunningNode();
+  const peerId = peerIdFromString(peerIdStr);
+  const response = await sendPorchRequest(node, peerId, {
+    method: "GetTheme",
+    params: { channel_id: channelId },
+  });
+  return unwrapResponse<ChannelTheme>(response);
+}
+
+/** Browser visitor: GetAssetBytes.
+ *
+ *  Returns the decoded asset bytes inline (under the 256 KiB cap) or
+ *  throws if the host signals "too_large" — the caller is responsible
+ *  for rendering a placeholder when that happens.
+ */
+export async function browserVisitGetAssetBytes(
+  peerIdStr: string,
+  assetId: string,
+): Promise<Uint8Array> {
+  const node = await getRunningNode();
+  const peerId = peerIdFromString(peerIdStr);
+  const response = await sendPorchRequest(node, peerId, {
+    method: "GetAssetBytes",
+    params: { asset_id: assetId },
+  });
+  const payload = unwrapResponse<AssetBytesResponse>(response);
+  if (payload.kind === "too_large") {
+    throw new Error(
+      `asset ${payload.asset_id} too large to preview inline: ${payload.bytes} bytes`,
+    );
+  }
+  // Decode base64 → Uint8Array. atob is fine in the browser.
+  const bin = atob(payload.bytes_b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
 }

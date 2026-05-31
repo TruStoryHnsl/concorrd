@@ -8,7 +8,7 @@
 //! process go through a `Mutex<Connection>`-style wrapper in the Tauri
 //! state layer.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -23,7 +23,14 @@ use super::DEFAULT_PORCH_CHANNEL_ID;
 /// * `1` — Phase A: `porch_channels`, `channel_acl`, `channel_messages`.
 /// * `2` — Phase B: `channel_knocks` (knock-to-enter pending requests
 ///   for inner channels with `acl_mode = 'allowlist'`).
-pub const SCHEMA_VERSION: i64 = 2;
+/// * `3` — Phase C: `channel_themes` (per-channel aesthetic theme rows)
+///   plus `porch_assets` (uploaded image blobs referenced by themes).
+pub const SCHEMA_VERSION: i64 = 3;
+
+/// Subdirectory under the porch data dir where uploaded theme assets
+/// (image bytes) live. The DB stores the relative file path
+/// (`<asset_id>.<ext>`) under this root.
+pub const PORCH_ASSETS_DIRNAME: &str = "porch_assets";
 
 /// Default porch channel display name. Cosmetic — the id is the stable
 /// reference.
@@ -52,6 +59,11 @@ pub struct Porch {
     /// [`crate::porch::knock`]) can drive the underlying connection
     /// without re-exposing it to the rest of the crate.
     pub(super) conn: Mutex<Connection>,
+    /// Absolute path to the `porch_assets/` subdirectory under the
+    /// porch's data dir. Phase C theme image uploads land here as
+    /// `<asset_id>.<ext>`. `None` for in-memory porches — uploads
+    /// fail with `PorchError::InvalidInput` in that case.
+    pub(super) assets_root: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Porch {
@@ -75,8 +87,13 @@ impl Porch {
         // the `ON DELETE CASCADE` on `channel_acl` / `channel_messages`
         // actually fires when a channel is deleted in a future phase.
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        // Phase C — ensure the asset-storage subdir exists so theme
+        // image uploads have somewhere to land. Idempotent.
+        let assets_root = dir.join(PORCH_ASSETS_DIRNAME);
+        std::fs::create_dir_all(&assets_root).map_err(PorchError::Io)?;
         let porch = Porch {
             conn: Mutex::new(conn),
+            assets_root: Some(assets_root),
         };
         porch.migrate()?;
         porch.ensure_default_channel()?;
@@ -85,15 +102,26 @@ impl Porch {
 
     /// Open an in-memory porch. Used by tests so they can spin up many
     /// independent instances cheaply without touching disk.
+    ///
+    /// In-memory porches have no `assets_root`, so Phase C asset
+    /// uploads error with `PorchError::InvalidInput`. Tests that need
+    /// the file-write path use `Porch::open` against a tempdir.
     pub fn open_in_memory() -> Result<Self, PorchError> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         let porch = Porch {
             conn: Mutex::new(conn),
+            assets_root: None,
         };
         porch.migrate()?;
         porch.ensure_default_channel()?;
         Ok(porch)
+    }
+
+    /// Absolute path to this porch's `porch_assets/` directory, if any.
+    /// `None` for in-memory porches.
+    pub fn assets_root(&self) -> Option<&Path> {
+        self.assets_root.as_deref()
     }
 
     fn migrate(&self) -> Result<(), PorchError> {
@@ -143,6 +171,8 @@ impl Porch {
                 COMMIT;",
             )?;
         }
+        // Phase C migration runs after Phase B; both migrate fresh
+        // installs and pre-Phase-C DBs in a single open call.
         if current < 2 {
             // Phase B migration. `channel_knocks` carries the
             // knock-to-enter request lifecycle. The partial unique index
@@ -169,6 +199,53 @@ impl Porch {
                 CREATE INDEX idx_knock_channel ON channel_knocks(channel_id);
                 CREATE INDEX idx_knock_status ON channel_knocks(status);
                 INSERT INTO schema_version (version) VALUES (2);
+                COMMIT;",
+            )?;
+        }
+        if current < 3 {
+            // Phase C migration. Two new tables:
+            //
+            // * `channel_themes` — one row per channel, holds the four
+            //   color anchors + font family + background descriptor.
+            //   Hex colors are `#RRGGBB` (7 chars including the `#`).
+            //   `background_kind` is one of none/solid/gradient/image;
+            //   `background_value` holds either a hex color, a CSS
+            //   gradient string, or the `id` of a row in
+            //   `porch_assets`. The Rust layer is responsible for
+            //   keeping `background_value` shape-consistent with
+            //   `background_kind`.
+            //
+            // * `porch_assets` — per-channel uploaded image blobs. The
+            //   bytes live on disk under `<data_dir>/porch_assets/`;
+            //   the DB just carries the metadata + SHA-256 so themes
+            //   can reference the asset by id without round-tripping
+            //   the bytes through the wire envelope.
+            conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE channel_themes (
+                    channel_id TEXT PRIMARY KEY,
+                    primary_color TEXT NOT NULL CHECK (length(primary_color) = 7 AND substr(primary_color, 1, 1) = '#'),
+                    surface_color TEXT NOT NULL CHECK (length(surface_color) = 7 AND substr(surface_color, 1, 1) = '#'),
+                    on_surface_color TEXT NOT NULL CHECK (length(on_surface_color) = 7 AND substr(on_surface_color, 1, 1) = '#'),
+                    accent_color TEXT NOT NULL CHECK (length(accent_color) = 7 AND substr(accent_color, 1, 1) = '#'),
+                    font_family TEXT NOT NULL,
+                    background_kind TEXT NOT NULL CHECK (background_kind IN ('none', 'solid', 'gradient', 'image')),
+                    background_value TEXT,
+                    updated_at INTEGER NOT NULL,
+                    FOREIGN KEY (channel_id) REFERENCES porch_channels(id) ON DELETE CASCADE
+                );
+                CREATE TABLE porch_assets (
+                    id TEXT PRIMARY KEY,
+                    channel_id TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (channel_id) REFERENCES porch_channels(id) ON DELETE CASCADE
+                );
+                CREATE INDEX idx_assets_channel ON porch_assets(channel_id);
+                INSERT INTO schema_version (version) VALUES (3);
                 COMMIT;",
             )?;
         }
