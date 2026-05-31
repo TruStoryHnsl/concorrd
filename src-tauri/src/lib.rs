@@ -902,6 +902,190 @@ async fn porch_visit_get_vault_file(
 }
 
 // ---------------------------------------------------------------------------
+// Porch Phase E — encrypted backup commands
+// ---------------------------------------------------------------------------
+
+/// Add (or update the label on) a backup target. The target is a peer
+/// the local install will push its encrypted porch backup to. Returns
+/// the inserted row.
+#[tauri::command]
+async fn porch_backup_add_target(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    peer_id: String,
+    label: Option<String>,
+) -> Result<porch::BackupTarget, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch::backup_targets::add(&porch, &peer_id, label.as_deref()).map_err(|e| e.to_string())
+}
+
+/// Remove a configured backup target. Surfaces a typed error if the
+/// peer wasn't on the list.
+#[tauri::command]
+async fn porch_backup_remove_target(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    peer_id: String,
+) -> Result<(), String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let n = porch::backup_targets::remove(&porch, &peer_id).map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(format!("no backup target with peer_id {peer_id}"));
+    }
+    Ok(())
+}
+
+/// List every configured backup target.
+#[tauri::command]
+async fn porch_backup_list_targets(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<porch::BackupTarget>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch::backup_targets::list(&porch).map_err(|e| e.to_string())
+}
+
+/// Manually push a fresh backup to `peer_id` right now. Builds the
+/// encrypted blob, opens an outbound `/concord/porch-backup/1.0.0`
+/// stream, ships it. On success the target's `last_success_at` is
+/// updated; on failure `last_failure_*` is updated and the error is
+/// returned.
+#[tauri::command]
+async fn porch_backup_push_now(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_identity_state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+    peer_id: String,
+) -> Result<(), String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let stronghold = get_or_open_peer_identity(&peer_identity_state, &app).await?;
+    let local_peer_id = {
+        let guard = servitude_state.0.lock().await;
+        guard
+            .as_ref()
+            .and_then(|h| h.libp2p_local_peer_id().map(|p| p.to_base58()))
+            .ok_or_else(|| "libp2p runtime is not running".to_string())?
+    };
+    // Build the blob using the Stronghold-derived seed; if the seed
+    // isn't available (a fresh install before `load_or_create` ran),
+    // surface a typed error so the UI can prompt the user to start
+    // the swarm first.
+    let seed = porch::StrongholdSeedAccess::new(&stronghold);
+    let blob = porch::backup::build_encrypted_backup(&porch, &local_peer_id, &seed)
+        .map_err(|e| format!("build backup blob: {e}"))?;
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    match porch::visit_backup_upload(&mut control, peer, blob).await {
+        Ok(()) => {
+            let now = chrono::Utc::now().timestamp_millis();
+            let _ = porch::backup_targets::record_success(&porch, &peer_id, now);
+            Ok(())
+        }
+        Err(e) => {
+            let now = chrono::Utc::now().timestamp_millis();
+            let msg = e.to_string();
+            let _ = porch::backup_targets::record_failure(&porch, &peer_id, now, &msg);
+            Err(format!("upload failed: {msg}"))
+        }
+    }
+}
+
+/// Ask the backup peer for a summary of what they're holding for us.
+/// Returns `None` if the peer isn't storing a backup for our peer-id.
+#[tauri::command]
+async fn porch_backup_check_remote_info(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+) -> Result<Option<porch::ReceivedBackupSummary>, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    porch::visit_backup_get_my_backup_info(&mut control, peer)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Pull the stored backup off the backup peer, decrypt it with the
+/// local Stronghold seed, and OVERWRITE the local `porch.sqlite`.
+///
+/// DESTRUCTIVE. The caller MUST pass `confirm = true` — the backend
+/// rejects any other value as a guard against accidental restores.
+/// After a successful restore the porch is closed (so the next access
+/// re-opens it against the fresh DB) and the libp2p runtime continues
+/// running unchanged.
+#[tauri::command]
+async fn porch_backup_restore_from(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_identity_state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+    peer_id: String,
+    confirm: bool,
+) -> Result<RestoreResult, String> {
+    if !confirm {
+        return Err(
+            "porch_backup_restore_from requires confirm=true — this overwrites the local porch DB"
+                .to_string(),
+        );
+    }
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let db_path = porch
+        .db_path()
+        .ok_or_else(|| "porch is in-memory; nothing to restore over".to_string())?
+        .to_path_buf();
+    let stronghold = get_or_open_peer_identity(&peer_identity_state, &app).await?;
+
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    let blob_opt = porch::visit_backup_get_my_backup(&mut control, peer)
+        .await
+        .map_err(|e| format!("fetch remote blob: {e}"))?;
+    let blob = blob_opt
+        .ok_or_else(|| "backup peer is not storing a backup for this install".to_string())?;
+
+    // Drop the live porch connection BEFORE rewriting the file —
+    // SQLite locks make atomic-rename fail if a reader is still open.
+    drop(porch);
+    {
+        let mut guard = porch_state.0.lock().await;
+        *guard = None;
+    }
+
+    let seed = porch::StrongholdSeedAccess::new(&stronghold);
+    let schema_version = porch::restore_from_blob(&db_path, &blob, &seed)
+        .map_err(|e| format!("restore: {e}"))?;
+
+    // Re-open the porch so subsequent commands see the restored DB.
+    // Note: the libp2p backup handler still has a stale Arc<Porch>; in
+    // a future polish pass we'd send a re-wire signal. For Phase E the
+    // restore path is rare enough that asking the user to restart is
+    // an acceptable trade — and the backup handler doesn't write often
+    // anyway, so a stale handle is mostly cosmetic.
+    let _ = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    Ok(RestoreResult { schema_version })
+}
+
+/// List every uploader the local install is currently storing backups
+/// for (in its role as a backup-peer). Surfaces in the Backup settings
+/// tab so the user can see who's relying on them.
+#[tauri::command]
+async fn porch_backup_list_received(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<porch::ReceivedBackupSummary>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch::list_received_backups(&porch).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct RestoreResult {
+    /// Schema version recorded in the restored blob. The caller can
+    /// use this to detect cross-version restores.
+    schema_version: i64,
+}
+
+// ---------------------------------------------------------------------------
 // Phase 8 — voice path selection
 // ---------------------------------------------------------------------------
 
@@ -2003,6 +2187,14 @@ pub fn run() {
             porch_read_vault_file,
             porch_visit_list_vault,
             porch_visit_get_vault_file,
+            // Phase E — encrypted backup pipeline.
+            porch_backup_add_target,
+            porch_backup_remove_target,
+            porch_backup_list_targets,
+            porch_backup_push_now,
+            porch_backup_check_remote_info,
+            porch_backup_restore_from,
+            porch_backup_list_received,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

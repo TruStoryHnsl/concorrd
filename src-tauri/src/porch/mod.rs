@@ -28,6 +28,8 @@
 //!   through here.
 
 pub mod acl;
+pub mod backup;
+pub mod backup_protocol;
 pub mod channel;
 pub mod db;
 pub mod error;
@@ -36,6 +38,15 @@ pub mod obsidian;
 pub mod protocol;
 pub mod theme;
 
+pub use backup::{
+    list_received_backups, read_received_backup, read_received_backup_info, restore_from_blob,
+    store_received_backup, targets as backup_targets, BackupTarget, EncryptedBackup,
+    ReceivedBackupSummary, SeedAccess, StrongholdSeedAccess, HKDF_INFO_V1,
+};
+pub use backup_protocol::{
+    visit_backup_get_my_backup, visit_backup_get_my_backup_info, visit_backup_upload,
+    BackupErrorBody, BackupHandler, BackupRequest, BackupResponse, BACKUP_PROTOCOL_ID,
+};
 pub use channel::{AclMode, AclRole, ChannelKind, ChannelMessage, PorchChannel};
 pub use db::Porch;
 pub use error::PorchError;

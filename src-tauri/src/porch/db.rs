@@ -27,12 +27,20 @@ use super::DEFAULT_PORCH_CHANNEL_ID;
 ///   plus `porch_assets` (uploaded image blobs referenced by themes).
 /// * `4` — Phase D: `obsidian_channels` (per-channel vault-root binding
 ///   for `kind = 'obsidian'` channels).
-pub const SCHEMA_VERSION: i64 = 4;
+/// * `5` — Phase E: `backup_targets` (per backing-up side, who we
+///   send our backup to) + `received_backups` (per backup-peer side,
+///   opaque ciphertext blobs keyed by uploader peer-id).
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Subdirectory under the porch data dir where uploaded theme assets
 /// (image bytes) live. The DB stores the relative file path
 /// (`<asset_id>.<ext>`) under this root.
 pub const PORCH_ASSETS_DIRNAME: &str = "porch_assets";
+
+/// Subdirectory under the porch data dir where received encrypted backup
+/// blobs (Phase E) land. One file per uploader peer-id; overwritten on
+/// each subsequent upload.
+pub const PORCH_BACKUPS_DIRNAME: &str = "porch_backups";
 
 /// Default porch channel display name. Cosmetic — the id is the stable
 /// reference.
@@ -66,6 +74,16 @@ pub struct Porch {
     /// `<asset_id>.<ext>`. `None` for in-memory porches — uploads
     /// fail with `PorchError::InvalidInput` in that case.
     pub(super) assets_root: Option<PathBuf>,
+    /// Absolute path to the `porch_backups/` subdirectory under the
+    /// porch's data dir. Phase E received-backup blobs land here as
+    /// `<uploader_peer_id>.bin`. `None` for in-memory porches — the
+    /// backup-peer side rejects uploads in that case.
+    pub(super) backups_root: Option<PathBuf>,
+    /// Absolute path to this porch's own `porch.sqlite` file. `None`
+    /// for in-memory porches. Phase E uses this on the backing-up side
+    /// to know which file to `VACUUM INTO` for the dump, and on the
+    /// restore path to know where to write the decrypted bytes.
+    pub(super) db_path: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Porch {
@@ -93,9 +111,15 @@ impl Porch {
         // image uploads have somewhere to land. Idempotent.
         let assets_root = dir.join(PORCH_ASSETS_DIRNAME);
         std::fs::create_dir_all(&assets_root).map_err(PorchError::Io)?;
+        // Phase E — ensure the received-backups subdir exists so the
+        // backup-peer side has somewhere to land incoming blobs.
+        let backups_root = dir.join(PORCH_BACKUPS_DIRNAME);
+        std::fs::create_dir_all(&backups_root).map_err(PorchError::Io)?;
         let porch = Porch {
             conn: Mutex::new(conn),
             assets_root: Some(assets_root),
+            backups_root: Some(backups_root),
+            db_path: Some(path),
         };
         porch.migrate()?;
         porch.ensure_default_channel()?;
@@ -114,6 +138,8 @@ impl Porch {
         let porch = Porch {
             conn: Mutex::new(conn),
             assets_root: None,
+            backups_root: None,
+            db_path: None,
         };
         porch.migrate()?;
         porch.ensure_default_channel()?;
@@ -124,6 +150,20 @@ impl Porch {
     /// `None` for in-memory porches.
     pub fn assets_root(&self) -> Option<&Path> {
         self.assets_root.as_deref()
+    }
+
+    /// Absolute path to this porch's `porch_backups/` directory, if any.
+    /// `None` for in-memory porches. Phase E uses this on the
+    /// backup-peer side to land incoming encrypted blobs.
+    pub fn backups_root(&self) -> Option<&Path> {
+        self.backups_root.as_deref()
+    }
+
+    /// Absolute path to this porch's `porch.sqlite` file, if any. `None`
+    /// for in-memory porches. Phase E uses this to drive the `VACUUM
+    /// INTO` snapshot during backup creation.
+    pub fn db_path(&self) -> Option<&Path> {
+        self.db_path.as_deref()
     }
 
     fn migrate(&self) -> Result<(), PorchError> {
@@ -272,6 +312,52 @@ impl Porch {
                     FOREIGN KEY (channel_id) REFERENCES porch_channels(id) ON DELETE CASCADE
                 );
                 INSERT INTO schema_version (version) VALUES (4);
+                COMMIT;",
+            )?;
+        }
+        if current < 5 {
+            // Phase E migration. Two new tables — they describe two
+            // different SIDES of the backup flow and are independent on
+            // any given install (a docker-hosted Concord acts only as a
+            // backup PEER; a personal install acts mostly as a
+            // backing-up side, but may also accept backups from a
+            // partner reciprocally):
+            //
+            // * `backup_targets` — per backing-up side, the peers we've
+            //   designated as recipients of our encrypted backup. The
+            //   `last_*` columns surface in the Backup settings tab so
+            //   the user can see whether the most recent push succeeded.
+            //   A peer can be a target and not yet have received any
+            //   blob — `last_success_at` is `NULL` in that state.
+            //
+            // * `received_backups` — per backup-peer side, the LATEST
+            //   blob received from each uploader peer-id. The blob
+            //   itself lives on disk under `<data_dir>/porch_backups/`;
+            //   the row carries only the metadata + SHA-256 so the
+            //   backup peer can disclose what it's holding without
+            //   round-tripping ciphertext through SQL. PRIMARY KEY on
+            //   `uploader_peer_id` enforces the "only the latest, no
+            //   history" semantics — replays overwrite. (Revision
+            //   pruning is a Phase E follow-up.)
+            conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE backup_targets (
+                    peer_id TEXT PRIMARY KEY,
+                    label TEXT,
+                    added_at INTEGER NOT NULL,
+                    last_success_at INTEGER,
+                    last_failure_at INTEGER,
+                    last_failure_reason TEXT
+                );
+                CREATE TABLE received_backups (
+                    uploader_peer_id TEXT PRIMARY KEY,
+                    blob_path TEXT NOT NULL,
+                    blob_size INTEGER NOT NULL,
+                    blob_sha256 TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    received_at INTEGER NOT NULL
+                );
+                INSERT INTO schema_version (version) VALUES (5);
                 COMMIT;",
             )?;
         }

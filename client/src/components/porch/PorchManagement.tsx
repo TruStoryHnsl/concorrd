@@ -41,7 +41,16 @@ const ObsidianChannelEditor = lazy(() =>
   })),
 );
 
-type ManagementTab = "channels" | "themes";
+// Phase E — lazy-load the backup settings surface. The list /
+// add-target form is small but it pulls in the encrypted-blob status
+// polling effect, so deferring the chunk keeps Channel-tab load fast.
+const BackupSettings = lazy(() =>
+  import("./BackupSettings").then((m) => ({
+    default: m.BackupSettings,
+  })),
+);
+
+type ManagementTab = "channels" | "themes" | "backup";
 
 export function PorchManagement() {
   const porch = usePorchStore();
@@ -123,9 +132,28 @@ export function PorchManagement() {
           onClick={() => setTab("themes")}
           testId="porch-tab-themes"
         />
+        <ManagementTabButton
+          label="Backup"
+          active={tab === "backup"}
+          onClick={() => setTab("backup")}
+          testId="porch-tab-backup"
+        />
       </div>
 
-      {tab === "themes" ? (
+      {tab === "backup" ? (
+        <Suspense
+          fallback={
+            <div
+              data-testid="backup-settings-suspense"
+              style={{ fontSize: 12 }}
+            >
+              Loading backup settings…
+            </div>
+          }
+        >
+          <BackupSettings />
+        </Suspense>
+      ) : tab === "themes" ? (
         <ThemesPanel
           channels={porch.channels.map((c) => ({ id: c.id, name: c.name }))}
           activeChannelId={activeThemeChannelId}
