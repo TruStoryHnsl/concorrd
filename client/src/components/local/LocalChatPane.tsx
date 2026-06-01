@@ -28,6 +28,7 @@ import { MessageList } from "../chat/MessageList";
 import { MessageInput } from "../chat/MessageInput";
 import { BringingUpSplash } from "../BringingUpSplash";
 import { isTauri } from "../../api/servitude";
+import { FirstLaunchTwoNameBanner } from "./FirstLaunchTwoNameBanner";
 
 function porchToChatMessage(
   m: {
@@ -126,9 +127,12 @@ export function LocalChatPane() {
   }
 
   const emptyState = (
-    <p className="text-base text-on-surface font-body">
-      Be the first to say something!
-    </p>
+    <div className="flex flex-col items-center gap-6 w-full max-w-md">
+      <FirstLaunchTwoNameBanner />
+      <p className="text-base text-on-surface font-body">
+        Be the first to say something!
+      </p>
+    </div>
   );
 
   return (
