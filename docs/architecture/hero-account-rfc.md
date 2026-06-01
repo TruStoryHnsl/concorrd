@@ -1,13 +1,20 @@
 # Hero Account + Device-to-Device Sync — Architecture RFC
 
 **Status:** Draft — RFC ONLY. No implementation code in this PR.
-**Author:** Architecture pass, 2026-05-31.
+**Author:** Architecture pass, 2026-05-31. User open-question resolutions folded 2026-06-01.
 **Supersedes:** none.
-**Cross-refs:** `docs/architecture/porch-design.md` (porch + Phase F device-pairing CRDT), `docs/architecture/user-management-design.md` (Phase 1 profiles + keychain), `src-tauri/src/servitude/identity.rs` (per-install Ed25519 seed).
+**Cross-refs:** `docs/architecture/porch-design.md` (porch + Phase F device-pairing CRDT), `docs/architecture/user-management-design.md` (Phase 1 profiles + keychain), `src-tauri/src/servitude/identity.rs` (per-install Ed25519 seed), `docs/architecture/concord-user-protocol-scope.md` (Architecture A), `docs/architecture/peer-presence-timeout-scope.md` (Architecture B), `docs/architecture/tailscale-gated-hero-sync-scope.md` (Architecture C), `docs/architecture/resumable-conflict-agent-scope.md` (Architecture D), `docs/architecture/hard-disconnect-on-close-scope.md` (Architecture E).
+
+## Status
+
+- Last user input: 2026-06-01.
+- All eight open-question markers resolved.
+- 5 new architecture scope-documents created in `docs/architecture/`.
+- Remaining work: implementation dispatches for Architectures A through E.
 
 This RFC defines the **hero account** — a cross-device user identity in Concord — and the **device-to-device sync** model that lets two installs owned by the same hero mirror their local-server data in an Obsidian-style append-only fashion.
 
-This document is **opinionated**: it recommends ONE source-of-truth model and ONE sync protocol. Items that the user must genuinely pick between are marked `[OPEN QUESTION]`.
+This document is **normative**. It states what Concord does and why; it no longer carries open-question markers.
 
 ---
 
@@ -23,82 +30,28 @@ A hero account is OPTIONAL. An install with no hero account is fully functional 
 
 ## 2. Source of truth for hero identity
 
-The user's note: *"A hero account is anchored to 'an agreed upon source of truth' (DID, DNS-anchored identity, or another agreed mechanism — design choice deferred)."*
+The hero account has **no external master instance and no DNS-anchored or DID-anchored source of truth**. It is locally created on a virgin install with the same friction as any other UI step, and the locally-created user IS that install's hero. The hero can be changed to any profile the user wants. There is no required anchor; the only authoritative source of truth for the hero is the hero's own seed-mnemonic, held by the user. Concord recommends no other source of truth.
 
-Three candidates, then a recommendation.
+The hero is advertised to peers on the p2p network using a vanity name plus a machine-readable address. Peers display that pairing as a human-readable identity according to their own preferences.
 
-### 2.a Candidate A — DID (Decentralized Identifier) via did:key or did:web
+### 2.a Cross-instance profile sharing — the Concord-native user-definition protocol
 
-A W3C DID is a URI that resolves to a public key (or to a key-holding document). Two sub-flavors:
+Because there is no external anchor, Concord cannot rely on Matrix or a master instance to reconcile two records of the same hero seen by two different parties. That reconciliation is the job of the **Concord-native user-definition protocol** — a transport-agnostic identity bridge that spans Matrix federation, libp2p porch, and Concord-via-domain HTTP.
 
-- **did:key** — the DID is literally `did:key:z<base58-multibase(public_key)>`. No network resolution, no anchoring, the DID IS the key. Self-sovereign in the purest sense: anyone can verify a signature against the DID with no infrastructure.
-- **did:web** — the DID is `did:web:example.com:hero:<slug>`, resolved by fetching `https://example.com/.well-known/did/hero/<slug>/did.json`. A DNS-anchored DID document holds the current keyset and lets the user rotate keys without changing the identifier.
+The protocol's defining contract: given a configurable level of trust between two instances, those instances can share a user profile. Without that trust, identity records accumulate **per-server**, NOT per-device — the intentional effect is that one user can present completely different impressions on two different servers with ease. The interaction with bots and programmatic chat applications is an open follow-up captured in the scope document.
 
-| Aspect | did:key | did:web |
-|---|---|---|
-| Bootstrap UX | one button: generate key, encode | requires a domain the user controls (most don't) |
-| Recovery from lost device | possession of any device holding the seed, OR the seed-mnemonic export (Phase E follow-up) | re-publish the DID doc from any device that still has DNS access |
-| Revocation | nothing built in — compromise = whole identity gone (or you rotate the DID, losing continuity) | edit the DID doc to remove the compromised key; old signatures still verify, future ones won't |
-| Interop with Matrix / federated Concord | none — Matrix uses its own user IDs; the DID is opaque to Matrix | none directly, but did:web's `https://` resolution is at least familiar |
-| Custody | the user holds the seed; the user is the CA | the user holds the seed AND owns a domain; DNS is the trust anchor |
+See `docs/architecture/concord-user-protocol-scope.md` for the scope of this protocol and the list of follow-up tasks it will trigger.
 
-did:web is essentially "your homeserver IS your identity" with a fancier name. did:key is purely cryptographic.
+### 2.b Why no anchor
 
-### 2.b Candidate B — A user-chosen master Concord instance acting as the identity anchor (Matrix-style)
+1. **The user is the only authority.** A hero owns their seed-mnemonic; that's the recovery and re-issue path. No external party can revoke or relocate the hero on the user's behalf.
+2. **Per-server identity isolation is a feature.** Without a global anchor, the same person can be one persona on Server X and another on Server Y without those servers ever learning that the personas belong to one human. A master-instance design would erode that property.
+3. **Cross-instance interop becomes the user-definition protocol's job, not a hidden side-effect of Matrix federation.** Concord deliberately owns the reconciliation contract end-to-end via Architecture A rather than borrowing Matrix's homeserver-anchored model.
+4. **Recovery UX is preserved.** Seed-mnemonic export and import remain the only durable recovery path. The user-management Phase 1 note that *"seed-mnemonic export/import is the load-bearing follow-up"* applies directly.
 
-The hero account is `@hero-name:concord-instance.example` — the user picks ONE Concord instance (a docker deployment, theirs or a friend's, or a trusted public one) to host their account record. Every other install signs into the hero by authenticating against that instance.
+### 2.c Per-device revocation
 
-This mirrors Matrix homeservers exactly, which is intentional — the existing user-management Phase 3 (`/concord/account-relay/1.0.0`) was already heading this direction.
-
-| Aspect | Master-instance anchor |
-|---|---|
-| Bootstrap UX | pick an instance from a list (or accept the bundled default), create credentials, done. Familiar mental model. |
-| Recovery from lost device | sign back into the master instance from any new device with passphrase / linked-device approval |
-| Revocation | the master instance revokes the device's grant; subsequent libp2p connections from that device's peerid stop being recognized as the hero |
-| Interop with Matrix | the master instance IS a Matrix homeserver (conduwuit). Federation comes for free. |
-| Custody | the user trusts the master instance operator (themselves, if they self-host; someone else if they don't) |
-| Failure mode | master instance disappears → hero is stuck on existing devices but can't bring identity to new ones until they migrate the account elsewhere |
-
-### 2.c Candidate C — Pure cryptographic key-pair, no anchor at all
-
-The hero is a public key the user generates on the first device and copies (QR / mnemonic / encrypted file) to every other device they want to bind. There is no DID URI, no resolution, no homeserver — just a 32-byte public key that signs cross-device pairing tokens.
-
-| Aspect | Pure key-pair |
-|---|---|
-| Bootstrap UX | first device: generate key + 24-word mnemonic, user writes it down. Second device: type mnemonic OR scan QR off the first device. |
-| Recovery from lost device | mnemonic recovery, full stop. No mnemonic = identity gone forever. |
-| Revocation | rotate the hero key on every linked device; old key is now untrusted. Lossy — you lose the device-link history. |
-| Interop with Matrix / federated Concord | none. Matrix users don't know what a hero key is. |
-| Custody | purely the user, no third party at all |
-
-### 2.d Recommendation: **Candidate B (master Concord instance anchor)** with mnemonic-export as the escape hatch
-
-**Why B and not A or C:**
-
-1. **Interop matters more than purity.** Concord federates over Matrix. A hero account whose identity also happens to be a Matrix user ID gets cross-Concord-instance presence, cross-instance DM, federated room membership, and Phase 3's account-relay flow for free. did:key and pure key-pairs get none of that — they'd require building a parallel identity plane on top of Matrix's.
-2. **Concord already chose this shape.** User-management Phase 3 explicitly designs an `/concord/account-relay/1.0.0` protocol where a docker Concord instance acts as the anchor. The codebase, the keychain layer, and the synced-tables CRDT are already aimed here. Switching to did:key or pure-key-pair would burn that work.
-3. **Recovery UX is good enough.** Lost device → sign back into the master instance with passphrase + linked-device approval. The user is already used to this workflow (it's how every Matrix client recovers).
-4. **The master instance can be the user's own.** A power user who doesn't want to trust a third party self-hosts (Concord is already a docker install). They become their own CA. For someone who doesn't want to self-host, they pick a public Concord instance — same trust model as picking a Mastodon home server.
-5. **did:key fans don't lose much.** Below the master-instance layer the hero key IS still an Ed25519 keypair the user owns; the master instance just publishes the public key and brokers device-link requests. A future "export as did:key" feature could surface the same public key in DID form if it ever became useful.
-
-**Escape hatch — seed-mnemonic export.** The user-management Phase 1 already notes: *"Seed-mnemonic export/import is the load-bearing follow-up that unlocks cross-device restore from a true loss event."* The hero account inherits this — the master-instance auth is the day-to-day path, but the user can always export the hero seed as 24 words and rebuild the hero on a new master instance if the original instance dies. This is what makes the master-instance choice not-lock-in.
-
-**Trade-off summary of the recommendation:**
-
-| | Master-instance anchor (recommended) |
-|---|---|
-| Bootstrap UX | Sign up on a Concord instance the way you sign up on Mastodon / Matrix today. Bundled default for new users; "pick another" for power users. |
-| Recovery | Passphrase + a linked device approves the new device. If everything is lost, use the 24-word seed mnemonic to rebuild on a fresh instance. |
-| Revocation | Per-device revocation handled by the master instance: it stops issuing fresh device-link tokens to the revoked peerid. Existing sessions on that device continue until their token expires (token TTL: `[OPEN QUESTION]` — 24h vs 7d vs 30d). |
-| Interop with Matrix | Native — the master instance IS a conduwuit homeserver; the hero IS a Matrix user. Federation across Concord instances works through existing Matrix federation. |
-| Interop with non-hero federated Concord users | They see a normal Matrix user. Hero-ness is invisible to them. |
-| Custody | User-chosen — self-host for full custody, or pick a public instance for convenience. The seed-mnemonic export means even a public-instance hero can leave at any time. |
-
-`[OPEN QUESTION]` — **default master-instance for fresh signups.** Three options: (1) a Concord project-run public instance, (2) prompt the user to pick from a curated list, (3) require self-host. The donation-only model + commercial scope rule out monetizing via a default instance, but operating it has cost. User picks the policy.
-
-`[OPEN QUESTION]` — **device-link token TTL.** 24h (high security, frequent re-auth), 7d (balanced), 30d (low friction). The longer the TTL the longer a revoked device retains access.
-
-`[OPEN QUESTION]` — **multi-master.** Should a hero be allowed to anchor on TWO master instances simultaneously (e.g. for redundancy if one goes down)? Adds complexity to "which one is canonical?" — probably no, recommend single-master with the mnemonic escape hatch.
+A device is revoked by removing its `DeviceLinkCert` from the local cert lists held on every other device of the hero. The revocation is propagated through the same sync substrate that distributes the cert list; existing sessions on the revoked device tear down on the next app close because Concord does not maintain background connections (see Architecture E below).
 
 ---
 
@@ -118,43 +71,50 @@ A device-link certificate is an Ed25519-signed payload:
 
 ```text
 DeviceLinkCert {
-    hero_pubkey:          [u8; 32],          // the hero's master public key
+    hero_pubkey:          [u8; 32],          // the hero's public key
     device_peerid:        PeerId,            // the libp2p peerid being linked
     device_label:         String,            // e.g. "Colton's MacBook"
     issued_at:            u64,               // unix seconds
-    expires_at:           u64,               // unix seconds; renewable
-    issuer_master_url:    String,            // master instance hostname, for replay-window scoping
-    nonce:                [u8; 32],          // OS CSPRNG; persisted at the master for replay protection
+    nonce:                [u8; 32],          // OS CSPRNG; persisted on each device of the hero for replay protection
     signature:            [u8; 64],          // Ed25519(hero_seed) over the canonical encoding of the above
 }
 ```
 
-The hero seed lives behind the master instance's auth wall, never on the device itself. The master instance signs the certificate on the user's behalf during the link flow (see 3.b below).
+The hero seed is held by the user (encrypted in Stronghold on whichever device originated the hero, mirrored by mnemonic export). The signing device — whichever holds the seed at link time — signs the certificate locally. There is no `expires_at` field: Concord does not use time-bounded device-link tokens. Sessions tear down on app close (see §3.d, Architecture E).
 
-Each install stores a list of `DeviceLinkCert`s for **itself + every other linked device of the same hero**. The list is loaded into memory on boot, refreshed on every successful master-instance sign-in, and consulted on every inbound sync handshake.
+Each install stores a list of `DeviceLinkCert`s for **itself + every other linked device of the same hero**. The list is loaded into memory on boot, refreshed on every sync exchange that reveals a new linked device, and consulted on every inbound sync handshake.
 
 ### 3.b Cross-device key exchange (link flow)
 
-**Scenario.** User has Concord on device A (already signed into hero H). User installs Concord on device B and wants to add it.
+**Scenario.** User has Concord on device A (already running hero H). User installs Concord on device B and wants to add it.
 
-1. **Device B asks the master instance.** Device B sends `LinkDeviceRequest { hero_id, my_peerid: <B's peerid>, label: "Phone" }` to the master instance, authenticated by the hero's master-instance passphrase (or, if the user is signed in elsewhere, by an Argon2id-hardened second factor).
-2. **Master instance challenges device A.** The master pushes a notification to every other signed-in device of hero H: "Device 'Phone' wants to join your hero. Approve?" Device A surfaces this as a modal showing B's peerid fingerprint and the label B chose.
-3. **Device A approves OR the user types the passphrase.** Approval on device A is preferred (the user is already authenticated there). If no other device is online, the user can fall back to the passphrase + a deliberate "this is the first time on this device" checkbox.
-4. **Master instance issues two certificates.** For peerid_B (sent to device B over the auth channel) AND for peerid_A (pushed to device A as a refresh — A also gets B's cert added to its list).
-5. **Devices A and B exchange certificates over libp2p.** The next time A and B are on the same libp2p swarm (LAN mDNS or via a paired peer-card connection), the sync handshake (4.a below) presents these certificates to each other.
+1. **Device B and device A meet via the pairing flow.** Pairing reuses the QR + paired-peer-card mechanism already shipped in PR #87. Device B advertises its peerid; device A scans the QR (or vice versa).
+2. **Device A signs B's cert.** Device A, holding the hero seed, signs a `DeviceLinkCert` over B's peerid with the hero's key and hands the cert to B over the pairing channel. A also adds B's cert to its own list and records B as a linked device of the hero.
+3. **B trusts A reciprocally.** If A was not already linked to B's cert list (this is B's first link to any hero device), A also issues itself a cert in B's view. From this point B can trust inbound sync from A and any other device A vouches for.
+4. **Devices exchange linked-device manifests on next sync.** When A and B meet on the libp2p swarm, the sync handshake exchanges full linked-device manifests so any other devices A and B know about are added to both lists.
 
-Replay protection comes from the master instance's nonce store + the `expires_at` field. The master tracks `(hero_id, nonce)` for every certificate it issues and refuses to issue a second certificate with the same nonce. A replayed certificate that's past `expires_at` is rejected by the recipient. A replayed certificate that's still in its TTL window is rejected because the receiving device already accepted it.
+Replay protection comes from the per-device nonce store + the lack of any long-lived session credential. Each device tracks `(hero_id, nonce)` for every certificate it has accepted and refuses a duplicate. Because tokens have no TTL and sessions hard-disconnect on app close (§3.d), the long-running-token attack surface is intentionally minimal.
 
-Downgrade attacks (attacker forces hero to fall back to weaker auth) are out of scope at the protocol level — they're a master-instance auth question. The master enforces a single auth policy per hero (passphrase + Argon2id, or WebAuthn, or device-link approval); downgrade between policies requires explicit user action and a fresh master-side re-enrollment.
+### 3.c Revocation
 
-### 3.c Sync handshake — what gets verified
+Revocation of a device is performed by removing its `DeviceLinkCert` from each remaining linked device's cert list. The removal propagates through the same sync substrate that distributes manifests. The revoked device retains its already-replicated home-server data — Concord cannot reach across to wipe a device the user no longer trusts — but it can no longer authenticate as a hero device on inbound sync handshakes from the others.
 
-When device A receives an inbound `PullDelta` or `PushDelta` from peerid X over `/concord/porch-sync/1.0.0` (the existing Phase F protocol), the handshake check is now hero-aware:
+### 3.d Session lifecycle — hard-disconnect on app close
+
+Concord does NOT use TTL-bounded device-link tokens. The session-lifecycle question that a TTL would answer is instead answered by the connection lifecycle: a session is alive only while the user is actively interacting with the running app. Closing the app **hard-disconnects** every native peer-to-peer connection — porch greet, home sync, server discovery, address rotation, history fetch, export delivery, and the WireGuard tunnels themselves. No background daemon. No warm-resume. Re-connect must be cheap on next launch; cold-start cost is acceptable; each device retains full control over its connectivity.
+
+This is the standing pattern; it is scoped in `docs/architecture/hard-disconnect-on-close-scope.md` (Architecture E). Every subsystem in this RFC that opens a native connection registers with the exit handler defined there.
+
+### 3.e Sync handshake — what gets verified
+
+When device A receives an inbound `PullDelta` or `PushDelta` from peerid X over `/concord/porch-sync/1.0.0` (the existing Phase F protocol), the handshake check is hero-aware:
 
 1. **Old path (Phase F bilateral device pairing):** Check `device_links` table for a row matching `(my_peerid, X)`. If present, accept. This path stays for backward compatibility — installs without a hero can still pair bilaterally.
-2. **New path (hero membership):** Look up X's `DeviceLinkCert` in the local cert list. If present, verify: (a) `hero_pubkey` matches MY hero, (b) `device_peerid` matches X, (c) signature verifies against `hero_pubkey`, (d) `expires_at` is in the future, (e) `nonce` hasn't been seen on this device for this `(hero, device)` pair before. If all pass, accept. Cert lookup is a HashMap by peerid; the verification is one Ed25519 verify (~50µs).
+2. **New path (hero membership):** Look up X's `DeviceLinkCert` in the local cert list. If present, verify: (a) `hero_pubkey` matches MY hero, (b) `device_peerid` matches X, (c) signature verifies against `hero_pubkey`, (d) `nonce` hasn't been seen on this device for this `(hero, device)` pair before. If all pass, accept. Cert lookup is a HashMap by peerid; the verification is one Ed25519 verify (~50µs).
 
 Both paths feed the same downstream sync engine. The hero path is a richer authorization layer above bilateral pairing.
+
+Additionally, hero-mediated sync between two same-hero instances has a second precondition: **mesh-VPN reachability** (Tailscale or equivalent) must be verified between the two machines, AND the shared hero must be confirmed on the protocol level. Either gate fails, no sync. This is the Tailscale-gated hero sync rule scoped in `docs/architecture/tailscale-gated-hero-sync-scope.md` (Architecture C). When the user has elected a docker instance as the sync anchor, the docker mediates; without an anchor, all sync cycles are fully additive p2p merges.
 
 ---
 
@@ -189,7 +149,7 @@ When a device first enters mirror-mode, it doesn't have anything to compare agai
 
 After the initial sync completes, B is at parity with A. Subsequent sync exchanges are incremental (Phase F's existing delta protocol).
 
-`[OPEN QUESTION]` — **Initial-sync ordering.** Should the user see channels appear in (a) channel-creation order, (b) most-recently-active order, or (c) all-at-once after the whole sync completes? (a) is simplest, (b) is the best UX, (c) is the smallest amount of UI work.
+**Initial-sync ordering.** Concord reuses the existing UI elements and templates from the rest of the display. The order in which the receiving device materializes the synced content is fixed: **text channels first → voice channels → available applications**. The user retains the ability to refine this menu's ordering in a later iteration, but text → voice → applications is the baseline.
 
 ---
 
@@ -323,11 +283,11 @@ ConflictVerdict {
 - **Fallback: in-app heuristic.** If no agent is configured, the UI offers heuristic suggestions (rename → "combine both names", tombstone-vs-write → "keep the write, the channel must exist") and asks the user to click one. This keeps Concord functional without orrchestrator.
 - **Power-user: HTTP webhook.** Settings → Hero Account → Conflict Agent → "Send conflicts to:" with a URL field. Same JSON envelope shape; the user can wire it to anything.
 
-`[OPEN QUESTION]` — **agent verdict confidence threshold.** Below what confidence does Concord show the verdict to the user for confirmation before applying? 0.7? 0.8? Per-conflict-kind override?
+**Agent verdict confidence threshold.** The auto-apply threshold is **per-conflict-kind**. There is no single global threshold; each conflict kind carries its own override. Lower-confidence verdicts on safety-sensitive conflict kinds (e.g. `acl_change`) require user confirmation before applying, while higher-confidence verdicts on cosmetic conflict kinds (e.g. `concurrent_rename`) can auto-apply at lower thresholds.
 
-`[OPEN QUESTION]` — **what happens if the agent times out.** Re-dispatch after N seconds? Move to manual resolution? Leave in queue?
+**Agent timeout.** When an agent times out, Concord **stops the timed-out process, integrates its session context into a new agent session, and picks up where the previous session left off.** The conflict-resolver loop is resumable across agent sessions — dead-session context flows into the next session. This is a standing architectural pattern: any long-running AI sub-task in Concord follows the same resume model. Scoped in `docs/architecture/resumable-conflict-agent-scope.md` (Architecture D).
 
-`[OPEN QUESTION]` — **multi-device convergence on a conflict.** If devices A and B BOTH detect the same conflict at the same time (they were both offline, both came back online, both saw the divergence), they both dispatch to the agent. Two verdicts arrive. Whose wins? Recommend: the agent verdict with the higher confidence; on tie, lamport-then-device-id. But this needs user sign-off.
+**Multi-device convergence on a conflict.** If devices A and B both detect the same conflict at the same time, they both dispatch to the agent and two verdicts arrive. Concord applies the higher-confidence verdict; on confidence tie, it falls back to Lamport timestamp then device-id. This is the RFC's recommended choice and is now normative.
 
 ---
 
@@ -338,8 +298,9 @@ This RFC is JUST the hero account + sync layer. Explicitly NOT covered:
 - **Porch ephemeral semantics** — covered in F1-REVISED (`docs/architecture/porch-design.md` rev that adds the ephemeral porch room to the persistent local-server schema).
 - **Unified add-source flow** — covered in F2 (the source-rail picker for Concord instances, Matrix homeservers, paired peers, etc.).
 - **libp2p mesh propagation** — covered in F3 (gossip + relay + DCUtR tuning for porch-sync over WAN).
-- **Account-relay flow over `/concord/account-relay/1.0.0`** — covered in user-management Phase 3. The hero account can USE the relay protocol to back up its keychain to the master instance, but the relay protocol itself is its own design.
-- **Concord-instance-as-master-instance UX** — covered in the broader docker-install onboarding work, separate sprint.
+- **Account-relay flow over `/concord/account-relay/1.0.0`** — covered in user-management Phase 3. The hero account can USE the relay protocol to back up its keychain to a docker anchor it has elected (Architecture C), but the relay protocol itself is its own design.
+- **Cross-protocol user-definition protocol** — covered in `docs/architecture/concord-user-protocol-scope.md` (Architecture A).
+- **Docker-anchor election UX** — covered in `docs/architecture/tailscale-gated-hero-sync-scope.md` (Architecture C) and broader docker-install onboarding work, separate sprint.
 - **Mobile lifecycle for hero-aware sync** — covered in INS-022's foreground/background glue. Mobile installs sync only when foregrounded (existing constraint).
 - **WireGuard tunnel hardening** — covered in porch Phase G. The hero protocol runs over the same libp2p paths; if Phase G's connection gate is enforced, hero-linked peers must also reach each other through a trusted tunnel CIDR.
 
@@ -349,18 +310,20 @@ This RFC is JUST the hero account + sync layer. Explicitly NOT covered:
 
 After this RFC is approved, four `develop_feature` dispatches form the build queue.
 
-### Phase H1 — Hero identity primitives + master-instance auth
+### Phase H1 — Hero identity primitives + local hero creation
 
-**Goal.** A user can create a hero account on a Concord instance and sign into it from a fresh install.
+**Goal.** A user can create a hero account locally on a virgin install and link a second device by exchanging signed certificates over the existing pairing flow.
 
 **Acceptance.**
-- New schema migration adds `hero_accounts` (hero_id ULID, hero_pubkey, master_instance_url, created_at) + `device_link_certs` (cert_id ULID, hero_id FK, device_peerid, label, issued_at, expires_at, nonce, signature).
-- New libp2p protocol `/concord/hero-auth/1.0.0` on docker Concord instances: `CreateHero { username, passphrase }`, `LinkDevice { hero_id, my_peerid, auth }`, `ApproveLink { pending_link_id }`, `RotateHero { ... }`.
-- Tauri commands: `hero_create`, `hero_sign_in`, `hero_link_device`, `hero_list_my_devices`, `hero_revoke_device`, `hero_export_mnemonic`, `hero_import_from_mnemonic`.
-- React surface: Settings → Hero Account tab with sign-in form, device list, "Approve pending link" notification, mnemonic export modal.
-- Tests: master-instance integration tests (sign-up + sign-in + link-device + revoke), unit tests for the certificate signature verification, vitest for the React surface.
+- New schema migration adds `hero_accounts` (hero_id ULID, hero_pubkey, created_at) + `device_link_certs` (cert_id ULID, hero_id FK, device_peerid, label, issued_at, nonce, signature). No `master_instance_url`, no `expires_at` — the hero is locally created and certs do not expire (revocation is removal-from-list).
+- New libp2p protocol `/concord/hero-link/1.0.0` for peer-to-peer cert exchange between same-hero devices: `OfferLink { my_peerid, label }`, `AcceptLink { signed_cert }`, `ExchangeManifest { linked_devices }`.
+- Tauri commands: `hero_create`, `hero_link_device`, `hero_list_my_devices`, `hero_revoke_device`, `hero_export_mnemonic`, `hero_import_from_mnemonic`.
+- React surface: Settings → Hero Account tab with hero-creation flow, device list, "Approve pending link" notification, mnemonic export modal.
+- Tests: cert-exchange integration tests (create + link + revoke), unit tests for the certificate signature verification, vitest for the React surface.
 
-**Estimated size:** large. Spans backend protocol + frontend onboarding + master-instance Rust changes.
+**Estimated size:** large. Spans backend protocol + frontend onboarding.
+
+**Note.** The cross-protocol user-definition protocol (Architecture A) is a separate dispatch and is NOT part of Phase H1. H1 ships the local cert primitives; A ships the cross-transport user record.
 
 ### Phase H2 — Mirror-mode consent + initial sync
 
@@ -406,23 +369,13 @@ After this RFC is approved, four `develop_feature` dispatches form the build que
 ## 8. Recap
 
 - **Hero account** = a cross-device user identity. Optional. Doesn't replace per-install identity; binds two or more per-install identities together.
-- **Source of truth: a user-chosen master Concord instance** (Matrix-anchored, conduwuit-backed), with seed-mnemonic escape hatch for portability. Recommended over did:key (no interop) and did:web (requires DNS custody most users don't have).
-- **Binding** = the master instance signs `DeviceLinkCert`s that map peerids to hero pubkeys; sync handshakes check these certs.
-- **Mirror-mode** = an explicit second consent; declining link still gives cross-device identity but no data sync.
+- **Source of truth: the hero's own seed-mnemonic.** Hero is locally created on a virgin install. No external anchor, no master instance, no DID, no DNS. Cross-instance profile sharing happens via the **Concord-native user-definition protocol** (Architecture A).
+- **Per-server identity isolation by default.** Without a trust-gated profile merge, identity records accumulate per-server, not per-device — one user can present completely different impressions on two servers.
+- **Binding** = a device holding the hero seed signs `DeviceLinkCert`s that map peerids to hero pubkeys; sync handshakes check these certs. No TTL; revocation is a removal-from-list operation.
+- **Session lifecycle** = hard-disconnect on app close (Architecture E). No background daemon; cold-start cost is acceptable.
+- **Mirror-mode** = an explicit second consent; declining link still gives cross-device identity but no data sync. Sync is additionally gated by mesh-VPN reachability (Architecture C, Tailscale-gated).
+- **Peer-presence + access** = per-connection expiry policy; expired peers become visibility-only until host re-affirms (Architecture B).
 - **Sync** = layered on top of the existing Phase F porch CRDT, plus a new append-only `event_log` that lets us detect destructive concurrent writes.
-- **Conflict resolution** = enqueued + handed to an orrchestrator agent (or HTTP webhook, or manual UI). Verdict becomes a merge event that propagates to every linked device.
-- **Phases** = H1 hero identity → H2 mirror consent + initial sync → H3 event log + conflict detection → H4 agent dispatch.
-
----
-
-## Open questions (must resolve before H1 dispatch)
-
-The user must pick on each of these:
-
-- **§2.d** — default master-instance for fresh signups (project-run public instance / curated list / require self-host).
-- **§2.d** — device-link token TTL (24h / 7d / 30d).
-- **§2.d** — allow multi-master anchoring (no recommended; user decides).
-- **§4.c** — initial-sync ordering UX (creation order / activity order / batch).
-- **§5.d** — agent verdict confidence threshold for auto-apply vs. user-confirm.
-- **§5.d** — agent timeout behavior.
-- **§5.d** — multi-device convergence when both detect the same conflict.
+- **Initial-sync ordering** = text channels first → voice channels → applications.
+- **Conflict resolution** = enqueued + handed to an orrchestrator agent (or HTTP webhook, or manual UI). Verdict becomes a merge event that propagates to every linked device. Per-conflict-kind confidence threshold. Agent timeout = stop + resume in a new session with context inlined (Architecture D). Multi-device convergence = higher-confidence verdict wins; tie → Lamport then device-id.
+- **Phases** = H1 hero identity → H2 mirror consent + initial sync → H3 event log + conflict detection → H4 agent dispatch. Architectures A through E will be dispatched as follow-up implementations after the RFC lands.
