@@ -3,6 +3,7 @@ import { useAuthStore } from "../../stores/auth";
 import { useToastStore } from "../../stores/toast";
 import { changePassword, getTOTPStatus, setupTOTP, verifyTOTP, disableTOTP, getRecoveryEmailStatus, setRecoveryEmail, type TOTPSetupResult } from "../../api/concord";
 import { Avatar } from "../ui/Avatar";
+import { IdentityTrustSection } from "./IdentityTrustSection";
 
 export function ProfileTab() {
   const client = useAuthStore((s) => s.client);
@@ -128,6 +129,9 @@ export function ProfileTab() {
 
       {/* Two-factor authentication */}
       <TOTPSection />
+
+      {/* F-A — Concord-native user-definition protocol: trust edges */}
+      <IdentityTrustSection />
 
       <div className="border-t border-outline-variant/15 pt-6 flex flex-wrap gap-3">
         <button
