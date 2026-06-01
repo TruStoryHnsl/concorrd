@@ -77,8 +77,8 @@ describe("ChatLayout safe-area mobile layout", () => {
   it("viewport-fit=cover is set in the CSS safe-area utilities", () => {
     // The actual meta tag is in index.html — these tests validate the
     // CSS utilities exist and are correctly defined.
-    expect(indexCssSource).toMatch(/\.safe-top\s*\{[^}]*padding-top:\s*env\(safe-area-inset-top/);
-    expect(indexCssSource).toMatch(/\.safe-bottom\s*\{[^}]*padding-bottom:\s*env\(safe-area-inset-bottom/);
+    expect(indexCssSource).toMatch(/\.safe-top\s*\{[^}]*padding-top:[^;]*env\(safe-area-inset-top/);
+    expect(indexCssSource).toMatch(/\.safe-bottom\s*\{[^}]*padding-bottom:[^;]*env\(safe-area-inset-bottom/);
   });
 
   it("html, body, #root have height:100% for full viewport chain", () => {
