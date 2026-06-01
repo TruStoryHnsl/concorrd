@@ -38,6 +38,7 @@ pub mod obsidian;
 pub mod protocol;
 pub mod sync;
 pub mod theme;
+pub mod users;
 
 pub use backup::{
     list_received_backups, read_received_backup, read_received_backup_info, restore_from_blob,
@@ -69,6 +70,10 @@ pub use sync::{
 pub use theme::{
     Background, ChannelTheme, FontFamily, PorchAsset, ThemeSummary, MAX_ASSET_UPLOAD_BYTES,
     MAX_INLINE_ASSET_BYTES,
+};
+pub use users::{
+    KeychainEntry, PlaintextCredentials, Provenance, SourceKind, UserProfile,
+    KEYCHAIN_HKDF_INFO_V1,
 };
 
 /// The id of the default porch channel created on first boot. Stable
