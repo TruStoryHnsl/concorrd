@@ -1,12 +1,10 @@
 /**
- * SourcesPanel — intrinsic Porch tile tests.
+ * SourcesPanel — intrinsic Local tile tests.
  *
- * The porch is local to this install and does NOT live in
- * `useSourcesStore.sources`. SourcesPanel synthesizes the tile and
- * routes click → `onPorchOpen()`.
- *
- * Reference: `docs/architecture/porch-design.md` (Phase A — Sources-rail
- * integration).
+ * The local tile represents THIS device's hosted instance and is
+ * NOT in `useSourcesStore.sources` (which holds external connections
+ * only). SourcesPanel synthesizes the tile at the TOP of the rail and
+ * routes click → `onLocalOpen()`.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,8 +13,9 @@ import { SourcesPanel } from "../SourcesPanel";
 import { useSourcesStore } from "../../../stores/sources";
 import { useAuthStore } from "../../../stores/auth";
 import { usePeerStore } from "../../../stores/peerStore";
+import { useInstanceNameStore } from "../../../stores/instanceName";
 
-describe("<SourcesPanel /> — Porch tile", () => {
+describe("<SourcesPanel /> — Local tile", () => {
   beforeEach(() => {
     useSourcesStore.setState({ sources: [] });
     // No Matrix client by default — exercises the home-icon fallback.
@@ -29,9 +28,6 @@ describe("<SourcesPanel /> — Porch tile", () => {
       isLoading: false,
       syncing: false,
     });
-    // Disable peer-store load() side effects in tests — we don't want
-    // it to call into Tauri or browser storage. Replacing it with a
-    // no-op keeps the effect inert.
     usePeerStore.setState({
       knownPeers: [],
       isLoading: false,
@@ -40,14 +36,21 @@ describe("<SourcesPanel /> — Porch tile", () => {
       addFromCard: vi.fn(async () => null),
       remove: vi.fn(async () => false),
     });
+    // Default to "no vanity name set" so the tile renders the "local"
+    // fallback label. Individual tests override when needed.
+    useInstanceNameStore.setState({
+      name: "",
+      loading: false,
+      error: null,
+    });
   });
 
-  it("renders the porch tile even when sources is empty", () => {
+  it("renders the local tile even when sources is empty", () => {
     render(<SourcesPanel onAddSource={() => {}} />);
-    expect(screen.getByTestId("porch-tile")).toBeInTheDocument();
+    expect(screen.getByTestId("local-tile")).toBeInTheDocument();
   });
 
-  it("renders the porch tile FIRST — above all source tiles", () => {
+  it("renders the local tile FIRST — above all source tiles", () => {
     useSourcesStore.setState({
       sources: [
         {
@@ -65,22 +68,17 @@ describe("<SourcesPanel /> — Porch tile", () => {
       ],
     });
     render(<SourcesPanel onAddSource={() => {}} />);
-    // Both tiles render. The porch tile's DOM position must precede
-    // the source tile (compareDocumentPosition's "FOLLOWING" bit).
-    const porchTile = screen.getByTestId("porch-tile");
+    const localTile = screen.getByTestId("local-tile");
     const sourceTile = screen.getByTestId("source-tile-src_matrix");
     expect(
-      porchTile.compareDocumentPosition(sourceTile) &
+      localTile.compareDocumentPosition(sourceTile) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
-  it("right-click on the porch tile does NOT open the source context menu (no Disconnect)", () => {
+  it("right-click on the local tile does NOT open the source context menu", () => {
     render(<SourcesPanel onAddSource={() => {}} />);
-    fireEvent.contextMenu(screen.getByTestId("porch-tile"));
-    // The intrinsic porch tile has no SourceContextMenu — there's
-    // nothing to disconnect from. Confirm no source-context-menu
-    // rendered, and no "Close connection" entry exists.
+    fireEvent.contextMenu(screen.getByTestId("local-tile"));
     expect(screen.queryByText(/close connection/i)).not.toBeInTheDocument();
     expect(
       document.querySelector('[data-testid^="source-context-menu-"]'),
@@ -89,22 +87,39 @@ describe("<SourcesPanel /> — Porch tile", () => {
 
   it("falls back to home icon when no Matrix client is available", () => {
     render(<SourcesPanel onAddSource={() => {}} />);
-    // No client → useAvatarUrl returns null → home material symbol renders.
-    expect(screen.getByTestId("porch-tile-home-icon")).toBeInTheDocument();
-    expect(screen.queryByTestId("porch-tile-avatar")).toBeNull();
+    expect(screen.getByTestId("local-tile-home-icon")).toBeInTheDocument();
+    expect(screen.queryByTestId("local-tile-avatar")).toBeNull();
   });
 
-  it("invokes onPorchOpen when the tile is clicked", () => {
-    const onPorchOpen = vi.fn();
+  it("invokes onLocalOpen when the tile is clicked", () => {
+    const onLocalOpen = vi.fn();
     render(
-      <SourcesPanel onAddSource={() => {}} onPorchOpen={onPorchOpen} />,
+      <SourcesPanel onAddSource={() => {}} onLocalOpen={onLocalOpen} />,
     );
-    fireEvent.click(screen.getByTestId("porch-tile"));
-    expect(onPorchOpen).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId("local-tile"));
+    expect(onLocalOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the vanity instance name as the tile label when set", () => {
+    useInstanceNameStore.setState({
+      name: "patio",
+      loading: false,
+      error: null,
+    });
+    render(<SourcesPanel onAddSource={() => {}} />);
+    expect(screen.getByTestId("local-tile").getAttribute("title")).toBe(
+      "patio",
+    );
+  });
+
+  it("falls back to 'local' label when no vanity name is set", () => {
+    render(<SourcesPanel onAddSource={() => {}} />);
+    expect(screen.getByTestId("local-tile").getAttribute("title")).toBe(
+      "local",
+    );
   });
 
   it("renders an offline indicator when no peers have recent lastSeen", () => {
-    // Stale peer (last seen >60s ago) → still offline.
     usePeerStore.setState({
       knownPeers: [
         {
@@ -123,9 +138,9 @@ describe("<SourcesPanel /> — Porch tile", () => {
       remove: vi.fn(async () => false),
     });
     render(<SourcesPanel onAddSource={() => {}} />);
-    const wrapper = screen.getByTestId("porch-tile-wrapper");
+    const wrapper = screen.getByTestId("local-tile-wrapper");
     expect(
-      within(wrapper).getByTestId("porch-tile-online-no"),
+      within(wrapper).getByTestId("local-tile-online-no"),
     ).toBeInTheDocument();
   });
 });
