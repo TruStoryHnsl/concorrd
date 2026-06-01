@@ -4,6 +4,7 @@ use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
 
 pub mod porch;
+pub mod porch_ephemeral;
 pub mod servitude;
 
 use servitude::config::Profile;
@@ -87,6 +88,14 @@ pub struct SwarmEventChannel(pub std::sync::Arc<SwarmStateCache>);
 /// build that never opens the porch surface doesn't pay the
 /// migration cost) and reused for the process lifetime.
 pub struct PorchState(pub Mutex<Option<std::sync::Arc<porch::Porch>>>);
+
+/// F1a — shared **ephemeral** porch (in-memory, session-only). Created
+/// at first read by `ensure_ephemeral_porch`; reused for the process
+/// lifetime. Dropping the process drops every byte of porch state —
+/// channels, messages, and ACL rows — and the next launch starts from
+/// a fresh `welcome` channel with no history. Distinct from
+/// [`PorchState`] (the SQLite-backed soon-to-be-home-server module).
+pub struct EphemeralPorchState(pub Mutex<Option<std::sync::Arc<porch_ephemeral::EphemeralPorch>>>);
 
 // ---------------------------------------------------------------------------
 // Phase 5 — peer-store IPC shapes
@@ -461,6 +470,115 @@ async fn porch_post_message(
     };
     porch
         .post_message(&channel_id, &author, &body)
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// F1a — ephemeral porch commands (in-memory, session-only)
+// ---------------------------------------------------------------------------
+//
+// Distinct surface from the persistent porch above — see
+// `src-tauri/src/porch_ephemeral/` for the doorman architecture +
+// session-token gate. The existing `porch_*` commands above operate on
+// the SQLite-backed module being re-themed as the home server in F1b;
+// nothing in this section touches that storage.
+
+/// Lazily construct the per-launch [`porch_ephemeral::EphemeralPorch`].
+/// The first read triggers seeding the welcome channel + minting the
+/// 256-bit session token; subsequent calls return the same `Arc`.
+///
+/// The host's libp2p PeerId is plumbed in from the running servitude
+/// handle so the porch can publish its identity to clients via the
+/// `porch_current_token` command. If the libp2p runtime isn't up yet
+/// (rare race during boot — the porch is constructed before
+/// servitude_start in some test flows), a placeholder PeerId is
+/// generated and replaced the next time servitude reports a real one.
+async fn ensure_ephemeral_porch(
+    state: &tauri::State<'_, EphemeralPorchState>,
+    servitude_state: &tauri::State<'_, ServitudeState>,
+) -> std::sync::Arc<porch_ephemeral::EphemeralPorch> {
+    let mut guard = state.0.lock().await;
+    if let Some(p) = guard.as_ref() {
+        return p.clone();
+    }
+    let host_peer_id = {
+        let s = servitude_state.0.lock().await;
+        s.as_ref()
+            .and_then(|h| h.libp2p_local_peer_id())
+            // Fall back to an ephemeral throwaway id when the swarm
+            // isn't up — `porch_current_token` will still return the
+            // real id once the renderer calls again after start.
+            .unwrap_or_else(|| {
+                libp2p::PeerId::from(libp2p::identity::Keypair::generate_ed25519().public())
+            })
+    };
+    let porch = std::sync::Arc::new(porch_ephemeral::EphemeralPorch::new(host_peer_id));
+    *guard = Some(porch.clone());
+    porch
+}
+
+/// F1a — `(peer_id, session_token)` published to the renderer so the
+/// peer-onboarding UX can surface the running token to invited guests.
+/// The token rotates on every binary launch; never log this value.
+#[tauri::command]
+async fn porch_current_token(
+    state: tauri::State<'_, EphemeralPorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+) -> Result<porch_ephemeral::PorchIdentity, String> {
+    let porch = ensure_ephemeral_porch(&state, &servitude_state).await;
+    Ok(porch.identity())
+}
+
+/// F1a — list channels on the ephemeral porch.
+#[tauri::command]
+async fn porch_list_channels(
+    state: tauri::State<'_, EphemeralPorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+) -> Result<Vec<porch_ephemeral::EphemeralChannel>, String> {
+    let porch = ensure_ephemeral_porch(&state, &servitude_state).await;
+    Ok(porch.list_channels().await)
+}
+
+/// F1a — read every message in an ephemeral channel. The persistent
+/// porch's own `porch_get_messages` command lives above and operates on
+/// the SQLite-backed module — they have different params (the
+/// persistent one paginates with `since` + `limit`; the ephemeral one
+/// is bounded at `MAX_MESSAGES_PER_CHANNEL` so returns everything).
+/// Named with the `_ephemeral_` infix to avoid a Tauri-command
+/// collision; the client wraps both behind a `porchEphemeralStore`
+/// follow-up.
+#[tauri::command]
+async fn porch_ephemeral_get_messages(
+    state: tauri::State<'_, EphemeralPorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    channel_id: String,
+) -> Result<Vec<porch_ephemeral::EphemeralMessage>, String> {
+    let porch = ensure_ephemeral_porch(&state, &servitude_state).await;
+    Ok(porch.get_messages(&channel_id).await)
+}
+
+/// F1a — append a message to an ephemeral channel. The author is
+/// stamped as the local libp2p PeerId; if no libp2p runtime is up
+/// (rare boot race), falls back to `"local"` so the host can still
+/// post.
+#[tauri::command]
+async fn porch_send_message(
+    state: tauri::State<'_, EphemeralPorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    channel_id: String,
+    body: String,
+) -> Result<porch_ephemeral::EphemeralMessage, String> {
+    let porch = ensure_ephemeral_porch(&state, &servitude_state).await;
+    let author = {
+        let guard = servitude_state.0.lock().await;
+        guard
+            .as_ref()
+            .and_then(|h| h.libp2p_local_peer_id().map(|p| p.to_base58()))
+            .unwrap_or_else(|| "local".to_string())
+    };
+    porch
+        .send_message(&channel_id, &author, &body)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -2359,6 +2477,12 @@ pub fn run() {
         // `porch_*` Tauri command opens the SQLite DB; subsequent calls
         // reuse the same instance.
         .manage(PorchState(Mutex::new(None)))
+        // F1a — lazily-opened ephemeral porch. Built on first call to
+        // any `porch_list_channels` / `porch_ephemeral_get_messages` /
+        // `porch_send_message` / `porch_current_token` command.
+        // Lives only for the process lifetime — dropped when the
+        // binary exits.
+        .manage(EphemeralPorchState(Mutex::new(None)))
         .setup(move |app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -2547,6 +2671,11 @@ pub fn run() {
             porch_list_my_channels,
             porch_get_messages,
             porch_post_message,
+            // F1a — ephemeral porch (in-memory, session-only).
+            porch_current_token,
+            porch_list_channels,
+            porch_ephemeral_get_messages,
+            porch_send_message,
             porch_visit_peer,
             porch_visit_get_messages,
             porch_visit_post_message,
