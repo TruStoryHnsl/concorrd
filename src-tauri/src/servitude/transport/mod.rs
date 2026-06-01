@@ -208,6 +208,16 @@ pub struct LibP2pRuntime {
     /// device they reached. Wired before `start()`; changes take
     /// effect on the next start/stop cycle.
     instance_name: Option<String>,
+    /// F-WG (RFC #140 §"Transport — WireGuard exclusively for native
+    /// p2p" + §"Architecture E — Hard-disconnect on app close") —
+    /// per-runtime registry of live WireGuard tunnels wrapping every
+    /// native p2p egress. Built fresh on each `start()` and dropped on
+    /// `stop()` so a stop/start cycle collapses every tunnel and
+    /// re-builds from scratch (no warm-resume). The Tauri close-event
+    /// handler calls `force_disconnect_all()` on this registry before
+    /// the runtime is dropped, so the binary exits with zero tunnels
+    /// live.
+    wg_registry: crate::servitude::network::wg_tunnel::WgRegistry,
 }
 
 impl std::fmt::Debug for LibP2pRuntime {
@@ -243,7 +253,19 @@ impl LibP2pRuntime {
             porch_stream_control: None,
             gate_state: None,
             instance_name: None,
+            wg_registry: crate::servitude::network::wg_tunnel::WgRegistry::new(),
         }
+    }
+
+    /// F-WG — clone of the per-runtime WireGuard tunnel registry. The
+    /// Tauri command layer uses this for `wg_tunnel_status` /
+    /// `wg_tunnel_force_disconnect_all`, and the close-event handler
+    /// uses it to hard-collapse every active tunnel before the binary
+    /// exits.
+    pub fn wg_registry(
+        &self,
+    ) -> crate::servitude::network::wg_tunnel::WgRegistry {
+        self.wg_registry.clone()
     }
 
     /// Wire the operator's vanity instance name. MUST be called before
@@ -598,6 +620,12 @@ impl LibP2pRuntime {
     }
 
     async fn stop(&mut self) -> Result<(), TransportError> {
+        // F-WG / Architecture E — hard-disconnect ALL WireGuard
+        // tunnels before tearing down the swarm itself. Done first so
+        // a long-running swarm task can't keep dialing through a
+        // half-collapsed tunnel during the shutdown window.
+        self.wg_registry.force_disconnect_all();
+
         let task = match self.swarm_task.take() {
             Some(t) => t,
             None => return Err(TransportError::NotRunning),
@@ -1030,6 +1058,22 @@ impl TransportRuntime {
     pub fn porch_stream_control(&self) -> Option<libp2p_stream::Control> {
         match self {
             TransportRuntime::LibP2p(t) => t.porch_stream_control(),
+            _ => None,
+        }
+    }
+
+    /// F-WG — clone of the per-runtime WireGuard tunnel registry. The
+    /// Tauri command layer's `wg_tunnel_status` /
+    /// `wg_tunnel_force_disconnect_all` commands read from it, and the
+    /// app close-event handler invokes `force_disconnect_all()` on it
+    /// to hard-collapse every active tunnel before the binary exits
+    /// (Architecture E). Returns `None` for non-libp2p variants — the
+    /// federation / domain transports never built a WG tunnel.
+    pub fn wg_registry(
+        &self,
+    ) -> Option<crate::servitude::network::wg_tunnel::WgRegistry> {
+        match self {
+            TransportRuntime::LibP2p(t) => Some(t.wg_registry()),
             _ => None,
         }
     }

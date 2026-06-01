@@ -231,6 +231,30 @@ hkdf = "0.12"
 # macOS: `getifaddrs`, Windows: `GetAdaptersAddresses`).
 ipnet = { version = "2", features = ["serde"] }
 
+# F-WG — WireGuard wrap for native p2p egress (RFC #140 Architecture E).
+#
+# `boringtun` is Cloudflare's pure-Rust WireGuard protocol engine. Picked
+# over `wireguard-control` (which wraps a C library + needs `libwgembed`
+# on Windows + needs CAP_NET_ADMIN/root on Linux for the kernel module)
+# because boringtun runs entirely in-process with no kernel-side state and
+# no elevated privileges. The default feature set gives us the `Tunn`
+# state machine (handshake + encrypt + decrypt) without any socket/device
+# shim — we orchestrate the UDP socket + the in-process forwarder ourselves
+# in `servitude/network/wg_tunnel.rs` so the tunnel collapses synchronously
+# on `Drop` (Architecture E — hard-disconnect on app close).
+#
+# Cross-platform: works the same on Linux, macOS, and Windows. No kernel
+# WireGuard interface means no extra cleanup on app close — the tunnel
+# state lives entirely in the boringtun `Tunn` value and the bound UDP
+# socket, both of which collapse when the WgTunnel is dropped.
+boringtun = "0.7"
+# Static-secret + public-key wrapper types for boringtun. boringtun 0.7
+# accepts the raw x25519 byte arrays directly, but `x25519-dalek` gives
+# the unit tests a way to derive a deterministic public key from a
+# private key without spinning up a full boringtun handshake.
+# `static_secrets` is the feature that exposes `StaticSecret::from(bytes)`.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
 # Unix-only deps for servitude child-process management. `nix::sys::signal`
 # gives us SIGTERM for graceful shutdown — std::process::Child::kill uses
 # SIGKILL only, which doesn't let tuwunel flush its RocksDB on exit.

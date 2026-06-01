@@ -1641,6 +1641,69 @@ async fn tunnel_detect_interfaces(
 }
 
 // ---------------------------------------------------------------------------
+// F-WG — WireGuard tunnel status + explicit-disconnect commands
+//
+// RFC #140 §"Transport — WireGuard exclusively for native p2p" mandates
+// that every native p2p egress ride inside a per-peer WireGuard tunnel.
+// RFC #140 §"Architecture E — Hard-disconnect on app close" mandates
+// that those tunnels collapse synchronously when the binary exits.
+//
+// These two commands surface the runtime's tunnel registry to the
+// React UI: `wg_tunnel_status` returns the live list (target peer-id,
+// established_at, bytes in/out, loopback endpoint); the explicit
+// "go offline now" affordance calls `wg_tunnel_force_disconnect_all`
+// to drop every active tunnel in one synchronous sweep. The close-
+// event handler in `run()` invokes the same force-disconnect path
+// before the binary exits, so a clean exit AND a user-requested
+// disconnect share the same shutdown code.
+// ---------------------------------------------------------------------------
+
+/// List currently-active WireGuard tunnels. Returns an empty list when
+/// no libp2p runtime is up yet, OR when every tunnel has already been
+/// disconnected. The React UI's Connections panel renders these as
+/// rows; the `bytes_in` / `bytes_out` fields refresh on each call so
+/// callers polling at 1Hz see live throughput.
+#[tauri::command]
+async fn wg_tunnel_status(
+    state: tauri::State<'_, ServitudeState>,
+) -> Result<Vec<servitude::network::TunnelInfo>, String> {
+    let guard = state.0.lock().await;
+    let handle = match guard.as_ref() {
+        Some(h) => h,
+        // No servitude up yet: empty list is the correct surface,
+        // matching the "no tunnels because nothing has started" model.
+        None => return Ok(Vec::new()),
+    };
+    let registry = match handle.wg_registry() {
+        Some(r) => r,
+        None => return Ok(Vec::new()),
+    };
+    Ok(registry.status())
+}
+
+/// User-driven "go offline now" affordance. Synchronously tears down
+/// every live tunnel — the user clicks the button and the UI sees
+/// `wg_tunnel_status` go to `[]` on the next poll. The libp2p swarm
+/// itself stays alive, so subsequent dials will lazily rebuild
+/// tunnels via the registry. This is distinct from `servitude_stop`,
+/// which tears down the entire runtime.
+///
+/// Same code path the Tauri close-event handler invokes — see
+/// Architecture E (no background daemon, no warm-resume).
+#[tauri::command]
+async fn wg_tunnel_force_disconnect_all(
+    state: tauri::State<'_, ServitudeState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().await;
+    if let Some(handle) = guard.as_ref() {
+        if let Some(registry) = handle.wg_registry() {
+            registry.force_disconnect_all();
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Phase 8 — voice path selection
 // ---------------------------------------------------------------------------
 
@@ -2880,6 +2943,10 @@ pub fn run() {
             tunnel_get_config,
             tunnel_set_config,
             tunnel_detect_interfaces,
+            // F-WG — per-peer WireGuard tunnel wrapping for native p2p
+            // egress (RFC #140 Architecture E hard-disconnect on close).
+            wg_tunnel_status,
+            wg_tunnel_force_disconnect_all,
             // User Management Phase 1 — profile CRUD + keychain metadata.
             user_profile_list,
             user_profile_create,
@@ -2890,6 +2957,41 @@ pub fn run() {
             user_profile_keychain_list,
             user_profile_keychain_remove,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // F-WG (RFC #140 Architecture E) — hard-disconnect every
+            // active WireGuard tunnel BEFORE the binary exits. Tauri's
+            // `RunEvent::Exit` fires after every window has closed but
+            // before the process actually exits, which is the last
+            // synchronous moment we can guarantee tunnel teardown
+            // happens with the binary still alive.
+            //
+            // The shutdown does NOT detach into a background process.
+            // It synchronously aborts every forwarder task, releases
+            // every bound UDP socket, and empties the registry. Calling
+            // it idempotent: a subsequent `Exit` (Tauri can fire two
+            // in rare double-close races) is a no-op because the
+            // registry is empty.
+            if let tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. } = &event {
+                if let Some(state) = app_handle.try_state::<ServitudeState>() {
+                    // Block on the async lock from a sync context.
+                    // Tauri's RunEvent callback isn't async; the
+                    // tokio runtime is still alive at this point so
+                    // `block_on` is safe.
+                    let registry = tauri::async_runtime::block_on(async {
+                        let guard = state.0.lock().await;
+                        guard.as_ref().and_then(|h| h.wg_registry())
+                    });
+                    if let Some(r) = registry {
+                        log::info!(
+                            target: "concord::servitude::wg_tunnel",
+                            "Tauri RunEvent::{:?} — force-disconnecting {} active WG tunnel(s)",
+                            std::mem::discriminant(&event), r.live_count()
+                        );
+                        r.force_disconnect_all();
+                    }
+                }
+            }
+        });
 }

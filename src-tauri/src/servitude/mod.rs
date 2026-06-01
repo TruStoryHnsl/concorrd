@@ -392,6 +392,23 @@ impl ServitudeHandle {
         None
     }
 
+    /// F-WG — clone of the libp2p runtime's WireGuard tunnel
+    /// registry. `None` when no libp2p runtime is in this handle's
+    /// transport list. The Tauri `wg_tunnel_status` /
+    /// `wg_tunnel_force_disconnect_all` commands read from it; the
+    /// app close-event handler invokes `force_disconnect_all()` on
+    /// it before the binary exits (Architecture E).
+    pub fn wg_registry(
+        &self,
+    ) -> Option<crate::servitude::network::wg_tunnel::WgRegistry> {
+        for runtime in &self.transports {
+            if let Some(r) = runtime.wg_registry() {
+                return Some(r);
+            }
+        }
+        None
+    }
+
     /// Drive the state machine `Stopped -> Starting -> Running`, bringing
     /// up each enabled transport in config order.
     ///

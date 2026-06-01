@@ -33,7 +33,15 @@
 pub mod connection_gate;
 pub mod tunnel_config;
 pub mod tunnel_detect;
+// F-WG (RFC #140 §"Transport — WireGuard exclusively for native p2p"
+// + §"Architecture E — Hard-disconnect on app close") — per-peer
+// userspace WireGuard tunnels wrapping all native libp2p egress.
+// Tunnels collapse synchronously on `Drop` (no background daemon,
+// no warm-resume, no kernel interface). See `wg_tunnel`'s module
+// docs for the boringtun-vs-wireguard-control decision rationale.
+pub mod wg_tunnel;
 
 pub use connection_gate::{ConnectionGate, GateDecision};
 pub use tunnel_config::{TunnelConfig, TunnelConfigError};
 pub use tunnel_detect::{TunnelDetectionReport, TunnelInterfaces};
+pub use wg_tunnel::{TunnelInfo, WgTunnel, WgTunnelError};
