@@ -31,7 +31,15 @@
  * (matches the index.html boot splash markup). The
  * `playsInline` + `muted` + `autoPlay` + `loop` combo lets it run
  * inside webview autoplay policies without a user gesture.
+ *
+ * Stability note: a ref-based imperative `play()` after mount keeps
+ * the video rolling across React StrictMode's intentional
+ * mount→unmount→remount cycle in dev. Without it the video reset to
+ * frame 0 partway through (user saw "the splash restarts halfway
+ * through") every time StrictMode poked the lifecycle.
  */
+
+import { useEffect, useRef } from "react";
 
 export type BringingUpSplashSize = "full" | "compact" | "inline";
 
@@ -104,6 +112,23 @@ export function BringingUpSplash({
   const outerClass = className
     ? `${spec.outerLayout} ${className}`
     : spec.outerLayout;
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Resume playback after StrictMode's dev-only remount cycle. The
+  // video element's autoPlay attribute fires only once per element
+  // creation; if StrictMode tears the component down and brings it
+  // back (or a parent re-render swaps the node), the new element
+  // starts at frame 0 — exactly the "restarts halfway through"
+  // symptom users see in dev. Calling play() here is idempotent and
+  // safe to run on every mount.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.play().catch(() => {
+      // Autoplay policies may reject silently; the element will
+      // fall back to whatever the platform allows. Nothing to do.
+    });
+  }, []);
   return (
     <span
       data-testid={testId}
@@ -119,6 +144,7 @@ export function BringingUpSplash({
         }}
       >
         <video
+          ref={videoRef}
           src="/boot-splash.mp4"
           autoPlay
           muted
