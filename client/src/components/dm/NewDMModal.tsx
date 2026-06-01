@@ -3,6 +3,7 @@ import { useAuthStore } from "../../stores/auth";
 import { useDMStore } from "../../stores/dm";
 import { useToastStore } from "../../stores/toast";
 import { useSourcesStore, type ConcordSource } from "../../stores/sources";
+import { BringingUpSplash } from "../BringingUpSplash";
 import { searchMatrixDirectory, type MatrixDirectoryUser } from "../../api/matrix";
 import { Avatar } from "../ui/Avatar";
 
@@ -253,7 +254,7 @@ export function NewDMModal({ onClose }: Props) {
                       </p>
                     </div>
                     {starting === user.user_id && (
-                      <span className="inline-block w-4 h-4 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
+                      <BringingUpSplash size="inline" />
                     )}
                   </button>
                 ))}

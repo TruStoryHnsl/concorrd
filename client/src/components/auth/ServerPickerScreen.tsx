@@ -11,6 +11,7 @@ import { useServerConfigStore } from "../../stores/serverConfig";
 import { useSourcesStore } from "../../stores/sources";
 import { usePlatform } from "../../hooks/usePlatform";
 import { ConcordLogo } from "../brand/ConcordLogo";
+import { BringingUpSplash } from "../BringingUpSplash";
 import {
   isTauri as isTauriRuntime,
   servitudeStatus,
@@ -824,7 +825,7 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
                       check_circle
                     </span>
                   ) : (
-                    <span className="inline-block w-8 h-8 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
+                    <BringingUpSplash size="compact" />
                   )}
                   <p className="text-sm text-on-surface font-medium">
                     {state.message}
@@ -977,11 +978,11 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
         )}
 
         {state.phase === "connecting" && (
-          <div className="flex flex-col items-center gap-3 py-8" data-testid="server-picker-connecting">
-            <span className="inline-block w-6 h-6 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
-            <p className="text-sm text-on-surface-variant">
-              Discovering Concord endpoints on {host.trim()}…
-            </p>
+          <div data-testid="server-picker-connecting">
+            <BringingUpSplash
+              size="compact"
+              status={`Discovering Concord endpoints on ${host.trim()}…`}
+            />
           </div>
         )}
 

@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from "react";
+import { BringingUpSplash } from "./BringingUpSplash";
 
 interface Props {
   children: ReactNode;
@@ -43,7 +44,7 @@ export class ErrorBoundary extends Component<Props, State> {
       if (this.state.retryCount < MAX_AUTO_RETRIES) {
         return (
           <div className="h-screen bg-surface flex items-center justify-center">
-            <span className="text-on-surface-variant">Loading...</span>
+            <BringingUpSplash size="compact" status="Loading…" />
           </div>
         );
       }

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { getWebhookInfo, submitWebhookMessage } from "../../api/concord";
 import type { WebhookInfo } from "../../api/concord";
+import { BringingUpSplash } from "../BringingUpSplash";
 
 interface Props {
   webhookId: string;
@@ -51,7 +52,7 @@ export function SubmitPage({ webhookId }: Props) {
   if (loading) {
     return (
       <div className="min-h-screen bg-surface flex items-center justify-center overflow-y-auto">
-        <span className="text-on-surface-variant">Loading...</span>
+        <BringingUpSplash size="compact" status="Loading…" />
       </div>
     );
   }

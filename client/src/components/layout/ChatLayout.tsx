@@ -23,6 +23,7 @@ import { useVoiceStore } from "../../stores/voice";
 import { useHostingStatus } from "../settings/HostingTab";
 import { SectionBoundary } from "./SectionBoundary";
 import { SourcesPanel } from "./SourcesPanel";
+import { BringingUpSplash } from "../BringingUpSplash";
 // Lazy: the porch surface (and its Phase A SQLite-talking stores) is only
 // loaded when the user actually clicks the Porch tile. Keeps the
 // porch-design.md feature off the cold-boot critical path.
@@ -1457,7 +1458,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               <span className="text-on-surface-variant font-body">
                 {!syncing || !serversLoaded ? (
                   <span className="flex items-center gap-2">
-                    <span className="inline-block w-3 h-3 border-2 border-on-surface-variant border-t-primary rounded-full animate-spin" />
+                    <BringingUpSplash size="inline" />
                     {!syncing ? "Connecting..." : "Loading servers..."}
                   </span>
                 ) : servers.length === 0 ? (
@@ -1594,7 +1595,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         <div className="flex-1 flex flex-col min-h-0">
           {!roomReady && (
             <div className="px-4 py-3 bg-primary/10 border-b border-primary/20 flex items-center gap-2 flex-shrink-0">
-              <span className="inline-block w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              <BringingUpSplash size="inline" />
               <span className="text-sm text-on-surface-variant">Loading room…</span>
             </div>
           )}
@@ -1789,12 +1790,10 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     return (
       <div className="flex-1 flex items-center justify-center p-8">
         {!syncing || !serversLoaded ? (
-          <div className="flex flex-col items-center gap-3">
-            <span className="inline-block w-6 h-6 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
-            <p className="text-on-surface-variant text-sm font-body">
-              {!syncing ? "Connecting..." : "Loading your servers..."}
-            </p>
-          </div>
+          <BringingUpSplash
+            size="compact"
+            status={!syncing ? "Connecting…" : "Loading your servers…"}
+          />
         ) : servers.length === 0 ? (
           <OnboardingGuide />
         ) : (
@@ -3036,10 +3035,7 @@ export function AddSourceModal({
 
         {/* ── Screen: validating ── */}
         {screen === "validating" && (
-          <div className="flex flex-col items-center gap-3 py-8">
-            <span className="inline-block w-6 h-6 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
-            <p className="text-sm text-on-surface-variant">Connecting…</p>
-          </div>
+          <BringingUpSplash size="compact" status="Connecting…" />
         )}
 
         {/* ── Screen: error ── */}

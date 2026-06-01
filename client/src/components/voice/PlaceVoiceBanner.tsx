@@ -1,5 +1,6 @@
 import { memo, useState } from "react";
 import { Avatar } from "../ui/Avatar";
+import { BringingUpSplash } from "../BringingUpSplash";
 
 interface Participant {
   userId: string;
@@ -47,7 +48,10 @@ export const PlaceVoiceBanner = memo(function PlaceVoiceBanner({
           <PlacePill key={p.userId} participant={p} onVideoClick={onVideoClick} />
         ))}
         {participants.length === 0 && (
-          <span className="text-xs text-on-surface-variant/60 font-label">Connecting...</span>
+          <span className="inline-flex items-center gap-1.5 text-xs text-on-surface-variant/60 font-label">
+            <BringingUpSplash size="inline" />
+            Connecting…
+          </span>
         )}
       </div>
 
