@@ -24,6 +24,8 @@
 import { useCallback, useMemo, useState } from "react";
 import type { ChatMessage } from "../../hooks/useMatrix";
 import { usePorchStore } from "../../stores/porchStore";
+import { useLocalServerSelectionStore } from "../../stores/localServerSelection";
+import { useHomeServerNameStore } from "../../stores/homeServerName";
 import { MessageList } from "../chat/MessageList";
 import { MessageInput } from "../chat/MessageInput";
 import { BringingUpSplash } from "../BringingUpSplash";
@@ -61,6 +63,15 @@ export function LocalChatPane() {
   const error = usePorchStore((s) => s.error);
   const sendMessage = usePorchStore((s) => s.sendMessage);
 
+  // F1b-IMPL — surface the active server's label in BringingUpSplash
+  // status strings + the "desktop-only" empty state so the user
+  // never sees stale "porch" copy when they're actually reading the
+  // home server.
+  const active = useLocalServerSelectionStore((s) => s.active);
+  const homeName = useHomeServerNameStore((s) => s.name);
+  const serverLabel =
+    active === "home" ? homeName.trim() || "home" : "porch";
+
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
 
   const selectedChannel = useMemo(
@@ -93,7 +104,7 @@ export function LocalChatPane() {
       <div className="flex-1 flex items-center justify-center p-8">
         <BringingUpSplash
           size="compact"
-          status="The porch lives on your desktop install"
+          status={`The ${serverLabel} server lives on your desktop install`}
         />
       </div>
     );
@@ -103,7 +114,10 @@ export function LocalChatPane() {
   if (!isLoaded) {
     return (
       <div className="flex-1 flex items-center justify-center p-8">
-        <BringingUpSplash size="compact" status="Loading porch…" />
+        <BringingUpSplash
+          size="compact"
+          status={`Loading ${serverLabel}…`}
+        />
       </div>
     );
   }

@@ -1,23 +1,26 @@
 /**
- * LocalChannelSidebar — channel column for the active local porch.
+ * LocalChannelSidebar — channel column for the active LOCAL server
+ * (porch OR home, see the 2026-06-01 CONSOLIDATED ARCHITECTURE filing
+ * in `instructions_inbox.md`).
  *
- * Visual contract: identical to ChannelSidebar's text-channel section —
- * server-name header at the top, a `Text Channels` group beneath, one
- * row per channel styled with the same Tailwind classes that
- * ChannelSidebar uses for a Matrix text channel. The data backing each
- * row comes from `usePorchStore` instead of `useServerStore`, but the
- * pixels are the same.
+ * Today both tiles read their channels from the existing `porchStore`
+ * (which is backed by the persistent porch SQLite). That's correct
+ * for the HOME server — the porch SQLite is being repurposed as the
+ * home's backing store; rename of the porch module / file is a
+ * follow-up PR. The PORCH server's ephemeral in-memory channel set
+ * lands in F1a (parallel PR); until then the porch tile shows the
+ * same list (still useful — the porch tile changing the header
+ * label confirms the routing works end-to-end).
  *
- * The Phase A porch backend already auto-seeds a default channel on
- * first open (see `src-tauri/src/porch/db.rs::Porch::open`), so the
- * list is never empty when running natively. On the web build, the
- * porch is unreachable — we render a small "desktop-only" hint
- * instead of an empty list.
+ * The server-name header reflects the currently-active local server:
+ *   - `active === "home"` → `useHomeServerNameStore.name` (default "home")
+ *   - `active === "porch"` → literal "porch" (porch is not renamable)
  */
 
 import { memo, useEffect } from "react";
 import { usePorchStore } from "../../stores/porchStore";
-import { useInstanceNameStore } from "../../stores/instanceName";
+import { useHomeServerNameStore } from "../../stores/homeServerName";
+import { useLocalServerSelectionStore } from "../../stores/localServerSelection";
 import { isTauri } from "../../api/servitude";
 import { BringingUpSplash } from "../BringingUpSplash";
 
@@ -30,12 +33,18 @@ export const LocalChannelSidebar = memo(function LocalChannelSidebar({
   mobile: _mobile,
   onChannelSelect,
 }: LocalChannelSidebarProps) {
+  // NOTE: `porchStore` is the persistent home-server's backing store
+  // today — the variable name is keep-as-is because the module
+  // rename is a follow-up PR.
   const channels = usePorchStore((s) => s.channels);
   const selectedChannelId = usePorchStore((s) => s.selectedChannelId);
   const isLoaded = usePorchStore((s) => s.isLoaded);
   const error = usePorchStore((s) => s.error);
   const loadChannels = usePorchStore((s) => s.loadChannels);
   const selectChannel = usePorchStore((s) => s.selectChannel);
+
+  const active = useLocalServerSelectionStore((s) => s.active);
+  const homeName = useHomeServerNameStore((s) => s.name);
 
   // Lazy-load on mount. `loadChannels` is idempotent — re-calling it
   // refreshes the list without resetting the selection.
@@ -45,22 +54,28 @@ export const LocalChannelSidebar = memo(function LocalChannelSidebar({
     }
   }, [isLoaded, loadChannels]);
 
-  const instanceName = useInstanceNameStore((s) => s.name);
-  const porchLabel = instanceName.trim() || "porch";
+  const serverLabel =
+    active === "home" ? homeName.trim() || "home" : "porch";
+
+  // Loading status string matches the active server so the user
+  // sees consistent vocabulary in BringingUpSplash.
+  const loadingStatus =
+    active === "home" ? "Loading home…" : "Loading porch…";
 
   return (
     <div className="w-full h-full flex flex-col min-h-0 bg-surface-container-low">
       {/* Server header — mirrors ChannelSidebar's `p-3 flex items-center
           justify-between` row. Settings/invite affordances are intentionally
-          omitted in Phase A; per-channel admin lives in the per-feature
+          omitted in this PR; per-channel admin lives in the per-feature
           surfaces under client/src/components/porch/. */}
       <div className="p-3 flex items-center justify-between relative">
         <span
           data-testid="local-channel-sidebar-server-header"
+          data-server-key={active}
           className="min-w-0 text-left text-sm font-headline font-semibold text-on-surface truncate"
-          title={porchLabel}
+          title={serverLabel}
         >
-          {porchLabel}
+          {serverLabel}
         </span>
       </div>
 
@@ -72,12 +87,12 @@ export const LocalChannelSidebar = memo(function LocalChannelSidebar({
               This device is in web mode
             </p>
             <p className="mt-2 text-xs text-on-surface-variant/60 font-label">
-              The local porch lives on your desktop install.
+              The local {serverLabel} server lives on your desktop install.
             </p>
           </div>
         ) : !isLoaded ? (
           <div className="flex justify-center py-6">
-            <BringingUpSplash size="compact" status="Loading porch…" />
+            <BringingUpSplash size="compact" status={loadingStatus} />
           </div>
         ) : error && error !== "native_only" ? (
           <div className="px-3 py-6 text-center">
