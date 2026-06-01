@@ -33,6 +33,7 @@ pub mod backup_protocol;
 pub mod channel;
 pub mod db;
 pub mod error;
+pub mod history_protocol;
 pub mod knock;
 pub mod obsidian;
 pub mod protocol;
@@ -52,6 +53,12 @@ pub use backup_protocol::{
 pub use channel::{AclMode, AclRole, ChannelKind, ChannelMessage, PorchChannel};
 pub use db::{Porch, SCHEMA_VERSION};
 pub use error::PorchError;
+pub use history_protocol::{
+    peer_ident_from_signing_key, sign_vouch_with_key, verify_hop_chain, visit_history,
+    HistoryErrorBody, HistoryHandler, HistoryRequest, HistoryResponse, HistoryResult, PairedPeerSource,
+    PeerIdent, StaticPairedPeers, VouchLink, MAX_HISTORY_LIMIT, MAX_HOP_CHAIN_LEN,
+    PORCH_HISTORY_PROTOCOL_ID,
+};
 pub use knock::{Knock, KnockStatus};
 pub use obsidian::{
     EntryKind, ObsidianChannelConfig, VaultEntry, MAX_VAULT_FILE_BYTES,

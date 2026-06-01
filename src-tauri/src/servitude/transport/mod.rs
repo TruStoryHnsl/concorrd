@@ -467,8 +467,23 @@ impl LibP2pRuntime {
             // trust boundary is "linked personal device" (enforced
             // inside the handler against `device_links`).
             let sync_handler =
-                std::sync::Arc::new(crate::porch::SyncHandler::new(porch));
+                std::sync::Arc::new(crate::porch::SyncHandler::new(porch.clone()));
             transport.register_federation_handler(sync_handler);
+            // Feature F3 — register the porch-history protocol handler
+            // (`/concord/porch-history/1.0.0`) for multi-hop read-only
+            // history access. The trust anchor is the paired-peer set
+            // backed by this runtime's Stronghold handle; the handler
+            // re-reads it on every request so an admin "remove peer"
+            // takes effect immediately on the next request rather than
+            // requiring a swarm restart.
+            let paired_source: std::sync::Arc<dyn crate::porch::PairedPeerSource> =
+                std::sync::Arc::new(StrongholdPairedPeers::new(self.stronghold.clone()));
+            let history_handler = std::sync::Arc::new(crate::porch::HistoryHandler::new(
+                porch,
+                transport.local_peer_id(),
+                paired_source,
+            ));
+            transport.register_federation_handler(history_handler);
         }
 
         // Capture the stream control before run() consumes the
@@ -479,6 +494,44 @@ impl LibP2pRuntime {
         self.local_peer_id = Some(transport.local_peer_id());
         self.event_tx = Some(transport.event_sender());
         self.shutdown_tx = Some(transport.shutdown_handle());
+
+        // Feature F3 — subscribe the freshly-built swarm to the
+        // rotation topic of every peer in this install's paired-peer
+        // list. Subscription is bounded to paired peers per the
+        // design (no implicit discovery), so subsequent un-pairings
+        // need an explicit unsubscribe in `peer_store_remove`. A
+        // missing peer-store sibling file (fresh install) yields an
+        // empty list — the subscribe loop is then a no-op.
+        match crate::servitude::peer_store::list(&self.stronghold).await {
+            Ok(known_peers) => {
+                let paired_peer_ids: Vec<libp2p::PeerId> = known_peers
+                    .iter()
+                    .filter_map(|p| p.peer_id.parse::<libp2p::PeerId>().ok())
+                    .collect();
+                if !paired_peer_ids.is_empty() {
+                    if let Err(e) =
+                        crate::servitude::mesh_propagation::subscribe_to_paired_peers(
+                            transport.swarm_mut(),
+                            &paired_peer_ids,
+                        )
+                    {
+                        log::warn!(
+                            target: "concord::servitude::transport",
+                            "F3: subscribe_to_paired_peers failed: {e} \
+                             — address-rotation receive will silently no-op \
+                             until next pairing"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                log::debug!(
+                    target: "concord::servitude::transport",
+                    "F3: peer_store::list failed on startup: {e} \
+                     — no paired-peer rotation subscriptions will be set up"
+                );
+            }
+        }
 
         // `run()` consumes the transport and drives the swarm event
         // loop until shutdown. Spawned onto the Tokio runtime so the
@@ -1214,6 +1267,51 @@ async fn register_owner_via_matrix_uia(
         access_token,
         device_id,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Feature F3 — paired-peer source backed by the Stronghold-encrypted
+// peer-store sibling file. The history-protocol handler asks for the
+// current paired-peer set on every request, so the on-disk store is
+// the single source of truth — admin actions ("remove this peer") take
+// effect immediately on the next request without a swarm restart.
+// ---------------------------------------------------------------------------
+
+/// Implementation of [`crate::porch::PairedPeerSource`] that delegates
+/// to [`crate::servitude::peer_store::list`] against a wrapped
+/// `Arc<StrongholdHandle>`. Cheap to construct (no I/O) and re-reads
+/// disk on every call.
+pub(crate) struct StrongholdPairedPeers {
+    stronghold: std::sync::Arc<StrongholdHandle>,
+}
+
+impl StrongholdPairedPeers {
+    pub(crate) fn new(stronghold: std::sync::Arc<StrongholdHandle>) -> Self {
+        Self { stronghold }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::porch::PairedPeerSource for StrongholdPairedPeers {
+    async fn paired_peer_ids(
+        &self,
+    ) -> Result<
+        std::collections::HashSet<String>,
+        crate::servitude::federation::FederationError,
+    > {
+        // peer_store::list returns the on-disk list of `KnownPeer` rows.
+        // A read error is mapped to the federation error type the trait
+        // contract requires — the handler converts it to a 403/500 on
+        // the wire.
+        let peers = crate::servitude::peer_store::list(&self.stronghold)
+            .await
+            .map_err(|e| {
+                crate::servitude::federation::FederationError::Upstream(format!(
+                    "peer_store::list failed: {e}"
+                ))
+            })?;
+        Ok(peers.into_iter().map(|p| p.peer_id).collect())
+    }
 }
 
 #[cfg(test)]

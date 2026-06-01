@@ -749,3 +749,95 @@ export async function porchSyncAllPersonalDevices(): Promise<SyncReport[]> {
   if (!isTauri()) return [];
   return await invoke<SyncReport[]>("porch_sync_all_personal_devices");
 }
+
+// ---------------------------------------------------------------------------
+// Feature F3 — multi-hop read-only history
+// ---------------------------------------------------------------------------
+
+/**
+ * A single peer identity over the porch-history wire — peer-id +
+ * Ed25519 public key. Receivers verify the peer-id derives from the
+ * pubkey before trusting any signature in the chain.
+ *
+ * Mirrors the Rust `PeerIdent` shape (`src-tauri/src/porch/history_protocol.rs`).
+ */
+export interface PorchHistoryPeerIdent {
+  /** base58 libp2p PeerId. */
+  peer_id: string;
+  /** 32-byte Ed25519 public key, hex-encoded. */
+  pubkey_hex: string;
+}
+
+/**
+ * A single vouching link in a hop chain. The voucher signs the canonical
+ * bytes `VOUCH_DOMAIN || "\n" || subject.peer_id || "\n" || target_peer_id`
+ * with their Ed25519 key. The signature binds BOTH the subject AND the
+ * destination server, so a vouch issued for one server cannot be replayed
+ * against another.
+ *
+ * Mirrors the Rust `VouchLink` shape.
+ */
+export interface PorchHistoryVouchLink {
+  subject: PorchHistoryPeerIdent;
+  voucher: PorchHistoryPeerIdent;
+  /** base58 PeerId of the server the request is addressed to. */
+  target_peer_id: string;
+  /** 64-byte Ed25519 signature, hex-encoded. */
+  signature_hex: string;
+}
+
+/**
+ * Read-only history request envelope.
+ *
+ * An empty `chain` is the "already paired" case — the requester is a
+ * direct paired peer of the target. Non-empty chains carry the
+ * friend-of-a-friend vouches; each link must verify and the chain's
+ * terminus voucher must itself be in the target's paired-peer list.
+ */
+export interface PorchHistoryRequest {
+  requester: PorchHistoryPeerIdent;
+  target_peer_id: string;
+  channel_id: string;
+  /** Capped server-side at 100. */
+  limit: number;
+  chain: PorchHistoryVouchLink[];
+}
+
+/**
+ * Successful read-only history response. `hops` is the chain length the
+ * server's verifier accepted — `0` for a direct paired peer, `>0` for
+ * friend-of-a-friend access.
+ *
+ * Surfaced to the UI so a remote source's `messageInputDisabled` flag
+ * can be set on `hops > 0` ("you're reading this from a friend-of-a-friend").
+ */
+export interface PorchHistoryResult {
+  messages: ChannelMessage[];
+  hops: number;
+}
+
+/**
+ * Discriminator the source-pane uses to decide whether the
+ * message-input is live or disabled-with-tooltip. Mirrors the
+ * F3 spec: direct paired peer = `live`; friend-of-friend = `read_only`.
+ */
+export type SourceAccessMode =
+  | { kind: "live" }
+  | { kind: "read_only"; reason: string };
+
+/**
+ * Derive a `SourceAccessMode` from a `PorchHistoryResult`. Used by the
+ * UI to render a tooltip on the disabled message-input when the user
+ * is viewing a friend-of-a-friend source.
+ */
+export function accessModeFromHistory(
+  history: PorchHistoryResult,
+): SourceAccessMode {
+  if (history.hops === 0) {
+    return { kind: "live" };
+  }
+  return {
+    kind: "read_only",
+    reason: "You're reading this from a friend-of-a-friend; you need a direct invite to post.",
+  };
+}

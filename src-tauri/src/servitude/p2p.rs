@@ -535,8 +535,25 @@ impl LibP2pTransport {
     /// events into the lightweight [`SwarmEvent`] enum and publishes them
     /// on the broadcast channel. Continues on per-event errors; exits only
     /// when the shutdown sender is signalled.
+    ///
+    /// **Feature F3 — auto-publish address rotation.** On every
+    /// `NewListenAddr` (the libp2p event fired whenever a new listening
+    /// multiaddr becomes available — fresh listener, NAT rebind, network
+    /// move), the loop publishes an `AddressRotation` payload over
+    /// gossipsub on this install's own rotation topic. Paired peers who
+    /// have subscribed to our topic receive the new address and update
+    /// their cache; un-paired peers ignore it. `InsufficientPeers` at
+    /// publish time is expected on a freshly-started swarm and is
+    /// logged at debug level, never bubbled up — the next listen-addr
+    /// change retries.
     pub async fn run(mut self) {
         let mut connected: HashSet<PeerId> = HashSet::new();
+        let local_peer_id = self.local_peer_id;
+        // Track every listen multiaddr seen during this run — the
+        // address-rotation payload always carries the full set so a
+        // receiver who missed an earlier announcement gets the
+        // complete picture from the next one.
+        let mut known_listen_addrs: Vec<Multiaddr> = Vec::new();
 
         // Phase 6: bootstrap inbound stream acceptors per registered
         // federation handler. Each handler gets its own `IncomingStreams`
@@ -606,6 +623,36 @@ impl LibP2pTransport {
                     // generic translation below handles
                     // listen-addr/peer-count/dial signals.
                     handle_mdns_event(&event, &self.event_tx);
+                    // F3 auto-publish — every NewListenAddr triggers a
+                    // gossipsub broadcast of our current address set.
+                    // Captured here BEFORE `translate_event` consumes
+                    // the event so we keep the (address, peer) data
+                    // without cloning the whole enum.
+                    if let LibP2pSwarmEvent::NewListenAddr { address, .. } = &event {
+                        // Track + publish only if this address is new
+                        // to our known set.
+                        if !known_listen_addrs.contains(address) {
+                            known_listen_addrs.push(address.clone());
+                            match crate::servitude::mesh_propagation::publish_address_rotation(
+                                &mut self.swarm,
+                                local_peer_id,
+                                &known_listen_addrs,
+                            ) {
+                                Ok(_) => log::debug!(
+                                    target: "concord::servitude::p2p",
+                                    "published address rotation ({} addrs)",
+                                    known_listen_addrs.len()
+                                ),
+                                Err(e) => log::debug!(
+                                    target: "concord::servitude::p2p",
+                                    "address rotation publish skipped: {e} \
+                                     (typically InsufficientPeers on a \
+                                     freshly-started swarm — next listen \
+                                     addr will retry)"
+                                ),
+                            }
+                        }
+                    }
                     // `translate_event` returns a Vec because a single raw
                     // libp2p event can map to multiple UI-facing signals —
                     // e.g. ConnectionEstablished emits both a DialSuccess

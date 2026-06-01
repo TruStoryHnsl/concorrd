@@ -42,6 +42,7 @@ pub mod config;
 pub mod federation;
 pub mod identity;
 pub mod lifecycle;
+pub mod mesh_propagation;
 pub mod network;
 pub mod p2p;
 pub mod peer_store;
