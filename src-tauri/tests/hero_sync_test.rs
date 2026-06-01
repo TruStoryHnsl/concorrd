@@ -186,16 +186,18 @@ fn two_gate_tailnet_present_but_no_hero_blocks() {
 }
 
 // ---------------------------------------------------------------------------
-// (7) Two-gate evaluator: both yes (under stub) verifies gate STAYS
-//     CLOSED until F-A lands.
+// (7) Two-gate evaluator: tailscale-yes + no libp2p control verifies the
+//     hero gate STAYS CLOSED. F-A is wired (#151), but a HeroBinding with
+//     no stream control cannot fetch a peer descriptor, so the gate is
+//     correctly closed — never a false pass.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn two_gate_with_f_a_stub_still_blocks_hero() {
-    // The F-A lookup stub returns None for every peer; this is the
-    // safe default that locks hero-sync OFF until F-A wires through.
-    // The test pins that behavior so a future merge cannot silently
-    // open the gate.
+fn two_gate_with_no_control_still_blocks_hero() {
+    // A HeroBinding built without a libp2p Control (HeroBinding::new)
+    // cannot run F-A's descriptor fetch, so lookup_peer_hero returns
+    // None and the hero gate stays closed even when tailscale passes.
+    // Pins that the gate can NEVER open without a real peer-hero match.
     let binding = HeroBinding::new(Some(HeroDescriptor {
         hero_pubkey: [0xAA; 32],
         display_label: "local".to_string(),
@@ -207,7 +209,7 @@ fn two_gate_with_f_a_stub_still_blocks_hero() {
         assert!(outcome.tailscale_passes);
         assert!(
             !outcome.hero_passes,
-            "F-A stub MUST return None until A lands — gate stays closed"
+            "no libp2p control wired — hero gate stays closed"
         );
         assert!(!outcome.both_pass());
     });

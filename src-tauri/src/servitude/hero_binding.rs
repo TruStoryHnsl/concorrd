@@ -5,28 +5,25 @@
 //! the two machines are reachable through Tailscale. This module is the
 //! plumbing for gate (i).
 //!
-//! ## Why a stub
+//! ## F-A is wired (2026-06-01)
 //!
 //! Gate (i) is the consumer of Architecture A — the Concord-native
 //! user-definition protocol (`docs/architecture/concord-user-protocol-scope.md`).
-//! A's trust-edge mechanism defines how two installs exchange hero
-//! descriptors and verify a shared identity. F-A is a PARALLEL PR; this
-//! PR cannot block on it landing, so we stub the binding here and
-//! document the integration point.
+//! F-A Phase 1 landed (#151) and ships the point-to-point descriptor
+//! fetch: `concord_user::protocol::open_descriptor_stream(control,
+//! peer_id, GetSelf)` opens the `/concord/user-profile/1.0.0` libp2p
+//! stream and returns the peer's [`ConcordUserDescriptor`], whose
+//! `concord_uid` is the 32-byte Ed25519 hero pubkey.
 //!
-//! When F-A merges, the implementation surface to swap in is:
-//!
-//! ```ignore
-//! pub async fn concord_user_get_for_peer(
-//!     peer_id: PeerId,
-//! ) -> Result<Option<HeroDescriptor>, FederationError>;
-//! ```
-//!
-//! …which returns the peer's hero descriptor (as advertised over the
-//! Concord-native user-definition protocol with a `trust=hero` edge).
-//! The comparator below already accepts an `Option<HeroDescriptor>` —
-//! when F-A wires through, the only change is replacing
-//! [`HeroBinding::lookup_peer_hero`] with a call to that function.
+//! [`HeroBinding`] now carries an OPTIONAL libp2p
+//! [`libp2p_stream::Control`] handle. When present,
+//! [`HeroBinding::lookup_peer_hero`] performs the real F-A fetch and
+//! maps `ConcordUserDescriptor { concord_uid, display_name }` into the
+//! local [`HeroDescriptor`]. When ABSENT (the `Default`/`new`
+//! constructors), the lookup returns `None` — the safe closed-gate
+//! state used by unit tests and by any install that has not yet
+//! initialized its libp2p stream control. The gate's two-gate
+//! semantics are unchanged.
 //!
 //! ## Design choices captured here
 //!
@@ -49,8 +46,14 @@
 //!    least surface possible. Bytes are bytes; F-H1's `DeviceLinkCert`
 //!    holds the canonical key.
 
+use std::sync::Arc;
+
 use libp2p::PeerId;
+use libp2p_stream::Control;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+
+use crate::servitude::concord_user::protocol::{open_descriptor_stream, ConcordUserRequest};
 
 /// Hero descriptor as advertised by a peer over the Architecture A
 /// user-definition protocol. F-A defines the wire encoding; this struct
@@ -66,41 +69,89 @@ pub struct HeroDescriptor {
     pub display_label: String,
 }
 
-/// Binding-check facade. Wraps the future F-A lookup behind a stable
-/// signature so the rest of F-C can be written and tested today.
-#[derive(Debug, Clone, Default)]
+/// Binding-check facade. Wraps F-A's descriptor fetch behind a stable
+/// signature for the rest of F-C.
+#[derive(Clone, Default)]
 pub struct HeroBinding {
     /// Local install's hero descriptor, if any. `None` means "this
     /// install has no hero account installed" — the gate is then closed.
     pub local: Option<HeroDescriptor>,
+    /// libp2p stream control used to reach F-A's
+    /// `/concord/user-profile/1.0.0` protocol. `None` until the swarm
+    /// initializes it; while `None`, [`lookup_peer_hero`] returns `None`
+    /// (closed gate) — the same safe default the pre-F-A stub used.
+    control: Option<Arc<Mutex<Control>>>,
+}
+
+impl std::fmt::Debug for HeroBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeroBinding")
+            .field("local", &self.local)
+            .field("control_wired", &self.control.is_some())
+            .finish()
+    }
 }
 
 impl HeroBinding {
-    /// Construct with an explicit local descriptor (test + production
-    /// surface — the production caller pulls the descriptor out of
-    /// Stronghold via the hero-management Tauri commands).
+    /// Construct with an explicit local descriptor and NO libp2p control.
+    /// In this state the remote lookup returns `None` (closed gate) — the
+    /// constructor used by unit tests and by callers that evaluate the
+    /// gate before the swarm's stream control exists.
     pub fn new(local: Option<HeroDescriptor>) -> Self {
-        Self { local }
+        Self {
+            local,
+            control: None,
+        }
     }
 
-    /// Lookup hook for the remote peer's hero descriptor.
+    /// Construct with the local descriptor AND F-A's libp2p stream
+    /// control. This is the production wiring: `lookup_peer_hero` will
+    /// open the `/concord/user-profile/1.0.0` stream and fetch the peer's
+    /// real hero descriptor.
+    pub fn with_control(local: Option<HeroDescriptor>, control: Arc<Mutex<Control>>) -> Self {
+        Self {
+            local,
+            control: Some(control),
+        }
+    }
+
+    /// Lookup the remote peer's hero descriptor via F-A's
+    /// user-definition protocol.
     ///
-    /// CURRENT IMPLEMENTATION: returns `None` for every peer. This is
-    /// the stub state until Architecture A's `concord_user_get_for_peer`
-    /// lands. The gate is therefore CLOSED FOR EVERY PEER until that
-    /// lookup wires through — the integration test below pins that
-    /// behaviour explicitly so the merge cannot silently lose the
-    /// gate's hero requirement.
+    /// When a libp2p [`Control`] is wired (via [`with_control`]), opens a
+    /// `/concord/user-profile/1.0.0` stream to `peer_id`, issues a
+    /// `GetSelf` request, and maps the returned
+    /// [`ConcordUserDescriptor`] into a [`HeroDescriptor`]
+    /// (`concord_uid` → `hero_pubkey`, `display_name` → `display_label`).
+    /// A response carrying an `error` (e.g. the peer has no hero) or no
+    /// descriptor yields `None` — closed gate, never a false pass.
     ///
-    /// F-A INTEGRATION POINT: replace this method's body with a call
-    /// to the F-A lookup once it lands. The remainder of the F-C
-    /// pipeline does NOT change.
+    /// When NO control is wired, returns `None` unconditionally — the
+    /// safe closed-gate default for pre-swarm / test contexts.
     pub async fn lookup_peer_hero(
         &self,
-        _peer_id: &PeerId,
+        peer_id: &PeerId,
     ) -> Result<Option<HeroDescriptor>, HeroBindingError> {
-        // STUB — F-A integration point. See module docs.
-        Ok(None)
+        let Some(control) = &self.control else {
+            // No libp2p control wired yet — closed gate.
+            return Ok(None);
+        };
+        let request = ConcordUserRequest::GetSelf { request_id: 1 };
+        let response = {
+            let mut ctrl = control.lock().await;
+            open_descriptor_stream(&mut ctrl, *peer_id, request)
+                .await
+                .map_err(|e| HeroBindingError::Unavailable(e.to_string()))?
+        };
+        // An error body or an absent descriptor both mean "no usable
+        // hero from this peer" — closed gate.
+        let Some(descriptor) = response.descriptor else {
+            return Ok(None);
+        };
+        Ok(Some(HeroDescriptor {
+            hero_pubkey: *descriptor.concord_uid.as_bytes(),
+            display_label: descriptor.display_name,
+        }))
     }
 
     /// Evaluate gate (i) for a given peer. `true` iff BOTH sides hold a
@@ -155,17 +206,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stub_lookup_returns_none_for_every_peer() {
-        // The F-A integration point is not wired yet. The stub must
-        // return None unconditionally so the gate is closed for every
-        // peer — that is the safe default until A lands.
+    async fn lookup_returns_none_when_no_control_wired() {
+        // F-A is wired, but a HeroBinding built WITHOUT a libp2p control
+        // (the `new` constructor) must still return None — the safe
+        // closed-gate default for pre-swarm / test contexts. The gate is
+        // closed for every peer in that state.
         let binding = HeroBinding::new(Some(hero("local-hero", 0xAA)));
+        assert!(binding.control.is_none());
         assert!(binding.lookup_peer_hero(&peer()).await.unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn shares_hero_false_until_f_a_lookup_lands() {
-        // The full gate (i) call: also returns false until A lands.
+    async fn shares_hero_false_when_no_control_wired() {
+        // The full gate (i) call: returns false with no control wired,
+        // because the F-A descriptor fetch cannot run without a stream
+        // control.
         let binding = HeroBinding::new(Some(hero("local-hero", 0xAA)));
         assert!(!binding.shares_hero_with(&peer()).await.unwrap());
     }
