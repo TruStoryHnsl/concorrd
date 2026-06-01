@@ -146,10 +146,11 @@ pub struct VisibilityRow {
 /// queries (cursor iteration) materialize results into Vec eagerly so
 /// the lock isn't held across `.await` points.
 pub struct Porch {
-    /// `pub(super)` so sibling modules in `crate::porch` (e.g.
-    /// [`crate::porch::knock`]) can drive the underlying connection
-    /// without re-exposing it to the rest of the crate.
-    pub(super) conn: Mutex<Connection>,
+    /// `pub(crate)` so sibling modules in `crate::porch` (e.g.
+    /// [`crate::porch::knock`]) AND crate-level downstream modules
+    /// (e.g. `crate::servitude::hero_sync`) can drive the underlying
+    /// connection without re-exposing it to dependent crates.
+    pub(crate) conn: Mutex<Connection>,
     /// Absolute path to the `porch_assets/` subdirectory under the
     /// porch's data dir. Phase C theme image uploads land here as
     /// `<asset_id>.<ext>`. `None` for in-memory porches — uploads
@@ -727,6 +728,51 @@ impl Porch {
                 ],
             )?;
         }
+        if current < 10 {
+            // F-C — Tailscale-gated hero sync.
+            //
+            // `conflict_queue` is the hand-off contract to Architecture
+            // D (the agent-dispatch session that drains pending
+            // conflicts). F-C's responsibility ends at the enqueue
+            // step: when the bidirectional event-log merge surfaces a
+            // DESTRUCTIVE conflict (per the RFC §5.c catalogue:
+            // concurrent_rename / tombstone_vs_write / acl_change), a
+            // row is appended here. Conflicts are LEFT IN THE QUEUE —
+            // F-D drains them in a separate parallel-session dispatch.
+            //
+            // Schema is the minimum the hand-off needs:
+            //
+            //   * `conflict_id` — ULID (BLOB) so the F-D dispatcher can
+            //     correlate verdicts across processes.
+            //   * `conflict_kind` — TEXT enum matching the RFC catalogue.
+            //   * `payload_json` — opaque CBOR-equivalent serialization
+            //     of the two competing events. F-C does NOT inspect
+            //     this; F-D's agent reads it and decides.
+            //   * `queued_at` — unix milliseconds (matches the rest of
+            //     this schema's `*_at` columns).
+            //   * `resolved_at` — nullable; F-D stamps it on verdict.
+            //   * `agent_verdict` — nullable BLOB; F-D writes the
+            //     CBOR-equivalent verdict envelope here.
+            //
+            // No FK to `event_log` here: that table is part of Phase
+            // H3 and may land separately. The payload carries the full
+            // event records inline so the queue is self-contained.
+            conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE IF NOT EXISTS conflict_queue (
+                    conflict_id BLOB PRIMARY KEY,
+                    conflict_kind TEXT NOT NULL,
+                    payload_json BLOB NOT NULL,
+                    queued_at INTEGER NOT NULL,
+                    resolved_at INTEGER,
+                    agent_verdict BLOB
+                );
+                CREATE INDEX IF NOT EXISTS idx_conflict_queue_pending
+                    ON conflict_queue(queued_at) WHERE resolved_at IS NULL;
+                INSERT INTO schema_version (version) VALUES (10);
+                COMMIT;",
+            )?;
+        }
         // Future migrations: branch on `current` and apply incremental
         // batches here.
         Ok(())
@@ -1299,7 +1345,7 @@ fn read_columns(conn: &Connection, table: &str) -> Result<Vec<String>, PorchErro
 /// Current unix time in milliseconds. Used as the `created_at` /
 /// `granted_at` source of truth. Saturates to 0 on the (impossible)
 /// case of a negative `SystemTime::now()`.
-pub(super) fn unix_millis() -> i64 {
+pub(crate) fn unix_millis() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

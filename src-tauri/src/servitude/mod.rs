@@ -40,6 +40,16 @@
 
 pub mod config;
 pub mod federation;
+// F-C — Hero-account binding stub (Architecture C gate (i)). Real
+// lookup wires through Architecture A's `concord_user_get_for_peer`
+// when that PR merges; for now this returns `None` for every peer so
+// the hero gate is closed by default.
+pub mod hero_binding;
+// F-C — Tailscale-gated hero sync orchestration. Holds the two-gate
+// evaluator, the `/concord/hero-sync/1.0.0` protocol handler, the
+// anchor mode resolver, and the conflict-queue hand-off for
+// Architecture D.
+pub mod hero_sync;
 pub mod identity;
 pub mod lifecycle;
 pub mod mesh_propagation;

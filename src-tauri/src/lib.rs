@@ -636,6 +636,44 @@ async fn home_set_server_name(
 }
 
 // ---------------------------------------------------------------------------
+// F-C — Hero anchor election + mode resolution Tauri commands.
+//
+// Per Architecture C, the hero-sync runtime auto-picks anchored vs
+// unanchored mode based on `home_meta.hero_anchor_instance`. These
+// commands let the React layer set or revoke the election from
+// Settings → Hero Account → Anchor (UX TBD; the command shape is
+// stable now).
+// ---------------------------------------------------------------------------
+
+/// Read the elected anchor's identifier. Returns `None` when the
+/// install runs in unanchored mode (every instance is canonical).
+#[tauri::command]
+async fn hero_get_anchor_instance(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    servitude::hero_sync::hero_get_anchor_instance(&porch).map_err(|e| e.to_string())
+}
+
+/// Set or revoke the elected anchor. Passing `None` revokes; passing
+/// `Some(label)` elects the docker instance carrying `label` as the
+/// sync anchor. The identifier is opaque (typically the docker
+/// instance's libp2p PeerId or a human-readable label the user pinned).
+#[tauri::command]
+async fn hero_set_anchor_instance(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    anchor: Option<String>,
+) -> Result<(), String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    servitude::hero_sync::hero_set_anchor_instance(&porch, anchor.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // F-VIS — visibility + visible/access split Tauri commands.
 // ---------------------------------------------------------------------------
 
@@ -3042,6 +3080,9 @@ pub fn run() {
             // F1b-IMPL — persistent home server meta.
             home_get_server_name,
             home_set_server_name,
+            // F-C — Hero-anchor election + mode resolution.
+            hero_get_anchor_instance,
+            hero_set_anchor_instance,
             // F-VIS — per-server mesh-hop visibility + visible/access
             // peer split (Architecture B).
             visibility_get_server,
