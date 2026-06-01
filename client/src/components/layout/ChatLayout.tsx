@@ -49,6 +49,11 @@ import { LocalHostingControl } from "../sources/LocalHostingControl";
 import { PeerCardScanner } from "../peers/PeerCardScanner";
 import { ServerSidebar } from "./ServerSidebar";
 import { ChannelSidebar, UserBar } from "./ChannelSidebar";
+import { LocalServerSidebar } from "../local/LocalServerSidebar";
+import { LocalChannelSidebar } from "../local/LocalChannelSidebar";
+import { LocalChatPane } from "../local/LocalChatPane";
+import { usePorchStore } from "../../stores/porchStore";
+import { useInstanceNameStore } from "../../stores/instanceName";
 import { DMSidebar } from "../dm/DMSidebar";
 import { ExploreModal } from "../server/ExploreModal";
 import { MessageList } from "../chat/MessageList";
@@ -329,15 +334,45 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     [],
   );
 
-  // The intrinsic "local" tile in SourcesPanel is a no-op for now —
-  // the porch's data must flow through ChatLayout's existing
-  // server/channel/message panes (same shape as Matrix, Discord,
-  // Concord federation sources), NOT a separate window. That
-  // integration is a follow-up; until it ships, clicking the tile
-  // does nothing visible.
+  // Local source — when active, ChatLayout renders the porch through
+  // its existing server/channel/message panes (same visual primitives
+  // as Matrix, Discord, Mozilla, Concord federation sources). The
+  // data backing the panes is `usePorchStore`, not matrix-js-sdk —
+  // honest source-kind-aware composition rather than a Matrix shim.
+  //
+  // See:
+  //   - client/src/components/local/LocalServerSidebar.tsx
+  //   - client/src/components/local/LocalChannelSidebar.tsx
+  //   - client/src/components/local/LocalChatPane.tsx
+  const [localActive, setLocalActive] = useState(false);
+  const porchSelectedChannel = usePorchStore((s) =>
+    s.channels.find((c) => c.id === s.selectedChannelId) ?? null,
+  );
+  const porchVanityName = useInstanceNameStore((s) => s.name);
+  const porchLabel = porchVanityName.trim() || "porch";
+  const loadPorchChannels = usePorchStore((s) => s.loadChannels);
   const openLocal = useCallback(() => {
-    // intentionally empty — see comment above
-  }, []);
+    // Activate the local source. Clear DM + Matrix server selection
+    // so the existing panes don't try to render a stale Matrix room
+    // beneath the porch surface. The Matrix tiles still highlight when
+    // tapped — see the Matrix-tile click handlers in ServerSidebar /
+    // SourcesPanel, which clear `localActive` via the effects below.
+    setLocalActive(true);
+    useDMStore.getState().setDMActive(false);
+    useServerStore.setState({ activeServerId: null, activeChannelId: null });
+    // Kick a channel-list load so the channel column populates as soon
+    // as the user lands. `loadChannels` is idempotent + safe on web.
+    void loadPorchChannels();
+  }, [loadPorchChannels]);
+
+  // Clear localActive whenever a Matrix source / DM / server becomes
+  // active — keeps the porch tile and Matrix tiles mutually exclusive
+  // in the active-source semantics.
+  useEffect(() => {
+    if (activeServerId || activeChannelId || dmActive) {
+      setLocalActive(false);
+    }
+  }, [activeServerId, activeChannelId, dmActive]);
 
   // Resizable channel sidebar (desktop only)
   const SIDEBAR_MIN = 160;
@@ -794,15 +829,21 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                 </div>
 
                 <SectionBoundary>
-                  <ServerSidebar />
+                  {localActive ? <LocalServerSidebar /> : <ServerSidebar />}
                 </SectionBoundary>
 
                 {/* Channel / DM sidebar */}
                 <div className="flex min-h-0" style={{ width: sidebarWidth, minWidth: SIDEBAR_MIN, maxWidth: SIDEBAR_MAX }}>
                   <SectionBoundary>
-                    {dmActive ? <DMSidebar /> : <ChannelSidebar onServerTitleClick={() => {
-                      if (activeServerId) setStatsTarget({ type: "server", serverId: activeServerId });
-                    }} />}
+                    {localActive ? (
+                      <LocalChannelSidebar />
+                    ) : dmActive ? (
+                      <DMSidebar />
+                    ) : (
+                      <ChannelSidebar onServerTitleClick={() => {
+                        if (activeServerId) setStatsTarget({ type: "server", serverId: activeServerId });
+                      }} />
+                    )}
                   </SectionBoundary>
                 </div>
               </div>
@@ -1174,13 +1215,27 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           {/* Panel: Servers */}
           <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
             <SectionBoundary>
-              <ServerSidebar mobile onServerSelect={() => setMobileView("channels")} />
+              {localActive ? (
+                <LocalServerSidebar
+                  mobile
+                  onServerSelect={() => setMobileView("channels")}
+                />
+              ) : (
+                <ServerSidebar mobile onServerSelect={() => setMobileView("channels")} />
+              )}
             </SectionBoundary>
           </div>
           {/* Panel: Channels */}
           <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
             <SectionBoundary>
-              <ChannelSidebar mobile onChannelSelect={(chId) => { handleMobileChannelSelect(chId); setMobileView("chat"); }} />
+              {localActive ? (
+                <LocalChannelSidebar
+                  mobile
+                  onChannelSelect={() => setMobileView("chat")}
+                />
+              ) : (
+                <ChannelSidebar mobile onChannelSelect={(chId) => { handleMobileChannelSelect(chId); setMobileView("chat"); }} />
+              )}
             </SectionBoundary>
           </div>
           {/* Panel: Chat */}
@@ -1355,7 +1410,38 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         {/* Channel / DM header */}
         <div className="h-12 flex items-center px-4 bg-surface-container-low flex-shrink-0 gap-2">
           <div className="flex-1 min-w-0 flex items-center">
-            {dmActive && dmConversation ? (
+            {localActive ? (
+              // Local porch header — same shape as the Matrix channel
+              // header (hashmark icon + channel name) so the visual
+              // primitive is identical.
+              <div className="flex items-center gap-3 min-w-0">
+                <h2
+                  data-testid="local-chat-header"
+                  className="font-headline font-semibold truncate"
+                >
+                  <span className="text-on-surface-variant mr-1">#</span>
+                  {porchSelectedChannel?.name ?? porchLabel}
+                </h2>
+                {showInlineAccountBanner && (
+                  <DesktopAccountButton
+                    desktopAccountRef={desktopAccountRef}
+                    open={desktopAccountPopoverOpen}
+                    userId={userId}
+                    accessToken={accessToken}
+                    onToggle={() => setDesktopAccountPopoverOpen((open) => !open)}
+                    onClose={() => setDesktopAccountPopoverOpen(false)}
+                    onOpenSettings={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      openSettings("profile");
+                    }}
+                    onOpenStats={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      setStatsTarget({ type: "user" });
+                    }}
+                  />
+                )}
+              </div>
+            ) : dmActive && dmConversation ? (
               <div className="flex items-center gap-3 min-w-0">
                 <span className="material-symbols-outlined text-on-surface-variant text-base">chat_bubble</span>
                 <DMHeaderName userId={dmConversation.other_user_id} />
@@ -1538,6 +1624,11 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   // Shared chat/voice content
   const renderChatContent = () => {
+    // Local porch chat — reuses MessageList + MessageInput so the
+    // visual surface matches every other server source.
+    if (localActive) {
+      return <LocalChatPane />;
+    }
     // DM chat
     if (dmActive && activeDMRoomId && dmConversation) {
       return (
