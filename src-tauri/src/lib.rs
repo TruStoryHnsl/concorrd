@@ -1349,6 +1349,112 @@ async fn porch_sync_all_personal_devices(
 }
 
 // ---------------------------------------------------------------------------
+// F1c — encrypted HOME-server data export to a trusted outside instance
+//
+// Two commands:
+//
+//   * `home_export_package` — atomic SQLite backup → tarball → Argon2id
+//     + ChaCha20-Poly1305 → write to `<app_data>/exports/<ts>-<peer>.concord-pkg`.
+//   * `home_send_export`    — open `/concord/home-export/1.0.0` to the
+//     target peer, stream the package in 64 KiB chunks, return the
+//     receipt (delivered or rejected).
+//
+// The receiver-side ingest is a deliberate follow-up PR. The inbound
+// handler in this PR LOGS receipts only and rejects senders that aren't
+// in the local peer-store.
+// ---------------------------------------------------------------------------
+
+/// Build an encrypted home-server export package. Returns an
+/// [`porch::ExportManifest`] with the absolute path of the sealed
+/// `.concord-pkg` file plus its SHA-256 + size.
+///
+/// The package format is frozen — see `src-tauri/src/porch/home_export.rs`
+/// module-doc for the byte layout and the `meta.json` schema.
+#[tauri::command]
+async fn home_export_package(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    passphrase: String,
+    target_peer_id: String,
+) -> Result<porch::ExportManifest, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let exporter_peer_id = {
+        let guard = servitude_state.0.lock().await;
+        guard
+            .as_ref()
+            .and_then(|h| h.libp2p_local_peer_id().map(|p| p.to_base58()))
+            .unwrap_or_else(|| "local".to_string())
+    };
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("no app_local_data_dir: {e}"))?;
+    // Run the (potentially slow — Argon2id @ 64 MiB) build off the
+    // async task so we don't stall the Tauri command loop.
+    let porch_for_blocking = porch.clone();
+    let target_for_blocking = target_peer_id.clone();
+    let manifest = tokio::task::spawn_blocking(move || {
+        porch::build_home_export_package(
+            &porch_for_blocking,
+            &passphrase,
+            &target_for_blocking,
+            &exporter_peer_id,
+            &data_dir,
+        )
+    })
+    .await
+    .map_err(|e| format!("export task join: {e}"))?
+    .map_err(|e| e.to_string())?;
+    Ok(manifest)
+}
+
+/// Stream a previously-built export package to a paired peer over
+/// `/concord/home-export/1.0.0`. Returns a [`porch::DeliveryReceipt`]
+/// — its `delivered_at` is `Some(...)` on accept and `rejected_reason`
+/// is `Some(...)` on reject.
+#[tauri::command]
+async fn home_send_export(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    package_path: String,
+    target_peer_id: String,
+) -> Result<porch::DeliveryReceipt, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &target_peer_id).await?;
+    let path = std::path::PathBuf::from(package_path);
+    porch::send_home_export_package(&mut control, peer, &path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Copy a previously-built export package to a user-chosen path on the
+/// host filesystem. Backs the "Save package locally too" affordance in
+/// the Settings → Hosting → Data sub-tab: the renderer drives the
+/// native `save` dialog via `@tauri-apps/plugin-dialog`, hands the
+/// resulting absolute path back to this command, and the file is
+/// atomically copied over.
+///
+/// Refuses if `src_path` doesn't exist OR if `dst_path` already exists
+/// (no silent overwrite — the dialog plugin handles the overwrite-
+/// confirm UX upstream).
+#[tauri::command]
+async fn home_export_copy_to(
+    src_path: String,
+    dst_path: String,
+) -> Result<(), String> {
+    let src = std::path::PathBuf::from(&src_path);
+    let dst = std::path::PathBuf::from(&dst_path);
+    if !src.exists() {
+        return Err(format!("source package does not exist: {}", src.display()));
+    }
+    // Run the copy off the async task — large packages may be tens of MB.
+    tokio::task::spawn_blocking(move || std::fs::copy(&src, &dst))
+        .await
+        .map_err(|e| format!("copy task join: {e}"))?
+        .map_err(|e| format!("copy: {e}"))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // User Management Phase 1 — profile CRUD + keychain metadata commands
 // ---------------------------------------------------------------------------
 
@@ -2766,6 +2872,10 @@ pub fn run() {
             porch_list_device_links,
             porch_sync_now,
             porch_sync_all_personal_devices,
+            // F1c — encrypted home-server export delivery.
+            home_export_package,
+            home_send_export,
+            home_export_copy_to,
             // Phase G — tunnel-only inbound hardening.
             tunnel_get_config,
             tunnel_set_config,

@@ -3,6 +3,7 @@ import { useAuthStore } from "../../stores/auth";
 import { getServerUrl } from "../../api/serverUrl";
 import { servitudeStatus, isTauri, type ServitudeState } from "../../api/servitude";
 import { AdminTab } from "./AdminTab";
+import { DataExportSection } from "./DataExportSection";
 import { DeploymentProfileSection } from "./DeploymentProfileSection";
 import { InstanceNameSection } from "./InstanceNameSection";
 
@@ -96,6 +97,15 @@ export function HostingTab() {
         hosting status summary when the operator flips to web_first.
       */}
       <DeploymentProfileSection />
+
+      {/*
+        F1c — encrypted HOME-server data export to a trusted outside
+        instance. Lives under Hosting because the operator-facing
+        decision is "which trusted machine keeps a copy of my home
+        server's data and runs analyses on it?" — that's a hosting
+        concern, not a user-profile one.
+      */}
+      <DataExportSection />
     </div>
   );
 }
