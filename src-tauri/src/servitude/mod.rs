@@ -39,6 +39,7 @@
 //!      `Stopping` because that would wedge the UI.
 
 pub mod config;
+pub mod concord_user;
 pub mod federation;
 pub mod identity;
 pub mod lifecycle;

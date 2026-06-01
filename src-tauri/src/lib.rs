@@ -2790,6 +2790,214 @@ async fn log_diagnostic(app: tauri::AppHandle, msg: String) -> Result<(), String
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// F-A — Concord-native user-definition protocol Tauri commands
+//
+// See `crate::servitude::concord_user` for the module-level design notes
+// and the merge-view algorithm. The command surface here is intentionally
+// thin: every command translates Tauri's IPC value types into the
+// concord_user data shape, calls the matching library function, and
+// translates errors into stringified messages for the React side.
+// ---------------------------------------------------------------------------
+
+use servitude::concord_user::{
+    derive_signing_key, AvatarRef, ConcordUserDescriptor, ConcordUserRequest,
+    ServerId, ServerProfile, TrustEdge, TrustEdgeRevocation, TrustLogEntry,
+    CONCORD_USER_PROTOCOL_ID,
+};
+
+/// Build the LOCAL install's [`ConcordUserDescriptor`]. The descriptor is
+/// constructed on the fly from the install's persisted state: the hero's
+/// `concord_uid` comes from the per-install Stronghold seed (via
+/// [`identity::peer_seed`]), the display name comes from
+/// `ServitudeConfig.display_name`, and the per-server rows + trust log
+/// come from the trust-store ([`servitude::concord_user::trust_store`]).
+///
+/// **Per-server isolation is the default:** a fresh install with no
+/// trust edges and one server (its own porch) returns a descriptor with
+/// exactly one server row. Adding rows happens via the user's UI flow on
+/// each new server they join.
+#[tauri::command]
+async fn concord_user_get_self(
+    state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+) -> Result<ConcordUserDescriptor, String> {
+    let stronghold = get_or_open_peer_identity(&state, &app).await?;
+    let seed = identity::peer_seed(&stronghold)
+        .await
+        .map_err(|e| format!("peer_seed: {e}"))?;
+    let (signing_key, uid) = derive_signing_key(&seed);
+
+    let cfg = ServitudeConfig::from_store(&app).map_err(|e| e.to_string())?;
+    let display_name = if cfg.display_name.trim().is_empty()
+        || cfg.display_name.trim() == "concord-node"
+    {
+        // Fresh install with no name yet — fall back to a stable
+        // placeholder derived from the uid hex (first 8 chars) so
+        // the descriptor still verifies and the JSON stays
+        // deterministic for round-trip tests.
+        format!("hero-{}", &uid.to_hex()[..8])
+    } else {
+        cfg.display_name.clone()
+    };
+
+    let mut descriptor = ConcordUserDescriptor::empty(uid, display_name.clone());
+
+    // Seed the descriptor with one row for this install's own porch.
+    // The porch server_id is `porch:<peerid-base58>`; we already derive
+    // the peerid from the same seed, so we can fabricate it without
+    // going through the swarm.
+    let porch_server_id = porch_server_id_for(&seed);
+    let porch_row = ServerProfile::sign_new(
+        &signing_key,
+        &uid,
+        ServerId::new(porch_server_id),
+        display_name,
+        None,
+        AvatarRef::None,
+    );
+    descriptor.upsert_server_profile(porch_row);
+
+    // Replay the trust log into the descriptor so the merge view picks
+    // up any user-declared edges.
+    let log = servitude::concord_user::trust_store_list_log(&stronghold)
+        .await
+        .map_err(|e| format!("trust_store_list_log: {e}"))?;
+    for entry in log {
+        descriptor.append_trust(entry);
+    }
+    Ok(descriptor)
+}
+
+/// Fetch a paired peer's descriptor over the `/concord/user-profile/1.0.0`
+/// libp2p protocol. Returns `Ok(None)` when the peer responds with
+/// `NotFound` (an unsigned-in / freshly-installed peer); `Err(_)` on
+/// transport failures.
+#[tauri::command]
+async fn concord_user_get_for_peer(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    peer_id: String,
+) -> Result<Option<ConcordUserDescriptor>, String> {
+    let (mut control, peer) = resolve_visit_control(&servitude_state, &peer_id).await?;
+    let request = ConcordUserRequest::GetSelf {
+        request_id: rand::random::<u32>() as u64,
+    };
+    let response =
+        servitude::concord_user::protocol::open_descriptor_stream(&mut control, peer, request)
+            .await
+            .map_err(|e| format!("concord_user request: {e}"))?;
+    if let Some(err) = response.error {
+        if err.code == 404 {
+            return Ok(None);
+        }
+        return Err(format!(
+            "remote returned code {}: {}",
+            err.code, err.message
+        ));
+    }
+    Ok(response.descriptor)
+}
+
+/// Sign and persist a new trust-edge declaration between two servers.
+///
+/// The edge is signed by the local install's hero (the `concord_uid`
+/// derived from the persisted Stronghold seed). The edge is then
+/// appended to the trust log on disk. Subsequent calls to
+/// [`concord_user_get_self`] include the edge.
+///
+/// This is the ONLY way trust edges enter the system — they are
+/// user-explicit. No code path auto-creates trust edges anywhere in
+/// the module.
+#[tauri::command]
+async fn concord_user_add_trust_edge(
+    state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+    server_a: String,
+    server_b: String,
+) -> Result<TrustEdge, String> {
+    let stronghold = get_or_open_peer_identity(&state, &app).await?;
+    let seed = identity::peer_seed(&stronghold)
+        .await
+        .map_err(|e| format!("peer_seed: {e}"))?;
+    let (signing_key, uid) = derive_signing_key(&seed);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let edge = TrustEdge::sign_new(
+        &signing_key,
+        uid,
+        ServerId::new(server_a),
+        ServerId::new(server_b),
+        now,
+    );
+    servitude::concord_user::trust_store_add_edge(&stronghold, edge.clone())
+        .await
+        .map_err(|e| format!("trust_store_add_edge: {e}"))?;
+    Ok(edge)
+}
+
+/// List the currently-active trust edges (revocations replayed).
+#[tauri::command]
+async fn concord_user_list_trust_edges(
+    state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<TrustEdge>, String> {
+    let stronghold = get_or_open_peer_identity(&state, &app).await?;
+    servitude::concord_user::trust_store_list_edges(&stronghold)
+        .await
+        .map_err(|e| format!("trust_store_list_edges: {e}"))
+}
+
+/// Sign + append a revocation of an existing trust edge. **Append-only,
+/// not delete:** the original edge declaration stays on disk; a
+/// revocation entry is added with a fresh timestamp, and the merge view
+/// honors the latest entry per `edge_id`.
+#[tauri::command]
+async fn concord_user_revoke_trust_edge(
+    state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+    edge_id: String,
+) -> Result<(), String> {
+    let stronghold = get_or_open_peer_identity(&state, &app).await?;
+    let seed = identity::peer_seed(&stronghold)
+        .await
+        .map_err(|e| format!("peer_seed: {e}"))?;
+    let (signing_key, uid) = derive_signing_key(&seed);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let revocation = TrustEdgeRevocation::sign_new(&signing_key, uid, edge_id, now);
+    servitude::concord_user::trust_store_revoke_edge(&stronghold, revocation)
+        .await
+        .map_err(|e| format!("trust_store_revoke_edge: {e}"))?;
+    Ok(())
+}
+
+/// Derive the canonical `porch:<peerid>` server id for the local
+/// install from its Ed25519 seed. Public-key derivation is
+/// deterministic, so this function is pure given the seed bytes.
+fn porch_server_id_for(seed: &zeroize::Zeroizing<[u8; identity::SECRET_SEED_LEN]>) -> String {
+    use libp2p::identity::Keypair;
+    let kp = Keypair::ed25519_from_bytes(seed.to_vec())
+        .expect("ed25519 keypair from 32-byte seed must succeed");
+    let peer_id = libp2p::PeerId::from(kp.public());
+    format!("porch:{}", peer_id)
+}
+
+// Touch the protocol-id symbol so it's wired into the type-export
+// surface even before any caller pulls it in directly. Removable when
+// the next phase wires the handler into the swarm's registration loop.
+#[allow(dead_code)]
+const _: &str = CONCORD_USER_PROTOCOL_ID;
+// Touch the log-entry type-import so refactors that move the protocol
+// module don't silently drop the symbol from the public surface.
+#[allow(dead_code)]
+fn _force_use_trust_log_entry() {
+    let _ = std::mem::size_of::<TrustLogEntry>();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK GPU compositing is unreliable on many Linux setups
@@ -3112,6 +3320,12 @@ pub fn run() {
             user_profile_delete,
             user_profile_keychain_list,
             user_profile_keychain_remove,
+            // F-A — Concord-native user-definition protocol.
+            concord_user_get_self,
+            concord_user_get_for_peer,
+            concord_user_add_trust_edge,
+            concord_user_list_trust_edges,
+            concord_user_revoke_trust_edge,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

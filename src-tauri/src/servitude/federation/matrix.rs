@@ -16,6 +16,30 @@
 //! (`"federation.heartbeat"`) is implemented end-to-end so the
 //! integration tests can prove the handler wiring works without a real
 //! homeserver in the loop.
+//!
+//! ## Matrix federation × ConcordUserDescriptor — the bridge is OPAQUE
+//!
+//! F-A (the Concord-native user-definition protocol, see
+//! `crate::servitude::concord_user`) defines a transport-agnostic record
+//! for "a Concord user." The Matrix bridge does NOT expose that record to
+//! Matrix homeservers. From a Matrix homeserver's perspective, the bridge
+//! is a normal Matrix user (an MXID, a Matrix displayname, a Matrix avatar
+//! URL). Only the ONE `ServerProfile` row whose `server_id` matches the
+//! homeserver this handler is talking to crosses the bridge — and it's
+//! translated into the Matrix profile shape, not handed over wholesale.
+//!
+//! Concretely, if a hero has 5 per-server rows in their
+//! `ConcordUserDescriptor` (rows for 2 Matrix homeservers and 3 Concord
+//! porches), a Matrix homeserver federating in only ever sees the row
+//! corresponding to its own ServerId. The other 4 rows do not cross the
+//! bridge. This keeps the per-server identity isolation default that
+//! `ConcordUserDescriptor::merge_view` enforces on the local side.
+//!
+//! The bridge does not federate the ConcordUid as a Matrix-side
+//! property either: a remote Matrix homeserver has no way to discover
+//! the hero's cross-transport identifier from the bridge alone. That
+//! discovery happens via the `/concord/user-profile/1.0.0` protocol
+//! between two trusted Concord installs, NOT over Matrix.
 
 use std::sync::Arc;
 
