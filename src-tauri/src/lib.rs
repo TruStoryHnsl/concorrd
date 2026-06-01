@@ -1186,6 +1186,115 @@ async fn porch_sync_all_personal_devices(
 }
 
 // ---------------------------------------------------------------------------
+// User Management Phase 1 — profile CRUD + keychain metadata commands
+// ---------------------------------------------------------------------------
+
+/// List every non-tombstoned user profile, primary first.
+#[tauri::command]
+async fn user_profile_list(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<porch::UserProfile>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.list_profiles().map_err(|e| e.to_string())
+}
+
+/// Create a new profile. The new row is non-primary; promote via
+/// `user_profile_set_primary` if desired.
+#[tauri::command]
+async fn user_profile_create(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    display_name: String,
+) -> Result<porch::UserProfile, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.create_profile(display_name).map_err(|e| e.to_string())
+}
+
+/// Rename a profile.
+#[tauri::command]
+async fn user_profile_rename(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    id: String,
+    display_name: String,
+) -> Result<porch::UserProfile, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.rename_profile(&id, display_name).map_err(|e| e.to_string())
+}
+
+/// Promote a profile to primary, demoting whichever profile was
+/// previously primary inside the same transaction.
+#[tauri::command]
+async fn user_profile_set_primary(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<porch::UserProfile, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.set_primary(&id).map_err(|e| e.to_string())
+}
+
+/// Set or clear a profile's avatar URL.
+#[tauri::command]
+async fn user_profile_set_avatar(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    id: String,
+    avatar_url: Option<String>,
+) -> Result<porch::UserProfile, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.set_profile_avatar(&id, avatar_url).map_err(|e| e.to_string())
+}
+
+/// Delete a profile. The schema's `ON DELETE CASCADE` drops every
+/// keychain entry the profile owns. Refuses to delete the only
+/// remaining profile or the primary without `confirm_primary_demotion`.
+#[tauri::command]
+async fn user_profile_delete(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    id: String,
+    confirm_primary_demotion: Option<bool>,
+) -> Result<(), String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch
+        .delete_profile(&id, confirm_primary_demotion.unwrap_or(false))
+        .map_err(|e| e.to_string())
+}
+
+/// List every keychain entry owned by `profile_id`. Returns metadata
+/// only — credential ciphertext / nonce never leaves the porch.
+#[tauri::command]
+async fn user_profile_keychain_list(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    profile_id: String,
+) -> Result<Vec<porch::KeychainEntry>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.list_keychain(&profile_id).map_err(|e| e.to_string())
+}
+
+/// Remove a keychain entry by id.
+#[tauri::command]
+async fn user_profile_keychain_remove(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    entry_id: String,
+) -> Result<(), String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.remove_keychain_entry(&entry_id).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Phase G — tunnel-only inbound hardening
 //
 // Three commands let the React Settings panel read + mutate
@@ -2402,6 +2511,15 @@ pub fn run() {
             tunnel_get_config,
             tunnel_set_config,
             tunnel_detect_interfaces,
+            // User Management Phase 1 — profile CRUD + keychain metadata.
+            user_profile_list,
+            user_profile_create,
+            user_profile_rename,
+            user_profile_set_primary,
+            user_profile_set_avatar,
+            user_profile_delete,
+            user_profile_keychain_list,
+            user_profile_keychain_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -39,7 +39,17 @@ use super::DEFAULT_PORCH_CHANNEL_ID;
 ///   `channel_knocks`, `channel_themes`, `porch_assets`,
 ///   `obsidian_channels`). Pre-Phase-F rows are backfilled with this
 ///   install's `device_id` and `sync_lamport = 0`.
-pub const SCHEMA_VERSION: i64 = 6;
+/// * `7` — User Management Phase 1: `user_profiles` (per-install
+///   identities; `is_primary` partial-unique-index enforces "at most
+///   one primary at a time"; `provenance` discriminates local vs.
+///   relay-restored origin) + `keychain_entries` (FK to a profile,
+///   ChaCha20-Poly1305 ciphertext + nonce — credentials encrypted at
+///   the keychain layer, NOT inside SQLite). Both tables carry Phase F
+///   sync metadata from the get-go so Phase 4 can ride the existing
+///   CRDT layer without a schema migration. A default "Local" primary
+///   profile is seeded so the install always has somewhere for Phase 2
+///   source-add flows to write.
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// Subdirectory under the porch data dir where uploaded theme assets
 /// (image bytes) live. The DB stores the relative file path
@@ -464,6 +474,104 @@ impl Porch {
                 CREATE INDEX IF NOT EXISTS idx_obsidian_sync   ON obsidian_channels(sync_lamport);
                 INSERT INTO schema_version (version) VALUES (6);
                 COMMIT;",
+            )?;
+        }
+        if current < 7 {
+            // User Management Phase 1 migration. Two new tables:
+            //
+            // * `user_profiles` — per-install user identities. Each
+            //   row is a Concord profile that may own zero-or-more
+            //   keychain entries. `is_primary` is enforced "at most
+            //   one row = 1" by a partial unique index, NOT by a
+            //   per-row CHECK — the application layer is responsible
+            //   for atomically clearing the previous primary in the
+            //   same transaction when promoting a new one. The
+            //   provenance column records where the profile came from:
+            //   `local` for any profile created on this install,
+            //   `relay_restored` for any profile pulled from an
+            //   account relay (Phase 3 lights this variant up; in
+            //   Phase 1 every profile is `local`).
+            //
+            // * `keychain_entries` — encrypted credential bag owned by
+            //   a profile. The plaintext credentials (access_token,
+            //   user_id, device_id, etc.) live inside `ciphertext`
+            //   encrypted with ChaCha20-Poly1305 keyed by HKDF-SHA256
+            //   from the Stronghold seed; the `nonce` column carries
+            //   the per-entry 12-byte AEAD nonce. SQLite never sees
+            //   plaintext credentials — that's the load-bearing
+            //   security property. `FOREIGN KEY … ON DELETE CASCADE`
+            //   makes profile deletion drop the owned keychain rows
+            //   automatically.
+            //
+            // Both tables carry the Phase F sync metadata columns
+            // (`sync_device_id`, `sync_lamport`, `sync_tombstone`)
+            // from the get-go so Phase 4 (multi-device sync of the
+            // keychain) can ride the existing CRDT layer without a
+            // schema migration. The lamport stamping is done at the
+            // application layer in `porch::users`; the columns are
+            // NOT enforced NOT NULL at the SQL level for symmetry
+            // with how Phase F ALTER-added the same columns to
+            // pre-existing tables.
+            //
+            // Default seed: a single primary "Local" profile so the
+            // install always has somewhere for Phase 2 source-add
+            // flows to write. Done unconditionally during this
+            // migration; subsequent app boots see `current >= 7` and
+            // never re-seed.
+            conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE user_profiles (
+                    id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    avatar_url TEXT,
+                    is_primary INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),
+                    provenance TEXT NOT NULL CHECK (provenance IN ('local', 'relay_restored')),
+                    created_at INTEGER NOT NULL,
+                    sync_device_id TEXT,
+                    sync_lamport INTEGER DEFAULT 0,
+                    sync_tombstone INTEGER DEFAULT 0
+                );
+                CREATE TABLE keychain_entries (
+                    id TEXT PRIMARY KEY,
+                    profile_id TEXT NOT NULL,
+                    source_kind TEXT NOT NULL CHECK (source_kind IN ('concord', 'matrix', 'p2p_peer')),
+                    source_host TEXT NOT NULL,
+                    label TEXT,
+                    ciphertext BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    last_used_at INTEGER,
+                    sync_device_id TEXT,
+                    sync_lamport INTEGER DEFAULT 0,
+                    sync_tombstone INTEGER DEFAULT 0,
+                    FOREIGN KEY (profile_id) REFERENCES user_profiles(id) ON DELETE CASCADE
+                );
+                CREATE UNIQUE INDEX idx_only_one_primary
+                    ON user_profiles(is_primary)
+                    WHERE is_primary = 1;
+                CREATE INDEX idx_keychain_by_profile ON keychain_entries(profile_id);
+                CREATE INDEX idx_keychain_by_source  ON keychain_entries(source_host);
+                CREATE INDEX idx_profiles_sync       ON user_profiles(sync_lamport);
+                CREATE INDEX idx_keychain_sync       ON keychain_entries(sync_lamport);
+                INSERT INTO schema_version (version) VALUES (7);
+                COMMIT;",
+            )?;
+
+            // Seed a single primary "Local" profile so the install
+            // always has somewhere for Phase 2 source-add flows to
+            // write. Stamped with this install's device-id at the
+            // next lamport value, so Phase 4 sync attribution is
+            // correct from row zero.
+            let device_id = device_id_unchecked(&conn)?;
+            let lamport = crate::porch::sync::clock::next_lamport(&conn)?;
+            let now = unix_millis();
+            let profile_id = Ulid::new().to_string();
+            conn.execute(
+                "INSERT INTO user_profiles
+                    (id, display_name, avatar_url, is_primary, provenance,
+                     created_at, sync_device_id, sync_lamport, sync_tombstone)
+                 VALUES (?1, 'Local', NULL, 1, 'local', ?2, ?3, ?4, 0)",
+                params![profile_id, now, device_id, lamport],
             )?;
         }
         // Future migrations: branch on `current` and apply incremental

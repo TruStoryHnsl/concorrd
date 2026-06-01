@@ -568,8 +568,14 @@ fn sync_rejects_non_linked_peer() {
 #[test]
 fn protocol_constant_pins_to_concord_porch_sync_v1() {
     assert_eq!(SYNC_PROTOCOL_ID, "/concord/porch-sync/1.0.0");
-    // The Phase F migration bumped to v6.
-    assert_eq!(SCHEMA_VERSION, 6, "Phase F bumps schema to v6");
+    // Phase F bumped to v6; User Management Phase 1 bumped to v7.
+    // Every subsequent migration must keep monotonically increasing —
+    // this assertion is a floor, not an equality, so it doesn't have
+    // to be touched by every future migration that lands.
+    assert!(
+        SCHEMA_VERSION >= 6,
+        "Phase F or later migration must keep SCHEMA_VERSION >= 6, got {SCHEMA_VERSION}"
+    );
 }
 
 // ---------------------------------------------------------------------------
