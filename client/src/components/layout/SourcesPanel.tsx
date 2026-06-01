@@ -22,6 +22,7 @@ import { useAuthStore } from "../../stores/auth";
 import { useSettingsStore } from "../../stores/settings";
 import { useSourcesStore, type ConcordSource } from "../../stores/sources";
 import { usePeerStore } from "../../stores/peerStore";
+import { useInstanceNameStore } from "../../stores/instanceName";
 import { useAvatarUrl } from "../../hooks/usePresence";
 import {
   SourceBrandIcon,
@@ -233,27 +234,37 @@ function SortableSourceTile({
 }
 
 /**
- * Porch tile — synthetic, intrinsic Sources-rail entry for the local
- * install's porch (per-install local server + lobby; design doc:
- * `docs/architecture/porch-design.md`). NOT in `useSourcesStore.sources`
- * because that store represents external connections — the porch is local
- * and exists from first boot.
+ * Local tile — synthetic, intrinsic Sources-rail entry that
+ * represents THIS device's hosted instance. The local source is a
+ * category of its own (not a Concord federation source, not a Matrix
+ * homeserver source), and it always exists from first boot.
+ *
+ * Inside the local source live one or more local servers — the
+ * auto-created **porch** (common landing pad for visitors) first,
+ * then any additional servers the user creates. Clicking this tile
+ * activates the local source so ChatLayout renders those servers in
+ * its normal server/channel/message panes.
  *
  * Visual contract:
- *  - Fixed at the TOP of the rail (above sortable sources).
- *  - Renders even with zero sources.
- *  - Avatar = user's Matrix profile picture when available, else a
- *    `home` material symbol (P2P-only profile / no Matrix session).
- *  - Bottom-right "home" badge so the user knows this is THEIR porch
+ *  - Fixed at the TOP of the rail (above sortable external sources).
+ *  - Renders even with zero external sources.
+ *  - Avatar = user's profile picture when available, else a
+ *    `home` material symbol.
+ *  - Bottom-right "home" badge so the user knows this is THEIR device
  *    (NOT a friend's). Mirrors the `source-owner-badge` star pattern.
  *  - Online dot in corner: green when at least one paired peer's
  *    `lastSeen` is recent (≤60s), gray otherwise.
- *  - NOT draggable / NOT removable. Right-click → "Open" only.
+ *  - NOT draggable / NOT removable.
+ *
+ * Label: the user's vanity instance name (via
+ * {@link useInstanceNameStore}) when set, else "local". The vanity
+ * name is also broadcast on the p2p network so peers see it on
+ * connect.
  */
-function PorchTile({
-  onPorchOpen,
+function LocalTile({
+  onLocalOpen,
 }: {
-  onPorchOpen?: () => void;
+  onLocalOpen?: () => void;
 }) {
   const userId = useAuthStore((s) => s.userId);
   const avatarUrl = useAvatarUrl(userId);
@@ -280,19 +291,22 @@ function PorchTile({
     });
   }, [knownPeers]);
 
+  const instanceName = useInstanceNameStore((s) => s.name);
+  const label = instanceName.trim() || "local";
+
   return (
     <div
       className="w-full flex items-center justify-center flex-shrink-0"
-      data-testid="porch-tile-wrapper"
+      data-testid="local-tile-wrapper"
     >
       <button
         type="button"
-        onClick={() => onPorchOpen?.()}
-        title="Your porch"
-        data-testid="porch-tile"
+        onClick={() => onLocalOpen?.()}
+        title={label}
+        data-testid="local-tile"
         className="group relative w-8 h-8 flex items-center justify-center rounded-xl shadow-lg scale-100 text-on-surface bg-surface-container-high ring-1 ring-primary/40 transition-all duration-150 hover:ring-primary/60"
         style={{
-          // Subtle inset tint so the porch reads as "local / mine" vs
+          // Subtle inset tint so the local tile reads as "this device" vs
           // the neutral remote-source tiles. Uses the primary token so
           // it follows the active theme.
           backgroundColor:
@@ -304,24 +318,24 @@ function PorchTile({
             src={avatarUrl}
             alt=""
             className="w-7 h-7 rounded-lg object-cover"
-            data-testid="porch-tile-avatar"
+            data-testid="local-tile-avatar"
           />
         ) : (
           <span
             className="material-symbols-outlined text-lg text-on-surface"
-            data-testid="porch-tile-home-icon"
+            data-testid="local-tile-home-icon"
           >
             home
           </span>
         )}
         {/* Home badge — overlapping bottom-right so the user knows
-            this is *their* porch (not a friend's). Mirrors the
+            this is *their* device (not a friend's). Mirrors the
             `source-owner-badge` star pattern, different icon. */}
         <span
-          data-testid="porch-tile-home-badge"
+          data-testid="local-tile-home-badge"
           className="absolute -bottom-1 -right-1 w-3 h-3 rounded-full bg-primary ring-2 ring-surface flex items-center justify-center"
-          title="Your porch"
-          aria-label="Your porch"
+          title={label}
+          aria-label={label}
         >
           <span className="material-symbols-outlined text-on-primary" style={{ fontSize: "8px" }}>
             home
@@ -330,7 +344,7 @@ function PorchTile({
         {/* Online indicator — green when at least one paired peer is
             currently online via libp2p (Phase 5+ peer-store). */}
         <span
-          data-testid={`porch-tile-online-${anyPeerOnline ? "yes" : "no"}`}
+          data-testid={`local-tile-online-${anyPeerOnline ? "yes" : "no"}`}
           className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full ring-2 ring-surface ${
             anyPeerOnline ? "bg-green-500" : "bg-on-surface-variant/50"
           }`}
@@ -342,11 +356,11 @@ function PorchTile({
 }
 
 /**
- * Mobile porch row — same intrinsic-tile semantics as the desktop
- * PorchTile but rendered as a list row, matching the mobile source
+ * Mobile local row — same intrinsic-tile semantics as the desktop
+ * LocalTile but rendered as a list row, matching the mobile source
  * list visual contract.
  */
-function MobilePorchRow({ onPorchOpen }: { onPorchOpen?: () => void }) {
+function MobileLocalRow({ onLocalOpen }: { onLocalOpen?: () => void }) {
   const userId = useAuthStore((s) => s.userId);
   const avatarUrl = useAvatarUrl(userId);
   const knownPeers = usePeerStore((s) => s.knownPeers);
@@ -363,18 +377,21 @@ function MobilePorchRow({ onPorchOpen }: { onPorchOpen?: () => void }) {
     });
   }, [knownPeers]);
 
+  const instanceName = useInstanceNameStore((s) => s.name);
+  const label = instanceName.trim() || "local";
+
   return (
     <div
       role="button"
       tabIndex={0}
-      onClick={() => onPorchOpen?.()}
+      onClick={() => onLocalOpen?.()}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onPorchOpen?.();
+          onLocalOpen?.();
         }
       }}
-      data-testid="porch-tile-mobile"
+      data-testid="local-tile-mobile"
       className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-container-high transition-colors cursor-pointer border-l-2 border-primary/40"
     >
       <span
@@ -384,10 +401,10 @@ function MobilePorchRow({ onPorchOpen }: { onPorchOpen?: () => void }) {
       />
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium text-on-surface truncate">
-          Your porch
+          {label}
         </div>
         <div className="text-xs text-on-surface-variant truncate">
-          {avatarUrl ? "Local lobby" : "Local lobby (sign in for avatar)"}
+          {avatarUrl ? "This device" : "This device (sign in for avatar)"}
         </div>
       </div>
     </div>
@@ -411,7 +428,7 @@ export function SourcesPanel({
   onAddSource,
   onSourceSelect,
   onSourceOpen,
-  onPorchOpen,
+  onLocalOpen,
   onExplore,
   mobile = false,
 }: {
@@ -420,13 +437,13 @@ export function SourcesPanel({
   /** Called when a tile is clicked — opens the source browser for that source. */
   onSourceOpen?: (sourceId: string) => void;
   /**
-   * Called when the intrinsic Porch tile is clicked. The porch is local
-   * to this install — see `docs/architecture/porch-design.md` — so the
-   * parent should route the main view to the local `PorchView` rather
-   * than the SourceServerBrowser modal. Optional so existing test
-   * mounts still work without supplying the callback.
+   * Called when the intrinsic "local" tile is clicked. The parent
+   * should activate the local source so ChatLayout renders the
+   * porch + any user-created local servers in its normal panes
+   * (rather than routing to a separate window). Optional so test
+   * mounts can omit the callback.
    */
-  onPorchOpen?: () => void;
+  onLocalOpen?: () => void;
   onExplore?: () => void;
   mobile?: boolean;
 }) {
@@ -636,7 +653,7 @@ export function SourcesPanel({
         <div className="flex-1 min-h-0 overflow-y-auto">
           {/* Intrinsic Porch row — always FIRST, even when sources is empty.
               Local-only; not part of useSourcesStore.sources. */}
-          <MobilePorchRow onPorchOpen={onPorchOpen} />
+          <MobileLocalRow onLocalOpen={onLocalOpen} />
           {sources.map((source) => {
             // Outer container: <div role="button"> instead of <button>. HTML
             // forbids interactive elements nested inside <button>, and the
@@ -733,7 +750,7 @@ export function SourcesPanel({
           (the porch is local, not a remote connection). NOT draggable —
           intentionally outside the SortableContext below. */}
       <div className="w-full flex flex-col items-center gap-1.5 pb-1.5 flex-shrink-0">
-        <PorchTile onPorchOpen={onPorchOpen} />
+        <LocalTile onLocalOpen={onLocalOpen} />
       </div>
 
       {/* Source tiles — scrollable, top-down */}

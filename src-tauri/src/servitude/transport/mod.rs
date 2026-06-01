@@ -201,6 +201,13 @@ pub struct LibP2pRuntime {
     /// a permissive default (enforce=false) — backward-compatible
     /// with tests and pre-Phase-G installs.
     gate_state: Option<crate::servitude::network::connection_gate::GateState>,
+    /// Operator vanity instance name (the persisted
+    /// `ServitudeConfig.display_name`). When `Some` it is propagated
+    /// into the libp2p Identify protocol's `agent_version` so
+    /// connecting peers can confirm the human-readable name of the
+    /// device they reached. Wired before `start()`; changes take
+    /// effect on the next start/stop cycle.
+    instance_name: Option<String>,
 }
 
 impl std::fmt::Debug for LibP2pRuntime {
@@ -235,7 +242,17 @@ impl LibP2pRuntime {
             porch: None,
             porch_stream_control: None,
             gate_state: None,
+            instance_name: None,
         }
+    }
+
+    /// Wire the operator's vanity instance name. MUST be called before
+    /// [`Self::start`] for the name to land in the Identify protocol's
+    /// `agent_version` string. Calling after `start()` is harmless but
+    /// won't retroactively update peers' cached Identify payloads —
+    /// the change takes effect on the next start/stop cycle.
+    pub fn set_instance_name(&mut self, name: Option<String>) {
+        self.instance_name = name;
     }
 
     /// Phase G — wire the inbound-gate state. Must be called BEFORE
@@ -332,11 +349,20 @@ impl LibP2pRuntime {
         // the state once here means the runtime's stored handle stays
         // wired to the SAME Arc the swarm observes, so subsequent
         // `update(...)` calls hot-swap as expected.
+        let instance_name = self.instance_name.as_deref();
         let mut transport = match self.gate_state.clone() {
             Some(state) => {
-                LibP2pTransport::new_with_gate(&peer_identity, &self.stronghold, state).await?
+                LibP2pTransport::new_with_gate(
+                    &peer_identity,
+                    &self.stronghold,
+                    state,
+                    instance_name,
+                )
+                .await?
             }
-            None => LibP2pTransport::new(&peer_identity, &self.stronghold).await?,
+            None => {
+                LibP2pTransport::new(&peer_identity, &self.stronghold, instance_name).await?
+            }
         };
 
         // If we hadn't wired a gate, capture the swarm's default
@@ -942,6 +968,15 @@ impl TransportRuntime {
     ) {
         if let TransportRuntime::LibP2p(t) = self {
             t.set_gate_state(state);
+        }
+    }
+
+    /// Wire the operator's vanity instance name into the LibP2p
+    /// runtime variant so the Identify protocol's `agent_version`
+    /// carries it to remote peers. No-op for every other variant.
+    pub fn set_instance_name(&mut self, name: Option<String>) {
+        if let TransportRuntime::LibP2p(t) = self {
+            t.set_instance_name(name);
         }
     }
 

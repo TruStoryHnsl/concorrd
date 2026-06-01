@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback, useRef, lazy, Suspense } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import type { IPublicRoomsChunkRoom } from "matrix-js-sdk";
 import {
   useMatrixSync,
@@ -24,12 +24,7 @@ import { useHostingStatus } from "../settings/HostingTab";
 import { SectionBoundary } from "./SectionBoundary";
 import { SourcesPanel } from "./SourcesPanel";
 import { BringingUpSplash } from "../BringingUpSplash";
-// Lazy: the porch surface (and its Phase A SQLite-talking stores) is only
-// loaded when the user actually clicks the Porch tile. Keeps the
-// porch-design.md feature off the cold-boot critical path.
-const PorchView = lazy(() =>
-  import("../porch/PorchView").then((m) => ({ default: m.PorchView })),
-);
+import { LocalSourcePane } from "./LocalSourcePane";
 import { HelpModal, OnboardingGuide, RulesGate } from "./OnboardingViews";
 import { AccountSheet, DesktopAccountButton } from "./AccountUI";
 import {
@@ -336,17 +331,17 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     [],
   );
 
-  // Porch view — opened when the user clicks the intrinsic Porch tile
-  // in SourcesPanel. The porch is local to this install (per-install
-  // server + lobby; see `docs/architecture/porch-design.md`), so we
-  // swap the main view rather than opening the SourceServerBrowser
-  // remote-connection modal.
-  const [porchOpen, setPorchOpen] = useState(false);
-  const openPorch = useCallback(() => {
-    setPorchOpen(true);
+  // Active local source tracking. When the user clicks the intrinsic
+  // "local" tile in SourcesPanel, ChatLayout flips its panes to show
+  // THIS device's local servers (porch + any user-created locals)
+  // instead of the active external source's content. The actual
+  // porch-aware pane is `<LocalSourcePane />` rendered below.
+  const [localActive, setLocalActive] = useState(false);
+  const openLocal = useCallback(() => {
+    setLocalActive(true);
   }, []);
-  const closePorch = useCallback(() => {
-    setPorchOpen(false);
+  const closeLocal = useCallback(() => {
+    setLocalActive(false);
   }, []);
 
   // Resizable channel sidebar (desktop only)
@@ -797,7 +792,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                     <SourcesPanel
                       onAddSource={openAddSource}
                       onSourceOpen={openSourceBrowser}
-                      onPorchOpen={openPorch}
+                      onLocalOpen={openLocal}
                       onExplore={openExplore}
                     />
                   </SectionBoundary>
@@ -1174,7 +1169,10 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               onSourceSelect={() => scrollToPanel(1)}
               onExplore={openExplore}
               onSourceOpen={openSourceBrowser}
-              onPorchOpen={openPorch}
+              onLocalOpen={() => {
+                openLocal();
+                scrollToPanel(1);
+              }}
             />
           </div>
           {/* Panel: Servers */}
@@ -1920,6 +1918,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           }}
         />
       )}
+      {/* Local source pane — rendered as a full-bleed overlay so it
+          covers the Matrix-aware panes underneath without unmounting
+          them. ChatLayout's outer shell (top bar, source rail) stays
+          mounted; the user backs out via the in-pane back button.
+          Click the intrinsic "local" tile in SourcesPanel to enter. */}
+      {localActive && <LocalSourcePane onClose={closeLocal} />}
       {/* Source browser — opened by clicking a source tile */}
       {sourceBrowserSourceId && (() => {
         const source = sources.find((s) => s.id === sourceBrowserSourceId);
@@ -1930,40 +1934,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           />
         );
       })()}
-      {/* Porch — opened by clicking the intrinsic Porch tile in
-          SourcesPanel. Routes the main view to the local PorchView
-          (per-install local server + lobby; see
-          `docs/architecture/porch-design.md`). Modal overlay so the
-          background ChatLayout shell stays mounted and the user can
-          dismiss back to wherever they were. */}
-      {porchOpen && (
-        <div
-          className="fixed inset-0 z-50 flex flex-col bg-surface"
-          data-testid="porch-overlay"
-        >
-          <div className="h-12 flex items-center px-3 gap-2 bg-surface-container-low flex-shrink-0">
-            <button
-              onClick={closePorch}
-              className="btn-press flex items-center justify-center w-9 h-9 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
-              aria-label="Close porch"
-            >
-              <span className="material-symbols-outlined text-xl">arrow_back</span>
-            </button>
-            <h2 className="font-headline font-semibold">Your porch</h2>
-          </div>
-          <div className="flex-1 min-h-0">
-            <Suspense
-              fallback={
-                <div className="flex items-center justify-center h-full text-on-surface-variant text-sm">
-                  Loading porch…
-                </div>
-              }
-            >
-              <PorchView mode="self" />
-            </Suspense>
-          </div>
-        </div>
-      )}
       {/* INS-070: admin-only Extension Library modal — surfaced from
           the Tools dropdown so installs are one click instead of
           two-clicks-deep in Settings → Admin → Extensions. */}

@@ -77,9 +77,25 @@ use crate::servitude::network::tunnel_detect::TunnelInterfaces;
 /// build time so Phase 3 nodes observe each other's exact Concord release.
 const IDENTIFY_PROTOCOL_VERSION: &str = concat!("concord/", env!("CARGO_PKG_VERSION"));
 
-/// Identify agent-version string — included in remote peers' Identify
-/// payloads for human-readable diagnostics.
-const IDENTIFY_AGENT_VERSION: &str = concat!("concord/", env!("CARGO_PKG_VERSION"));
+/// Identify agent-version string base — included in remote peers'
+/// Identify payloads for human-readable diagnostics. The runtime
+/// appends the operator's vanity instance name when one is set so
+/// peers can confirm at connect time that they've reached the right
+/// device.
+const IDENTIFY_AGENT_VERSION_BASE: &str =
+    concat!("concord/", env!("CARGO_PKG_VERSION"));
+
+/// Build the Identify agent-version string for this run. Format:
+///   - no vanity name:  `concord/<version>`
+///   - vanity name set: `concord/<version> (<name>)`
+fn build_agent_version(instance_name: Option<&str>) -> String {
+    match instance_name {
+        Some(n) if !n.trim().is_empty() => {
+            format!("{IDENTIFY_AGENT_VERSION_BASE} ({})", n.trim())
+        }
+        _ => IDENTIFY_AGENT_VERSION_BASE.to_string(),
+    }
+}
 
 /// Request-response protocol name. Phase 3 placeholder; concrete payload
 /// types land in Phase 4+.
@@ -252,12 +268,13 @@ impl LibP2pTransport {
     pub async fn new(
         peer_identity: &PeerIdentity,
         stronghold: &StrongholdHandle,
+        instance_name: Option<&str>,
     ) -> Result<Self, P2pError> {
         // Default to a permissive (enforce=false) gate. Callers that
         // want tunnel-only mode wire it in via
         // [`Self::new_with_gate`].
         let gate = GateState::new(false, TunnelInterfaces::detect(&[]));
-        Self::new_with_gate(peer_identity, stronghold, gate).await
+        Self::new_with_gate(peer_identity, stronghold, gate, instance_name).await
     }
 
     /// Phase G — same as [`Self::new`] but takes a pre-built
@@ -266,10 +283,16 @@ impl LibP2pTransport {
     /// come up. The state is `Arc`-shared, so subsequent
     /// `state.update(...)` calls on the same handle are observable
     /// immediately by the gate behaviour inside the swarm.
+    ///
+    /// `instance_name` is the operator's vanity name (the persisted
+    /// `ServitudeConfig.display_name`). When `Some` it appears in the
+    /// Identify protocol's `agent_version` field so connecting peers
+    /// can confirm the human-readable name of the device they reached.
     pub async fn new_with_gate(
         peer_identity: &PeerIdentity,
         stronghold: &StrongholdHandle,
         gate: GateState,
+        instance_name: Option<&str>,
     ) -> Result<Self, P2pError> {
         // Pull the per-install seed out of the identity module's cache.
         // Bytes are wrapped in `Zeroizing` so they wipe themselves when the
@@ -329,6 +352,11 @@ impl LibP2pTransport {
         // running behaviour without restarting the swarm.
         let gate_for_closure = gate.clone();
 
+        // Materialize the Identify agent-version string up-front so the
+        // closure below doesn't borrow the parameter — the closure runs
+        // on the libp2p builder's executor and prefers owned values.
+        let agent_version = build_agent_version(instance_name);
+
         // Build the swarm using libp2p's typestate builder. `with_tokio()`
         // selects the Tokio executor; `with_quic()`/`with_tcp()` set up the
         // transport stack; `with_relay_client()` injects the client-side
@@ -367,7 +395,7 @@ impl LibP2pTransport {
                 let identify = identify::Behaviour::new(identify::Config::new(
                     IDENTIFY_PROTOCOL_VERSION.to_string(),
                     key.public(),
-                ).with_agent_version(IDENTIFY_AGENT_VERSION.to_string()));
+                ).with_agent_version(agent_version.clone()));
 
                 let ping = ping::Behaviour::new(ping::Config::new());
 

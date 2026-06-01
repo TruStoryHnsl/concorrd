@@ -163,7 +163,17 @@ impl ServitudeHandle {
             // — the config enum existed before Phase 3 and `Mesh`
             // placeholders predate the real libp2p wiring. Append rather
             // than prepend so existing transports keep their start order.
-            transports.push(TransportRuntime::LibP2p(LibP2pRuntime::new(sh)));
+            let mut runtime = LibP2pRuntime::new(sh);
+            // Vanity instance-name → Identify agent_version. Peers see
+            // this on connect to confirm they reached the device they
+            // intended. Empty display_name is treated as "unset" so
+            // peers fall back to the bare `concord/<version>` form
+            // rather than `concord/<version> ()`.
+            let trimmed = config.display_name.trim();
+            if !trimmed.is_empty() {
+                runtime.set_instance_name(Some(trimmed.to_string()));
+            }
+            transports.push(TransportRuntime::LibP2p(runtime));
         }
         Ok(Self {
             config,

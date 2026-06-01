@@ -465,7 +465,7 @@ async fn spawn_transport(label: &str) -> (LibP2pTransport, PeerId, Multiaddr) {
     let peer_identity = identity::load_or_create(&handle)
         .await
         .expect("identity ok");
-    let mut transport = LibP2pTransport::new(&peer_identity, &handle)
+    let mut transport = LibP2pTransport::new(&peer_identity, &handle, None)
         .await
         .expect("transport ok");
     let peer_id = transport.local_peer_id();
