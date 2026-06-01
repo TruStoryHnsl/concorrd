@@ -17,11 +17,6 @@ vi.mock("../../sources/LocalHostingControl", () => ({
   ),
 }));
 
-// HostOnboarding is only rendered for the hosting-bootstrap screen; stub.
-vi.mock("../../onboarding/HostOnboarding", () => ({
-  HostOnboarding: () => <div data-testid="host-onboarding-stub" />,
-}));
-
 // PeerCardScanner is the body of the pair-peer screen — render a small
 // recognizable stub so we can assert that the screen mounted it.
 vi.mock("../../peers/PeerCardScanner", () => ({
