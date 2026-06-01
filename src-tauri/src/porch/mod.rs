@@ -31,6 +31,7 @@ pub mod acl;
 pub mod backup;
 pub mod backup_protocol;
 pub mod channel;
+pub mod conflict_agent;
 pub mod db;
 pub mod error;
 pub mod history_protocol;
@@ -63,6 +64,14 @@ pub use home_export_protocol::{
     MAX_FRAME_BYTES, MAX_PACKAGE_BYTES,
 };
 pub use channel::{AclMode, AclRole, ChannelKind, ChannelMessage, PorchChannel};
+pub use conflict_agent::{
+    build_previous_session_preamble, AgentAttempt, AttemptState, ConflictInput,
+    ConflictResolutionTask, ConflictResolver, ConflictRow, ConflictStatus,
+    DeterministicConflictResolver, MockTimeoutResolver, OrchestratorConfig,
+    PartialContext, ResolverContext, ResolverResult, ResumableConflictAgent,
+    RunReport, Verdict, VerdictKind, DEFAULT_ATTEMPT_TIMEOUT, DEFAULT_MAX_ATTEMPTS,
+    HEARTBEAT_INTERVAL,
+};
 pub use db::{
     Porch, VisibilityRow, DEFAULT_HOME_MAX_HOPS, DEFAULT_HOME_SERVER_NAME,
     DEFAULT_PORCH_MAX_HOPS, MAX_HOME_SERVER_NAME_CHARS, SCHEMA_VERSION,

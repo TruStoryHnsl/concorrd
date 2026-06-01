@@ -482,6 +482,82 @@ async fn porch_post_message(
 }
 
 // ---------------------------------------------------------------------------
+// F-D — Resumable conflict-agent session: read-side + manual-resolve
+// commands. The agent-dispatch loop is driven by
+// `porch::conflict_agent::ResumableConflictAgent` on a background task
+// (not wired into the Tauri command surface — the UI just reads queue
+// state and provides the manual-resolve fallback). See
+// `docs/architecture/resumable-conflict-agent-scope.md`.
+// ---------------------------------------------------------------------------
+
+/// List every conflict that has NOT yet been resolved by the agent. The
+/// UI uses this to surface a "Sync conflicts — N pending" panel. The
+/// `status` column distinguishes `pending` (agent still working) from
+/// `manual_required` (agent exhausted its retry budget; user must
+/// click).
+#[tauri::command]
+async fn conflict_queue_list_unresolved(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<porch::ConflictRow>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch
+        .conflict_queue_list_unresolved()
+        .map_err(|e| e.to_string())
+}
+
+/// Read the per-attempt audit trail for a single conflict. The UI shows
+/// each attempt's snapshot + verdict-so-far so the user can see how
+/// the agent reasoned about the conflict across resumed sessions.
+#[tauri::command]
+async fn conflict_queue_get_attempts(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    conflict_id: String,
+) -> Result<Vec<porch::AgentAttempt>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch
+        .conflict_queue_get_attempts(&conflict_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Force a conflict to `manual_required` status — abandons further
+/// agent dispatch and surfaces the row for explicit user resolution.
+/// Idempotent; a row that's already `resolved` is left untouched.
+#[tauri::command]
+async fn conflict_queue_force_manual(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    conflict_id: String,
+) -> Result<(), String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch
+        .conflict_queue_mark_manual_required(&conflict_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Apply a user-typed verdict to a conflict (manual resolution
+/// fallback). The `verdict_json` is validated against the
+/// [`porch::Verdict`] shape before writing — bad JSON returns an
+/// `InvalidInput` error so the UI never silently accepts garbage.
+#[tauri::command]
+async fn conflict_queue_manual_resolve(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    conflict_id: String,
+    verdict_json: String,
+) -> Result<(), String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch
+        .conflict_queue_manual_resolve(&conflict_id, &verdict_json)
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // F1a — ephemeral porch commands (in-memory, session-only)
 // ---------------------------------------------------------------------------
 //
@@ -3034,6 +3110,11 @@ pub fn run() {
             porch_list_my_channels,
             porch_get_messages,
             porch_post_message,
+            // F-D — Resumable conflict-agent session.
+            conflict_queue_list_unresolved,
+            conflict_queue_get_attempts,
+            conflict_queue_force_manual,
+            conflict_queue_manual_resolve,
             // F1a — ephemeral porch (in-memory, session-only).
             porch_current_token,
             porch_list_channels,

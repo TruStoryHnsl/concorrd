@@ -67,7 +67,17 @@ use super::DEFAULT_PORCH_CHANNEL_ID;
 ///   hop-1, home at hop-0. See [`crate::porch::visibility`] for the
 ///   CRUD layer + the gossipsub propagation payload that flows
 ///   through F3's address-rotation topic.
-pub const SCHEMA_VERSION: i64 = 9;
+/// * `10` — F-D — Resumable conflict-agent session:
+///   `conflict_queue` (one row per detected destructive sync conflict,
+///   per RFC §5.c–d) + `conflict_attempts` (append-only per-attempt
+///   audit trail with per-attempt partial-context snapshots that flow
+///   into the NEXT attempt's preamble when a previous attempt timed
+///   out). The orchestration loop in
+///   [`crate::porch::conflict_agent`] drives these tables; F-D is the
+///   first hand-off contract from F-C's conflict-detection layer to
+///   the agent-dispatch layer. See `docs/architecture/
+///   resumable-conflict-agent-scope.md` for the full design.
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// Server id used by `visibility_meta` for the ephemeral PORCH server.
 /// Hard-coded literal because the porch is intrinsic — not user-created
@@ -725,6 +735,82 @@ impl Porch {
                     DEFAULT_HOME_MAX_HOPS as i64,
                     now,
                 ],
+            )?;
+        }
+        if current < 10 {
+            // F-D — Resumable conflict-agent session.
+            //
+            // Two new tables drive the conflict-resolver loop:
+            //
+            // * `conflict_queue` — one row per destructive sync conflict
+            //   detected by F-C. `conflict_kind` is the discriminator
+            //   from RFC §5.c (`concurrent_rename`, `tombstone_vs_write`,
+            //   `acl_change`, etc.); `payload_json` carries the two
+            //   competing event payloads + their Lamport stamps as a
+            //   self-contained JSON blob so the resolver can reason about
+            //   the conflict without joining back to `event_log`.
+            //
+            //   `resolved_at` + `final_verdict_json` are populated when
+            //   the first successful attempt completes. The
+            //   `manual_required` status (column `status` defaulting to
+            //   `'pending'`) is set when the orchestrator has burned its
+            //   retry budget; a user manually resolving via
+            //   `conflict_queue_manual_resolve` ALSO populates these
+            //   columns, with `final_verdict_json` carrying the user's
+            //   verdict.
+            //
+            // * `conflict_attempts` — append-only audit trail. Each
+            //   attempt records `started_at`, `ended_at`, `state`
+            //   (`running` | `succeeded` | `timeout` | `aborted`),
+            //   `partial_context_blob` (the agent's working state at the
+            //   most recent heartbeat snapshot — see the conflict_agent
+            //   module's hand-off contract), and `partial_verdict_json`
+            //   (any tentative reasoning the agent emitted before
+            //   succeeding or timing out).
+            //
+            //   The orchestration loop picks up where a timed-out attempt
+            //   left off by reading the last attempt's
+            //   `partial_context_blob` and embedding it as a
+            //   `<<previous-session>>` preamble in the NEW attempt's
+            //   input. That's the resume-on-timeout pipeline described
+            //   in `docs/architecture/resumable-conflict-agent-scope.md`.
+            //
+            // `ON DELETE CASCADE` keeps the attempts log tied to its
+            // conflict, so dropping a conflict (rare — typically the
+            // orchestrator marks `manual_required` instead) cleans up
+            // its history. The indices accelerate the two hot queries:
+            // "give me unresolved conflicts in queued order" and "give
+            // me the most-recent attempt for this conflict."
+            conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE IF NOT EXISTS conflict_queue (
+                    conflict_id TEXT PRIMARY KEY,
+                    conflict_kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    queued_at INTEGER NOT NULL,
+                    resolved_at INTEGER,
+                    final_verdict_json TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'resolved', 'manual_required'))
+                );
+                CREATE TABLE IF NOT EXISTS conflict_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    conflict_id TEXT NOT NULL,
+                    started_at INTEGER NOT NULL,
+                    ended_at INTEGER,
+                    state TEXT NOT NULL
+                        CHECK (state IN ('running', 'succeeded', 'timeout', 'aborted')),
+                    partial_context_blob TEXT,
+                    partial_verdict_json TEXT,
+                    FOREIGN KEY (conflict_id) REFERENCES conflict_queue(conflict_id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_conflict_queue_unresolved
+                    ON conflict_queue(queued_at)
+                    WHERE resolved_at IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_conflict_attempts_by_conflict
+                    ON conflict_attempts(conflict_id, started_at);
+                INSERT INTO schema_version (version) VALUES (10);
+                COMMIT;",
             )?;
         }
         // Future migrations: branch on `current` and apply incremental
