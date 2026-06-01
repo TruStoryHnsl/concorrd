@@ -24,6 +24,7 @@ import { useHostingStatus } from "../settings/HostingTab";
 import { SectionBoundary } from "./SectionBoundary";
 import { SourcesPanel } from "./SourcesPanel";
 import { BringingUpSplash } from "../BringingUpSplash";
+import { LocalSourcePane } from "./LocalSourcePane";
 import { HelpModal, OnboardingGuide, RulesGate } from "./OnboardingViews";
 import { AccountSheet, DesktopAccountButton } from "./AccountUI";
 import {
@@ -333,12 +334,14 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // Active local source tracking. When the user clicks the intrinsic
   // "local" tile in SourcesPanel, ChatLayout flips its panes to show
   // THIS device's local servers (porch + any user-created locals)
-  // instead of the active external source's content. The data adapter
-  // for the panes themselves lands in a follow-up; this state is the
-  // gating signal.
+  // instead of the active external source's content. The actual
+  // porch-aware pane is `<LocalSourcePane />` rendered below.
   const [localActive, setLocalActive] = useState(false);
   const openLocal = useCallback(() => {
     setLocalActive(true);
+  }, []);
+  const closeLocal = useCallback(() => {
+    setLocalActive(false);
   }, []);
 
   // Resizable channel sidebar (desktop only)
@@ -1915,6 +1918,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           }}
         />
       )}
+      {/* Local source pane — rendered as a full-bleed overlay so it
+          covers the Matrix-aware panes underneath without unmounting
+          them. ChatLayout's outer shell (top bar, source rail) stays
+          mounted; the user backs out via the in-pane back button.
+          Click the intrinsic "local" tile in SourcesPanel to enter. */}
+      {localActive && <LocalSourcePane onClose={closeLocal} />}
       {/* Source browser — opened by clicking a source tile */}
       {sourceBrowserSourceId && (() => {
         const source = sources.find((s) => s.id === sourceBrowserSourceId);
