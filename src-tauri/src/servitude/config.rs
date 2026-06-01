@@ -194,6 +194,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let raw: Vec<String> = Vec::<String>::deserialize(d)?;
+    let raw_was_empty = raw.is_empty();
     let parsed: Vec<Transport> = raw
         .into_iter()
         .filter_map(|s| match s.as_str() {
@@ -214,7 +215,13 @@ where
             }
         })
         .collect();
-    if parsed.is_empty() {
+    // Respect an EXPLICITLY empty list — that's the operator saying
+    // "run only the libp2p baseline, no MatrixFederation, no nothing
+    // else." Falling back to defaults here would silently resurrect
+    // tuwunel on an install that explicitly opted out. The fallback
+    // is ONLY for the config-drift case: input was non-empty but
+    // every entry was an unknown / removed variant.
+    if parsed.is_empty() && !raw_was_empty {
         log::warn!(
             target: "concord::config",
             "no recognized transports in enabled_transports; falling back \
@@ -336,9 +343,13 @@ impl ServitudeConfig {
         if self.listen_port < 1024 && !self.allow_privileged_port {
             return Err(ConfigError::PrivilegedPortNotAllowed(self.listen_port));
         }
-        if self.enabled_transports.is_empty() {
-            return Err(ConfigError::NoTransportsEnabled);
-        }
+        // `enabled_transports` is allowed to be empty under the porch
+        // architecture: the libp2p baseline transport is always-on
+        // and is intentionally NOT declared in this list. An empty
+        // list = "porch-only install, no MatrixFederation, no
+        // optional transports." Rejecting empty here was a holdover
+        // from the pre-porch era when MatrixFederation was treated
+        // as load-bearing.
 
         Ok(())
     }
@@ -364,9 +375,6 @@ pub enum ConfigError {
 
     #[error("listen_port {0} is privileged (<1024); set allow_privileged_port = true to override")]
     PrivilegedPortNotAllowed(i64),
-
-    #[error("at least one transport must be enabled in enabled_transports")]
-    NoTransportsEnabled,
 
     #[error("settings store error: {0}")]
     Store(String),
@@ -483,10 +491,16 @@ mod tests {
     }
 
     #[test]
-    fn test_config_validation_rejects_no_transports() {
+    fn test_config_validation_allows_empty_transports() {
+        // Empty `enabled_transports` is the porch-only configuration:
+        // the always-on libp2p baseline runs and no optional
+        // MatrixFederation / WireGuard / Mesh transports come up.
+        // validate() MUST accept it — rejecting empty here was a
+        // holdover from the pre-porch era and silently resurrected
+        // tuwunel on installs that explicitly opted out.
         let mut cfg = base();
         cfg.enabled_transports.clear();
-        assert_eq!(cfg.validate(), Err(ConfigError::NoTransportsEnabled));
+        cfg.validate().expect("empty enabled_transports is valid");
     }
 
     #[test]
