@@ -24,7 +24,6 @@ import { useHostingStatus } from "../settings/HostingTab";
 import { SectionBoundary } from "./SectionBoundary";
 import { SourcesPanel } from "./SourcesPanel";
 import { BringingUpSplash } from "../BringingUpSplash";
-import { LocalSourcePane } from "./LocalSourcePane";
 import { HelpModal, OnboardingGuide, RulesGate } from "./OnboardingViews";
 import { AccountSheet, DesktopAccountButton } from "./AccountUI";
 import {
@@ -331,17 +330,14 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     [],
   );
 
-  // Active local source tracking. When the user clicks the intrinsic
-  // "local" tile in SourcesPanel, ChatLayout flips its panes to show
-  // THIS device's local servers (porch + any user-created locals)
-  // instead of the active external source's content. The actual
-  // porch-aware pane is `<LocalSourcePane />` rendered below.
-  const [localActive, setLocalActive] = useState(false);
+  // The intrinsic "local" tile in SourcesPanel is a no-op for now —
+  // the porch's data must flow through ChatLayout's existing
+  // server/channel/message panes (same shape as Matrix, Discord,
+  // Concord federation sources), NOT a separate window. That
+  // integration is a follow-up; until it ships, clicking the tile
+  // does nothing visible.
   const openLocal = useCallback(() => {
-    setLocalActive(true);
-  }, []);
-  const closeLocal = useCallback(() => {
-    setLocalActive(false);
+    // intentionally empty — see comment above
   }, []);
 
   // Resizable channel sidebar (desktop only)
@@ -1174,6 +1170,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
                 scrollToPanel(1);
               }}
             />
+
           </div>
           {/* Panel: Servers */}
           <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
@@ -1918,12 +1915,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           }}
         />
       )}
-      {/* Local source pane — rendered as a full-bleed overlay so it
-          covers the Matrix-aware panes underneath without unmounting
-          them. ChatLayout's outer shell (top bar, source rail) stays
-          mounted; the user backs out via the in-pane back button.
-          Click the intrinsic "local" tile in SourcesPanel to enter. */}
-      {localActive && <LocalSourcePane onClose={closeLocal} />}
       {/* Source browser — opened by clicking a source tile */}
       {sourceBrowserSourceId && (() => {
         const source = sources.find((s) => s.id === sourceBrowserSourceId);

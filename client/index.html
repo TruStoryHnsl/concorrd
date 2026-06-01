@@ -236,16 +236,7 @@
         ></video>
       </div>
       <div id="boot-splash-brand">Concord</div>
-      <div id="boot-splash-status">Waiting for host</div>
     </div>
-    <script>
-      (() => {
-        const status = document.getElementById("boot-splash-status");
-        if (status) {
-          status.textContent = `Waiting for ${window.location.host || "host"}`;
-        }
-      })();
-    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

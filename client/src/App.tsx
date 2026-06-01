@@ -461,47 +461,36 @@ export default function App() {
     );
   }
 
-  if (!serverConnected) {
-    // W2-05 / INS-058: native first launch with no sources → Welcome.
-    // Existing-source path (e.g. user previously connected on a fresh
-    // install) falls through to the legacy ServerPickerScreen so the
-    // already-locked-in W-04 test plus existing INS-027 flow keep
-    // working. The Welcome → onboarding flows route back through
-    // `setServerConnected(true)` once a source is persisted.
-    //
-    // INS-058 destination per `feedback_ux_hollow_webui_spec.md` is
-    // a fully hollow ChatLayout with `+` tile as the universal entry —
-    // Welcome is a STEPPING STONE on the way there, not the terminus.
-    // Do NOT remove the Welcome routing until that hollow-shell rewrite
-    // ships and `firstLaunch.welcome.test.tsx` is updated.
-    const hasAnySource =
-      isTauri && useSourcesStore.getState().sources.length > 0;
-    if (isTauri && !hasAnySource) {
+  // Native installs drop straight into ChatLayout — no Welcome, no
+  // wizard, no LoginForm on first launch. The local porch is the
+  // user's device-local source; it's intrinsic, requires no account,
+  // and is reachable the moment the libp2p swarm comes up. Matrix
+  // accounts are only created the moment the user tries to add a
+  // remote auth-required source (Matrix homeserver, peer Concord),
+  // and that flow has its own embedded sign-in surface.
+  //
+  // Web builds still route through the existing ServerPickerScreen +
+  // LoginForm because docker stacks always have an external homeserver
+  // and the browser entry point has no local porch to land in.
+  if (!isTauri) {
+    if (!serverConnected) {
       return (
         <>
-          <Welcome onConnected={() => setServerConnected(true)} />
+          <ServerPickerScreen onConnected={() => setServerConnected(true)} />
           <MarkReady />
           {launchOverlay}
         </>
       );
     }
-    return (
-      <>
-        <ServerPickerScreen onConnected={() => setServerConnected(true)} />
-        <MarkReady />
-        {launchOverlay}
-      </>
-    );
-  }
-
-  if (!isLoggedIn) {
-    return (
-      <>
-        <LoginForm />
-        <MarkReady />
-        {launchOverlay}
-      </>
-    );
+    if (!isLoggedIn) {
+      return (
+        <>
+          <LoginForm />
+          <MarkReady />
+          {launchOverlay}
+        </>
+      );
+    }
   }
 
   // NOTE: <MarkReady /> intentionally NOT here. ChatLayout is the
