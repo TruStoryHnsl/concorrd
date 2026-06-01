@@ -15,9 +15,8 @@
  * Size variants:
  *
  *   - `full`    — Full-screen splash (192px video + brand + status).
- *                 Used by HostOnboarding's bring-up screen, post-auth
- *                 boot transitions, and anything that fills the
- *                 viewport while we wait.
+ *                 Used by post-auth boot transitions and anything
+ *                 that fills the viewport while we wait.
  *   - `compact` — Page-section splash (64px video + optional status).
  *                 Used by ChatLayout's "loading servers" / "loading
  *                 messages" interstitials, modal loading panels,
