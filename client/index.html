@@ -218,15 +218,10 @@
     <div id="boot-splash" data-state="visible" aria-hidden="true">
       <div id="boot-splash-logo">
         <!--
-          Hand-crafted Blender animation. Plays exactly ONCE, then
-          freezes on the last frame. No `loop` attribute, no JS swap.
-          The previous ping-pong dual-video setup was cycling 4-5
-          times during slow boots and the loop boundary read as a
-          visible "reset" because the first and last frames differ
-          by ~4% in the lower mark area. Holding the last frame
-          (which is the logo at rest, ball seated in the lower ring)
-          is the rest pose the user expects to see while waiting for
-          the app to finish hydrating.
+          Hand-crafted Blender animation. Loops continuously — the
+          splash is a cyclical animation and the user wants it to
+          keep playing as long as we're still loading, not freeze on
+          the last frame. The mp4 is authored to seam cleanly.
         -->
         <video
           id="boot-splash-anim"
@@ -234,6 +229,7 @@
           src="/boot-splash.mp4"
           autoplay
           muted
+          loop
           playsinline
           preload="auto"
           aria-hidden="true"

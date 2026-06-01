@@ -26,10 +26,11 @@
  *                 Drop-in replacement for the per-button / per-row
  *                 status pips that used to be border-spin rings.
  *
- * The video plays once and freezes on its last frame (no `loop`
- * attribute, matching the boot-splash markup in index.html). The
- * `playsInline` + `muted` + `autoPlay` combo lets it run inside
- * webview autoplay policies without a user gesture.
+ * The video loops continuously — the splash is a cyclical animation
+ * and should keep playing as long as a loading state is on screen
+ * (matches the index.html boot splash markup). The
+ * `playsInline` + `muted` + `autoPlay` + `loop` combo lets it run
+ * inside webview autoplay policies without a user gesture.
  */
 
 export type BringingUpSplashSize = "full" | "compact" | "inline";
@@ -121,6 +122,7 @@ export function BringingUpSplash({
           src="/boot-splash.mp4"
           autoPlay
           muted
+          loop
           playsInline
           preload="auto"
           aria-hidden="true"
