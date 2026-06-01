@@ -34,6 +34,7 @@ import { startHostingServitude } from "../../api/hostingProfile";
 import { useSourcesStore } from "../../stores/sources";
 import { useServerConfigStore } from "../../stores/serverConfig";
 import { useInstanceNameStore } from "../../stores/instanceName";
+import { useAuthStore } from "../../stores/auth";
 import { BringingUpSplash } from "../BringingUpSplash";
 
 export interface HostOnboardingProps {
@@ -256,6 +257,17 @@ export function HostOnboarding({
         debugLog("instance-name persist failed:", err);
       }
     }
+
+    // Log the owner in so App.tsx doesn't drop them on LoginForm
+    // post-bring-up. LoginForm is reserved for joining REMOTE
+    // sources (Matrix homeservers, other Concord peers) — the
+    // local-host wizard already has a fresh owner session in hand
+    // from servitude_register_owner, so we plug that straight into
+    // the auth store. `login()` writes concord_session, hydrates
+    // the matrix-js-sdk client, and flips isLoggedIn → true.
+    useAuthStore
+      .getState()
+      .login(session.access_token, session.user_id, session.device_id);
 
     setSpinnerStatus({ phase: "done" });
     onConnected();
