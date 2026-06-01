@@ -141,3 +141,32 @@ describe("porch API wrapper", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 });
+
+// ===========================================================================
+// Feature F3 — multi-hop read-only history access-mode helper
+// ===========================================================================
+
+import {
+  accessModeFromHistory,
+  type PorchHistoryResult,
+} from "../porch";
+
+describe("porch F3 — access mode derivation", () => {
+  it("returns 'live' for a direct paired peer (hops === 0)", () => {
+    const history: PorchHistoryResult = { messages: [], hops: 0 };
+    const mode = accessModeFromHistory(history);
+    expect(mode.kind).toBe("live");
+  });
+
+  it("returns 'read_only' with the friend-of-a-friend tooltip for hops > 0", () => {
+    const history: PorchHistoryResult = { messages: [], hops: 2 };
+    const mode = accessModeFromHistory(history);
+    expect(mode.kind).toBe("read_only");
+    if (mode.kind === "read_only") {
+      expect(mode.reason).toMatch(/friend-of-a-friend/);
+      // The tooltip explicitly tells the user how to unlock posting
+      // — matches the F3 spec wording.
+      expect(mode.reason).toMatch(/direct invite/);
+    }
+  });
+});
