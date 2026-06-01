@@ -49,7 +49,7 @@ async fn swarm_starts_with_valid_peer_id() {
         .await
         .expect("phase 2 load_or_create must succeed");
 
-    let transport = LibP2pTransport::new(&peer_identity, &handle)
+    let transport = LibP2pTransport::new(&peer_identity, &handle, None)
         .await
         .expect("LibP2pTransport::new must succeed on a fresh handle");
 
@@ -72,7 +72,7 @@ async fn swarm_starts_with_valid_peer_id() {
     // recoverable across restarts — the seed exported from the handle's
     // cache is bit-for-bit identical.
     drop(transport);
-    let transport_2 = LibP2pTransport::new(&peer_identity, &handle)
+    let transport_2 = LibP2pTransport::new(&peer_identity, &handle, None)
         .await
         .expect("second LibP2pTransport::new must succeed");
     let peer_id_2 = transport_2.local_peer_id();
@@ -131,7 +131,7 @@ async fn swarm_reports_listening_multiaddr_on_quic() {
         .await
         .expect("phase 2 load_or_create must succeed");
 
-    let mut transport = LibP2pTransport::new(&peer_identity, &handle)
+    let mut transport = LibP2pTransport::new(&peer_identity, &handle, None)
         .await
         .expect("transport must construct");
 
@@ -194,10 +194,10 @@ async fn two_swarms_dial_and_connect() {
         .await
         .expect("identity b");
 
-    let mut transport_a = LibP2pTransport::new(&identity_a, &handle_a)
+    let mut transport_a = LibP2pTransport::new(&identity_a, &handle_a, None)
         .await
         .expect("transport a");
-    let mut transport_b = LibP2pTransport::new(&identity_b, &handle_b)
+    let mut transport_b = LibP2pTransport::new(&identity_b, &handle_b, None)
         .await
         .expect("transport b");
 
@@ -315,10 +315,10 @@ async fn mdns_discovers_peer_on_same_network() {
         .await
         .expect("identity b");
 
-    let transport_a = LibP2pTransport::new(&identity_a, &handle_a)
+    let transport_a = LibP2pTransport::new(&identity_a, &handle_a, None)
         .await
         .expect("transport a");
-    let transport_b = LibP2pTransport::new(&identity_b, &handle_b)
+    let transport_b = LibP2pTransport::new(&identity_b, &handle_b, None)
         .await
         .expect("transport b");
 
@@ -401,7 +401,7 @@ async fn swarm_starts_with_no_bootstrap() {
     // path that could fail. The previous architecture had a
     // `new_with_bootstrap_override` test seam; in the mDNS world there's
     // nothing to inject.
-    let transport = LibP2pTransport::new(&peer_identity, &handle)
+    let transport = LibP2pTransport::new(&peer_identity, &handle, None)
         .await
         .expect("transport must construct with no bootstrap config");
 
@@ -465,10 +465,10 @@ async fn dial_success_event_reaches_subscribers() {
         .await
         .expect("identity b");
 
-    let mut transport_a = LibP2pTransport::new(&identity_a, &handle_a)
+    let mut transport_a = LibP2pTransport::new(&identity_a, &handle_a, None)
         .await
         .expect("transport a");
-    let mut transport_b = LibP2pTransport::new(&identity_b, &handle_b)
+    let mut transport_b = LibP2pTransport::new(&identity_b, &handle_b, None)
         .await
         .expect("transport b");
 

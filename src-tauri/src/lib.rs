@@ -2202,6 +2202,68 @@ async fn set_servitude_profile(
     Ok(())
 }
 
+/// Vanity instance name — the operator-chosen label that replaces
+/// "local" on the source-rail home tile AND is broadcast in the
+/// libp2p Identify protocol's `agent_version` so connecting peers
+/// can confirm they've reached the right device. Backed by
+/// `ServitudeConfig.display_name`. An empty string means "user has
+/// not picked a name yet" — the UI then renders the default "local"
+/// label and the Identify agent_version omits the parenthesized
+/// suffix.
+#[tauri::command]
+async fn get_instance_name(app: tauri::AppHandle) -> Result<String, String> {
+    let cfg = ServitudeConfig::from_store(&app).map_err(|e| e.to_string())?;
+    // ServitudeConfig::validate() forbids an empty display_name on
+    // the disk path, so on a fresh install we return the synthetic
+    // default rather than the persisted "concord-node" placeholder.
+    // The renderer treats an empty string as "user hasn't picked".
+    if cfg.display_name.trim().is_empty()
+        || cfg.display_name.trim() == "concord-node"
+    {
+        Ok(String::new())
+    } else {
+        Ok(cfg.display_name)
+    }
+}
+
+/// Persist the operator's vanity instance name. Empty / whitespace-
+/// only inputs clear the name (the config layer falls back to its
+/// default placeholder so on-disk validation still passes); the
+/// renderer treats those as "unset" via [`get_instance_name`].
+///
+/// The change takes effect on the next servitude start/stop cycle:
+/// the Identify protocol's `agent_version` is fixed at swarm-build
+/// time and there is intentionally no live `set_agent_version` —
+/// peers learn the new name when they reconnect, matching how
+/// profile flips behave.
+#[tauri::command]
+async fn set_instance_name(
+    app: tauri::AppHandle,
+    name: String,
+) -> Result<(), String> {
+    let trimmed = name.trim().to_string();
+    // Bound the name so a runaway paste doesn't pollute Identify
+    // payloads for every peer on the swarm. 64 chars is generous for
+    // a vanity label and well under any reasonable wire limit.
+    if trimmed.chars().count() > 64 {
+        return Err(
+            "instance name must be 64 characters or fewer".to_string(),
+        );
+    }
+    let mut cfg = ServitudeConfig::from_store(&app).map_err(|e| e.to_string())?;
+    // Empty input → revert to the default placeholder so
+    // ServitudeConfig::validate() (which forbids empty display_name)
+    // still passes. The renderer side recognizes the placeholder via
+    // `get_instance_name`'s empty-string return.
+    cfg.display_name = if trimmed.is_empty() {
+        "concord-node".to_string()
+    } else {
+        trimmed
+    };
+    cfg.save_to_store(&app).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Diagnostic logger for INS-065 — appends to
 /// `<app_local_data>/diag.log` so the renderer can surface
 /// errors and lifecycle markers that aren't visible because the
@@ -2452,6 +2514,8 @@ pub fn run() {
             servitude_register_owner,
             get_servitude_profile,
             set_servitude_profile,
+            get_instance_name,
+            set_instance_name,
             log_diagnostic,
             peer_identity,
             peer_swarm_status,

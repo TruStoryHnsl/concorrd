@@ -11,6 +11,7 @@ import App from "./App";
 // every page load. One-shot unregister + no registration = no SW.
 import { initServerUrl } from "./api/serverUrl";
 import { useSourcesStore } from "./stores/sources";
+import { useInstanceNameStore } from "./stores/instanceName";
 
 // `__TAURI_INTERNALS__` is the canonical Tauri v2 global — see the
 // comment in `client/src/api/serverUrl.ts` for the full explanation of
@@ -64,6 +65,10 @@ initServerUrl().then(() => {
     if (isNative) {
       // Native: populate from persisted serverConfig (picker-confirm writes it)
       useSourcesStore.getState().migrateFromSession();
+      // Hydrate the vanity instance name so the source-rail home tile
+      // labels correctly on first paint. Web build is a no-op inside
+      // the store, so calling here unconditionally costs one branch.
+      void useInstanceNameStore.getState().load();
     } else if (typeof window !== "undefined") {
       // Web: origin IS the source. Build config from page location so the
       // Sources panel shows the current Concord instance without a picker.

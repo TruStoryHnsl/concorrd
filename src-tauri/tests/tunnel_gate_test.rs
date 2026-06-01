@@ -74,10 +74,10 @@ async fn inbound_rejected_when_source_not_in_tunnel_cidr() {
     // the test needs the gate to reject a loopback dial in order to
     // prove rejection works at all.
     let a_gate = GateState::new(true, TunnelInterfaces::from_cidrs(Vec::new()));
-    let mut transport_a = LibP2pTransport::new_with_gate(&identity_a, &handle_a, a_gate)
+    let mut transport_a = LibP2pTransport::new_with_gate(&identity_a, &handle_a, a_gate, None)
         .await
         .expect("transport a");
-    let mut transport_b = LibP2pTransport::new(&identity_b, &handle_b)
+    let mut transport_b = LibP2pTransport::new(&identity_b, &handle_b, None)
         .await
         .expect("transport b");
 

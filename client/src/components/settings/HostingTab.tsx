@@ -4,6 +4,7 @@ import { getServerUrl } from "../../api/serverUrl";
 import { servitudeStatus, isTauri, type ServitudeState } from "../../api/servitude";
 import { AdminTab } from "./AdminTab";
 import { DeploymentProfileSection } from "./DeploymentProfileSection";
+import { InstanceNameSection } from "./InstanceNameSection";
 
 export type HostingStatus = "loading" | "running" | "stopped" | "error";
 
@@ -82,6 +83,11 @@ export function HostingTab() {
       </div>
 
       <AdminTab />
+
+      {/* Vanity instance name — replaces "local" on the source-rail
+          home tile and propagates into the libp2p Identify protocol
+          so peers can confirm they reached the right device. */}
+      <InstanceNameSection />
 
       {/*
         Deployment profile (Phase 7 — native default profile). Relocated
