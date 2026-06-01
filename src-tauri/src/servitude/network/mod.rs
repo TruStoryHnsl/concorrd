@@ -31,6 +31,12 @@
 //! Phase G section.
 
 pub mod connection_gate;
+// F-C — Architecture C ("Tailscale-gated hero sync"). Strictly narrower
+// than `tunnel_detect`: this module answers "is the peer on the
+// tailnet specifically", not the broader "is this IP on any trusted
+// tunnel". Used by `crate::servitude::hero_sync::gate` as one half of
+// the two-gate hero-sync precondition.
+pub mod tailscale_detect;
 pub mod tunnel_config;
 pub mod tunnel_detect;
 // F-WG (RFC #140 §"Transport — WireGuard exclusively for native p2p"
