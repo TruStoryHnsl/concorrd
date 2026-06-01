@@ -363,6 +363,35 @@ impl ServitudeHandle {
         None
     }
 
+    /// F-VIS — broadcast a serialized [`crate::porch::VisibilityUpdate`]
+    /// over the libp2p gossipsub mesh. Returns the typed error if no
+    /// libp2p runtime is running OR the bounded outbound queue is full
+    /// (a runaway producer); the caller should log + swallow and
+    /// retry on the next slider change. Returns `Ok(())` if the
+    /// payload was successfully queued for publish (the actual
+    /// `gossipsub.publish` happens inside the swarm event loop).
+    pub fn broadcast_visibility(
+        &mut self,
+        update: &crate::porch::VisibilityUpdate,
+    ) -> Result<(), ServitudeError> {
+        let sender = self
+            .transports
+            .iter()
+            .find_map(|r| r.visibility_broadcast_sender())
+            .ok_or(ServitudeError::NotRunning)?;
+        let payload = update.encode();
+        // try_send so a full queue surfaces immediately as an error
+        // rather than blocking the Tauri command thread.
+        sender.try_send(payload).map_err(|e| {
+            // No dedicated error variant — funnel through the existing
+            // Transport variant. The producer side already logs the
+            // returned error at the caller (`visibility_set_server`).
+            ServitudeError::Transport(TransportError::StartFailed(format!(
+                "visibility broadcast queue: {e}"
+            )))
+        })
+    }
+
     /// Phase G — wire the inbound-gate state into the libp2p runtime.
     /// MUST be called BEFORE `start()` for the operator's persisted
     /// tunnel-only preferences to be in effect when the swarm comes

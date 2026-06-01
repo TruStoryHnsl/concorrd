@@ -303,3 +303,163 @@ async fn add_rejects_malformed_payloads() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// F-VIS — access grant/revoke round-trip preserves the visible-peers row.
+// Maps to deliverable #9 (cargo test: access grant/revoke round-trip
+// preserves the visible_peers row).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn revoke_access_keeps_peer_in_visible_list() {
+    let (_sh, handle, dir) = persistent_handle("revoke-keeps-visible");
+
+    let card = PeerCard {
+        peer_id: PEER_ID.to_string(),
+        public_key_hex: valid_pubkey_hex(),
+        multiaddrs: vec![ADDR_QUIC_4001.to_string()],
+    };
+    peer_store::add(&handle, card, PeerSource::Qr)
+        .await
+        .expect("add ok");
+
+    // Sanity: brand-new peers default to access-granted with a
+    // last_access_grant_at populated.
+    let visible_before = peer_store::list(&handle).await.expect("list");
+    assert_eq!(visible_before.len(), 1);
+    assert!(
+        visible_before[0].access_granted,
+        "freshly-added peer must default to access_granted=true"
+    );
+    assert!(
+        visible_before[0].last_access_grant_at.is_some(),
+        "freshly-added peer must record last_access_grant_at"
+    );
+
+    // Revoke access.
+    let revoked = peer_store::revoke_access(&handle, PEER_ID)
+        .await
+        .expect("revoke ok")
+        .expect("returned the updated row");
+    assert_eq!(revoked.peer_id, PEER_ID);
+    assert!(!revoked.access_granted, "revoke must flip access_granted");
+    assert!(
+        revoked.last_access_grant_at.is_some(),
+        "revoke must preserve last_access_grant_at as audit trail"
+    );
+
+    // Peer is STILL in the visible list — visibility persists across
+    // access revoke (Architecture B).
+    let visible_after = peer_store::list(&handle).await.expect("list");
+    assert_eq!(
+        visible_after.len(),
+        1,
+        "revoke must NOT remove peer from visible list"
+    );
+    assert!(!visible_after[0].access_granted);
+
+    // But the access list filters them out.
+    let access_after = peer_store::list_access_peers(&handle)
+        .await
+        .expect("list access");
+    assert_eq!(
+        access_after.len(),
+        0,
+        "revoke must remove peer from access list"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn grant_access_reaffirms_revoked_peer() {
+    let (_sh, handle, dir) = persistent_handle("grant-reaffirms");
+
+    let card = PeerCard {
+        peer_id: PEER_ID.to_string(),
+        public_key_hex: valid_pubkey_hex(),
+        multiaddrs: vec![ADDR_QUIC_4001.to_string()],
+    };
+    let added = peer_store::add(&handle, card, PeerSource::Qr)
+        .await
+        .expect("add ok");
+    let original_grant_at = added.last_access_grant_at.expect("seeded");
+
+    peer_store::revoke_access(&handle, PEER_ID)
+        .await
+        .expect("revoke ok")
+        .expect("found peer");
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+    // Re-affirm.
+    let granted = peer_store::grant_access(&handle, PEER_ID)
+        .await
+        .expect("grant ok")
+        .expect("found peer");
+    assert!(granted.access_granted);
+    let new_grant_at = granted.last_access_grant_at.expect("present");
+    assert!(
+        new_grant_at > original_grant_at,
+        "grant_access must bump last_access_grant_at: {new_grant_at:?} > {original_grant_at:?}"
+    );
+
+    // Visible and access lists are once again identical.
+    let visible = peer_store::list(&handle).await.expect("list");
+    let access = peer_store::list_access_peers(&handle)
+        .await
+        .expect("list access");
+    assert_eq!(visible.len(), 1);
+    assert_eq!(access.len(), 1);
+    assert_eq!(visible[0].peer_id, access[0].peer_id);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn revoke_missing_peer_returns_none() {
+    let (_sh, handle, dir) = persistent_handle("revoke-missing");
+    let res = peer_store::revoke_access(&handle, "12D3KooWnobody")
+        .await
+        .expect("revoke ok");
+    assert!(
+        res.is_none(),
+        "revoking a non-existent peer must return None, not error"
+    );
+    let res = peer_store::grant_access(&handle, "12D3KooWnobody")
+        .await
+        .expect("grant ok");
+    assert!(
+        res.is_none(),
+        "granting a non-existent peer must return None, not error"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn add_after_remove_starts_fresh_with_access_granted() {
+    // Defence: hard `remove` drops the row entirely. A subsequent
+    // `add` must seed the new row with access_granted=true.
+    let (_sh, handle, dir) = persistent_handle("add-after-remove");
+    let card = PeerCard {
+        peer_id: PEER_ID.to_string(),
+        public_key_hex: valid_pubkey_hex(),
+        multiaddrs: vec![ADDR_QUIC_4001.to_string()],
+    };
+    peer_store::add(&handle, card.clone(), PeerSource::Qr)
+        .await
+        .expect("add ok");
+    peer_store::revoke_access(&handle, PEER_ID)
+        .await
+        .expect("revoke ok");
+    let removed = peer_store::remove(&handle, PEER_ID)
+        .await
+        .expect("remove ok");
+    assert!(removed);
+    let after = peer_store::add(&handle, card, PeerSource::Qr)
+        .await
+        .expect("re-add ok");
+    assert!(after.access_granted);
+    assert!(after.last_access_grant_at.is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}

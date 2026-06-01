@@ -107,6 +107,10 @@ pub struct EphemeralPorchState(pub Mutex<Option<std::sync::Arc<porch_ephemeral::
 /// Derived from [`KnownPeer`] at the IPC boundary so internal changes to
 /// `KnownPeer` don't auto-leak into the renderer contract — adding a
 /// new internal field requires a deliberate update here too.
+///
+/// F-VIS: `access_granted` + `last_access_grant_at` surface the
+/// visible-vs-access split (Architecture B) so the Connections-tab
+/// toggle has direct read access to the on-disk flag.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct KnownPeerPublic {
@@ -116,6 +120,8 @@ struct KnownPeerPublic {
     source: String,
     first_seen: String,
     last_seen: String,
+    access_granted: bool,
+    last_access_grant_at: Option<String>,
 }
 
 impl From<KnownPeer> for KnownPeerPublic {
@@ -128,6 +134,8 @@ impl From<KnownPeer> for KnownPeerPublic {
             // RFC 3339 string is JSON-friendly + sortable lexicographically.
             first_seen: kp.first_seen.to_rfc3339(),
             last_seen: kp.last_seen.to_rfc3339(),
+            access_granted: kp.access_granted,
+            last_access_grant_at: kp.last_access_grant_at.map(|ts| ts.to_rfc3339()),
         }
     }
 }
@@ -625,6 +633,147 @@ async fn home_set_server_name(
 ) -> Result<(), String> {
     let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
     porch.set_home_server_name(&name).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// F-VIS — visibility + visible/access split Tauri commands.
+// ---------------------------------------------------------------------------
+
+/// Renderer-facing camelCase view of a `VisibilityRow`. Matches the
+/// pattern established by `KnownPeerPublic` so the TS layer doesn't
+/// have to transcribe field names by hand.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VisibilityRowPublic {
+    server_id: String,
+    max_hops: u8,
+    last_changed_at: i64,
+}
+
+impl From<porch::VisibilityRow> for VisibilityRowPublic {
+    fn from(row: porch::VisibilityRow) -> Self {
+        Self {
+            server_id: row.server_id,
+            max_hops: row.max_hops,
+            last_changed_at: row.last_changed_at,
+        }
+    }
+}
+
+/// F-VIS — read a single server's visibility row. Returns `None` for
+/// an unknown server id (the renderer differentiates "I don't host
+/// that server" from "max_hops = 0" at this seam).
+#[tauri::command]
+async fn visibility_get_server(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    server_id: String,
+) -> Result<Option<VisibilityRowPublic>, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let row = porch.get_visibility(&server_id).map_err(|e| e.to_string())?;
+    Ok(row.map(VisibilityRowPublic::from))
+}
+
+/// F-VIS — write a server's visibility ceiling. `max_hops` is validated
+/// to fit in `u8` (0..=255). After the SQL write, broadcasts the new
+/// value over the F3 gossipsub address-rotation topic so paired peers
+/// within the new hop ceiling pick it up and refresh their explore-menu
+/// filter. Best-effort: a gossipsub publish failure (no mesh peers
+/// yet) is logged + swallowed so the local write still succeeds — the
+/// next address-rotation broadcast (or the next `visibility_set_server`
+/// call) will re-publish.
+#[tauri::command]
+async fn visibility_set_server(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    server_id: String,
+    max_hops: u8,
+) -> Result<VisibilityRowPublic, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    let row = porch
+        .set_visibility(&server_id, max_hops)
+        .map_err(|e| e.to_string())?;
+
+    // Best-effort gossipsub broadcast — see module docstring on
+    // `porch::visibility`. We resolve the local peer-id from the
+    // running servitude; if the swarm isn't up yet, the broadcast is
+    // skipped silently and the next address-rotation tick re-publishes.
+    if let Some(local_peer_id) = {
+        let guard = servitude_state.0.lock().await;
+        guard.as_ref().and_then(|h| h.libp2p_local_peer_id())
+    } {
+        let update = porch::VisibilityUpdate::from_row(
+            local_peer_id.to_base58(),
+            &porch::VisibilityRow {
+                server_id: row.server_id.clone(),
+                max_hops: row.max_hops,
+                last_changed_at: row.last_changed_at,
+            },
+        );
+        // Publish via the dedicated visibility broadcast helper in
+        // `mesh_propagation`. Failure is non-fatal — log + carry on.
+        let mut guard = servitude_state.0.lock().await;
+        if let Some(handle) = guard.as_mut() {
+            if let Err(err) = handle.broadcast_visibility(&update) {
+                log::warn!(
+                    target: "concord::visibility",
+                    "visibility broadcast failed (non-fatal): {err}"
+                );
+            }
+        }
+    }
+
+    Ok(VisibilityRowPublic::from(row))
+}
+
+/// F-VIS — list every peer the user has ever paired with, INCLUDING
+/// access-revoked rows. Matches the "visible_peers" half of the
+/// Architecture B split.
+#[tauri::command]
+async fn peers_list_visible(
+    state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<KnownPeerPublic>, String> {
+    let stronghold = get_or_open_peer_identity(&state, &app).await?;
+    let peers = peer_store::list(&stronghold)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(peers.into_iter().map(KnownPeerPublic::from).collect())
+}
+
+/// F-VIS — flip a peer from access-granted to visible-only. The peer
+/// row remains in the visible list. Returns the updated peer or
+/// `None` if no peer matched.
+#[tauri::command]
+async fn peers_revoke_access(
+    state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+    peer_id: String,
+) -> Result<Option<KnownPeerPublic>, String> {
+    let stronghold = get_or_open_peer_identity(&state, &app).await?;
+    let updated = peer_store::revoke_access(&stronghold, &peer_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(updated.map(KnownPeerPublic::from))
+}
+
+/// F-VIS — re-affirm access for a previously-revoked peer. The peer
+/// must already be in the visible-peers list; this call is not an
+/// implicit `add`. Returns the updated peer or `None` if no peer
+/// matched.
+#[tauri::command]
+async fn peers_grant_access(
+    state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+    peer_id: String,
+) -> Result<Option<KnownPeerPublic>, String> {
+    let stronghold = get_or_open_peer_identity(&state, &app).await?;
+    let updated = peer_store::grant_access(&stronghold, &peer_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(updated.map(KnownPeerPublic::from))
 }
 
 /// Resolve a libp2p stream control + peer-id for a visit. Returns the
@@ -2893,6 +3042,13 @@ pub fn run() {
             // F1b-IMPL — persistent home server meta.
             home_get_server_name,
             home_set_server_name,
+            // F-VIS — per-server mesh-hop visibility + visible/access
+            // peer split (Architecture B).
+            visibility_get_server,
+            visibility_set_server,
+            peers_list_visible,
+            peers_revoke_access,
+            peers_grant_access,
             porch_visit_peer,
             porch_visit_get_messages,
             porch_visit_post_message,

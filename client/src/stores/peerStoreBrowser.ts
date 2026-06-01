@@ -142,6 +142,13 @@ export function listBrowserPeers(): KnownPeer[] {
         multiaddrs.push(addr);
       }
     }
+    // F-VIS — accessGranted / lastAccessGrantAt may be absent in
+    // legacy v1 envelopes. Default to access granted (true) so existing
+    // pairings keep working seamlessly.
+    const accessGranted =
+      typeof e.accessGranted === "boolean" ? e.accessGranted : true;
+    const lastAccessGrantAt =
+      typeof e.lastAccessGrantAt === "string" ? e.lastAccessGrantAt : null;
     out.push({
       peerId: e.peerId,
       publicKeyHex: e.publicKeyHex,
@@ -149,6 +156,8 @@ export function listBrowserPeers(): KnownPeer[] {
       source,
       firstSeen: e.firstSeen,
       lastSeen: e.lastSeen,
+      accessGranted,
+      lastAccessGrantAt,
     });
   }
   return out;
@@ -237,6 +246,11 @@ export function addBrowserPeerFromCard(
       source: prior.source,
       firstSeen: prior.firstSeen,
       lastSeen: nowIso,
+      // F-VIS: preserve the existing access flag on a re-add. A repeat
+      // pairing doesn't auto-grant access to a revoked peer; the user
+      // must explicitly call grant_access.
+      accessGranted: prior.accessGranted,
+      lastAccessGrantAt: prior.lastAccessGrantAt,
     };
     existing[matchIdx] = updated;
   } else {
@@ -247,6 +261,10 @@ export function addBrowserPeerFromCard(
       source,
       firstSeen: nowIso,
       lastSeen: nowIso,
+      // F-VIS: fresh pairing is implicitly access-granted (same as
+      // native add()).
+      accessGranted: true,
+      lastAccessGrantAt: nowIso,
     };
     existing.push(updated);
   }
@@ -273,6 +291,59 @@ export function removeBrowserPeer(peerId: string): WriteResult<boolean> {
   const write = persistBrowserPeers(remaining);
   if (!write.ok) return write;
   return { ok: true, value: true };
+}
+
+/**
+ * F-VIS — revoke access for a peer in the browser-side store while
+ * keeping them in the visible-peers list. Returns the updated peer in
+ * the result `value` slot, or `null` if no peer matched.
+ *
+ * Architecture B: the row is preserved; only `accessGranted` flips
+ * to false. `lastAccessGrantAt` stays untouched so the UI can still
+ * show the user's most recent re-affirmation timestamp as an audit
+ * trail.
+ */
+export function revokeBrowserPeerAccess(
+  peerId: string,
+): WriteResult<KnownPeer | null> {
+  const existing = listBrowserPeers();
+  const idx = existing.findIndex((p) => p.peerId === peerId);
+  if (idx < 0) {
+    return { ok: true, value: null };
+  }
+  const updated: KnownPeer = {
+    ...existing[idx],
+    accessGranted: false,
+  };
+  existing[idx] = updated;
+  const write = persistBrowserPeers(existing);
+  if (!write.ok) return write;
+  return { ok: true, value: updated };
+}
+
+/**
+ * F-VIS — re-affirm a previously-revoked peer in the browser-side
+ * store. Sets `accessGranted = true` and bumps `lastAccessGrantAt` to
+ * now.
+ */
+export function grantBrowserPeerAccess(
+  peerId: string,
+  now: () => Date = () => new Date(),
+): WriteResult<KnownPeer | null> {
+  const existing = listBrowserPeers();
+  const idx = existing.findIndex((p) => p.peerId === peerId);
+  if (idx < 0) {
+    return { ok: true, value: null };
+  }
+  const updated: KnownPeer = {
+    ...existing[idx],
+    accessGranted: true,
+    lastAccessGrantAt: now().toISOString(),
+  };
+  existing[idx] = updated;
+  const write = persistBrowserPeers(existing);
+  if (!write.ok) return write;
+  return { ok: true, value: updated };
 }
 
 /**

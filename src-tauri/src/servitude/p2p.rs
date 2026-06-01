@@ -254,6 +254,16 @@ pub struct LibP2pTransport {
     /// command layer can hot-swap the enforce flag + extras CIDRs
     /// without restarting the swarm.
     gate_state: GateState,
+    /// F-VIS — outbound queue for visibility-update broadcasts. The
+    /// Tauri command layer enqueues a serialized [`VisibilityUpdate`]
+    /// payload here; the swarm event loop drains the queue and
+    /// publishes on this install's rotation topic. Bounded so a
+    /// runaway producer can't OOM the runtime; depth of 32 covers
+    /// realistic burst sizes (operator dragging a hop slider).
+    visibility_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    /// Receiver paired with [`Self::visibility_tx`]. Consumed by the
+    /// event loop in [`Self::run`].
+    visibility_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
 }
 
 impl LibP2pTransport {
@@ -459,6 +469,13 @@ impl LibP2pTransport {
         // `stream_control()` hand callers their own copy.
         let stream_control = swarm.behaviour().stream.new_control();
 
+        // F-VIS — bounded outbound channel for visibility broadcasts.
+        // Depth of 32 covers the realistic burst from a user dragging
+        // the hop slider; over-runs `try_send` -> drop the oldest
+        // payload at the producer side rather than blocking the Tauri
+        // command thread.
+        let (visibility_tx, visibility_rx) = tokio::sync::mpsc::channel(32);
+
         Ok(Self {
             swarm,
             event_tx,
@@ -468,7 +485,17 @@ impl LibP2pTransport {
             federation_handlers: Vec::new(),
             stream_control,
             gate_state: gate,
+            visibility_tx,
+            visibility_rx,
         })
+    }
+
+    /// F-VIS — clone of the outbound visibility-broadcast sender. The
+    /// Tauri command layer keeps this clone alive for the lifetime of
+    /// the swarm and enqueues serialized [`crate::porch::VisibilityUpdate`]
+    /// payloads here when the operator changes a server's `max_hops`.
+    pub fn visibility_broadcast_sender(&self) -> tokio::sync::mpsc::Sender<Vec<u8>> {
+        self.visibility_tx.clone()
     }
 
     /// Phase G — clone of the inbound-gate state. Tauri command
@@ -616,6 +643,42 @@ impl LibP2pTransport {
                         "libp2p swarm shutdown signal received — exiting event loop"
                     );
                     break;
+                }
+                // F-VIS — drain queued visibility-update payloads and
+                // publish them on this install's rotation topic. We
+                // re-use the same topic as the address-rotation feature
+                // (see `mesh_propagation::rotation_topic_for_peer`) so
+                // paired peers within the operator's mesh only need
+                // one gossipsub subscription per peer. Payload is
+                // already JSON-encoded with a `kind` discriminator —
+                // receivers route between visibility + address
+                // rotation in the gossipsub message handler.
+                Some(payload) = self.visibility_rx.recv() => {
+                    use crate::servitude::mesh_propagation::rotation_topic_for_peer;
+                    let topic = rotation_topic_for_peer(&local_peer_id);
+                    // We MUST be subscribed to our own topic before
+                    // publishing so the mesh can route our payload.
+                    // Subscribe is idempotent.
+                    let _ = self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .subscribe(&topic);
+                    match self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .publish(topic.clone(), payload)
+                    {
+                        Ok(_) => log::debug!(
+                            target: "concord::servitude::p2p",
+                            "published visibility update on rotation topic"
+                        ),
+                        Err(e) => log::debug!(
+                            target: "concord::servitude::p2p",
+                            "visibility publish skipped: {e} \
+                             (typically InsufficientPeers on a freshly-started swarm — \
+                             next slider change retries)"
+                        ),
+                    }
                 }
                 event = self.swarm.select_next_some() => {
                     // Tap mDNS events first so LAN-discovered peers

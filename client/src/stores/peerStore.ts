@@ -28,7 +28,10 @@ import { create } from "zustand";
 import {
   addPeer,
   fetchKnownPeers,
+  fetchVisiblePeers,
+  grantPeerAccess,
   removePeer,
+  revokePeerAccess,
   type KnownPeer,
   type PeerCard,
   type PeerSource,
@@ -36,8 +39,10 @@ import {
 import { isTauri } from "../api/servitude";
 import {
   addBrowserPeerFromCard,
+  grantBrowserPeerAccess,
   listBrowserPeers,
   removeBrowserPeer,
+  revokeBrowserPeerAccess,
 } from "./peerStoreBrowser";
 
 /**
@@ -70,6 +75,20 @@ export interface PeerStoreState {
   /** Remove a peer by id. Returns the backend's boolean (true if a
    *  record was actually removed). */
   remove: (peerId: string) => Promise<boolean>;
+
+  /** F-VIS — flip a peer from access-granted to visible-only. The peer
+   *  stays in `knownPeers` (visible list) but `accessGranted` becomes
+   *  false. */
+  revokeAccess: (peerId: string) => Promise<KnownPeer | null>;
+
+  /** F-VIS — re-affirm a revoked peer back into the access list. */
+  grantAccess: (peerId: string) => Promise<KnownPeer | null>;
+
+  /** F-VIS — convenience: refetch the FULL visible list (including
+   *  access-revoked peers). The native command this binds to is
+   *  `peers_list_visible`; on web it reads from the localStorage
+   *  envelope, which always contained both states. */
+  loadVisible: () => Promise<void>;
 }
 
 /**
@@ -204,6 +223,104 @@ export const usePeerStore = create<PeerStoreState>((set, get) => ({
         err instanceof Error ? err.message : String(err ?? "unknown error");
       set({ error: message });
       return null;
+    }
+  },
+
+  revokeAccess: async (peerId) => {
+    if (!isTauri()) {
+      const result = revokeBrowserPeerAccess(peerId);
+      if (!result.ok) {
+        set({ error: result.error });
+        return null;
+      }
+      if (result.value) {
+        // Replace the matching row in the local mirror.
+        set((s) => ({
+          knownPeers: s.knownPeers.map((p) =>
+            p.peerId === peerId ? result.value! : p,
+          ),
+          error: null,
+        }));
+      }
+      return result.value;
+    }
+    try {
+      const updated = await revokePeerAccess(peerId);
+      if (updated) {
+        set((s) => ({
+          knownPeers: s.knownPeers.map((p) =>
+            p.peerId === peerId ? updated : p,
+          ),
+          error: null,
+        }));
+      }
+      return updated;
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : String(err ?? "unknown error");
+      set({ error: message });
+      return null;
+    }
+  },
+
+  grantAccess: async (peerId) => {
+    if (!isTauri()) {
+      const result = grantBrowserPeerAccess(peerId);
+      if (!result.ok) {
+        set({ error: result.error });
+        return null;
+      }
+      if (result.value) {
+        set((s) => ({
+          knownPeers: s.knownPeers.map((p) =>
+            p.peerId === peerId ? result.value! : p,
+          ),
+          error: null,
+        }));
+      }
+      return result.value;
+    }
+    try {
+      const updated = await grantPeerAccess(peerId);
+      if (updated) {
+        set((s) => ({
+          knownPeers: s.knownPeers.map((p) =>
+            p.peerId === peerId ? updated : p,
+          ),
+          error: null,
+        }));
+      }
+      return updated;
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : String(err ?? "unknown error");
+      set({ error: message });
+      return null;
+    }
+  },
+
+  loadVisible: async () => {
+    if (!isTauri()) {
+      // Browser store always tracks both visible + access-revoked
+      // peers under one list — same as native after F-VIS.
+      try {
+        const peers = listBrowserPeers();
+        set({ knownPeers: peers, isLoading: false, error: null });
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : String(err ?? "unknown error");
+        set({ isLoading: false, error: message });
+      }
+      return;
+    }
+    set({ isLoading: true, error: null });
+    try {
+      const peers = await fetchVisiblePeers();
+      set({ knownPeers: peers, isLoading: false, error: null });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : String(err ?? "unknown error");
+      set({ isLoading: false, error: message });
     }
   },
 

@@ -34,6 +34,11 @@ export type PeerSource = "qr" | "deeplink" | "matrix_room" | "dht";
 /**
  * A peer the user has paired with. Mirrors `KnownPeerPublic` on the Rust
  * side except that `source` is normalized to lowercase snake_case here.
+ *
+ * F-VIS — `accessGranted` + `lastAccessGrantAt` carry the Architecture B
+ * visible-vs-access split. A peer with `accessGranted: false` is still
+ * in the visible-peers list ("the user remembers this peer existed")
+ * but cannot dial in until `peers_grant_access` is called.
  */
 export interface KnownPeer {
   peerId: string;
@@ -44,6 +49,13 @@ export interface KnownPeer {
   firstSeen: string;
   /** ISO 8601 string; advanced by `peer_store_add` on idempotent re-add. */
   lastSeen: string;
+  /** F-VIS — `true` = peer is in the access list; `false` = revoked
+   *  but still visible. */
+  accessGranted: boolean;
+  /** F-VIS — ISO 8601 timestamp of the most recent explicit access
+   *  grant (re-affirmation). `null` for legacy v1 envelopes that never
+   *  saw an explicit grant call. */
+  lastAccessGrantAt: string | null;
 }
 
 /**
@@ -60,6 +72,10 @@ export interface PeerCard {
 /**
  * Raw wire shape returned by `peer_store_list` / `peer_store_add`. The
  * `source` field is the Rust enum's PascalCase serialization.
+ *
+ * F-VIS — `accessGranted` + `lastAccessGrantAt` are present on every
+ * `KnownPeerPublic` payload (the Rust side always emits the field set,
+ * with sensible defaults for legacy envelopes).
  */
 interface RawKnownPeer {
   peerId: string;
@@ -68,6 +84,8 @@ interface RawKnownPeer {
   source: "Qr" | "Deeplink" | "MatrixRoom" | "Dht";
   firstSeen: string;
   lastSeen: string;
+  accessGranted: boolean;
+  lastAccessGrantAt: string | null;
 }
 
 /**
@@ -123,6 +141,12 @@ function fromRaw(raw: RawKnownPeer): KnownPeer {
     source: parseSource(raw.source),
     firstSeen: raw.firstSeen,
     lastSeen: raw.lastSeen,
+    // F-VIS: defensive defaults if the backend somehow omits the new
+    // fields (it shouldn't, but a future schema rework might roll
+    // through and we don't want the UI to crash on undefined).
+    accessGranted:
+      typeof raw.accessGranted === "boolean" ? raw.accessGranted : true,
+    lastAccessGrantAt: raw.lastAccessGrantAt ?? null,
   };
 }
 
@@ -167,4 +191,45 @@ export async function addPeer(
  */
 export async function removePeer(peerId: string): Promise<boolean> {
   return await invoke<boolean>("peer_store_remove", { peerId });
+}
+
+/**
+ * F-VIS — list every peer the user has ever paired with, INCLUDING any
+ * with `accessGranted: false`. Same wire shape as `fetchKnownPeers`;
+ * the access-list filter happens on the renderer (or, for dial-gating,
+ * via the separate `peers_list_access` call inside the libp2p
+ * runtime).
+ *
+ * This is the surface the Connections-tab visible-peers list reads.
+ */
+export async function fetchVisiblePeers(): Promise<KnownPeer[]> {
+  const raw = await invoke<RawKnownPeer[]>("peers_list_visible");
+  return raw.map(fromRaw);
+}
+
+/**
+ * F-VIS — flip a peer from access-granted to visible-only. The peer
+ * row stays in the visible list. Returns the updated peer or `null`
+ * if no peer matched.
+ */
+export async function revokePeerAccess(
+  peerId: string,
+): Promise<KnownPeer | null> {
+  const raw = await invoke<RawKnownPeer | null>("peers_revoke_access", {
+    peerId,
+  });
+  return raw === null ? null : fromRaw(raw);
+}
+
+/**
+ * F-VIS — re-affirm access for a previously-revoked peer. Bumps
+ * `lastAccessGrantAt` to now on the backend.
+ */
+export async function grantPeerAccess(
+  peerId: string,
+): Promise<KnownPeer | null> {
+  const raw = await invoke<RawKnownPeer | null>("peers_grant_access", {
+    peerId,
+  });
+  return raw === null ? null : fromRaw(raw);
 }

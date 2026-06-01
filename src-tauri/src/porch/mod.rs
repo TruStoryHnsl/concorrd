@@ -42,6 +42,7 @@ pub mod protocol;
 pub mod sync;
 pub mod theme;
 pub mod users;
+pub mod visibility;
 
 pub use backup::{
     list_received_backups, read_received_backup, read_received_backup_info, restore_from_blob,
@@ -63,7 +64,9 @@ pub use home_export_protocol::{
 };
 pub use channel::{AclMode, AclRole, ChannelKind, ChannelMessage, PorchChannel};
 pub use db::{
-    Porch, DEFAULT_HOME_SERVER_NAME, MAX_HOME_SERVER_NAME_CHARS, SCHEMA_VERSION,
+    Porch, VisibilityRow, DEFAULT_HOME_MAX_HOPS, DEFAULT_HOME_SERVER_NAME,
+    DEFAULT_PORCH_MAX_HOPS, MAX_HOME_SERVER_NAME_CHARS, SCHEMA_VERSION,
+    VISIBILITY_SERVER_ID_HOME, VISIBILITY_SERVER_ID_PORCH,
 };
 pub use error::PorchError;
 pub use history_protocol::{
@@ -94,6 +97,10 @@ pub use theme::{
 pub use users::{
     KeychainEntry, PlaintextCredentials, Provenance, SourceKind, UserProfile,
     KEYCHAIN_HKDF_INFO_V1,
+};
+pub use visibility::{
+    explore_filter, VisibilityUpdate, VisibilityWireError, MAX_SERVER_ID_LEN,
+    VISIBILITY_PAYLOAD_KIND, VISIBILITY_PAYLOAD_VERSION,
 };
 
 /// The id of the default porch channel created on first boot. Stable
