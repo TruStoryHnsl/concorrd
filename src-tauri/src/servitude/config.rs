@@ -240,7 +240,16 @@ impl Default for ServitudeConfig {
             max_peers: 32,
             listen_port: 8765,
             allow_privileged_port: false,
-            enabled_transports: default_transports(),
+            // Fresh install = porch-only. The libp2p baseline is
+            // always-on and runs regardless of this list; optional
+            // transports (MatrixFederation tuwunel, WireGuard, Mesh,
+            // Tunnel) only come up when the operator EXPLICITLY adds
+            // them. Defaulting to MatrixFederation here was the
+            // root cause of every "I disconnected but it came back"
+            // bug — a freshly nuked install with no settings.json
+            // would auto-spawn tuwunel and pull the user back into
+            // a hosted-Matrix posture they never opted into.
+            enabled_transports: Vec::new(),
             profile: Profile::default(),
         }
     }
