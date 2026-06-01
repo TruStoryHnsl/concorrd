@@ -193,7 +193,17 @@ ringbuf = "0.4"
 # requirement (macOS Catalina ships an old libsqlite3; Windows has none
 # by default). The build pays a one-time C-compile cost; the resulting
 # binary is fully self-contained.
-rusqlite = { version = "0.36", features = ["bundled"] }
+rusqlite = { version = "0.36", features = ["bundled", "backup"] }
+# F1c — home-server data export. Argon2id passphrase-based key derivation
+# for `home_export_package`. ChaCha20-Poly1305 is already a top-level dep
+# above (Phase 4 sibling-file seed + Phase E backup); the export pipeline
+# reuses it with a passphrase-derived key instead of the install seed.
+argon2 = "0.5"
+# F1c — pure-Rust tarball builder for bundling `home.sqlite` +
+# `home_assets/` + `home_backups/` + `meta.json` ahead of encryption. No
+# system libtar dependency; binary stays fully self-contained on every
+# target.
+tar = "0.4"
 # ULID generator for porch message IDs. Lexicographically sortable +
 # monotonic-per-process so `ORDER BY id` is a stable tiebreaker when
 # two messages land in the same millisecond.

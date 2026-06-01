@@ -486,6 +486,27 @@ impl LibP2pRuntime {
             transport.register_federation_handler(history_handler);
         }
 
+        // F1c — register the home-export delivery handler on
+        // `/concord/home-export/1.0.0`. The handler reads the local
+        // peer-store (via the shared Stronghold handle) to enforce the
+        // "sender must be a paired peer" rule before logging the
+        // receipt. It does NOT persist or ingest in this PR — the
+        // receive-side ingest is a deliberate follow-up.
+        //
+        // Registered unconditionally (no `porch.is_some()` gate) so a
+        // trusted-outside-instance build that has its peer-store but
+        // hasn't opened any persistent server yet can still accept
+        // deliveries. The handler holds no porch reference — its only
+        // dependency is the peer-store snapshot.
+        {
+            use crate::porch::{HomeExportHandler, StrongholdPeerStoreSnapshot};
+            let snap = std::sync::Arc::new(StrongholdPeerStoreSnapshot::new(
+                self.stronghold.clone(),
+            ));
+            let handler = std::sync::Arc::new(HomeExportHandler::new(snap));
+            transport.register_federation_handler(handler);
+        }
+
         // Capture the stream control before run() consumes the
         // transport so the porch visit commands can open outbound
         // streams. Held until stop() clears it.

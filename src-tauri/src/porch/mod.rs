@@ -34,6 +34,8 @@ pub mod channel;
 pub mod db;
 pub mod error;
 pub mod history_protocol;
+pub mod home_export;
+pub mod home_export_protocol;
 pub mod knock;
 pub mod obsidian;
 pub mod protocol;
@@ -49,6 +51,15 @@ pub use backup::{
 pub use backup_protocol::{
     visit_backup_get_my_backup, visit_backup_get_my_backup_info, visit_backup_upload,
     BackupErrorBody, BackupHandler, BackupRequest, BackupResponse, BACKUP_PROTOCOL_ID,
+};
+pub use home_export::{
+    build_home_export_package, decrypt_home_export_package, read_meta_from_tar, ExportManifest,
+    PackageMeta, EXPORTS_DIRNAME, PACKAGE_FORMAT_VERSION, SUBJECT_HOME,
+};
+pub use home_export_protocol::{
+    send_home_export_package, DeliveryReceipt, DeliveryStatus, HomeExportHandler,
+    PeerStoreSnapshot, StrongholdPeerStoreSnapshot, CHUNK_BYTES, HOME_EXPORT_PROTOCOL_ID,
+    MAX_FRAME_BYTES, MAX_PACKAGE_BYTES,
 };
 pub use channel::{AclMode, AclRole, ChannelKind, ChannelMessage, PorchChannel};
 pub use db::{
