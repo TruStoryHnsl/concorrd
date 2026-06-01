@@ -171,17 +171,16 @@ pub struct ServitudeConfig {
     pub profile: Profile,
 }
 
-/// Per-field default used by serde when `enabled_transports` is
-/// omitted from a stored settings.json. MUST stay aligned with
-/// `Default for ServitudeConfig` — both treat a fresh / field-absent
-/// install as porch-only. Returning a non-empty `[MatrixFederation]`
-/// here was the cause of "I disconnected but the host came back" on
-/// any settings file that simply omitted the key (e.g. an older
-/// build's persisted shape, or an upgrade write that didn't
-/// re-emit the field). Keeping it empty makes the field-absent path
-/// match the explicit-empty path.
+/// Default `enabled_transports` for a fresh install / field-absent
+/// settings.json: `[MatrixFederation]`. The persisted default lists
+/// MatrixFederation but `Profile::default()` = `p2p_only` SKIPS it
+/// at runtime, so a fresh boot still comes up porch-only. When the
+/// HostOnboarding wizard later flips the profile to `web_first` to
+/// stand up the embedded homeserver, the runtime materializes the
+/// transport from this list — no separate "add MatrixFederation"
+/// step needed.
 fn default_transports() -> Vec<Transport> {
-    Vec::new()
+    vec![Transport::MatrixFederation]
 }
 
 /// Deserialize `enabled_transports` while tolerating unknown variants.
@@ -249,16 +248,12 @@ impl Default for ServitudeConfig {
             max_peers: 32,
             listen_port: 8765,
             allow_privileged_port: false,
-            // Fresh install = porch-only. The libp2p baseline is
-            // always-on and runs regardless of this list; optional
-            // transports (MatrixFederation tuwunel, WireGuard, Mesh,
-            // Tunnel) only come up when the operator EXPLICITLY adds
-            // them. Defaulting to MatrixFederation here was the
-            // root cause of every "I disconnected but it came back"
-            // bug — a freshly nuked install with no settings.json
-            // would auto-spawn tuwunel and pull the user back into
-            // a hosted-Matrix posture they never opted into.
-            enabled_transports: Vec::new(),
+            // Fresh install lists MatrixFederation but
+            // `Profile::default()` = `P2pOnly` SKIPS it at runtime so
+            // first boot still comes up porch-only. The wizard's
+            // profile flip to `WebFirst` is what makes the transport
+            // materialize from this list.
+            enabled_transports: default_transports(),
             profile: Profile::default(),
         }
     }
