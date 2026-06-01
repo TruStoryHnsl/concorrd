@@ -124,10 +124,16 @@ export function BringingUpSplash({
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    v.play().catch(() => {
-      // Autoplay policies may reject silently; the element will
-      // fall back to whatever the platform allows. Nothing to do.
-    });
+    // jsdom returns `undefined` from `play()` (no Promise impl), so
+    // guard against the missing Promise before calling .catch. Real
+    // browsers always return a Promise.
+    const result = v.play();
+    if (result && typeof result.catch === "function") {
+      result.catch(() => {
+        // Autoplay policies may reject silently; the element falls
+        // back to whatever the platform allows. Nothing to do.
+      });
+    }
   }, []);
   return (
     <span

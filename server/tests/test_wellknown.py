@@ -433,7 +433,7 @@ async def test_public_base_url_overrides_lan_ip_server_name(client, monkeypatch)
     ``PUBLIC_BASE_URL`` advertises the real public host, the LiveKit
     URL must derive from the public host — NOT from the LAN IP. This
     is the dev-stack failure mode the regression test was added for:
-    cert is for dev.concorrd.com, doc was advertising wss://192.168.x."""
+    cert is for dev.<personal-host>, doc was advertising wss://192.168.x."""
     monkeypatch.setenv("CONDUWUIT_SERVER_NAME", "192.168.1.152")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://dev.example.test")
 

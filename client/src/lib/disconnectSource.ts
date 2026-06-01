@@ -81,17 +81,23 @@ export function disconnectSource(sourceId: string): void {
     for (let i = 0; i < ls.length; i++) {
       const key = ls.key(i);
       if (!key) continue;
-      // matrix-js-sdk filter cache, push rules cache, etc. The
-      // SDK keys are normally userId-scoped via a suffix; the
-      // safest cleanup when disconnecting the only signed-in user
-      // is to drop ALL of them. If multiple users were signed in
-      // simultaneously this would over-purge — but multi-user is
-      // not a supported mode of the native client.
-      if (key.startsWith("mxjssdk_")) {
-        if (
-          !disconnectedUserId ||
-          key.includes(disconnectedUserId)
-        ) {
+      // Every matrix-js-sdk localStorage prefix the bug report could
+      // possibly resurrect from:
+      //   - `mxjssdk_*` — MemoryStore filter cache
+      //   - `mx_pending_events_*` — send-queue replay state
+      //   - `mx_oidc_*` — OIDC WebStorageStateStore
+      //   - `concord_matrix_store_*` — IndexedDBStore's localStorage
+      //     side-companion (see `client/src/api/matrix.ts::buildStoreKey`)
+      // The native client is single-user so dropping every match is
+      // safe; if the key carries a userId suffix we still scope it
+      // to the disconnected user as a belt-and-suspenders.
+      const isMatrixKey =
+        key.startsWith("mxjssdk_") ||
+        key.startsWith("mx_pending_events_") ||
+        key.startsWith("mx_oidc_") ||
+        key.startsWith("concord_matrix_store_");
+      if (isMatrixKey) {
+        if (!disconnectedUserId || key.includes(disconnectedUserId)) {
           toRemove.push(key);
         }
         continue;
@@ -111,12 +117,15 @@ export function disconnectSource(sourceId: string): void {
     }
   }
 
-  // 5) Drop matrix-js-sdk's IndexedDB stores. Async/best-effort —
-  //    failures are non-fatal and just mean a slightly larger
-  //    re-fetch on the next sign-in. Browsers expose
-  //    `indexedDB.databases()` for enumeration; fall back to the
-  //    well-known SDK database names when enumeration is unavailable
-  //    (some WebKit builds don't expose `.databases()`).
+  // 5) Drop matrix-js-sdk's IndexedDB stores. The IndexedDBStore used
+  //    by `client/src/api/matrix.ts::createMatrixClient` names each
+  //    database `concord_matrix_store_<userId|homeserverUrl>` — that
+  //    is the database with the room state, filters, and sync token
+  //    that would otherwise rebuild a logged-in shell on the next
+  //    launch. Also delete every legacy `matrix-js-sdk*` database
+  //    (older client builds named them that way + crypto stores
+  //    still do). Async/best-effort — failures are non-fatal and
+  //    just mean a slightly larger re-fetch on next sign-in.
   if (typeof window !== "undefined" && window.indexedDB) {
     const idb = window.indexedDB;
     const knownDbs = [
@@ -131,21 +140,43 @@ export function disconnectSource(sourceId: string): void {
         // ignore — best-effort
       }
     };
+    const isMatrixDb = (name: string) =>
+      name.startsWith("matrix-js-sdk") ||
+      name.startsWith("concord_matrix_store_");
     if (typeof idb.databases === "function") {
       idb
         .databases()
         .then((dbs) => {
           for (const db of dbs) {
-            if (db.name && db.name.startsWith("matrix-js-sdk")) {
+            if (db.name && isMatrixDb(db.name)) {
               dropDb(db.name);
             }
           }
         })
         .catch(() => {
           for (const name of knownDbs) dropDb(name);
+          if (disconnectedUserId) {
+            dropDb(buildSyncDbName(disconnectedUserId, source.homeserverUrl));
+          }
         });
     } else {
       for (const name of knownDbs) dropDb(name);
+      if (disconnectedUserId) {
+        dropDb(buildSyncDbName(disconnectedUserId, source.homeserverUrl));
+      }
     }
   }
+}
+
+/**
+ * Mirror of `client/src/api/matrix.ts::buildStoreKey`. Kept in sync
+ * by hand — if the live createMatrixClient ever changes its dbName
+ * scheme, this fallback must follow or the sync DB will leak through
+ * a disconnect again. Reads identically: `userId|homeserverUrl` with
+ * non-alphanumerics replaced by `_`, prefixed with
+ * `concord_matrix_store_`.
+ */
+function buildSyncDbName(userId: string, homeserverUrl: string): string {
+  const scope = `${userId}|${homeserverUrl}`.replace(/[^A-Za-z0-9_.-]+/g, "_");
+  return `concord_matrix_store_${scope}`;
 }

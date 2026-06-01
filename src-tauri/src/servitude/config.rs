@@ -171,8 +171,17 @@ pub struct ServitudeConfig {
     pub profile: Profile,
 }
 
+/// Per-field default used by serde when `enabled_transports` is
+/// omitted from a stored settings.json. MUST stay aligned with
+/// `Default for ServitudeConfig` — both treat a fresh / field-absent
+/// install as porch-only. Returning a non-empty `[MatrixFederation]`
+/// here was the cause of "I disconnected but the host came back" on
+/// any settings file that simply omitted the key (e.g. an older
+/// build's persisted shape, or an upgrade write that didn't
+/// re-emit the field). Keeping it empty makes the field-absent path
+/// match the explicit-empty path.
 fn default_transports() -> Vec<Transport> {
-    vec![Transport::MatrixFederation]
+    Vec::new()
 }
 
 /// Deserialize `enabled_transports` while tolerating unknown variants.
