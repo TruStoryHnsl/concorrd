@@ -2198,6 +2198,24 @@ async fn set_servitude_profile(
     // profile doesn't clobber unrelated settings.
     let mut cfg = ServitudeConfig::from_store(&app).map_err(|e| e.to_string())?;
     cfg.profile = profile;
+    // Flipping to a hosting profile (WebFirst) requires the
+    // MatrixFederation transport to be present in `enabled_transports`
+    // — `servitude_register_owner` and every other Matrix surface
+    // depends on it. If the stored config drifted (older builds, hand
+    // edits, my own earlier resets), the flip silently leaves the
+    // transport list empty and the next `register_owner` fails with
+    // "no MatrixFederation transport configured for register_owner."
+    // Make the flip-to-hosting path self-healing: ensure the
+    // transport is in the list whenever the profile lands on WebFirst.
+    if matches!(cfg.profile, Profile::WebFirst)
+        && !cfg
+            .enabled_transports
+            .iter()
+            .any(|t| matches!(t, servitude::config::Transport::MatrixFederation))
+    {
+        cfg.enabled_transports
+            .push(servitude::config::Transport::MatrixFederation);
+    }
     cfg.save_to_store(&app).map_err(|e| e.to_string())?;
     Ok(())
 }
