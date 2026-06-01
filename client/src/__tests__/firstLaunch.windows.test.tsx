@@ -4,8 +4,8 @@
  * This test focuses on the Windows-specific concern that originally
  * motivated PR #36: a fresh Tauri-v2 webview on Windows MUST be
  * detected via `__TAURI_INTERNALS__` (the v2 key) and NOT via
- * `__TAURI__` (the v1 key). When detection works, App takes the
- * native-empty-state branch and renders the W2-05 Welcome screen.
+ * `__TAURI__` (the v1 key). When detection works, App drops the user
+ * straight into the chat shell — no Welcome, no wizard, no LoginForm.
  *
  * What this test verifies:
  *
@@ -18,22 +18,15 @@
  *      fresh.
  *   4. `localStorage` is empty.
  *
- * Under those conditions, `App` MUST take the W2-05 native-empty
- * branch and render `Welcome` as the first interactive surface —
- * NOT `ServerPickerScreen` (legacy pre-W2-05 gate), NOT `LoginForm`
- * (login fires after Welcome's CTA → onboarding flow commits a
- * source), NOT `ChatLayout` (no shell until a source is persisted),
- * NOT `DockerFirstBootScreen` (web/Docker path only).
+ * Under those conditions, `App` MUST render `ChatLayout` as the first
+ * interactive surface — NOT `Welcome` (removed for native: no
+ * first-launch account creation), NOT `ServerPickerScreen` (legacy
+ * pre-native gate), NOT `LoginForm` (per-source sign-in lives inside
+ * the Add Source flow), NOT `DockerFirstBootScreen` (web/Docker only).
  *
- * The Welcome screen's CTA labels and absence-of-other-surfaces
- * coverage lives in `firstLaunch.welcome.test.tsx`. This file is
- * the regression guard for the v2-detection branch specifically;
- * the welcome test is the design-contract guard.
- *
- * INS-058 destination per `feedback_ux_hollow_webui_spec.md` is the
- * full hollow ChatLayout with `+` tile in Sources. Welcome is the
- * W2-05 stepping stone; when the hollow rewrite ships, this test
- * + welcome.test.tsx both need updating.
+ * The "no Welcome on native" design-contract guard also lives in
+ * `firstLaunch.welcome.test.tsx`; this file is the regression guard
+ * for the v2-detection branch specifically.
  *
  * Test mechanics:
  *
@@ -229,24 +222,23 @@ describe("first-launch (Windows native): __TAURI_INTERNALS__ + empty serverConfi
     window.localStorage.clear();
   });
 
-  it("takes the W2-05 native-empty branch and renders Welcome as the first interactive surface", async () => {
+  it("takes the native-empty branch and renders ChatLayout as the first interactive surface", async () => {
     const { default: App } = await import("../App");
 
     render(<App />);
 
-    // Wait for Welcome to mount (LaunchAnimation onDone fires after
-    // a microtask; the empty-state branch then resolves to Welcome).
-    const welcome = await screen.findByTestId("welcome-screen", {}, { timeout: 3000 });
-    expect(welcome).toBeTruthy();
+    // Wait for the chat shell to mount (LaunchAnimation onDone fires
+    // after a microtask; the native branch then resolves to ChatLayout).
+    const chat = await screen.findByTestId("chat-layout", {}, { timeout: 3000 });
+    expect(chat).toBeTruthy();
 
-    // Negative space — none of these should render on the W2-05
-    // Tauri-v2 native-empty path. ServerPickerScreen is the legacy
-    // pre-W2-05 gate; LoginForm and ChatLayout live downstream of
-    // Welcome's CTA → onboarding flow committing a source;
-    // DockerFirstBootScreen is web/Docker only.
+    // Negative space — none of these should render on a Tauri-v2 fresh
+    // install. Welcome was removed from the native path; ServerPickerScreen
+    // is the legacy pre-native gate; LoginForm only renders on web
+    // post-picker; DockerFirstBootScreen is web/Docker only.
+    expect(screen.queryByTestId("welcome-screen")).toBeNull();
     expect(screen.queryByTestId("server-picker-screen")).toBeNull();
     expect(screen.queryByTestId("login-form")).toBeNull();
-    expect(screen.queryByTestId("chat-layout")).toBeNull();
     expect(screen.queryByTestId("docker-first-boot")).toBeNull();
   });
 });
