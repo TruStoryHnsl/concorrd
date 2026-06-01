@@ -1,54 +1,53 @@
 /**
- * Zustand surface for the home-server vanity name.
+ * Zustand surface for the persistent HOME server's user-set name.
  *
- * Sibling of {@link useInstanceNameStore}. The local source on a fresh
- * install has TWO names the user cares about:
+ * The home server is the user's persistent local data layer (see the
+ * 2026-06-01 CONSOLIDATED ARCHITECTURE filing in
+ * `instructions_inbox.md`). Its default name is `"home"`; the user
+ * can rename it via the Tauri command `home_set_server_name`.
  *
- *   1. The source-rail label (what peers see when they reach this
- *      device) — `useInstanceNameStore`, default "local".
- *   2. The home server's name (the persistent default server inside
- *      the local source) — THIS store, default "home".
+ * Storage backs onto the new `home_meta` table inside the existing
+ * `porch.sqlite` (schema version 8). The module + file rename from
+ * `porch` → `home` is a follow-up PR; this store deliberately uses
+ * the new "home" vocabulary so the renderer doesn't grow porch-isms.
  *
- * `name === ""` means the user has not picked a name yet — UI
- * components should render their default ("home") in that case rather
- * than treating the empty string as the intended label.
+ * Web behavior: `name` stays at the default `"home"` forever and
+ * `set()` rejects. The web build has no persistent SQLite layer to
+ * write to.
  *
- * Implementation note: the backing Tauri command ships with F1b-IMPL.
- * Until that lands the `set()` call still updates the in-memory store
- * so the rest of the session sees the new name immediately; persistence
- * starts working the moment F1b's command registers. See
- * `client/src/api/homeServerName.ts` for the no-op-on-missing-command
- * detail.
+ * Hydration: `load()` is idempotent and safe to call multiple times.
+ * `LocalServerSidebar` calls it on mount so the home tile renders the
+ * persisted name from first paint.
  */
 
 import { create } from "zustand";
 import {
   getHomeServerName,
   setHomeServerName as setRemote,
-} from "../api/homeServerName";
+} from "../api/homeServer";
 import { isTauri } from "../api/servitude";
 
 interface HomeServerNameState {
-  /** Current home-server vanity name. Empty means "not picked". */
+  /** Current user-set name for the home server. Defaults to `"home"`. */
   name: string;
   /** True while the initial hydration / a save is in flight. */
   loading: boolean;
   /** Last error from a load/save round-trip, or `null`. */
   error: string | null;
-  /** Refresh from the persisted Tauri store. No-op on web builds. */
+  /** Refresh from the persisted home_meta row. No-op on web. */
   load: () => Promise<void>;
-  /** Persist a new name. Whitespace is trimmed; empty clears the value. */
+  /** Persist a new name. Trims, validates non-empty + ≤64 chars. */
   set: (name: string) => Promise<void>;
 }
 
 export const useHomeServerNameStore = create<HomeServerNameState>((set) => ({
-  name: "",
+  name: "home",
   loading: false,
   error: null,
   load: async () => {
     if (!isTauri()) {
-      // Web builds: the docker stack picks the label at compose time;
-      // the client never reads or writes it.
+      // Web builds: no persistent home server. Keep the default and
+      // skip the IPC round-trip.
       return;
     }
     set({ loading: true, error: null });
@@ -65,14 +64,13 @@ export const useHomeServerNameStore = create<HomeServerNameState>((set) => ({
   set: async (name: string) => {
     if (!isTauri()) {
       throw new Error(
-        "useHomeServerNameStore.set: web builds cannot change the home-server name",
+        "useHomeServerNameStore.set: web builds cannot rename the home server",
       );
     }
-    const trimmed = name.trim();
     set({ loading: true, error: null });
     try {
-      await setRemote(trimmed);
-      set({ name: trimmed, loading: false });
+      await setRemote(name);
+      set({ name: name.trim(), loading: false });
     } catch (e) {
       set({
         loading: false,

@@ -54,6 +54,7 @@ import { LocalChannelSidebar } from "../local/LocalChannelSidebar";
 import { LocalChatPane } from "../local/LocalChatPane";
 import { usePorchStore } from "../../stores/porchStore";
 import { useInstanceNameStore } from "../../stores/instanceName";
+import { useHomeServerNameStore } from "../../stores/homeServerName";
 import { DMSidebar } from "../dm/DMSidebar";
 import { ExploreModal } from "../server/ExploreModal";
 import { MessageList } from "../chat/MessageList";
@@ -351,6 +352,14 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const porchVanityName = useInstanceNameStore((s) => s.name);
   const porchLabel = porchVanityName.trim() || "porch";
   const loadPorchChannels = usePorchStore((s) => s.loadChannels);
+  // F1b-IMPL — hydrate the persistent home-server name on first
+  // ChatLayout mount so the home tile in LocalServerSidebar renders
+  // the user-set label from first paint. `load()` is idempotent and
+  // a no-op on web (no persistent SQLite layer there).
+  const loadHomeServerName = useHomeServerNameStore((s) => s.load);
+  useEffect(() => {
+    void loadHomeServerName();
+  }, [loadHomeServerName]);
   const openLocal = useCallback(() => {
     // Activate the local source. Clear DM + Matrix server selection
     // so the existing panes don't try to render a stale Matrix room

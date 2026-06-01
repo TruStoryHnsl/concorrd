@@ -582,6 +582,51 @@ async fn porch_send_message(
         .map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Home server (F1b-IMPL) — persistent home-server meta surface
+// ---------------------------------------------------------------------------
+//
+// The HOME server is the user's persistent local data layer. Per the
+// 2026-06-01 CONSOLIDATED ARCHITECTURE filing, the existing
+// `porch.sqlite` is being repurposed as the home server's backing
+// store; renaming the module + file from `porch` → `home` is a
+// follow-up PR (kept out of this one to avoid a noisy diff).
+//
+// The two commands below surface the user-set NAME of the home server
+// (default `"home"`), stored in the `home_meta` table added in schema
+// version 8. The HOME server's CHANNELS / MESSAGES are still served
+// by `porch_list_my_channels` / `porch_get_messages` /
+// `porch_post_message` above — the only thing changing in this PR is
+// the addition of a renamable label and the LocalServerSidebar
+// rendering the porch + home tiles side-by-side.
+
+/// Read the user-set name of the home server. Defaults to `"home"`
+/// on a fresh install; persisted via [`home_set_server_name`].
+#[tauri::command]
+async fn home_get_server_name(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.home_server_name().map_err(|e| e.to_string())
+}
+
+/// Persist a new user-set name for the home server. Trims whitespace,
+/// rejects empty, caps length at 64 chars. The new name is reflected
+/// in the renderer the next time `home_get_server_name` is called
+/// (the zustand store hydrates on ChatLayout mount).
+#[tauri::command]
+async fn home_set_server_name(
+    porch_state: tauri::State<'_, PorchState>,
+    servitude_state: tauri::State<'_, ServitudeState>,
+    app: tauri::AppHandle,
+    name: String,
+) -> Result<(), String> {
+    let porch = get_or_open_porch(&porch_state, &servitude_state, &app).await?;
+    porch.set_home_server_name(&name).map_err(|e| e.to_string())
+}
+
 /// Resolve a libp2p stream control + peer-id for a visit. Returns the
 /// control + parsed PeerId, or an error string suitable for `Result`.
 async fn resolve_visit_control(
@@ -2676,6 +2721,9 @@ pub fn run() {
             porch_list_channels,
             porch_ephemeral_get_messages,
             porch_send_message,
+            // F1b-IMPL — persistent home server meta.
+            home_get_server_name,
+            home_set_server_name,
             porch_visit_peer,
             porch_visit_get_messages,
             porch_visit_post_message,

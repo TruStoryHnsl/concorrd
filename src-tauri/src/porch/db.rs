@@ -49,7 +49,26 @@ use super::DEFAULT_PORCH_CHANNEL_ID;
 ///   CRDT layer without a schema migration. A default "Local" primary
 ///   profile is seeded so the install always has somewhere for Phase 2
 ///   source-add flows to write.
-pub const SCHEMA_VERSION: i64 = 7;
+/// * `8` — F1b-IMPL — "home server" re-hosting: `home_meta`
+///   key/value table to carry the user-set name of the persistent
+///   home server (default `"home"`) and any future home-server
+///   meta. The existing `porch.sqlite` file is being repurposed as
+///   the home server's backing store; the module + file rename
+///   from `porch` → `home` is deliberately deferred to a follow-up
+///   PR to keep this migration small. See `instructions_inbox.md`
+///   2026-06-01 CONSOLIDATED ARCHITECTURE filing for the full
+///   re-scope rationale.
+pub const SCHEMA_VERSION: i64 = 8;
+
+/// Default name of the persistent home server. Stored in `home_meta`
+/// under the `server_name` key on first open. The user can rename it
+/// via the Tauri command `home_set_server_name`.
+pub const DEFAULT_HOME_SERVER_NAME: &str = "home";
+
+/// Maximum allowed length (in chars) for the user-set home server
+/// name. Matches the `set_instance_name` cap so both vanity-label
+/// surfaces are consistent on the wire.
+pub const MAX_HOME_SERVER_NAME_CHARS: usize = 64;
 
 /// Subdirectory under the porch data dir where uploaded theme assets
 /// (image bytes) live. The DB stores the relative file path
@@ -574,8 +593,82 @@ impl Porch {
                 params![profile_id, now, device_id, lamport],
             )?;
         }
+        if current < 8 {
+            // F1b-IMPL — "home server" re-hosting.
+            //
+            // The existing `porch.sqlite` is being repurposed as the
+            // backing store of the persistent HOME server (see the
+            // 2026-06-01 CONSOLIDATED ARCHITECTURE filing in
+            // `instructions_inbox.md`). Renaming the module + file from
+            // `porch` to `home` is deferred to a follow-up PR; this
+            // migration just adds a tiny `home_meta` key/value table so
+            // we can surface and persist the user-set home-server name
+            // without touching any of the legacy `porch_*` tables.
+            //
+            // The default `server_name` row is seeded here with the
+            // literal `"home"`; the user can rename it via the
+            // `home_set_server_name` Tauri command. `INSERT OR IGNORE`
+            // makes a subsequent boot a no-op (the seed only applies
+            // when there's nothing in the table yet, mirroring the
+            // `ensure_default_channel` semantics).
+            conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE IF NOT EXISTS home_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO schema_version (version) VALUES (8);
+                COMMIT;",
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO home_meta (key, value) VALUES ('server_name', ?1)",
+                params![DEFAULT_HOME_SERVER_NAME],
+            )?;
+        }
         // Future migrations: branch on `current` and apply incremental
         // batches here.
+        Ok(())
+    }
+
+    /// Read the user-set name of the home server from `home_meta`.
+    /// Returns the literal default [`DEFAULT_HOME_SERVER_NAME`] when no
+    /// row is present (defensive — the migration seeds it, so this only
+    /// fires on a hypothetically-damaged DB).
+    pub fn home_server_name(&self) -> Result<String, PorchError> {
+        let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM home_meta WHERE key = 'server_name'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(value.unwrap_or_else(|| DEFAULT_HOME_SERVER_NAME.to_string()))
+    }
+
+    /// Persist a new user-set name for the home server. Validation:
+    /// trims whitespace, rejects an empty result, caps length at
+    /// [`MAX_HOME_SERVER_NAME_CHARS`] chars. Idempotent on the same
+    /// value.
+    pub fn set_home_server_name(&self, name: &str) -> Result<(), PorchError> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(PorchError::InvalidInput(
+                "home server name must not be empty".to_string(),
+            ));
+        }
+        if trimmed.chars().count() > MAX_HOME_SERVER_NAME_CHARS {
+            return Err(PorchError::InvalidInput(format!(
+                "home server name must be {} characters or fewer",
+                MAX_HOME_SERVER_NAME_CHARS
+            )));
+        }
+        let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        conn.execute(
+            "INSERT INTO home_meta (key, value) VALUES ('server_name', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![trimmed],
+        )?;
         Ok(())
     }
 
@@ -1071,6 +1164,52 @@ mod tests {
             .lookup_acl(DEFAULT_PORCH_CHANNEL_ID, "12D3Visitor")
             .expect("lookup ok");
         assert_eq!(role, None);
+    }
+
+    #[test]
+    fn home_meta_default_seeded() {
+        // F1b-IMPL — schema v8 seeds `server_name` = "home" on first
+        // open. A fresh in-memory porch should reflect that default.
+        let porch = Porch::open_in_memory().expect("open ok");
+        let name = porch.home_server_name().expect("read ok");
+        assert_eq!(name, DEFAULT_HOME_SERVER_NAME);
+    }
+
+    #[test]
+    fn home_meta_rename_round_trip() {
+        // F1b-IMPL — writing a new name persists across reads.
+        let porch = Porch::open_in_memory().expect("open ok");
+        porch.set_home_server_name("studio").expect("set ok");
+        assert_eq!(porch.home_server_name().expect("read ok"), "studio");
+        // Renaming again replaces (not appends).
+        porch.set_home_server_name("workshop").expect("set ok");
+        assert_eq!(
+            porch.home_server_name().expect("read ok"),
+            "workshop"
+        );
+    }
+
+    #[test]
+    fn home_meta_rejects_empty_and_oversize() {
+        let porch = Porch::open_in_memory().expect("open ok");
+        let err = porch.set_home_server_name("").expect_err("must error");
+        assert!(matches!(err, PorchError::InvalidInput(_)));
+        let err = porch.set_home_server_name("   ").expect_err("must error");
+        assert!(matches!(err, PorchError::InvalidInput(_)));
+        let oversized = "a".repeat(MAX_HOME_SERVER_NAME_CHARS + 1);
+        let err = porch
+            .set_home_server_name(&oversized)
+            .expect_err("must error");
+        assert!(matches!(err, PorchError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn home_meta_trims_whitespace_on_write() {
+        let porch = Porch::open_in_memory().expect("open ok");
+        porch
+            .set_home_server_name("  studio  ")
+            .expect("set ok");
+        assert_eq!(porch.home_server_name().expect("read ok"), "studio");
     }
 
     #[test]

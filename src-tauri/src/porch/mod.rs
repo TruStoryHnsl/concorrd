@@ -51,7 +51,9 @@ pub use backup_protocol::{
     BackupErrorBody, BackupHandler, BackupRequest, BackupResponse, BACKUP_PROTOCOL_ID,
 };
 pub use channel::{AclMode, AclRole, ChannelKind, ChannelMessage, PorchChannel};
-pub use db::{Porch, SCHEMA_VERSION};
+pub use db::{
+    Porch, DEFAULT_HOME_SERVER_NAME, MAX_HOME_SERVER_NAME_CHARS, SCHEMA_VERSION,
+};
 pub use error::PorchError;
 pub use history_protocol::{
     peer_ident_from_signing_key, sign_vouch_with_key, verify_hop_chain, visit_history,
