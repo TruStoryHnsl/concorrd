@@ -224,6 +224,14 @@ impl Envelope {
             peers: Vec::new(),
         }
     }
+
+    #[cfg(test)]
+    fn new(peers: Vec<KnownPeer>) -> Self {
+        Self {
+            version: FORMAT_VERSION,
+            peers,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -844,5 +852,69 @@ mod tests {
             multiaddrs: vec!["/ip4/1.2.3.4/udp/4001/quic-v1".to_string()],
         };
         validate_card(&card).expect("valid card");
+    }
+
+    /// PM-flagged follow-up from PR #149: the F-VIS PR added
+    /// `access_granted` + `last_access_grant_at` to `KnownPeer` and
+    /// bumped the on-disk envelope version 1 → 2. v1 envelopes WITHOUT
+    /// the new fields must still deserialize cleanly via the
+    /// `#[serde(default)]` markers, so installs upgrading from a v1
+    /// peer-store don't lose their paired peers. This test pins that
+    /// contract — a hand-rolled v1 JSON envelope round-trips into a v2
+    /// `Envelope` whose peers default to `access_granted: true` +
+    /// `last_access_grant_at: None`.
+    #[test]
+    fn envelope_v1_legacy_payload_round_trips_with_default_access() {
+        let legacy_v1 = serde_json::json!({
+            "version": 1,
+            "peers": [
+                {
+                    "peer_id": "12D3KooWLegacyA",
+                    "public_key_hex": "ab".repeat(32),
+                    "multiaddrs": ["/ip4/127.0.0.1/udp/4001/quic-v1"],
+                    "source": "Qr",
+                    "first_seen": "2026-04-01T00:00:00Z",
+                    "last_seen": "2026-04-01T00:00:00Z"
+                },
+                {
+                    "peer_id": "12D3KooWLegacyB",
+                    "public_key_hex": "cd".repeat(32),
+                    "multiaddrs": [],
+                    "source": "Deeplink",
+                    "first_seen": "2026-04-02T00:00:00Z",
+                    "last_seen": "2026-04-02T00:00:00Z"
+                }
+            ]
+        });
+
+        let bytes = serde_json::to_vec(&legacy_v1).expect("serialize v1 fixture");
+        let envelope: Envelope = serde_json::from_slice(&bytes).expect(
+            "v1 envelope MUST still deserialize after the v2 KnownPeer bump — \
+             missing #[serde(default)] on access_granted or last_access_grant_at",
+        );
+
+        // The on-disk version field is whatever the legacy envelope wrote;
+        // we don't auto-rewrite it during read, just default the new
+        // KnownPeer fields. The next save() bumps it to FORMAT_VERSION.
+        assert_eq!(envelope.version, 1);
+        assert_eq!(envelope.peers.len(), 2);
+        for peer in &envelope.peers {
+            assert!(
+                peer.access_granted,
+                "v1 envelope rows must default to access_granted=true"
+            );
+            assert!(
+                peer.last_access_grant_at.is_none(),
+                "v1 envelope rows must default to last_access_grant_at=None"
+            );
+        }
+
+        // The next save round-trips through FORMAT_VERSION = 2 so future
+        // reads see the bumped envelope shape — verify by serializing the
+        // envelope we just deserialized through a fresh Envelope::new and
+        // checking the version bumps without changing the row contents.
+        let bumped = Envelope::new(envelope.peers.clone());
+        assert_eq!(bumped.version, FORMAT_VERSION);
+        assert_eq!(bumped.peers.len(), envelope.peers.len());
     }
 }

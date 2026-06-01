@@ -47,6 +47,8 @@ const SAMPLE_PEER: KnownPeer = {
   source: "qr",
   firstSeen: "2026-05-27T12:00:00Z",
   lastSeen: "2026-05-27T13:00:00Z",
+  accessGranted: true,
+  lastAccessGrantAt: null,
 };
 
 const SAMPLE_PEER_2: KnownPeer = {
@@ -56,6 +58,8 @@ const SAMPLE_PEER_2: KnownPeer = {
   source: "deeplink",
   firstSeen: "2026-05-27T14:00:00Z",
   lastSeen: "2026-05-27T14:30:00Z",
+  accessGranted: true,
+  lastAccessGrantAt: null,
 };
 
 /** Wait until both peer_paired listeners have registered. The store's

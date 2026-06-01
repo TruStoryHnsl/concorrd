@@ -241,6 +241,8 @@ describe("peerStore API wrapper", () => {
       source: "qr",
       firstSeen: "2026-05-27T12:00:00Z",
       lastSeen: "2026-05-27T13:00:00Z",
+      accessGranted: true,
+      lastAccessGrantAt: null,
     };
     expect(peer.source).toBe("qr");
   });

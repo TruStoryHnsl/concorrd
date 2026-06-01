@@ -16,8 +16,6 @@ import { redeemInvite, getInstanceInfo } from "./api/concord";
 import { showBootSplash } from "./bootSplash";
 import { LoginForm } from "./components/auth/LoginForm";
 import { ServerPickerScreen } from "./components/auth/ServerPickerScreen";
-import { Welcome } from "./components/Welcome";
-import { useSourcesStore } from "./stores/sources";
 import { DockerFirstBootScreen } from "./components/auth/DockerFirstBootScreen";
 import { SubmitPage } from "./components/public/SubmitPage";
 import { ChatLayout } from "./components/layout/ChatLayout";

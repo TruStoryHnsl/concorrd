@@ -129,6 +129,8 @@ describe("<SourcesPanel /> — Local tile", () => {
           firstSeen: new Date(0).toISOString(),
           lastSeen: new Date(Date.now() - 5 * 60_000).toISOString(),
           source: "qr",
+          accessGranted: true,
+          lastAccessGrantAt: null,
         },
       ],
       isLoading: false,
