@@ -374,6 +374,23 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     }
   }, [activeServerId, activeChannelId, dmActive]);
 
+  // Auto-activate the porch on first ChatLayout mount when nothing
+  // else is selected — the porch IS the device's default surface, so
+  // requiring the user to click the home tile just to see it is wrong.
+  // Skips when any external source / DM is already active (returning
+  // visitors keep their last selection) and skips on web (the porch
+  // doesn't exist there).
+  const autoActivatedRef = useRef(false);
+  useEffect(() => {
+    if (autoActivatedRef.current) return;
+    const isNativeApp =
+      typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    if (!isNativeApp) return;
+    if (activeServerId || activeChannelId || dmActive) return;
+    autoActivatedRef.current = true;
+    openLocal();
+  }, [activeServerId, activeChannelId, dmActive, openLocal]);
+
   // Resizable channel sidebar (desktop only)
   const SIDEBAR_MIN = 160;
   const SIDEBAR_MAX = 400;

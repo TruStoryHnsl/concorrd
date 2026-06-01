@@ -113,19 +113,59 @@ export function BringingUpSplash({
     : spec.outerLayout;
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  // Resume playback after StrictMode's dev-only remount cycle. The
-  // video element's autoPlay attribute fires only once per element
-  // creation; if StrictMode tears the component down and brings it
-  // back (or a parent re-render swaps the node), the new element
-  // starts at frame 0 — exactly the "restarts halfway through"
-  // symptom users see in dev. Calling play() here is idempotent and
-  // safe to run on every mount.
+  // Make the loop continuous ACROSS REMOUNTS. Each BringingUpSplash
+  // instance gets a fresh <video> element from React, and that element's
+  // playback starts at frame 0 — so as the user navigates through
+  // loading states (boot → ChatLayout sync → empty-state → etc.) the
+  // splash visibly snaps back to the beginning each time a new instance
+  // mounts. That's what the user sees as "restarts halfway through."
+  //
+  // Fix: persist the video's currentTime to sessionStorage on every
+  // tick, and restore it on mount. The visual effect is one
+  // uninterrupted, looping animation regardless of how many times
+  // React unmounts and recreates the element. The boot-splash video
+  // in index.html (id="boot-splash-anim") seeds the first time so
+  // the React handoff stays continuous too.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
+    const STORAGE_KEY = "concord:splash:currentTime";
+    // Seed from sessionStorage first; fall back to the boot-splash
+    // video element if it's still in the DOM during early handoff.
+    let seed = 0;
+    try {
+      const stored = window.sessionStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const t = parseFloat(stored);
+        if (!isNaN(t) && isFinite(t) && t > 0) seed = t;
+      }
+    } catch {
+      // sessionStorage may be unavailable in some sandboxes
+    }
+    if (seed === 0) {
+      const boot = document.getElementById("boot-splash-anim");
+      if (boot && boot instanceof HTMLVideoElement && boot.currentTime > 0) {
+        seed = boot.currentTime;
+      }
+    }
+    if (seed > 0) {
+      try {
+        v.currentTime = seed;
+      } catch {
+        // setting currentTime can throw before the video has loaded
+        // its metadata — fall through to autoPlay's default 0 start
+      }
+    }
+    const persist = () => {
+      try {
+        window.sessionStorage.setItem(STORAGE_KEY, String(v.currentTime));
+      } catch {
+        // ignore — best-effort
+      }
+    };
+    const interval = window.setInterval(persist, 150);
     // jsdom returns `undefined` from `play()` (no Promise impl), so
-    // guard against the missing Promise before calling .catch. Real
-    // browsers always return a Promise.
+    // guard against the missing Promise before calling .catch.
     const result = v.play();
     if (result && typeof result.catch === "function") {
       result.catch(() => {
@@ -133,6 +173,10 @@ export function BringingUpSplash({
         // back to whatever the platform allows. Nothing to do.
       });
     }
+    return () => {
+      window.clearInterval(interval);
+      persist();
+    };
   }, []);
   return (
     <span
