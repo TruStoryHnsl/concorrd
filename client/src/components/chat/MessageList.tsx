@@ -6,6 +6,7 @@ import { MessageContent } from "./MessageContent";
 import { ReactionPills, QuickReactBar } from "./ReactionBar";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { useLocalServerName } from "../../hooks/useFederation";
+import { BringingUpSplash } from "../BringingUpSplash";
 import { ChatWidgetBanner } from "./ChatWidgetBanner";
 import { useFormatStore, type FormatOverride } from "../../stores/format";
 import { FormatPopover } from "./FormatPopover";
@@ -251,7 +252,7 @@ export const MessageList = memo(function MessageList({
       )}
       {isPaginating && (
         <div className="flex justify-center py-2">
-          <span className="inline-block w-4 h-4 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
+          <BringingUpSplash size="inline" />
         </div>
       )}
 

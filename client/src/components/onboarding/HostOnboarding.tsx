@@ -33,6 +33,7 @@ import { servitudeStatus, type ServitudeStatusResponse } from "../../api/servitu
 import { startHostingServitude } from "../../api/hostingProfile";
 import { useSourcesStore } from "../../stores/sources";
 import { useServerConfigStore } from "../../stores/serverConfig";
+import { BringingUpSplash } from "../BringingUpSplash";
 
 export interface HostOnboardingProps {
   onCancel: () => void;
@@ -414,23 +415,18 @@ export function HostOnboarding({
     return (
       <div
         data-testid="host-onboarding-spinner"
-        className="h-full w-full bg-surface mesh-background flex items-center justify-center"
+        className="h-full w-full bg-surface mesh-background"
       >
-        <div className="max-w-md w-full px-8 py-12 flex flex-col items-center gap-6">
-          <div className="w-12 h-12 rounded-full border-4 border-border-soft border-t-accent animate-spin" />
-          <div className="flex flex-col items-center gap-1">
-            <h2 className="text-2xl font-bold text-text-primary">
-              Bringing up your Concord
-            </h2>
-            <p
-              data-testid="host-onboarding-spinner-phase"
-              className="text-sm text-text-secondary"
-            >
-              {humanizePhase(spinnerStatus.phase)}
-              {spinnerStatus.detail ? ` (${spinnerStatus.detail})` : ""}
-            </p>
-          </div>
-        </div>
+        <BringingUpSplash
+          size="full"
+          brand="Bringing up your Concord"
+          status={
+            spinnerStatus.detail
+              ? `${humanizePhase(spinnerStatus.phase)} (${spinnerStatus.detail})`
+              : humanizePhase(spinnerStatus.phase)
+          }
+          testId="host-onboarding-spinner-phase"
+        />
       </div>
     );
   }
