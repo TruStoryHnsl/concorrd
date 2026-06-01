@@ -58,7 +58,33 @@ use super::DEFAULT_PORCH_CHANNEL_ID;
 ///   PR to keep this migration small. See `instructions_inbox.md`
 ///   2026-06-01 CONSOLIDATED ARCHITECTURE filing for the full
 ///   re-scope rationale.
-pub const SCHEMA_VERSION: i64 = 8;
+/// * `9` — F-VIS — per-server mesh-hop visibility property:
+///   `visibility_meta` table keyed by `server_id` ("porch", "home", or
+///   a future user-created server's UUID). Carries `max_hops` (0 =
+///   owner-only; 1 = direct paired; N = up to N mesh hops away) and
+///   `last_changed_at` for sync ordering. Seeded on first open with
+///   the defaults from the 2026-06-01 RFC-resolution filing: porch at
+///   hop-1, home at hop-0. See [`crate::porch::visibility`] for the
+///   CRUD layer + the gossipsub propagation payload that flows
+///   through F3's address-rotation topic.
+pub const SCHEMA_VERSION: i64 = 9;
+
+/// Server id used by `visibility_meta` for the ephemeral PORCH server.
+/// Hard-coded literal because the porch is intrinsic — not user-created
+/// and not assigned a UUID.
+pub const VISIBILITY_SERVER_ID_PORCH: &str = "porch";
+
+/// Server id used by `visibility_meta` for the persistent HOME server.
+/// Hard-coded literal — the home server is intrinsic on every install.
+pub const VISIBILITY_SERVER_ID_HOME: &str = "home";
+
+/// Default max-hops for the porch server. Hop-1 = direct paired peers
+/// only; matches the 2026-06-01 CONSOLIDATED ARCHITECTURE filing.
+pub const DEFAULT_PORCH_MAX_HOPS: u8 = 1;
+
+/// Default max-hops for the home server. Hop-0 = owner-only; the user
+/// must explicitly open it via the Hosting → Visibility surface.
+pub const DEFAULT_HOME_MAX_HOPS: u8 = 0;
 
 /// Default name of the persistent home server. Stored in `home_meta`
 /// under the `server_name` key on first open. The user can rename it
@@ -94,6 +120,23 @@ pub const MAX_MESSAGE_BODY_BYTES: usize = 64 * 1024;
 /// more, we cap here so a single envelope can't ship megabytes of
 /// rows.
 pub const MAX_MESSAGES_PER_QUERY: u32 = 500;
+
+/// F-VIS — one row of the `visibility_meta` table. Serializable so the
+/// renderer can render it directly + so the gossipsub propagation
+/// layer can use the same struct on the wire (a small additive payload
+/// — see [`crate::porch::visibility::VisibilityUpdate`]).
+///
+/// `server_id` is the stable identifier ("porch", "home", or a future
+/// user-created server's UUID). `max_hops` is the configurable mesh-hop
+/// visibility ceiling: 0 = owner only, 1 = direct paired, N = up to N
+/// hops away. `last_changed_at` is unix-millis; the LWW merge rule for
+/// inbound updates is "strictly greater wins."
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VisibilityRow {
+    pub server_id: String,
+    pub max_hops: u8,
+    pub last_changed_at: i64,
+}
 
 /// Owner of the porch SQLite connection. Single instance per install.
 ///
@@ -625,6 +668,65 @@ impl Porch {
                 params![DEFAULT_HOME_SERVER_NAME],
             )?;
         }
+        if current < 9 {
+            // F-VIS — per-server mesh-hop visibility property.
+            //
+            // The `visibility_meta` table stores a single
+            // (server_id, max_hops, last_changed_at) tuple per server
+            // the operator hosts. The two intrinsic servers (porch +
+            // home) are seeded immediately with the defaults from the
+            // 2026-06-01 RFC-resolution filing: porch at hop-1 (only
+            // direct paired peers see it in their explore menu), home
+            // at hop-0 (owner-only until explicitly opened).
+            //
+            // `max_hops` is stored as INTEGER for SQLite simplicity but
+            // capped at 0..=255 at the application layer
+            // (visibility::set_max_hops). 255 is plenty for any
+            // realistic mesh diameter and keeps the wire payload tiny.
+            //
+            // `last_changed_at` is unix-milliseconds — same convention
+            // as the other `*_at` columns in this schema. It exists so
+            // future cross-device sync (via the existing F gossipsub
+            // topic) can resolve "who has the freshest setting" by
+            // strict numeric comparison, no Lamport bookkeeping needed
+            // because a single owner edits per row.
+            //
+            // The `INSERT OR IGNORE` seeding mirrors `home_meta`'s
+            // first-open pattern; on a re-run (which can't happen at
+            // current >= 9, but is defended-in-depth anyway) the rows
+            // stay untouched.
+            let now = unix_millis();
+            conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE IF NOT EXISTS visibility_meta (
+                    server_id TEXT PRIMARY KEY,
+                    max_hops INTEGER NOT NULL DEFAULT 0,
+                    last_changed_at INTEGER NOT NULL
+                );
+                INSERT INTO schema_version (version) VALUES (9);
+                COMMIT;",
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO visibility_meta
+                    (server_id, max_hops, last_changed_at)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    VISIBILITY_SERVER_ID_PORCH,
+                    DEFAULT_PORCH_MAX_HOPS as i64,
+                    now,
+                ],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO visibility_meta
+                    (server_id, max_hops, last_changed_at)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    VISIBILITY_SERVER_ID_HOME,
+                    DEFAULT_HOME_MAX_HOPS as i64,
+                    now,
+                ],
+            )?;
+        }
         // Future migrations: branch on `current` and apply incremental
         // batches here.
         Ok(())
@@ -670,6 +772,135 @@ impl Porch {
             params![trimmed],
         )?;
         Ok(())
+    }
+
+    /// F-VIS — read a single `visibility_meta` row. Returns the
+    /// seeded defaults for the intrinsic porch / home servers, or
+    /// whatever value the user (or a remote update) has persisted
+    /// since. `None` for an unknown `server_id` so callers can
+    /// distinguish "no such server" from "default value".
+    pub fn get_visibility(
+        &self,
+        server_id: &str,
+    ) -> Result<Option<VisibilityRow>, PorchError> {
+        let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        let row: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT max_hops, last_changed_at
+                 FROM visibility_meta WHERE server_id = ?1",
+                params![server_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(hops, ts)| VisibilityRow {
+            server_id: server_id.to_string(),
+            // Clamp at 0..=255 on read so a corrupt DB never panics
+            // the renderer.
+            max_hops: hops.clamp(0, u8::MAX as i64) as u8,
+            last_changed_at: ts,
+        }))
+    }
+
+    /// F-VIS — write or update a `visibility_meta` row. Validates
+    /// `max_hops` is in `0..=255` (255 is the SQL-side INTEGER cap we
+    /// enforce). Bumps `last_changed_at` to `unix_millis()` so the
+    /// gossipsub propagation layer can pick the freshest setting on
+    /// merge.
+    ///
+    /// Returns the resulting [`VisibilityRow`] so the caller can echo
+    /// the persisted state to the renderer without a follow-up SELECT.
+    pub fn set_visibility(
+        &self,
+        server_id: &str,
+        max_hops: u8,
+    ) -> Result<VisibilityRow, PorchError> {
+        if server_id.trim().is_empty() {
+            return Err(PorchError::InvalidInput(
+                "server_id must not be empty".to_string(),
+            ));
+        }
+        let now = unix_millis();
+        let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        conn.execute(
+            "INSERT INTO visibility_meta
+                (server_id, max_hops, last_changed_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(server_id) DO UPDATE SET
+                max_hops = excluded.max_hops,
+                last_changed_at = excluded.last_changed_at",
+            params![server_id, max_hops as i64, now],
+        )?;
+        Ok(VisibilityRow {
+            server_id: server_id.to_string(),
+            max_hops,
+            last_changed_at: now,
+        })
+    }
+
+    /// F-VIS — apply an inbound `VisibilityRow` only if its
+    /// `last_changed_at` is strictly greater than the local value
+    /// (LWW). Used by the gossipsub receiver to merge neighbour-broadcast
+    /// updates without clobbering a fresher local edit. Returns `true`
+    /// if the row was actually written, `false` if the inbound value
+    /// was equal-or-older and silently ignored.
+    pub fn apply_visibility_if_newer(
+        &self,
+        row: &VisibilityRow,
+    ) -> Result<bool, PorchError> {
+        let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT last_changed_at FROM visibility_meta WHERE server_id = ?1",
+                params![row.server_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let should_write = match existing {
+            Some(local_ts) => row.last_changed_at > local_ts,
+            None => true,
+        };
+        if !should_write {
+            return Ok(false);
+        }
+        conn.execute(
+            "INSERT INTO visibility_meta
+                (server_id, max_hops, last_changed_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(server_id) DO UPDATE SET
+                max_hops = excluded.max_hops,
+                last_changed_at = excluded.last_changed_at",
+            params![
+                row.server_id,
+                row.max_hops as i64,
+                row.last_changed_at,
+            ],
+        )?;
+        Ok(true)
+    }
+
+    /// F-VIS — list every visibility row. Used by the renderer's
+    /// Hosting tab to show all currently-tracked server visibility
+    /// settings at once. Order is `server_id ASC` for deterministic
+    /// rendering.
+    pub fn list_visibility(&self) -> Result<Vec<VisibilityRow>, PorchError> {
+        let conn = self.conn.lock().expect("porch conn mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT server_id, max_hops, last_changed_at
+             FROM visibility_meta ORDER BY server_id ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let hops: i64 = r.get(1)?;
+            Ok(VisibilityRow {
+                server_id: r.get(0)?,
+                max_hops: hops.clamp(0, u8::MAX as i64) as u8,
+                last_changed_at: r.get(2)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     fn ensure_default_channel(&self) -> Result<(), PorchError> {
@@ -1210,6 +1441,213 @@ mod tests {
             .set_home_server_name("  studio  ")
             .expect("set ok");
         assert_eq!(porch.home_server_name().expect("read ok"), "studio");
+    }
+
+    #[test]
+    fn visibility_seeded_with_porch_and_home_defaults() {
+        // F-VIS — schema v9 seeds the two intrinsic servers on first
+        // open. A fresh in-memory porch should reflect both defaults.
+        let porch = Porch::open_in_memory().expect("open ok");
+        let porch_row = porch
+            .get_visibility(VISIBILITY_SERVER_ID_PORCH)
+            .expect("read ok")
+            .expect("seeded row");
+        assert_eq!(porch_row.max_hops, DEFAULT_PORCH_MAX_HOPS);
+        assert_eq!(porch_row.server_id, "porch");
+
+        let home_row = porch
+            .get_visibility(VISIBILITY_SERVER_ID_HOME)
+            .expect("read ok")
+            .expect("seeded row");
+        assert_eq!(home_row.max_hops, DEFAULT_HOME_MAX_HOPS);
+        assert_eq!(home_row.server_id, "home");
+
+        // Unknown server id → None, not an error.
+        assert!(porch
+            .get_visibility("does-not-exist")
+            .expect("read ok")
+            .is_none());
+    }
+
+    #[test]
+    fn visibility_set_get_round_trip() {
+        let porch = Porch::open_in_memory().expect("open ok");
+        let original = porch
+            .get_visibility(VISIBILITY_SERVER_ID_HOME)
+            .expect("ok")
+            .expect("seeded");
+        // Tiny sleep so last_changed_at strictly advances.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let updated = porch
+            .set_visibility(VISIBILITY_SERVER_ID_HOME, 3)
+            .expect("set ok");
+        assert_eq!(updated.max_hops, 3);
+        assert!(
+            updated.last_changed_at > original.last_changed_at,
+            "set_visibility must bump last_changed_at: {} > {}",
+            updated.last_changed_at,
+            original.last_changed_at,
+        );
+        let read_back = porch
+            .get_visibility(VISIBILITY_SERVER_ID_HOME)
+            .expect("ok")
+            .expect("present");
+        assert_eq!(read_back, updated);
+    }
+
+    #[test]
+    fn visibility_set_accepts_full_u8_range() {
+        let porch = Porch::open_in_memory().expect("open ok");
+        for hops in [0u8, 1, 5, 64, 255] {
+            let row = porch
+                .set_visibility(VISIBILITY_SERVER_ID_HOME, hops)
+                .expect("set ok");
+            assert_eq!(row.max_hops, hops, "round-trip preserves {}", hops);
+        }
+    }
+
+    #[test]
+    fn visibility_set_rejects_empty_server_id() {
+        let porch = Porch::open_in_memory().expect("open ok");
+        let err = porch.set_visibility("", 1).expect_err("must error");
+        assert!(matches!(err, PorchError::InvalidInput(_)));
+        let err = porch.set_visibility("   ", 1).expect_err("must error");
+        assert!(matches!(err, PorchError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn visibility_apply_if_newer_wins_when_strictly_newer() {
+        let porch = Porch::open_in_memory().expect("open ok");
+        let local = porch
+            .get_visibility(VISIBILITY_SERVER_ID_HOME)
+            .expect("ok")
+            .expect("seeded");
+        // Inbound from a neighbour with a strictly-newer ts and a
+        // different value.
+        let inbound = VisibilityRow {
+            server_id: VISIBILITY_SERVER_ID_HOME.to_string(),
+            max_hops: 7,
+            last_changed_at: local.last_changed_at + 1_000,
+        };
+        let written = porch
+            .apply_visibility_if_newer(&inbound)
+            .expect("apply ok");
+        assert!(written, "newer inbound update must win");
+        let read_back = porch
+            .get_visibility(VISIBILITY_SERVER_ID_HOME)
+            .expect("ok")
+            .expect("present");
+        assert_eq!(read_back.max_hops, 7);
+        assert_eq!(read_back.last_changed_at, inbound.last_changed_at);
+    }
+
+    #[test]
+    fn visibility_apply_if_newer_ignores_equal_or_older_ts() {
+        let porch = Porch::open_in_memory().expect("open ok");
+        let local = porch
+            .get_visibility(VISIBILITY_SERVER_ID_HOME)
+            .expect("ok")
+            .expect("seeded");
+        // Equal ts — must be ignored (strictly-greater semantics).
+        let equal = VisibilityRow {
+            server_id: VISIBILITY_SERVER_ID_HOME.to_string(),
+            max_hops: 7,
+            last_changed_at: local.last_changed_at,
+        };
+        let written = porch
+            .apply_visibility_if_newer(&equal)
+            .expect("apply ok");
+        assert!(!written, "equal-ts inbound must be ignored");
+        let read_back = porch
+            .get_visibility(VISIBILITY_SERVER_ID_HOME)
+            .expect("ok")
+            .expect("present");
+        assert_eq!(read_back.max_hops, DEFAULT_HOME_MAX_HOPS);
+
+        // Older ts — same.
+        let older = VisibilityRow {
+            server_id: VISIBILITY_SERVER_ID_HOME.to_string(),
+            max_hops: 9,
+            last_changed_at: local.last_changed_at - 1,
+        };
+        let written = porch
+            .apply_visibility_if_newer(&older)
+            .expect("apply ok");
+        assert!(!written, "older-ts inbound must be ignored");
+    }
+
+    #[test]
+    fn visibility_apply_if_newer_inserts_unknown_server() {
+        // For a user-created server we've never seen, any inbound is
+        // strictly-newer than "no row exists" — insert it.
+        let porch = Porch::open_in_memory().expect("open ok");
+        let inbound = VisibilityRow {
+            server_id: "user-created-uuid".to_string(),
+            max_hops: 2,
+            last_changed_at: 12345,
+        };
+        let written = porch
+            .apply_visibility_if_newer(&inbound)
+            .expect("apply ok");
+        assert!(written);
+        let read_back = porch
+            .get_visibility("user-created-uuid")
+            .expect("ok")
+            .expect("present");
+        assert_eq!(read_back, inbound);
+    }
+
+    #[test]
+    fn visibility_list_returns_seeded_rows_sorted() {
+        let porch = Porch::open_in_memory().expect("open ok");
+        let rows = porch.list_visibility().expect("ok");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].server_id, "home");
+        assert_eq!(rows[1].server_id, "porch");
+    }
+
+    #[test]
+    fn schema_migration_v8_to_v9_round_trip_on_persistent_db() {
+        // Spec deliverable #9: schema migration v8 → v9 round-trip
+        // test. We can't easily synthesize a v8 DB from scratch
+        // without re-implementing the old migration here, so the
+        // round-trip is "open a fresh DB (which runs v0 → v9), close
+        // it, reopen it, observe the same state." That exercises the
+        // idempotent re-open path through every prior migration
+        // including v8 → v9. A future targeted v8-rollback test
+        // would require a frozen v8 schema dump.
+        let tmp = tempfile::tempdir().expect("tmp");
+        {
+            let porch = Porch::open(tmp.path()).expect("open ok");
+            // Confirm v9 ran: visibility_meta table exists + seeded.
+            let porch_row = porch
+                .get_visibility(VISIBILITY_SERVER_ID_PORCH)
+                .expect("ok")
+                .expect("seeded");
+            assert_eq!(porch_row.max_hops, DEFAULT_PORCH_MAX_HOPS);
+            // Mutate the home row so we can verify it persists.
+            porch
+                .set_visibility(VISIBILITY_SERVER_ID_HOME, 4)
+                .expect("set ok");
+        }
+        // Reopen — v9 migration must be a no-op AND the mutated home
+        // row must survive.
+        {
+            let porch = Porch::open(tmp.path()).expect("reopen ok");
+            let home_row = porch
+                .get_visibility(VISIBILITY_SERVER_ID_HOME)
+                .expect("ok")
+                .expect("seeded");
+            assert_eq!(home_row.max_hops, 4, "value survives reopen");
+            // Migration is idempotent — re-running it must not error
+            // or wipe the row.
+            porch.migrate().expect("re-migrate ok");
+            let home_row_after = porch
+                .get_visibility(VISIBILITY_SERVER_ID_HOME)
+                .expect("ok")
+                .expect("seeded");
+            assert_eq!(home_row_after.max_hops, 4);
+        }
     }
 
     #[test]

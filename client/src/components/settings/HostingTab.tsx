@@ -6,6 +6,7 @@ import { AdminTab } from "./AdminTab";
 import { DataExportSection } from "./DataExportSection";
 import { DeploymentProfileSection } from "./DeploymentProfileSection";
 import { InstanceNameSection } from "./InstanceNameSection";
+import { VisibilitySection } from "./VisibilitySection";
 
 export type HostingStatus = "loading" | "running" | "stopped" | "error";
 
@@ -97,6 +98,15 @@ export function HostingTab() {
         hosting status summary when the operator flips to web_first.
       */}
       <DeploymentProfileSection />
+
+      {/*
+        F-VIS — per-server mesh-hop visibility slider. Lets the
+        operator decide how far across the mesh each server they host
+        is advertised. Defaults: porch = 1 (direct paired only), home
+        = 0 (owner only until opt-in). Architecture B from the
+        2026-06-01 RFC-resolution filing.
+      */}
+      <VisibilitySection />
 
       {/*
         F1c — encrypted HOME-server data export to a trusted outside

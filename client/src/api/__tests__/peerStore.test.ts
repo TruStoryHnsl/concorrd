@@ -84,7 +84,13 @@ describe("peerStore API wrapper", () => {
     expect(result).toHaveLength(1);
     const keys = Object.keys(result[0]).sort();
     expect(keys).toEqual([
+      // F-VIS — accessGranted + lastAccessGrantAt are part of the
+      // documented public shape now (Architecture B visible-vs-access
+      // split). Defaults to true + null when the backend payload omits
+      // them.
+      "accessGranted",
       "firstSeen",
+      "lastAccessGrantAt",
       "lastSeen",
       "multiaddrs",
       "peerId",
@@ -201,7 +207,10 @@ describe("peerStore API wrapper", () => {
    */
   it("fetchKnownPeers returns objects with exactly the documented key set", async () => {
     const expectedKeys = [
+      // F-VIS — see comment in earlier test.
+      "accessGranted",
       "firstSeen",
+      "lastAccessGrantAt",
       "lastSeen",
       "multiaddrs",
       "peerId",

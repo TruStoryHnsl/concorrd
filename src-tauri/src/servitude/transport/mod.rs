@@ -218,6 +218,14 @@ pub struct LibP2pRuntime {
     /// the runtime is dropped, so the binary exits with zero tunnels
     /// live.
     wg_registry: crate::servitude::network::wg_tunnel::WgRegistry,
+    /// F-VIS — outbound queue for visibility-update broadcasts. The
+    /// Tauri command layer keeps a clone of this `Sender` (via
+    /// [`Self::visibility_broadcast_sender`]) and enqueues JSON-encoded
+    /// [`crate::porch::VisibilityUpdate`] payloads when the operator
+    /// changes a server's `max_hops`. Captured at `start()` from the
+    /// freshly-constructed [`super::super::p2p::LibP2pTransport`].
+    /// `None` while the runtime is stopped.
+    visibility_broadcast_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
 }
 
 impl std::fmt::Debug for LibP2pRuntime {
@@ -254,6 +262,7 @@ impl LibP2pRuntime {
             gate_state: None,
             instance_name: None,
             wg_registry: crate::servitude::network::wg_tunnel::WgRegistry::new(),
+            visibility_broadcast_tx: None,
         }
     }
 
@@ -313,6 +322,14 @@ impl LibP2pRuntime {
     /// Returns `None` while the runtime is stopped.
     pub fn porch_stream_control(&self) -> Option<libp2p_stream::Control> {
         self.porch_stream_control.clone()
+    }
+
+    /// F-VIS — clone of the outbound visibility-broadcast sender, or
+    /// `None` while the runtime is stopped. Tauri's
+    /// `visibility_set_server` command pushes JSON-encoded
+    /// [`crate::porch::VisibilityUpdate`] payloads here.
+    pub fn visibility_broadcast_sender(&self) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
+        self.visibility_broadcast_tx.clone()
     }
 
     /// Wire the voice-call registry. MUST be called before
@@ -533,6 +550,9 @@ impl LibP2pRuntime {
         // transport so the porch visit commands can open outbound
         // streams. Held until stop() clears it.
         self.porch_stream_control = Some(transport.stream_control());
+        // F-VIS — capture the outbound visibility-broadcast sender
+        // similarly. Cleared in `stop()`.
+        self.visibility_broadcast_tx = Some(transport.visibility_broadcast_sender());
 
         self.local_peer_id = Some(transport.local_peer_id());
         self.event_tx = Some(transport.event_sender());
@@ -643,6 +663,11 @@ impl LibP2pRuntime {
         // Drop the cached porch stream control — outbound visit calls
         // made after stop() will see `None` and surface a typed error.
         self.porch_stream_control = None;
+        // F-VIS — drop the outbound visibility-broadcast sender. Any
+        // Tauri command thread that still holds a clone discovers the
+        // receiver is closed on next `try_send` and silently drops
+        // (the local DB write still succeeded).
+        self.visibility_broadcast_tx = None;
 
         // Phase 8 follow-up — abort the voice outbound drain task.
         // The task would exit naturally when all senders drop, but
@@ -1074,6 +1099,17 @@ impl TransportRuntime {
     ) -> Option<crate::servitude::network::wg_tunnel::WgRegistry> {
         match self {
             TransportRuntime::LibP2p(t) => Some(t.wg_registry()),
+            _ => None,
+        }
+    }
+
+    /// F-VIS — clone of the outbound visibility-broadcast sender.
+    /// `None` for every other variant or while the swarm is stopped.
+    pub fn visibility_broadcast_sender(
+        &self,
+    ) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
+        match self {
+            TransportRuntime::LibP2p(t) => t.visibility_broadcast_sender(),
             _ => None,
         }
     }

@@ -70,7 +70,20 @@ const KEY_LEN: usize = 32;
 
 /// Wire-format version baked into the JSON envelope. Bumped if the
 /// `KnownPeer` shape ever changes incompatibly.
-const FORMAT_VERSION: u32 = 1;
+///
+/// * `1` — Phase 5 initial schema: peer_id, public_key_hex, multiaddrs,
+///   source, first_seen, last_seen.
+/// * `2` — F-VIS: peer-store split between **visible_peers** (everyone
+///   we've paired with, persists across access revoke) and
+///   **access_peers** (subset currently allowed to dial in). On disk
+///   this is one envelope of `KnownPeer` rows carrying two new
+///   fields — `access_granted` (defaults to `true` for v1 rows so
+///   pre-existing pairings keep working) and `last_access_grant_at`
+///   (defaults to `null` and is set on the next explicit
+///   `grant_access` call). Old v1 envelopes deserialize cleanly
+///   because both new fields use serde defaults; this avoids needing a
+///   one-shot migration step at the read path.
+const FORMAT_VERSION: u32 = 2;
 
 /// Expected hex length of `public_key_hex` — 32 bytes = 64 hex chars.
 const PUBLIC_KEY_HEX_LEN: usize = 64;
@@ -106,6 +119,17 @@ pub struct PeerCard {
 
 /// A peer we've been introduced to and chosen to remember. Stored
 /// durably; survives app restart.
+///
+/// **F-VIS — visibility vs. access split.** Per the 2026-06-01 RFC
+/// resolution filing (Architecture B), every paired peer the user has
+/// ever introduced themselves to STAYS in the store ("visible_peers")
+/// even after their access has been permanently revoked. The
+/// `access_granted` boolean discriminates: `true` = appears in the
+/// access list (this peer can dial in), `false` = visible-only (the
+/// user still sees the peer existed but the host won't accept their
+/// inbound dial until re-affirmed). Default for legacy v1 rows
+/// deserialized off disk is `true` so existing pairings keep
+/// transparently working.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct KnownPeer {
     pub peer_id: String,
@@ -114,6 +138,29 @@ pub struct KnownPeer {
     pub source: PeerSource,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
+    /// F-VIS — `true` means this peer is currently in the access list
+    /// (allowed to dial into the local porch/home). `false` means the
+    /// peer is visible-only: the user still remembers them, but
+    /// access has been revoked and won't be re-granted until the host
+    /// explicitly calls `grant_access`. Defaults to `true` so format-v1
+    /// envelopes round-trip without losing access for any
+    /// pre-existing peer.
+    #[serde(default = "default_access_granted")]
+    pub access_granted: bool,
+    /// F-VIS — RFC3339 timestamp of the most recent explicit
+    /// `grant_access` call (i.e. the moment the operator re-affirmed
+    /// this peer). `None` for legacy v1 rows that were never explicitly
+    /// granted (they inherit the implicit `true` above but no
+    /// timestamp). Surfaces in the Connections tab so the user can see
+    /// which peers were re-affirmed recently.
+    #[serde(default)]
+    pub last_access_grant_at: Option<DateTime<Utc>>,
+}
+
+fn default_access_granted() -> bool {
+    // F-VIS — see KnownPeer above. v1 envelopes that lack this field
+    // default to "access granted" so legacy pairings keep working.
+    true
 }
 
 /// Errors raised by the peer-store module.
@@ -260,6 +307,10 @@ pub async fn add(
                     deduped.push(a.clone());
                 }
             }
+            // F-VIS — a freshly-added peer starts with access GRANTED
+            // and `last_access_grant_at = now`. The visible/access
+            // split only becomes interesting after a `revoke_access`
+            // call. Adding a peer is implicitly an access grant.
             let peer = KnownPeer {
                 peer_id: card.peer_id.clone(),
                 public_key_hex: card.public_key_hex.clone(),
@@ -267,6 +318,8 @@ pub async fn add(
                 source,
                 first_seen: now,
                 last_seen: now,
+                access_granted: true,
+                last_access_grant_at: Some(now),
             };
             envelope.peers.push(peer.clone());
             peer
@@ -304,8 +357,95 @@ pub async fn mark_seen(
     Ok(())
 }
 
+/// F-VIS — revoke access for `peer_id` while keeping the peer in the
+/// visible-peers list. Sets `access_granted = false`. Returns
+/// `Ok(Some(KnownPeer))` with the updated row when a peer was found,
+/// `Ok(None)` when no such peer existed (the caller distinguishes
+/// "nothing to do" from "I revoked something").
+///
+/// This is the load-bearing call for Architecture B in the 2026-06-01
+/// RFC-resolution filing: revoking access does NOT delete the peer.
+/// Re-affirming via [`grant_access`] flips the flag back without
+/// re-collecting the peer card.
+pub async fn revoke_access(
+    handle: &StrongholdHandle,
+    peer_id: &str,
+) -> Result<Option<KnownPeer>, PeerStoreError> {
+    let paths = resolve_paths(handle)?;
+    let _guard = lock_for(&paths.sibling);
+
+    let mut envelope = read_envelope(handle, &paths)?;
+    let updated = envelope
+        .peers
+        .iter_mut()
+        .find(|p| p.peer_id == peer_id)
+        .map(|peer| {
+            peer.access_granted = false;
+            // `last_access_grant_at` deliberately preserved so the UI
+            // can still show "last affirmed: X" even after revocation.
+            peer.clone()
+        });
+    if updated.is_some() {
+        write_envelope(handle, &paths, &envelope)?;
+    }
+    Ok(updated)
+}
+
+/// F-VIS — re-affirm access for `peer_id`. Sets `access_granted = true`
+/// and bumps `last_access_grant_at` to `now()`. Returns the same
+/// `Option<KnownPeer>` semantics as [`revoke_access`].
+///
+/// Used by the Connections-tab toggle when the operator decides to
+/// re-let an access-revoked peer back in.
+pub async fn grant_access(
+    handle: &StrongholdHandle,
+    peer_id: &str,
+) -> Result<Option<KnownPeer>, PeerStoreError> {
+    let paths = resolve_paths(handle)?;
+    let _guard = lock_for(&paths.sibling);
+
+    let mut envelope = read_envelope(handle, &paths)?;
+    let now = Utc::now();
+    let updated = envelope
+        .peers
+        .iter_mut()
+        .find(|p| p.peer_id == peer_id)
+        .map(|peer| {
+            peer.access_granted = true;
+            peer.last_access_grant_at = Some(now);
+            peer.clone()
+        });
+    if updated.is_some() {
+        write_envelope(handle, &paths, &envelope)?;
+    }
+    Ok(updated)
+}
+
+/// F-VIS — list every peer that's currently in the access set (i.e.
+/// `access_granted == true`). Subset of [`list`]; the rest of the
+/// callers in the codebase (greet handler, knock-resolver, etc.) should
+/// migrate to this so a revoked peer's inbound dial is rejected even
+/// though they remain visible in the UI.
+pub async fn list_access_peers(
+    handle: &StrongholdHandle,
+) -> Result<Vec<KnownPeer>, PeerStoreError> {
+    let paths = resolve_paths(handle)?;
+    let _guard = lock_for(&paths.sibling);
+    let envelope = read_envelope(handle, &paths)?;
+    Ok(envelope
+        .peers
+        .into_iter()
+        .filter(|p| p.access_granted)
+        .collect())
+}
+
 /// Remove `peer_id` from the store. Returns `true` if a peer was
 /// removed, `false` if no such peer existed.
+///
+/// F-VIS note: this is a HARD removal that drops the peer from
+/// visibility entirely. Use [`revoke_access`] when you want to deny
+/// future dials but keep the peer in the user's list ("I know this
+/// peer existed").
 pub async fn remove(
     handle: &StrongholdHandle,
     peer_id: &str,

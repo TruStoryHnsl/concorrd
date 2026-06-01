@@ -91,6 +91,8 @@ export function KnownPeersList() {
 
 function KnownPeerRow({ peer }: { peer: KnownPeer }) {
   const remove = usePeerStore((s) => s.remove);
+  const revokeAccess = usePeerStore((s) => s.revokeAccess);
+  const grantAccess = usePeerStore((s) => s.grantAccess);
   const addToast = useToastStore((s) => s.addToast);
 
   const handleRemove = async () => {
@@ -111,10 +113,30 @@ function KnownPeerRow({ peer }: { peer: KnownPeer }) {
     }
   };
 
+  // F-VIS — toggle for the visible-vs-access split (Architecture B).
+  // Revoking does NOT remove the peer from the list; the row stays
+  // and the user can re-affirm later.
+  const handleToggleAccess = async () => {
+    const result = peer.accessGranted
+      ? await revokeAccess(peer.peerId)
+      : await grantAccess(peer.peerId);
+    if (!result) {
+      addToast("Could not change access");
+      return;
+    }
+    addToast(
+      peer.accessGranted ? "Access revoked — peer is visible-only" : "Access re-affirmed",
+      "success",
+    );
+  };
+
   const sourceLabel = SOURCE_LABEL[peer.source] ?? peer.source;
 
   return (
-    <div className="flex items-center justify-between gap-3 py-1.5 px-2 rounded hover:bg-surface-container-high">
+    <div
+      className="flex items-center justify-between gap-3 py-1.5 px-2 rounded hover:bg-surface-container-high"
+      data-testid={`known-peer-row-${peer.peerId}`}
+    >
       <div className="flex items-center gap-2 min-w-0 flex-1">
         <span
           className="text-sm text-on-surface-variant font-mono truncate"
@@ -128,6 +150,18 @@ function KnownPeerRow({ peer }: { peer: KnownPeer }) {
         >
           {sourceLabel}
         </span>
+        {/* F-VIS access state chip — visible when revoked so the user
+            can tell at a glance which rows are in the access list and
+            which are visible-only. */}
+        {!peer.accessGranted && (
+          <span
+            className="text-xs px-2 py-0.5 rounded-full bg-error/10 text-error whitespace-nowrap"
+            title="This peer is in the visible list but cannot dial in until access is re-granted."
+            data-testid={`access-revoked-chip-${peer.peerId}`}
+          >
+            Access revoked
+          </span>
+        )}
       </div>
       <span
         className="text-xs text-on-surface-variant whitespace-nowrap"
@@ -135,6 +169,26 @@ function KnownPeerRow({ peer }: { peer: KnownPeer }) {
       >
         {relativeTime(peer.lastSeen)}
       </span>
+      {/* F-VIS — per-row toggle between access-granted and visible-only.
+          Implemented as a checkbox switch (native input for accessibility). */}
+      <label
+        className="inline-flex items-center gap-1.5 text-xs text-on-surface-variant whitespace-nowrap cursor-pointer select-none"
+        title={
+          peer.accessGranted
+            ? "Access granted — this peer can dial into your porch/home."
+            : "Access revoked — peer stays in your visible list but can't dial in."
+        }
+      >
+        <input
+          type="checkbox"
+          checked={peer.accessGranted}
+          onChange={() => void handleToggleAccess()}
+          aria-label={`Toggle access for ${peer.peerId.slice(0, 12)}`}
+          data-testid={`access-toggle-${peer.peerId}`}
+          className="accent-primary"
+        />
+        Access
+      </label>
       <button
         type="button"
         onClick={handleRemove}
