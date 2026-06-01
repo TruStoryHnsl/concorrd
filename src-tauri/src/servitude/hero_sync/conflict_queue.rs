@@ -6,19 +6,26 @@
 //! is the responsibility of Architecture D (`docs/architecture/resumable-conflict-agent-scope.md`),
 //! which dispatches an agent in a separate session.
 //!
-//! ## Schema
+//! ## Schema (unified with F-D at porch::db migration v10)
+//!
+//! The producer (this module) and the consumer (`porch::conflict_agent`,
+//! F-D) share ONE all-TEXT `conflict_queue`. F-D's Tauri command layer
+//! takes `conflict_id: String`, so the id is a hex-encoded ULID and the
+//! payload + verdict are JSON *strings*, not BLOBs. The canonical DDL
+//! lives in `porch::db::run_migrations` (v10):
 //!
 //! ```sql
 //! CREATE TABLE conflict_queue (
-//!     conflict_id    BLOB PRIMARY KEY,    -- ULID, raw 16 bytes
-//!     conflict_kind  TEXT NOT NULL,       -- enum: see HERO_SYNC_CONFLICT_KINDS
-//!     payload_json   BLOB NOT NULL,       -- opaque JSON: the two
-//!                                          --   competing events + context
-//!     queued_at      INTEGER NOT NULL,    -- unix milliseconds
-//!     resolved_at    INTEGER,             -- nullable; F-D stamps
-//!     agent_verdict  BLOB                 -- nullable JSON; F-D writes
+//!     conflict_id        TEXT PRIMARY KEY,  -- hex-encoded 16-byte ULID
+//!     conflict_kind      TEXT NOT NULL,     -- enum: see HERO_SYNC_CONFLICT_KINDS
+//!     payload_json       TEXT NOT NULL,     -- JSON: the two competing events
+//!     queued_at          INTEGER NOT NULL,  -- unix milliseconds
+//!     resolved_at        INTEGER,           -- nullable; F-D stamps
+//!     final_verdict_json TEXT,              -- nullable JSON; F-D writes
+//!     status             TEXT NOT NULL DEFAULT 'pending'
+//!                        CHECK (status IN ('pending','resolved','manual_required'))
 //! );
-//! CREATE INDEX idx_conflict_queue_pending
+//! CREATE INDEX idx_conflict_queue_unresolved
 //!     ON conflict_queue(queued_at) WHERE resolved_at IS NULL;
 //! ```
 //!
@@ -29,9 +36,11 @@
 //! and writes:
 //!
 //!   * `resolved_at = unix_millis()`
-//!   * `agent_verdict = <JSON envelope per RFC §5.d>`
+//!   * `final_verdict_json = <JSON envelope per RFC §5.d>`
+//!   * `status = 'resolved'` (or `'manual_required'` when the retry
+//!     budget is exhausted)
 //!
-//! `agent_verdict` schema mirrors the RFC's `ConflictVerdict` struct:
+//! `final_verdict_json` mirrors the RFC's `ConflictVerdict` struct:
 //! `{ verdict_kind, rationale, confidence, agent_signature?, applied_event_id? }`.
 //! F-D must NOT delete rows — the queue is the audit trail. Resolved
 //! rows stay forever, partitioned by the `WHERE resolved_at IS NULL`
@@ -111,7 +120,11 @@ pub struct ConflictQueueRow {
     pub payload_json: serde_json::Value,
     pub queued_at: i64,
     pub resolved_at: Option<i64>,
-    pub agent_verdict: Option<serde_json::Value>,
+    /// The verdict envelope F-D (or a manual user resolution) writes into
+    /// `conflict_queue.final_verdict_json`. `None` while the row is still
+    /// pending. Same column the F-D resolver reads/writes — producer and
+    /// consumer agree on the unified TEXT schema.
+    pub final_verdict_json: Option<serde_json::Value>,
 }
 
 /// Mint a fresh ULID-shaped 16-byte identifier. We don't depend on the
@@ -141,16 +154,22 @@ pub fn enqueue(
     record: &ConflictRecord,
 ) -> Result<[u8; 16], PorchError> {
     let conflict_id = fresh_conflict_id();
+    // Unified conflict_queue schema (porch::db migration v10) is all-TEXT:
+    // the F-D consumer's Tauri command layer takes `conflict_id: String`,
+    // so the producer writes the hex-encoded ULID and a JSON *string*
+    // payload (NOT a BLOB). Producer + consumer therefore read/write the
+    // SAME column types.
+    let conflict_id_hex = hex::encode(conflict_id);
     let conn = porch.conn.lock().expect("porch conn mutex poisoned");
-    let payload_bytes = serde_json::to_vec(&record.payload).map_err(PorchError::Serde)?;
+    let payload_text = serde_json::to_string(&record.payload).map_err(PorchError::Serde)?;
     conn.execute(
         "INSERT INTO conflict_queue
-            (conflict_id, conflict_kind, payload_json, queued_at)
-         VALUES (?1, ?2, ?3, ?4)",
+            (conflict_id, conflict_kind, payload_json, queued_at, status)
+         VALUES (?1, ?2, ?3, ?4, 'pending')",
         params![
-            conflict_id.as_slice(),
+            conflict_id_hex,
             record.kind.as_str(),
-            payload_bytes.as_slice(),
+            payload_text,
             unix_millis(),
         ],
     )?;
@@ -163,44 +182,44 @@ pub fn list_pending(porch: &Porch) -> Result<Vec<ConflictQueueRow>, PorchError> 
     let conn = porch.conn.lock().expect("porch conn mutex poisoned");
     let mut stmt = conn.prepare(
         "SELECT conflict_id, conflict_kind, payload_json, queued_at,
-                resolved_at, agent_verdict
+                resolved_at, final_verdict_json
          FROM conflict_queue
          WHERE resolved_at IS NULL
          ORDER BY queued_at ASC",
     )?;
     let rows = stmt
         .query_map([], |r| {
-            let id_bytes: Vec<u8> = r.get(0)?;
+            let conflict_id: String = r.get(0)?;
             let kind: String = r.get(1)?;
-            let payload_bytes: Vec<u8> = r.get(2)?;
+            let payload_text: String = r.get(2)?;
             let queued_at: i64 = r.get(3)?;
             let resolved_at: Option<i64> = r.get(4)?;
-            let verdict_bytes: Option<Vec<u8>> = r.get(5)?;
+            let verdict_text: Option<String> = r.get(5)?;
             let payload_json: serde_json::Value =
-                serde_json::from_slice(&payload_bytes).map_err(|e| {
+                serde_json::from_str(&payload_text).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
                         2,
-                        rusqlite::types::Type::Blob,
+                        rusqlite::types::Type::Text,
                         Box::new(e),
                     )
                 })?;
-            let agent_verdict = match verdict_bytes {
-                Some(bytes) => Some(serde_json::from_slice(&bytes).map_err(|e| {
+            let final_verdict_json = match verdict_text {
+                Some(text) => Some(serde_json::from_str(&text).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
                         5,
-                        rusqlite::types::Type::Blob,
+                        rusqlite::types::Type::Text,
                         Box::new(e),
                     )
                 })?),
                 None => None,
             };
             Ok(ConflictQueueRow {
-                conflict_id: hex::encode(id_bytes),
+                conflict_id,
                 conflict_kind: kind,
                 payload_json,
                 queued_at,
                 resolved_at,
-                agent_verdict,
+                final_verdict_json,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -287,16 +306,16 @@ mod tests {
             let conn = porch.conn.lock().unwrap();
             conn.execute(
                 "UPDATE conflict_queue
-                 SET resolved_at = ?1, agent_verdict = ?2
+                 SET resolved_at = ?1, final_verdict_json = ?2, status = 'resolved'
                  WHERE conflict_id = ?3",
                 params![
                     unix_millis(),
-                    serde_json::to_vec(&serde_json::json!({
+                    serde_json::to_string(&serde_json::json!({
                         "verdict_kind": "pick_a",
                         "rationale": "tie-break by device-id"
                     }))
                     .unwrap(),
-                    id.as_slice(),
+                    hex::encode(id),
                 ],
             )
             .unwrap();
@@ -343,5 +362,41 @@ mod tests {
         let pending = list_pending(&porch).unwrap();
         assert_eq!(pending[0].payload_json["row_id"], "🦀-channel");
         assert_eq!(pending[0].payload_json["names"][1], "#общий");
+    }
+
+    /// Cross-module reconciliation guard (F-C enqueue ↔ F-D resolve).
+    ///
+    /// Proves the producer (this module, F-C) and the consumer
+    /// (`porch::conflict_agent`, F-D) read/write the SAME unified
+    /// `conflict_queue` schema (porch::db v10). If the column types or
+    /// names diverged again (e.g. BLOB vs TEXT, `agent_verdict` vs
+    /// `final_verdict_json`), F-D's `conflict_queue_list_unresolved`
+    /// would either fail to type-convert or see zero rows — this test
+    /// would catch it instead of the silent "resolver reads nothing"
+    /// failure the schemas were reconciled to prevent.
+    #[test]
+    fn fc_enqueue_is_visible_to_fd_resolver_view() {
+        let porch = Porch::open_in_memory().expect("open");
+        // Producer side (F-C) writes the row.
+        enqueue(&porch, &record(ConflictKind::TombstoneVsWrite, "row-x"))
+            .expect("F-C enqueue");
+
+        // Consumer side (F-D) reads it through its OWN Porch method —
+        // the read path the Tauri command layer actually uses.
+        let unresolved = porch
+            .conflict_queue_list_unresolved()
+            .expect("F-D list_unresolved");
+        assert_eq!(unresolved.len(), 1, "F-D must see the F-C-enqueued row");
+        let row = &unresolved[0];
+        assert_eq!(row.conflict_kind, "tombstone_vs_write");
+        // F-D reads payload_json as a TEXT JSON string; it must parse and
+        // carry the producer's payload through unchanged.
+        let payload: serde_json::Value =
+            serde_json::from_str(&row.payload_json).expect("F-D payload_json parses as TEXT JSON");
+        assert_eq!(payload["row_id"], "row-x");
+        // Fresh F-C enqueue defaults to pending, no verdict yet.
+        assert!(row.resolved_at.is_none());
+        assert!(row.final_verdict_json.is_none());
+        assert_eq!(row.status, crate::porch::ConflictStatus::Pending);
     }
 }

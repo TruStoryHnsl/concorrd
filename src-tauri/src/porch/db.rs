@@ -67,7 +67,17 @@ use super::DEFAULT_PORCH_CHANNEL_ID;
 ///   hop-1, home at hop-0. See [`crate::porch::visibility`] for the
 ///   CRUD layer + the gossipsub propagation payload that flows
 ///   through F3's address-rotation topic.
-pub const SCHEMA_VERSION: i64 = 9;
+/// * `10` — F-D — Resumable conflict-agent session:
+///   `conflict_queue` (one row per detected destructive sync conflict,
+///   per RFC §5.c–d) + `conflict_attempts` (append-only per-attempt
+///   audit trail with per-attempt partial-context snapshots that flow
+///   into the NEXT attempt's preamble when a previous attempt timed
+///   out). The orchestration loop in
+///   [`crate::porch::conflict_agent`] drives these tables; F-D is the
+///   first hand-off contract from F-C's conflict-detection layer to
+///   the agent-dispatch layer. See `docs/architecture/
+///   resumable-conflict-agent-scope.md` for the full design.
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// Server id used by `visibility_meta` for the ephemeral PORCH server.
 /// Hard-coded literal because the porch is intrinsic — not user-created
@@ -729,46 +739,73 @@ impl Porch {
             )?;
         }
         if current < 10 {
-            // F-C — Tailscale-gated hero sync.
+            // F-C (enqueue) + F-D (resolve) — unified conflict_queue.
             //
-            // `conflict_queue` is the hand-off contract to Architecture
-            // D (the agent-dispatch session that drains pending
-            // conflicts). F-C's responsibility ends at the enqueue
-            // step: when the bidirectional event-log merge surfaces a
-            // DESTRUCTIVE conflict (per the RFC §5.c catalogue:
-            // concurrent_rename / tombstone_vs_write / acl_change), a
-            // row is appended here. Conflicts are LEFT IN THE QUEUE —
-            // F-D drains them in a separate parallel-session dispatch.
+            // `conflict_queue` is the hand-off contract between the
+            // hero-sync conflict DETECTOR (F-C,
+            // `servitude::hero_sync::conflict_queue`) and the
+            // conflict-agent RESOLVER (F-D, `porch::conflict_agent`).
+            // F-C enqueues a row when the bidirectional event-log merge
+            // surfaces a DESTRUCTIVE conflict (RFC §5.c catalogue:
+            // concurrent_rename / tombstone_vs_write / acl_change); F-D
+            // drains unresolved rows in a separate dispatch session and
+            // stamps `resolved_at` + `final_verdict_json`.
             //
-            // Schema is the minimum the hand-off needs:
+            // The two sides agreed on a single TEXT representation so
+            // the producer's INSERT and the consumer's command layer
+            // (which takes `conflict_id: String`) read/write the SAME
+            // table without type coercion:
             //
-            //   * `conflict_id` — ULID (BLOB) so the F-D dispatcher can
-            //     correlate verdicts across processes.
-            //   * `conflict_kind` — TEXT enum matching the RFC catalogue.
-            //   * `payload_json` — opaque CBOR-equivalent serialization
-            //     of the two competing events. F-C does NOT inspect
-            //     this; F-D's agent reads it and decides.
-            //   * `queued_at` — unix milliseconds (matches the rest of
-            //     this schema's `*_at` columns).
-            //   * `resolved_at` — nullable; F-D stamps it on verdict.
-            //   * `agent_verdict` — nullable BLOB; F-D writes the
-            //     CBOR-equivalent verdict envelope here.
+            //   * `conflict_id` — TEXT primary key. F-C mints a
+            //     hex-encoded 16-byte ULID; F-D's Tauri commands pass it
+            //     straight through as a `String`.
+            //   * `conflict_kind` — TEXT enum from the RFC catalogue.
+            //   * `payload_json` — TEXT JSON of the two competing events.
+            //     F-C writes it; F-D's resolver reads + reasons over it.
+            //   * `queued_at` — unix milliseconds.
+            //   * `resolved_at` — nullable; F-D stamps on verdict.
+            //   * `final_verdict_json` — nullable TEXT; F-D (or a manual
+            //     user resolution) writes the verdict envelope here.
+            //   * `status` — pending | resolved | manual_required. F-C
+            //     enqueues with the DEFAULT 'pending'; F-D advances it.
             //
-            // No FK to `event_log` here: that table is part of Phase
-            // H3 and may land separately. The payload carries the full
-            // event records inline so the queue is self-contained.
+            // `conflict_attempts` is F-D's append-only per-attempt audit
+            // trail (one row per resolver attempt; `partial_context_blob`
+            // flows into the next attempt's `<<previous-session>>`
+            // preamble on timeout). `ON DELETE CASCADE` ties it to its
+            // conflict. Two indices accelerate the hot queries: pending
+            // conflicts in queued order, and most-recent attempt per
+            // conflict. See `docs/architecture/
+            // resumable-conflict-agent-scope.md` +
+            // `docs/architecture/tailscale-gated-hero-sync-scope.md`.
             conn.execute_batch(
                 "BEGIN;
                 CREATE TABLE IF NOT EXISTS conflict_queue (
-                    conflict_id BLOB PRIMARY KEY,
+                    conflict_id TEXT PRIMARY KEY,
                     conflict_kind TEXT NOT NULL,
-                    payload_json BLOB NOT NULL,
+                    payload_json TEXT NOT NULL,
                     queued_at INTEGER NOT NULL,
                     resolved_at INTEGER,
-                    agent_verdict BLOB
+                    final_verdict_json TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'resolved', 'manual_required'))
                 );
-                CREATE INDEX IF NOT EXISTS idx_conflict_queue_pending
-                    ON conflict_queue(queued_at) WHERE resolved_at IS NULL;
+                CREATE TABLE IF NOT EXISTS conflict_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    conflict_id TEXT NOT NULL,
+                    started_at INTEGER NOT NULL,
+                    ended_at INTEGER,
+                    state TEXT NOT NULL
+                        CHECK (state IN ('running', 'succeeded', 'timeout', 'aborted')),
+                    partial_context_blob TEXT,
+                    partial_verdict_json TEXT,
+                    FOREIGN KEY (conflict_id) REFERENCES conflict_queue(conflict_id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_conflict_queue_unresolved
+                    ON conflict_queue(queued_at)
+                    WHERE resolved_at IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_conflict_attempts_by_conflict
+                    ON conflict_attempts(conflict_id, started_at);
                 INSERT INTO schema_version (version) VALUES (10);
                 COMMIT;",
             )?;
