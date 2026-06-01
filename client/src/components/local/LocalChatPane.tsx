@@ -24,9 +24,11 @@
 import { useCallback, useMemo, useState } from "react";
 import type { ChatMessage } from "../../hooks/useMatrix";
 import { usePorchStore } from "../../stores/porchStore";
+import { useInstanceNameStore } from "../../stores/instanceName";
 import { MessageList } from "../chat/MessageList";
 import { MessageInput } from "../chat/MessageInput";
 import { BringingUpSplash } from "../BringingUpSplash";
+import { VanityNameBanner, isVanityBannerSkipped } from "./VanityNameBanner";
 import { isTauri } from "../../api/servitude";
 
 function porchToChatMessage(
@@ -61,6 +63,21 @@ export function LocalChatPane() {
   const sendMessage = usePorchStore((s) => s.sendMessage);
 
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
+
+  // Vanity-name banner gating. We show it when:
+  //  - the user has not picked a name yet (`instanceName === ""`),
+  //  - the porch has no messages (truly fresh install — long-running
+  //    porches don't get re-nagged), and
+  //  - the user hasn't tapped "skip" in this session.
+  // `bannerHidden` lets the user dismiss the banner without immediately
+  // re-mounting it from the parent props.
+  const instanceName = useInstanceNameStore((s) => s.name);
+  const [bannerHidden, setBannerHidden] = useState(() => isVanityBannerSkipped());
+  const showVanityBanner =
+    isNative &&
+    !bannerHidden &&
+    instanceName.trim().length === 0 &&
+    messages.length === 0;
 
   const selectedChannel = useMemo(
     () => channels.find((c) => c.id === selectedChannelId) ?? null,
@@ -133,6 +150,9 @@ export function LocalChatPane() {
 
   return (
     <>
+      {showVanityBanner && (
+        <VanityNameBanner onDismiss={() => setBannerHidden(true)} />
+      )}
       <MessageList
         messages={chatMessages}
         isPaginating={isLoading}
