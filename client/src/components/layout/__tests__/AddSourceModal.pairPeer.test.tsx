@@ -55,6 +55,13 @@ describe("<AddSourceModal /> pair-peer surface", () => {
       />,
     );
 
+    // Feature F2: the modal lands on the unified address screen first.
+    // The legacy picker (where the 'Pair a peer' tile lives) is reached
+    // via the "More options" link.
+    fireEvent.click(
+      screen.getByTestId("add-source-address-more-options"),
+    );
+
     const tile = screen.getByTestId("add-source-tile-pair-peer");
     expect(tile).toBeInTheDocument();
     expect(tile).toHaveTextContent(/pair a peer/i);
@@ -69,6 +76,9 @@ describe("<AddSourceModal /> pair-peer surface", () => {
       />,
     );
 
+    fireEvent.click(
+      screen.getByTestId("add-source-address-more-options"),
+    );
     fireEvent.click(screen.getByTestId("add-source-tile-pair-peer"));
 
     expect(

@@ -4,7 +4,14 @@ import { ConcordLogo } from "../brand/ConcordLogo";
 export type SourceBrand = "concord" | "matrix" | "mozilla" | "reticulum";
 
 export function inferSourceBrand(input: {
-  platform?: "concord" | "matrix" | "reticulum";
+  /**
+   * The platform tag from `ConcordSource.platform`. Kept in sync with
+   * the source-store union — `concord-p2p` (Feature F2) renders with
+   * the default Concord brand because libp2p porch peers ARE Concord
+   * instances reached via a different transport, not a different
+   * product.
+   */
+  platform?: "concord" | "matrix" | "reticulum" | "concord-p2p";
   host?: string;
   instanceName?: string;
   serverName?: string;

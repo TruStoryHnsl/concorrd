@@ -2526,6 +2526,7 @@ export function AddSourceModal({
   onSourceAdded: () => void;
 }) {
   type Screen =
+    | "address"
     | "pick"
     | "concord"
     | "matrix"
@@ -2539,9 +2540,12 @@ export function AddSourceModal({
   // (e.g. "pair-peer", "concord", "matrix"). Domain hints like
   // "matrix.org" or "chat.mozilla.org" are handled by callers as a
   // shortcut to open the modal — they don't map to a screen here, so we
-  // fall back to "pick" for them. Avoids surfacing an unknown-screen
-  // blank state.
+  // fall back to "address" (the unified detection screen) for them.
+  // Avoids surfacing an unknown-screen blank state. Feature F2 made
+  // "address" the default landing, with "pick" reachable via the
+  // "More options" link in case the user wants to bypass detection.
   const KNOWN_SCREENS: ReadonlySet<Screen> = new Set([
+    "address",
     "pick",
     "concord",
     "matrix",
@@ -2551,9 +2555,18 @@ export function AddSourceModal({
   const startScreen: Screen =
     initialScreen && KNOWN_SCREENS.has(initialScreen as Screen)
       ? (initialScreen as Screen)
-      : "pick";
+      : "address";
   const [screen, setScreen] = useState<Screen>(startScreen);
   const [error, setError] = useState("");
+
+  // Feature F2 — unified address screen. The user types one thing and
+  // we figure out which protocol it is. The detection sub-state lives
+  // beside the existing per-protocol form state so each screen keeps
+  // its own self-contained inputs (back-navigation preserves drafts).
+  const [addressInput, setAddressInput] = useState("");
+  const [detectPhase, setDetectPhase] = useState<
+    "idle" | "inspect" | "probe-concord" | "probe-matrix"
+  >("idle");
 
   // Concord form state
   const [host, setHost] = useState("");
@@ -2606,6 +2619,64 @@ export function AddSourceModal({
         setScreen("error");
       });
   }, [onSourceAdded, updateSource]);
+
+  /**
+   * Feature F2 — run unified address detection, then route to the
+   * correct protocol-specific screen. We pre-populate the destination
+   * screen's form state so the user doesn't have to retype the address
+   * (e.g. detecting `matrix.org` lands them in matrix-auth with the
+   * homeserver field already filled). Unknown → fall back to the
+   * legacy picker with the address pre-filled so the user can pick a
+   * protocol manually without losing what they typed.
+   *
+   * Detection is purely a routing step: the actual well-known fetch
+   * + login flow still happens via the existing per-screen handlers
+   * once we land on `concord` / `matrix-auth` / `pair-peer`. This
+   * keeps the wire-level discovery logic in one place (`api/wellKnown`)
+   * and avoids duplicating the well-known parse across two callsites.
+   */
+  const handleDetectAddress = async () => {
+    const trimmed = addressInput.trim();
+    if (!trimmed) return;
+    setDetectPhase("inspect");
+    setScreen("validating");
+    try {
+      const { detectAddressKind } = await import("../../lib/detectAddress");
+      const verdict = await detectAddressKind(trimmed, {
+        onProgress: (phase) => setDetectPhase(phase),
+      });
+      switch (verdict.kind) {
+        case "concord-http":
+          setHost(verdict.host);
+          setToken("");
+          setScreen("concord");
+          break;
+        case "matrix":
+          await handleDiscoverPresetMatrix(verdict.host);
+          break;
+        case "concord-p2p":
+          setScreen("pair-peer");
+          break;
+        case "unknown":
+          // Pre-fill both possible destinations so the manual picker
+          // user just has to click "Concord" or "Matrix" and continue.
+          setHost(verdict.host);
+          setMatrixHost(verdict.host);
+          setError(verdict.detail);
+          setScreen("pick");
+          break;
+        case "invalid":
+          setError(verdict.detail);
+          setScreen("error");
+          break;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Detection failed");
+      setScreen("error");
+    } finally {
+      setDetectPhase("idle");
+    }
+  };
 
   const handleConnectConcord = async () => {
     const trimmed = host.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
@@ -2768,10 +2839,66 @@ export function AddSourceModal({
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="w-full sm:max-w-sm sm:mx-4 bg-surface-container rounded-t-2xl sm:rounded-2xl border border-outline-variant/20 shadow-2xl p-4 sm:p-6 max-h-[88vh] overflow-y-auto safe-bottom">
 
+        {/* ── Screen: address (Feature F2 — unified create-server flow) ──
+            One input field. Accepts a hostname, a Matrix domain, a
+            Concord well-known URL, a `concord://peer/` deeplink, a
+            `concord+pair://` URL, a libp2p multiaddr, or a bare peer
+            id. We auto-detect which protocol the address belongs to
+            and route the user to the matching sub-flow behind the
+            scenes — they never have to know which protocol they
+            picked. See `lib/detectAddress.ts` for the precedence
+            order. */}
+        {screen === "address" && (
+          <>
+            <Header title="Add a place" />
+            <div className="space-y-4">
+              <p className="text-xs text-on-surface-variant">
+                You arrive at a "place" and that place has servers you may have access to. Paste an address — a hostname, an invite link, or a peer card — and Concord figures out the rest.
+              </p>
+              <div>
+                <label className="text-xs font-label text-on-surface-variant mb-1.5 block">
+                  Address
+                </label>
+                <input
+                  type="text"
+                  value={addressInput}
+                  onChange={(e) => setAddressInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && addressInput.trim()) {
+                      void handleDetectAddress();
+                    }
+                  }}
+                  placeholder="chat.example.com, matrix.org, concord://peer/…"
+                  data-testid="add-source-address-input"
+                  autoFocus
+                  className="w-full px-3 py-2 bg-surface-container-highest rounded-lg text-sm text-on-surface border border-outline-variant/20 focus:border-primary/50 focus:outline-none"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleDetectAddress()}
+                disabled={!addressInput.trim()}
+                data-testid="add-source-address-continue"
+                className="w-full py-2.5 bg-primary text-on-primary rounded-lg text-sm font-medium disabled:opacity-40 hover:bg-primary/90 transition-colors"
+              >
+                Continue
+              </button>
+              <button
+                type="button"
+                onClick={() => setScreen("pick")}
+                data-testid="add-source-address-more-options"
+                className="w-full text-xs text-on-surface-variant hover:text-on-surface underline-offset-2 hover:underline transition-colors"
+              >
+                More options — pick a protocol manually
+              </button>
+            </div>
+          </>
+        )}
+
         {/* ── Screen: pick ── */}
         {screen === "pick" && (
           <>
-            <Header title="Explore Sources" />
+            <Header title="Explore Sources" onBack={() => setScreen("address")} />
             <div className="space-y-2">
               {/*
                 "Start / Stop local hosting" sits at the top of the pick
@@ -3081,9 +3208,27 @@ export function AddSourceModal({
           </div>
         )}
 
-        {/* ── Screen: validating ── */}
+        {/* ── Screen: validating ──
+            Shared between Feature F2 detection and the per-protocol
+            login round-trips. When detection is mid-probe we show a
+            phase-specific subtitle so the user knows which protocol
+            is being probed; everything else gets the generic
+            "Connecting…". The BringingUpSplash is mandatory — never
+            invent a new spinner here (see CLAUDE.md). */}
         {screen === "validating" && (
-          <BringingUpSplash size="compact" status="Connecting…" />
+          <BringingUpSplash
+            size="compact"
+            status={
+              detectPhase === "probe-concord"
+                ? "Detecting Concord HTTP…"
+                : detectPhase === "probe-matrix"
+                  ? "Detecting Matrix…"
+                  : detectPhase === "inspect"
+                    ? "Detecting…"
+                    : "Connecting…"
+            }
+            testId="add-source-validating-splash"
+          />
         )}
 
         {/* ── Screen: error ── */}

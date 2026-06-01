@@ -54,8 +54,19 @@ export interface ConcordSource {
   error?: string;
   /** When this source was added (ISO timestamp). */
   addedAt: string;
-  /** What kind of network this source represents. Defaults to "concord". */
-  platform?: "concord" | "matrix" | "reticulum";
+  /**
+   * What kind of network this source represents. Defaults to "concord".
+   *
+   * Feature F2 introduced `"concord-p2p"` for sources reached via the
+   * libp2p porch path (peer-card deeplinks, multiaddrs, scanned QR).
+   * These rows are written by the unified add-source flow purely for
+   * tile-display continuity — the actual peer connection is still
+   * tracked in {@link import("./peerStore").usePeerStore}. ChatLayout
+   * treats `"concord-p2p"` like any other source for rail rendering;
+   * protocol-specific divergence lives behind a thin adapter at the
+   * data-fetch boundary, not in the rendering layer.
+   */
+  platform?: "concord" | "matrix" | "reticulum" | "concord-p2p";
   /** Concord user who owns this persisted source. Null => instance-global primary source. */
   ownerUserId?: string | null;
   /**
