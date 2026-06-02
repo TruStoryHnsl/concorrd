@@ -15,11 +15,9 @@ import type { HomeserverConfig } from "../../../api/wellKnown";
  *     homeserver URL into the serverConfig store", "an http:// QR is
  *     rejected", etc.
  *
- *   - The encoder/decoder round-trip test uses real host/url values
- *     that a user would actually encounter in the wild (concordchat.net
- *     public default from INS-051). It does NOT use the operator's
- *     personal instance domain — that remains a secret per
- *     feedback_concorrd_domain_is_secret memory rule.
+ *   - The encoder/decoder round-trip test uses generic host/url values
+ *     (concordchat.net public default from INS-051) — never any
+ *     operator's personal instance domain.
  */
 
 describe("pairingSchema encode/decode (INS-022 QR pairing wire format)", () => {

@@ -170,3 +170,104 @@ async def _list_compose_containers(
         return resp.json()
 
 
+async def is_service_running(service_name: str) -> bool:
+    """Return ``True`` when at least one container for ``service_name`` is
+    in the ``running`` state.
+
+    Heuristic used by ``/api/hosting/profile`` to report whether the web
+    stack is actually up. ``running`` is the Docker Engine API's
+    own ``State`` value — anything else (``exited``, ``created``,
+    ``paused``, ``restarting``) is treated as not-running for the
+    purpose of the UI badge.
+
+    Swallows :class:`DockerControlError` to ``False`` because the
+    profile endpoint is a status read, not an enforcement point — a
+    proxy-down or service-missing condition is "stack not running"
+    from the operator's perspective, and the surrounding hosting
+    status surface already carries actionable diagnostics for those
+    cases.
+    """
+    try:
+        containers = await _list_compose_containers(
+            service_name, all_states=True
+        )
+    except DockerControlError:
+        return False
+    return any(c.get("State") == "running" for c in containers)
+
+
+async def start_compose_service(service_name: str) -> dict:
+    """Start every container belonging to a docker-compose service.
+
+    Looks up containers by the ``com.docker.compose.service`` label
+    (same as :func:`restart_compose_service`). Containers already in
+    the ``running`` state are skipped — this call is idempotent so
+    the Phase 7 "enable web stack" toggle can be re-pressed without
+    error if a previous attempt half-completed.
+
+    Returns a dict with ``started`` (list of container short IDs that
+    transitioned from stopped to running), ``already_running`` (list of
+    short IDs that were already up), and ``elapsed_seconds``. Raises
+    :class:`DockerControlError` if the proxy is unreachable, the
+    service has no containers (compose hasn't been ``up``'d at all),
+    or the Docker API rejects the start.
+    """
+    start = time.monotonic()
+    containers = await _list_compose_containers(service_name, all_states=True)
+    if not containers:
+        raise DockerControlError(
+            f"No container with label "
+            f"com.docker.compose.service={service_name} — "
+            "is the compose stack defined and at least once `up`'d?"
+        )
+
+    started: list[str] = []
+    already_running: list[str] = []
+    async with httpx.AsyncClient(
+        base_url=DOCKER_PROXY_URL,
+        timeout=httpx.Timeout(
+            connect=_CONNECT_TIMEOUT,
+            read=_RESTART_TIMEOUT,
+            write=_CONNECT_TIMEOUT,
+            pool=_CONNECT_TIMEOUT,
+        ),
+    ) as client:
+        for c in containers:
+            cid = c["Id"]
+            short = cid[:12]
+            if c.get("State") == "running":
+                already_running.append(short)
+                continue
+            logger.info(
+                "starting container %s (service=%s)", short, service_name
+            )
+            try:
+                rr = await client.post(f"/containers/{cid}/start")
+            except httpx.HTTPError as exc:
+                raise DockerControlError(
+                    f"Start call failed for {short}: {exc}"
+                ) from exc
+            if rr.status_code == 403:
+                raise DockerControlError(
+                    f"docker-socket-proxy denied start for {short} — "
+                    "check that POST=1 is set on the proxy"
+                )
+            # 204 = started, 304 = already running (idempotent).
+            if rr.status_code not in (204, 304):
+                raise DockerControlError(
+                    f"Docker start returned {rr.status_code} "
+                    f"for {short}: {rr.text}"
+                )
+            started.append(short)
+    elapsed = time.monotonic() - start
+    logger.info(
+        "start_compose_service(%s) done: started=%d already=%d in %.2fs",
+        service_name, len(started), len(already_running), elapsed,
+    )
+    return {
+        "started": started,
+        "already_running": already_running,
+        "elapsed_seconds": round(elapsed, 2),
+    }
+
+

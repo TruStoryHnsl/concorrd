@@ -4,9 +4,9 @@ This document describes how Concord's stable React client is packaged into
 native binaries via **Tauri v2** for every supported platform, and how those
 builds are split across the workshop's two build hosts.
 
-> **Audience:** developers building Concord locally on orrion or orrpheus,
-> or wiring up CI to reproduce these builds. This guide is the source of
-> truth for which machine produces which artifact.
+> **Audience:** developers building Concord locally on a Linux/Windows
+> host or a macOS host, or wiring up CI to reproduce these builds. This
+> guide is the source of truth for which host produces which artifact.
 
 ---
 
@@ -19,7 +19,7 @@ builds are split across the workshop's two build hosts.
 | Node.js      | 18+ | Required by the Vite/React client build |
 | npm          | 9+  | Bundled with Node 18+ |
 
-The current dev host (`orrion`) confirms `cargo 1.94.0`, `rustc 1.94.0`, and
+A typical dev host confirms `cargo 1.94.0`, `rustc 1.94.0`, and
 `tauri-cli 2.10.1` work end-to-end.
 
 ## 2. Per-platform system prerequisites
@@ -76,15 +76,16 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libappindicator3-dev \
 
 ## 3. Machine split
 
-Concord uses a **two-machine workshop**:
+Concord assumes a **two-host workshop**:
 
 | Build host | OS | Builds for | Why |
 |------------|----|-----------|-----|
-| **orrion** | CachyOS, RTX 3070 | Linux x86_64, Linux aarch64, Windows x86_64, Android ARM64 | Linux-native + cross-targets that don't need Apple toolchains |
-| **orrpheus** | macOS 14+, M1 Pro | macOS Universal, iOS ARM64 | Apple toolchains require physical Apple hardware |
+| **Linux/Windows host** | CachyOS / Arch / Debian / WSL | Linux x86_64, Linux aarch64, Windows x86_64, Android ARM64 | Linux-native + cross-targets that don't need Apple toolchains |
+| **macOS host** | macOS 14+ (Apple Silicon recommended) | macOS Universal, iOS ARM64 | Apple toolchains require physical Apple hardware |
 
-Both hosts share `~/projects/concord` via Syncthing. Each host runs only the
-build scripts targeted at its platforms; artifacts written to
+Both hosts need a working copy of the repository (a shared filesystem
+via Syncthing/NFS, or independent clones, both work). Each host runs only
+the build scripts targeted at its platforms; artifacts written to
 `src-tauri/target/release/bundle/` are picked up by the release aggregation
 step (see §6).
 
@@ -103,14 +104,14 @@ Concord's binaries split into two **roles** per platform:
 
 | Platform | Frontend Client (build host & cmd) | Servitude Companion | Release channel | Artifact aggregation path |
 |---|---|---|---|---|
-| **Linux x86_64**   | orrion · `scripts/build_linux_native.sh` | embedded module (always-on when foreground) | direct download (AppImage, .deb) + future Flathub | `src-tauri/target/release/bundle/{appimage,deb}/` |
-| **Linux aarch64**  | orrion · `cargo tauri build --target aarch64-unknown-linux-gnu` | embedded module | direct download (AppImage, .deb) | `src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/` |
-| **Windows x86_64** | orrion · `scripts/build_windows_wsl.sh` (WSL) or `scripts/build_windows_native.ps1` (native) | embedded module | direct download (.msi) + future Microsoft Store | `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/` |
-| **macOS Universal**| orrpheus · `scripts/build_macos_native.sh` | embedded module | direct download (.dmg) + Mac App Store (future) | `src-tauri/target/universal-apple-darwin/release/bundle/{dmg,macos}/` |
-| **iOS ARM64**      | orrpheus · `cargo tauri ios build` (after `cargo tauri ios init`) | embedded module (foreground MVP — VoIP background entitlement is a stretch goal) | App Store (Apple Developer Program enrollment in progress 2026-04-07) | `src-tauri/gen/apple/build/Build/Products/Release-iphoneos/` |
-| **Android ARM64**  | orrion · `cargo tauri android build` (after `cargo tauri android init`) | embedded module (foreground MVP) | Play Store + direct .apk download + F-Droid (future) | `src-tauri/gen/android/app/build/outputs/apk/release/` |
-| **Google TV / Android TV** | orrion · same `cargo tauri android build` (shared APK with leanback manifest flags) | embedded module (foreground MVP) | Play Store (TV track) + direct .apk sideload | `src-tauri/gen/android/app/build/outputs/apk/release/` (same APK as Android phone) |
-| **Apple TV (tvOS)** | orrpheus · Xcode build of `src-tvos/ConcordTV.xcodeproj` (Path C shell, **deferred to post-v0.3**) | not embedded (web-only shell, no Rust runtime) | App Store (tvOS track, future) | `src-tvos/build/` |
+| **Linux x86_64**   | Linux host · `scripts/build_linux_native.sh` | embedded module (always-on when foreground) | direct download (AppImage, .deb) + future Flathub | `src-tauri/target/release/bundle/{appimage,deb}/` |
+| **Linux aarch64**  | Linux host · `cargo tauri build --target aarch64-unknown-linux-gnu` | embedded module | direct download (AppImage, .deb) | `src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/` |
+| **Windows x86_64** | Linux host · `scripts/build_windows_wsl.sh` (WSL) or `scripts/build_windows_native.ps1` (native) | embedded module | direct download (.msi) + future Microsoft Store | `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/` |
+| **macOS Universal**| macOS host · `scripts/build_macos_native.sh` | embedded module | direct download (.dmg) + Mac App Store (future) | `src-tauri/target/universal-apple-darwin/release/bundle/{dmg,macos}/` |
+| **iOS ARM64**      | macOS host · `cargo tauri ios build` (after `cargo tauri ios init`) | embedded module (foreground MVP — VoIP background entitlement is a stretch goal) | App Store (Apple Developer Program enrollment required) | `src-tauri/gen/apple/build/Build/Products/Release-iphoneos/` |
+| **Android ARM64**  | Linux host · `cargo tauri android build` (after `cargo tauri android init`) | embedded module (foreground MVP) | Play Store + direct .apk download + F-Droid (future) | `src-tauri/gen/android/app/build/outputs/apk/release/` |
+| **Google TV / Android TV** | Linux host · same `cargo tauri android build` (shared APK with leanback manifest flags) | embedded module (foreground MVP) | Play Store (TV track) + direct .apk sideload | `src-tauri/gen/android/app/build/outputs/apk/release/` (same APK as Android phone) |
+| **Apple TV (tvOS)** | macOS host · Xcode build of `src-tvos/ConcordTV.xcodeproj` (Path C shell, **deferred to post-v0.3**) | not embedded (web-only shell, no Rust runtime) | App Store (tvOS track, future) | `src-tvos/build/` |
 
 > **Embedded servitude rule (2026-04-08):** servitude is *not* a standalone
 > daemon. Every Concord build, on every platform, ships the servitude module
@@ -123,10 +124,10 @@ Concord's binaries split into two **roles** per platform:
 
 ## 5. Quick-start commands
 
-### Linux native (orrion)
+### Linux native (Linux host)
 
 ```bash
-# From repo root on orrion:
+# From repo root on a Linux build host:
 ./scripts/build_linux_native.sh
 ./scripts/build_linux_native.sh --smoke   # also smoke-launch the AppImage
 ```
@@ -135,10 +136,71 @@ The script runs the prerequisite check, builds the React client, then runs
 `cargo tauri build --bundles appimage,deb`. Artifacts land in
 `src-tauri/target/release/bundle/{appimage,deb}/`.
 
-### macOS native (orrpheus)
+#### Linux native — host vs client mode
+
+Every Linux native build is capable of running in either of two modes; the
+choice is made at first launch and is fully reversible from the in-app
+settings.
+
+- **Host mode** — the Linux app runs the embedded *Servitude* module
+  in-process. That spawns the bundled `tuwunel` Matrix homeserver
+  (`src-tauri/resources/tuwunel/tuwunel`, pinned in
+  `scripts/build_linux_native.sh`) as a child process listening on the
+  configured `listen_port` (default `8765`; see
+  `ServitudeConfig::default()` in `src-tauri/src/servitude/config.rs`).
+  Other clients on the LAN — or, with port forwarding / a tunnel,
+  remote clients — can then connect to this Linux box as their server.
+  The optional `DiscordBridge` transport additionally spawns a
+  bubblewrap-sandboxed `mautrix-discord` (declared as a `.deb`
+  `depends:` runtime requirement in `tauri.conf.json`).
+- **Client mode** — the Linux app does not bind any embedded server
+  port. It only opens outbound connections to whatever Concord
+  instance the user picked. The Servitude lifecycle remains in the
+  `Stopped` state and `servitude_status` reports `stopped` with an
+  empty `degraded_transports` map.
+
+**How the choice is surfaced**
+
+The first-launch picker lives in
+`client/src/components/auth/ServerPickerScreen.tsx`. The top-level menu
+shows a Host option when `canHost = isTauri && !isMobile` is true —
+which it is on every Linux desktop build. Choosing **Host** drives the
+picker into its `hosting` phase, which calls the
+`servitude_start` Tauri command (defined in `src-tauri/src/lib.rs`),
+polls `servitude_status` for the `running` transition, and then
+synthesises a local `HomeserverConfig` pointing at
+`http://localhost:<port>`. Choosing **Join** (or **Matrix** / **Bridge**)
+performs well-known discovery against a remote hostname instead and
+never touches `servitude_start`.
+
+**Where the choice persists**
+
+The chosen `HomeserverConfig` lives in the `serverConfig` zustand store
+(`client/src/stores/serverConfig.ts`), which is mirrored to the Tauri
+plugin-store `settings.json`. The picker is gated by
+`computeInitialServerConnected` in `client/src/serverPickerGate.ts` —
+on a fresh install with no `serverConfig`, the Linux native shell
+always opens hollow on the picker; on subsequent launches it goes
+straight to the chosen mode. The Servitude config itself
+(`ServitudeConfig` schema in `src-tauri/src/servitude/config.rs`) is
+persisted under the `servitude` key in the same store and is what
+`servitude_start` re-reads on every restart.
+
+**How to switch modes after first launch**
+
+Open Settings → Node and use the toggle in `NodeHostingTab`
+(`client/src/components/settings/NodeHostingTab.tsx`). It calls
+`servitudeStart` / `servitudeStop` from `client/src/api/servitude.ts`,
+which map directly to the Rust commands `servitude_start`,
+`servitude_stop`, and `servitude_status` registered in
+`src-tauri/src/lib.rs`. The tab polls `servitude_status` every 3s and
+shows transitional `starting` / `stopping` states with the action
+button disabled — no double-click wedge.
+
+### macOS native (macOS host)
 
 ```bash
-# From repo root on orrpheus:
+# From repo root on a macOS build host:
 export APPLE_ID="you@example.com"
 export APPLE_TEAM_ID="ABCDEFGHIJ"
 export APPLE_CERT_NAME="Developer ID Application: Your Name (ABCDEFGHIJ)"
@@ -147,10 +209,10 @@ export APPLE_CERT_NAME="Developer ID Application: Your Name (ABCDEFGHIJ)"
 
 Artifacts land in `src-tauri/target/universal-apple-darwin/release/bundle/`.
 
-### Windows native (orrion via WSL)
+### Windows native (Linux host via WSL)
 
 ```bash
-# From repo root on orrion (under WSL or with cross toolchain):
+# From repo root on a Linux build host (under WSL or with cross toolchain):
 ./scripts/build_windows_wsl.sh
 ```
 
@@ -160,13 +222,13 @@ Or, if running PowerShell on a real Windows host:
 .\scripts\build_windows_native.ps1
 ```
 
-### Android (orrion)
+### Android (Linux host)
 
 Android requires a one-time scaffolding step. The Tauri v2 init command must
 be run on a host with the Android SDK installed:
 
 ```bash
-# One-time, on orrion:
+# One-time, on your Linux build host with the Android SDK installed:
 cd src-tauri
 cargo tauri android init
 # Then for every build:
@@ -177,12 +239,12 @@ A placeholder template lives at
 `src-tauri/gen/android/build.gradle.kts.template` so the directory layout is
 visible in git before the init runs. See §7 for the full Android section.
 
-### iOS (orrpheus)
+### iOS (macOS host)
 
-iOS likewise requires a one-time scaffolding step on orrpheus:
+iOS likewise requires a one-time scaffolding step on a macOS host:
 
 ```bash
-# One-time, on orrpheus:
+# One-time, on your macOS build host with Xcode installed:
 cd src-tauri
 cargo tauri ios init
 # Then for every build:
@@ -191,37 +253,37 @@ cargo tauri ios build
 
 A placeholder template lives at
 `src-tauri/gen/apple/project.pbxproj.template`. See §8 for full iOS notes,
-including reuse of the entitlements proven by the 2026-03-28 iOS pipeline
-proof-of-concept (recorded in `PLAN.md` Recent Changes).
+including reuse of the entitlements validated by an earlier iOS pipeline
+proof-of-concept.
 
 ---
 
 ## 6. Release aggregation convention
 
 Each build host writes artifacts into its local
-`src-tauri/target/.../bundle/` tree. Syncthing replicates the entire
-`~/projects/concord` directory between orrion and orrpheus, so the artifacts
-become visible on both hosts within seconds of being written.
+`src-tauri/target/.../bundle/` tree. If you replicate the repo across
+both hosts (Syncthing, NFS, separate clones with manual artifact copy,
+etc.), the bundle outputs become visible on the aggregation host once
+the corresponding build finishes.
 
 The release flow (manual today, scriptable later):
 
 1. Bump the version in `VERSION` and `src-tauri/Cargo.toml`.
-2. On orrion: run `scripts/build_linux_native.sh`,
+2. On the Linux build host: run `scripts/build_linux_native.sh`,
    `scripts/build_windows_wsl.sh`, and (post-init) `cargo tauri android build`.
-3. On orrpheus: run `scripts/build_macos_native.sh` and (post-init)
-   `cargo tauri ios build`.
-4. Wait for Syncthing to mirror the new bundle outputs to a single host.
+3. On the macOS build host: run `scripts/build_macos_native.sh` and
+   (post-init) `cargo tauri ios build`.
+4. Copy or mirror the new bundle outputs to a single host.
 5. Upload all artifacts to a GitHub Release using the existing
-   `/release concord <bump>` workflow described in the project root
-   `CLAUDE.md`.
+   `/release concord <bump>` workflow.
 
 The convention is: **each machine builds its own native targets locally; no
-machine ever cross-builds for Apple platforms; aggregation happens via
-Syncthing then GitHub Releases.**
+machine ever cross-builds for Apple platforms; aggregation happens on a
+single host before publishing the GitHub Release.**
 
 ---
 
-## 7. Android scaffolding (one-time, on orrion)
+## 7. Android scaffolding (one-time, on the Linux build host)
 
 The Android target lives in `src-tauri/gen/android/`, but the actual project
 files are generated by `cargo tauri android init`, which can only run on a
@@ -232,7 +294,7 @@ visible in git before init runs, a placeholder template is committed at:
 src-tauri/gen/android/build.gradle.kts.template
 ```
 
-When you are ready to run init on orrion:
+When you are ready to run init on your Linux build host:
 
 ```bash
 # 1. Install Android Studio (or just the SDK + NDK).
@@ -246,7 +308,7 @@ rustup target add aarch64-linux-android armv7-linux-androideabi \
                   i686-linux-android x86_64-linux-android
 
 # 4. From src-tauri:
-cd ~/projects/concord/src-tauri
+cd <repo-root>/src-tauri
 cargo tauri android init
 ```
 
@@ -315,8 +377,8 @@ output installs on both phones and TVs provided the generated
 feature flags and a TV banner.
 
 **Source-of-truth checklist**: `src-tauri/gen/android/AndroidManifest.xml.template`.
-After `cargo tauri android init` runs on orrion, the porting step
-must copy the keys from this template into the generated
+After `cargo tauri android init` runs, the porting step must copy the
+keys from this template into the generated
 `src-tauri/gen/android/app/src/main/AndroidManifest.xml`. The key
 additions Tauri's default init does NOT include:
 
@@ -390,18 +452,18 @@ design pass instructions.
 
 ---
 
-## 8. iOS scaffolding (one-time, on orrpheus)
+## 8. iOS scaffolding (one-time, on the macOS build host)
 
 The iOS target lives in `src-tauri/gen/apple/`, generated by
 `cargo tauri ios init`. Like Android, init can only run on a host with the
-matching toolchain — for iOS that's orrpheus with Xcode installed. A
+matching toolchain — for iOS that's a macOS host with Xcode installed. A
 placeholder template is committed at:
 
 ```
 src-tauri/gen/apple/project.pbxproj.template
 ```
 
-When you are ready to run init on orrpheus:
+When you are ready to run init on the macOS build host:
 
 ```bash
 # 1. Confirm Xcode 15+ is installed and `xcodebuild -version` works.
@@ -409,13 +471,13 @@ When you are ready to run init on orrpheus:
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 
 # 3. From src-tauri:
-cd ~/projects/concord/src-tauri
+cd <repo-root>/src-tauri
 cargo tauri ios init
 ```
 
 After init succeeds, port the **already-validated entitlements** from the
-2026-03-28 iOS pipeline proof-of-concept into the generated Xcode
-project. The porting step reads from two committed template files:
+earlier iOS pipeline proof-of-concept into the generated Xcode project.
+The porting step reads from two committed template files:
 
 - `src-tauri/gen/apple/ios-entitlements.plist` — entitlements checklist
 - `src-tauri/gen/apple/Info.plist.template` — Info.plist checklist,
@@ -485,10 +547,8 @@ The `[target.'cfg(target_os = "ios")'.dependencies]` section in
 `src-tauri/Cargo.toml` is reserved for iOS-only crates when servitude grows
 real platform integration.
 
-The Apple Developer Program enrollment was submitted on 2026-04-07; ID
-verification is in progress. Plan as if active — the build flow above
-assumes the team ID is available by the time you run a real signed build.
-Until `bundle.iOS.developmentTeam` is populated in `src-tauri/tauri.conf.json`,
+Until `bundle.iOS.developmentTeam` is populated in `src-tauri/tauri.conf.json`
+(or `APPLE_TEAM_ID` is exported in the environment),
 `build_ios_native.sh` produces an **unsigned** device .app — fine for
 Sideloadly / AltStore re-signing (see §8a below), not for TestFlight.
 
@@ -530,8 +590,8 @@ picks it up automatically and you can skip the zip step.
 **Step 3a. AltStore mac-companion install (preferred).**
 
 1. Install AltServer for macOS from <https://altstore.io/>
-2. Plug your iPhone into orrpheus via USB (or Lightning, depending on
-   the device).
+2. Plug your iPhone into the macOS build host via USB (or Lightning,
+   depending on the device).
 3. On the iPhone: Settings → General → VPN & Device Management → trust
    the developer certificate that AltStore installed.
 4. In AltServer's menu bar icon: "Install AltStore" → pick your device.
@@ -544,7 +604,7 @@ picks it up automatically and you can skip the zip step.
 **Step 3b. Sideloadly alternative.**
 
 1. Install Sideloadly from <https://sideloadly.io/>
-2. Plug the iPhone into orrpheus.
+2. Plug the iPhone into the macOS build host.
 3. Drag `Concord.ipa` into the Sideloadly window.
 4. Enter your Apple ID email and an app-specific password (required —
    Apple rejects plain account passwords from third-party installers).
@@ -577,9 +637,9 @@ normally.
 
 ---
 
-## 9. Verifying a fresh clone (orrion)
+## 9. Verifying a fresh clone (Linux host)
 
-A fresh clone on orrion should be buildable end-to-end with:
+A fresh clone on a Linux build host should be buildable end-to-end with:
 
 ```bash
 git clone https://github.com/TruStoryHnsl/concord.git
@@ -618,7 +678,7 @@ the Concord/Matrix API via URLSession.
 - `client/src/api/tvOSHost.ts` — TypeScript bridge client (no-ops on non-tvOS)
 - `client/src/styles/tv.css` — 10-foot UI CSS overrides (active when `data-tv="true"`)
 - `client/src/components/tv/TVCapabilityBanner.tsx` — Voice/video unavailability banner for TV
-- `scripts/build_tvos_native.sh` — Build script for orrpheus
+- `scripts/build_tvos_native.sh` — Build script for the macOS host
 
 **What is NOT committed yet:**
 
@@ -627,7 +687,7 @@ the Concord/Matrix API via URLSession.
 - Actual App Icon and Top Shelf artwork (catalog structure is placeholder)
 - CI/CD pipeline for tvOS
 
-**Build command (orrpheus):**
+**Build command (macOS host):**
 
 ```bash
 # Release build (device):
@@ -653,7 +713,7 @@ feasibility study for the prerequisites checklist.
 |---------|--------------|-----|
 | `error: failed to find development files for webkit2gtk-4.1` | webkit dev headers missing | Install `webkit2gtk-4.1` (Arch) or `libwebkit2gtk-4.1-dev` (Debian) |
 | `tauri-cli: command not found` | Tauri CLI not installed | `cargo install tauri-cli --version '^2.0' --locked` |
-| `cargo tauri ios init` fails on orrion | Apple toolchain not present | iOS builds run on orrpheus only — see §8 |
+| `cargo tauri ios init` fails on a Linux host | Apple toolchain not present | iOS builds run on a macOS host only — see §8 |
 | iOS sideloaded app installs but crashes immediately on launch | `Info.plist` `UIDeviceFamily` and the entitlements file are out of sync, or an entitlement the app requests is missing from the provisioning profile | (1) Verify `plutil -p src-tauri/gen/apple/concord_iOS/Info.plist` shows `UIDeviceFamily = [1, 2]` and the `NSBonjourServices` types match servitude's advertised types. (2) On a free personal-team sideload, the multicast entitlement is silently stripped — Concord still launches but local-mesh features fall back to manual peer entry. (3) Check the device console (Console.app, attached to the iPhone) for the exact missing-entitlement string. |
 | `cargo tauri ios build --target aarch64-apple-ios-sim` fails with `invalid value` | Tauri CLI uses short target aliases | Use `--target aarch64-sim` (simulator) or `--target aarch64` (device); `aarch64-apple-ios-sim` is the rustup name, not the Tauri CLI alias |
 | AppImage smoke launch hangs in CI | No display server | Run with `xvfb-run` or skip `--smoke` |

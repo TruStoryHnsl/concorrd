@@ -61,6 +61,16 @@ async def _lightweight_migrations():
         # "Applications" group in the channels list (introduced 2026-04-25).
         ("channels", "extension_id", "TEXT"),
         ("channels", "app_access", "TEXT"),
+        # INS-073: instance-wide soundboard + Freesound license/attribution
+        # metadata. Existing per-server clips become instance-wide on next
+        # boot (the routers stop filtering by server_id); these columns
+        # capture the CC license + original uploader for clips imported
+        # from freesound.org so attribution survives across the platform.
+        ("soundboard_clips", "source", "TEXT"),
+        ("soundboard_clips", "source_id", "TEXT"),
+        ("soundboard_clips", "license", "TEXT"),
+        ("soundboard_clips", "license_url", "TEXT"),
+        ("soundboard_clips", "attribution", "TEXT"),
     ]
     async with engine.begin() as conn:
         for table, column, sql_type in migrations:

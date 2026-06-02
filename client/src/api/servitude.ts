@@ -5,7 +5,7 @@
  *   - servitude_start: loads config from the store, constructs/reuses the
  *     `ServitudeHandle`, drives the lifecycle to Running.
  *   - servitude_stop: drives the lifecycle from Running back to Stopped.
- *   - servitude_status: returns a JSON-serialized `LifecycleState` string.
+ *   - servitude_status: returns a typed `ServitudeStatusResponse` object.
  *
  * All three are only available when the app runs inside the Tauri shell.
  * In a plain browser build (Vite dev server, deployed web UI) the `invoke`
@@ -106,37 +106,32 @@ export async function servitudeStop(): Promise<void> {
 /**
  * Poll the current lifecycle state and degraded transports.
  *
- * INS-024 Wave 4: the return shape is now a `ServitudeStatusResponse`
- * with `state` (lifecycle string) and `degraded_transports` (map of
- * transport name → failure reason).
+ * Returns the typed `ServitudeStatusResponse` object directly — the
+ * Rust command returns the same struct shape, so the Tauri runtime
+ * delivers a deserialized object to this side. The previous
+ * `JSON.parse(invoke<string>())` round-trip was a hand-rolled
+ * double-encoding with no compile-time check that the Rust and TS
+ * shapes agreed; it has been removed.
  *
  * Returns `{ state: "stopped", degraded_transports: {} }` in the browser
  * build — the "no Tauri runtime" case is indistinguishable from the
  * "handle not yet constructed" case on the Rust side.
  *
- * The Rust command may return either a plain lifecycle string (legacy,
- * pre-Wave-3) or the full `{ state, degraded_transports }` object
- * (Wave-3+). Both are handled for backward compatibility during rollout.
+ * Throws if the runtime delivers a value that doesn't match the
+ * declared shape (defensive — Tauri's transport should never produce
+ * one, but a Rust-side typo + an old binary running against a new TS
+ * build would be the failure mode this guard catches).
  */
 export async function servitudeStatus(): Promise<ServitudeStatusResponse> {
   if (!isTauri()) {
     return { state: "stopped", degraded_transports: {} };
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  const raw = await invoke<string>("servitude_status");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error(`servitude_status returned non-JSON payload: ${raw}`);
+  const response = await invoke<ServitudeStatusResponse>("servitude_status");
+  if (!isServitudeStatusResponse(response)) {
+    throw new Error(
+      `servitude_status returned unexpected shape: ${JSON.stringify(response)}`,
+    );
   }
-  // Wave-3+ response: full object with state + degraded_transports.
-  if (isServitudeStatusResponse(parsed)) {
-    return parsed;
-  }
-  // Legacy response: plain lifecycle string.
-  if (isServitudeState(parsed)) {
-    return { state: parsed, degraded_transports: {} };
-  }
-  throw new Error(`servitude_status returned unknown payload: ${raw}`);
+  return response;
 }

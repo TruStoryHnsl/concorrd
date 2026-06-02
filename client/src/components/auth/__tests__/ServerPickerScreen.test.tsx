@@ -400,7 +400,7 @@ describe("<ServerPickerScreen />", () => {
 
       await user.type(
         screen.getByTestId("server-picker-hostname-input"),
-        "concorrd.example",
+        "chat.example.test",
       );
       await user.click(screen.getByTestId("server-picker-connect-button"));
 

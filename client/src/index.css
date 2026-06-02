@@ -253,6 +253,7 @@ html {
   height: 100%;
 }
 
+
 /* ── Mobile Layout Fixes ──
  * overflow-x:hidden prevents stray wide content from scrolling the
  * entire viewport horizontally. touch-action:manipulation allows both
@@ -268,6 +269,17 @@ html {
     max-width: 100vw;
     touch-action: manipulation;
   }
+
+  /* The horizontal scroll-snap strip (sources/servers/channels/chat)
+   * paints a native horizontal scrollbar at the bottom of every
+   * mobile page. It tracks the panel position and runs flush with
+   * the chat-tab purple locator bar above it, which reads as a
+   * visual duplicate. Hide every scrollbar inside the mobile
+   * viewport — the snap UX uses swipe gestures and the page-tab
+   * indicator already shows position. WebKit / Blink want
+   * ::-webkit-scrollbar; Firefox uses scrollbar-width:none. */
+  *::-webkit-scrollbar { display: none; width: 0; height: 0; }
+  * { scrollbar-width: none; -ms-overflow-style: none; }
 }
 
 body {
@@ -403,7 +415,16 @@ select {
 
 /* ── Safe Area Utilities ── */
 .safe-bottom {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  /* max() floor so the bottom gap never collapses on viewports with no
+     safe-area inset (e.g. desktop, where env() resolves to 0). This rule is
+     intentionally UNLAYERED so it still wins over Tailwind's layered
+     pb-*/py-*/p-* utilities and applies uniformly. Previously this was
+     `env(safe-area-inset-bottom, 0px)` alone, which silently zeroed the
+     bottom padding of every .safe-bottom element on desktop and slammed
+     content flush to the container bottom edge (Explore Sources modal,
+     VoiceConnectionBar). 0.75rem matches the floor used inline in
+     PlaceVoiceBanner.tsx. */
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
 }
 .safe-top {
   padding-top: env(safe-area-inset-top, 0px);

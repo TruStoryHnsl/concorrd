@@ -1,18 +1,31 @@
 import { useAuthStore } from "../../stores/auth";
 import { useSettingsStore } from "../../stores/settings";
 import { useSourcesStore } from "../../stores/sources";
+import { disconnectSource } from "../../lib/disconnectSource";
+import { useBrowserLibp2p } from "../../hooks/useBrowserLibp2p";
 import { SourceBrandIcon } from "../sources/sourceBrand";
+import { PeerConnectionsSection } from "./connections/PeerConnectionsSection";
+import { TunnelHardeningSection } from "./connections/TunnelHardeningSection";
 
 /**
  * Per-user Connections tab.
  *
  * Each connection is personal to the caller; tiles deep-link into the
  * AddSource modal via requestAddSource.
+ *
+ * 2026-05-30: P2P surfaces (peer identity, swarm status, paired peers)
+ * relocated here from ProfileTab — they describe connectivity, not the
+ * user-profile concept. Mounting this tab boots the browser libp2p
+ * swarm (no-op on Tauri) so the swarm-status block has data to show.
  */
 export function UserConnectionsTab() {
   const accessToken = useAuthStore((s) => s.accessToken);
   const requestAddSource = useSettingsStore((s) => s.requestAddSource);
   const sources = useSourcesStore((s) => s.sources);
+
+  // Phase 9 (browser P2P UI surface): opening Settings → Connections is
+  // the trigger for booting the browser libp2p swarm. No-op on Tauri.
+  useBrowserLibp2p({ enabled: true });
 
   if (!accessToken) {
     return (
@@ -71,6 +84,14 @@ export function UserConnectionsTab() {
       />
 
       <ConnectionCard
+        brand="p2p"
+        title="Pair with a peer (P2P)"
+        subtitle="Direct device-to-device connection. No homeserver, no DNS, no server."
+        action="Pair"
+        onAction={() => requestAddSource("pair-peer")}
+      />
+
+      <ConnectionCard
         brand="slack"
         title="Slack"
         subtitle="Preloaded release target"
@@ -84,6 +105,88 @@ export function UserConnectionsTab() {
         action="Soon"
         disabled
       />
+
+      <ConnectedAccountsList />
+      <PeerConnectionsSection />
+      <TunnelHardeningSection />
+    </div>
+  );
+}
+
+/**
+ * Per-source row with a Disconnect affordance. The right-click context
+ * menu on the Sources rail offers the same action (PR #112), but the
+ * user's mental model is "Settings → Connections is where I add and
+ * remove things", so we also surface it here. Renders nothing when
+ * there are no sources — keeps the tab clean on a fresh install.
+ */
+function ConnectedAccountsList() {
+  const sources = useSourcesStore((s) => s.sources);
+
+  if (sources.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <h4 className="text-sm font-semibold text-on-surface">
+        Connected accounts
+      </h4>
+      <p className="text-xs text-on-surface-variant">
+        Currently-active connections. Disconnect to remove the source
+        and its cached state from this install.
+      </p>
+      <ul className="space-y-1.5" data-testid="connected-accounts-list">
+        {sources.map((source) => {
+          const label =
+            source.instanceName ||
+            source.host ||
+            source.id;
+          const subtitle = source.host && source.instanceName ? source.host : source.platform;
+          const brand =
+            source.platform === "concord"
+              ? "concord"
+              : source.platform === "matrix"
+                ? "matrix"
+                : null;
+          return (
+            <li
+              key={source.id}
+              className="flex items-center gap-3 px-3 py-2 rounded-lg border border-outline-variant/20 bg-surface-container-low/40"
+            >
+              <div className="w-7 h-7 rounded-md bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                {brand ? (
+                  <SourceBrandIcon brand={brand} size={18} />
+                ) : (
+                  <span className="material-symbols-outlined text-on-surface-variant text-base">
+                    public
+                  </span>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p
+                  className="text-sm text-on-surface truncate"
+                  title={label}
+                >
+                  {label}
+                </p>
+                <p
+                  className="text-xs text-on-surface-variant truncate font-mono"
+                  title={subtitle}
+                >
+                  {subtitle}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => disconnectSource(source.id)}
+                data-testid={`connected-account-disconnect-${source.id}`}
+                className="px-3 py-1.5 text-xs rounded-md text-error border border-error/30 hover:bg-error/10 transition-colors min-h-[32px]"
+              >
+                Disconnect
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -97,7 +200,7 @@ function ConnectionCard({
   disabled,
   count,
 }: {
-  brand: "concord" | "matrix" | "mozilla" | "slack" | "reticulum";
+  brand: "concord" | "matrix" | "mozilla" | "slack" | "reticulum" | "p2p";
   title: string;
   subtitle: string;
   action: string;
@@ -105,12 +208,22 @@ function ConnectionCard({
   disabled?: boolean;
   count?: number;
 }) {
-  const brandedIcon =
-    brand === "concord" || brand === "matrix" || brand === "mozilla"
-      ? <SourceBrandIcon brand={brand} size={24} />
-      : <span className="material-symbols-outlined text-on-surface-variant">
-          {brand === "slack" ? "forum" : "sensors"}
-        </span>;
+  let brandedIcon: React.ReactNode;
+  if (brand === "concord" || brand === "matrix" || brand === "mozilla") {
+    brandedIcon = <SourceBrandIcon brand={brand} size={24} />;
+  } else if (brand === "p2p") {
+    brandedIcon = (
+      <span className="material-symbols-outlined text-on-surface-variant">
+        hub
+      </span>
+    );
+  } else {
+    brandedIcon = (
+      <span className="material-symbols-outlined text-on-surface-variant">
+        {brand === "slack" ? "forum" : "sensors"}
+      </span>
+    );
+  }
 
   return (
     <div className="border border-outline-variant/20 rounded-lg overflow-hidden">

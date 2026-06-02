@@ -8,6 +8,7 @@ import { AudioTab } from "./AudioTab";
 import { VoiceTab } from "./VoiceTab";
 import { NotificationsTab } from "./NotificationsTab";
 import { ProfileTab } from "./ProfileTab";
+import { UsersTab } from "./UsersTab";
 import { AppearanceTab } from "./AppearanceTab";
 import { NodeHostingTab } from "./NodeHostingTab";
 import { UserConnectionsTab } from "./UserConnectionsTab";
@@ -120,6 +121,7 @@ export function SettingsPanel() {
       { key: "voice", label: "Voice", icon: "graphic_eq", group: "user" },
       { key: "notifications", label: "Notifications", icon: "notifications", group: "user" },
       { key: "profile", label: "Profile", icon: "person", group: "user" },
+      { key: "users", label: "Users", icon: "manage_accounts", group: "user" },
       { key: "connections", label: "Connections", icon: "link", group: "user" },
       { key: "appearance", label: "Appearance", icon: "palette", group: "user" },
     ];
@@ -356,6 +358,7 @@ export function SettingsPanel() {
         {activeTab === "voice" && <VoiceTab />}
         {activeTab === "notifications" && <NotificationsTab />}
         {activeTab === "profile" && <ProfileTab />}
+        {activeTab === "users" && <UsersTab />}
         {activeTab === "connections" && <UserConnectionsTab />}
         {activeTab === "appearance" && <AppearanceTab />}
         {activeTab === "node" && <NodeHostingTab />}

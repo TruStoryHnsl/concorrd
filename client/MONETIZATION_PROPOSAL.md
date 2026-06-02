@@ -6,6 +6,26 @@
 
 ---
 
+## Addendum — 2026-05-30 · Fair Source relicense (does not change this proposal)
+
+Concord's **code license** changed from MIT to the Functional Source License
+(`FSL-1.1-Apache-2.0`, converts to Apache-2.0 two years after each release).
+This is a separate axis from the donation model described here:
+
+- **This document is about how *end users* pay us** (optional donations; the app
+  itself is free). Unchanged. Everything below still holds.
+- **The FSL is about stopping *third parties* from monetizing our work** — no one
+  else may resell Concord or run it as a paid/managed service while a release is
+  still within its two-year window. The maintainer (us) is exempt and may offer
+  paid signed builds and paid hosting.
+
+The two are compatible: end users get Concord free; competitors can't sell it;
+we retain the sole right to commercialize. The "web UI free forever, native
+donation-only" posture below is a *product* decision and is unaffected by the
+license change.
+
+---
+
 ## Executive Summary
 
 **Everything in Concord is free.** Free on the web, free on iOS, free on Android, free to install, free to use, free to remove ads, free forever. There is no paid tier and there never will be.

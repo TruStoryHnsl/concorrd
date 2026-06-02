@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from dependencies import require_server_admin
 from models import Webhook, Channel, Server
-from routers.servers import get_user_id
+from dependencies import get_user_id
 from services.bot import bot_send_message, BOT_ACCESS_TOKEN
 
 router = APIRouter(tags=["webhooks"])

@@ -6,6 +6,7 @@ import {
 import { ConnectionState } from "livekit-client";
 import { useVoiceStore } from "../../stores/voice";
 import { useServerStore } from "../../stores/server";
+import { BringingUpSplash } from "../BringingUpSplash";
 
 export function VoiceConnectionBar() {
   const connected = useVoiceStore((s) => s.connected);
@@ -38,7 +39,7 @@ export function VoiceConnectionBar() {
     return (
       <div className="flex items-center justify-between px-3 md:px-4 py-2 md:py-2 glass-panel flex-shrink-0 safe-bottom">
         <div className="flex items-center gap-2 text-sm text-yellow-400 min-w-0 font-body">
-          <span className="inline-block w-3 h-3 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+          <BringingUpSplash size="inline" className="flex-shrink-0" />
           <span className="truncate">
             Reconnecting to voice{reconnectAttempt > 0 ? ` (attempt ${reconnectAttempt})` : ""}...
           </span>
