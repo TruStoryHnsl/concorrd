@@ -84,10 +84,10 @@ $ dig @8.8.8.8 _matrix._tcp.example.test SRV +short
 No SRV records. Matrix server discovery must rely on the `.well-known`
 delegation — which is exactly what the fix installs.
 
-## Config file topology (what broke on the orrgate deploy)
+## Config file topology (what broke on this deploy)
 
 Worth flagging for future maintainers: the deployed Concord stack on
-orrgate is running the **dev** Caddyfile (`Caddyfile.dev`), not the
+this host was running the **dev** Caddyfile (`Caddyfile.dev`), not the
 production one. Confirmed via `docker compose logs web`:
 
 ```
@@ -195,9 +195,9 @@ continues to report `FederationOK: True`.
    serves the correct `.well-known/matrix/*` responses.
 
 2. **Token file handling.** The Cloudflare audit used a zone-scoped
-   API token passed via a short-lived file at `/home/corr/cloudflare_token`
-   with 600 perms. The file should be deleted by the operator after
-   verifying the Page Rules look correct in the CF dashboard.
+   API token passed via a short-lived file (chmod 600). The file
+   should be deleted by the operator after verifying the Page Rules
+   look correct in the CF dashboard.
 
 3. **Deeper CF audit not performed.** A full WAF ruleset review
    (Managed Rules, custom rules, rate-limit rules) was not executed —
@@ -231,8 +231,8 @@ curl -s "https://federationtester.matrix.org/api/report?server_name=example.test
 
 - `config/Caddyfile` — production Caddyfile, `.well-known/matrix/*`
   proxy replaced with inline `respond` handlers.
-- `config/Caddyfile.dev` — dev Caddyfile (actually running on
-  orrgate), same replacement.
+- `config/Caddyfile.dev` — dev Caddyfile (the one actually serving
+  traffic at the time of this audit), same replacement.
 - `docs/federation-reachability-diagnosis.md` (this file) — audit
   trail per the INS-026 diagnostic phase requirement.
 

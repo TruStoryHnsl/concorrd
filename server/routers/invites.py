@@ -11,7 +11,7 @@ from pydantic import EmailStr
 from database import get_db
 from dependencies import require_server_member, require_server_admin
 from models import InviteToken, Server, ServerMember, ServerBan, Channel
-from routers.servers import get_user_id, get_access_token
+from dependencies import get_user_id, get_access_token
 from services.matrix_admin import join_room
 from services.email import send_invite_email, is_configured as email_configured
 from services.auth_code import generate_auth_code, validate_auth_code, seconds_until_rotation

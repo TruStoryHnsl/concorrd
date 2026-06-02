@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>F-VIS Settings → Hosting visibility slider</title>
+  <script
+    src="https://cdn.tailwindcss.com/3.4.16"
+    integrity="sha384-mS5Uq7sE90lgbBDN8xgf34ibEgbZo4gB3tfLY40ZRle+M188BQw8onzNHg6GUZaA"
+    crossorigin="anonymous"
+  ></script>
+  <style>
+    :root {
+      --surface: #1a1b1f;
+      --surface-container: #1d1f23;
+      --surface-container-high: #2a2c31;
+      --on-surface: #e2e3e8;
+      --on-surface-variant: #cdd0d6;
+      --primary: #b9c6ff;
+      --error: #ffb4ab;
+    }
+    body { margin: 0; background: #0b0c0f; padding: 32px; font-family: ui-sans-serif, system-ui, sans-serif; color: var(--on-surface); }
+    .bg-surface-container { background: var(--surface-container); }
+    .text-on-surface { color: var(--on-surface); }
+    .text-on-surface-variant { color: var(--on-surface-variant); }
+    .text-on-surface-variant\/70 { color: rgba(205, 208, 214, 0.7); }
+    .text-error { color: var(--error); }
+    .border-outline-variant\/20 { border-color: rgba(126, 130, 138, 0.2); }
+    .accent-primary { accent-color: var(--primary); }
+    input[type="range"] { accent-color: var(--primary); width: 100%; }
+    .label-strip { display:flex; justify-content: space-between; font-size: 10px; color: var(--on-surface-variant); font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <h1 style="font-size: 16px; color: var(--on-surface-variant); margin: 0 0 12px 0;">
+    Settings → Hosting → Server visibility (F-VIS)
+  </h1>
+  <p style="font-size: 12px; color: var(--on-surface-variant); max-width: 720px; margin: 0 0 24px 0;">
+    Each server you host has a configurable mesh-hop visibility ceiling. A peer N hops away on the mesh only sees a server when its ceiling is at least N. Outside that radius, the server is invisible to them. Visibility is independent of access — a peer can see a server without being able to dial in.
+  </p>
+
+  <div class="bg-surface-container rounded-xl p-3" style="max-width: 640px; margin-bottom: 16px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px;">
+      <span class="text-on-surface" style="font-size: 14px; font-weight: 500;">Porch (always-fresh guest entrance)</span>
+      <span class="text-on-surface-variant" style="font-size: 12px; font-family: ui-monospace, monospace;">1 hop</span>
+    </div>
+    <input type="range" min="0" max="5" step="1" value="1" />
+    <div class="label-strip" style="margin-top: 6px;">
+      <span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span>
+    </div>
+    <p class="text-on-surface-variant" style="font-size: 12px; margin: 8px 0 0;">
+      Direct paired peers — only the peers you've paired with see it.
+    </p>
+    <p class="text-on-surface-variant/70" style="font-size: 12px; font-style: italic; margin: 4px 0 0;">
+      Defaults to 1 hop — only your directly-paired peers can see it.
+    </p>
+  </div>
+
+  <div class="bg-surface-container rounded-xl p-3" style="max-width: 640px; margin-bottom: 16px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px;">
+      <span class="text-on-surface" style="font-size: 14px; font-weight: 500;">Home (your persistent server)</span>
+      <span class="text-on-surface-variant" style="font-size: 12px; font-family: ui-monospace, monospace;">0 hops</span>
+    </div>
+    <input type="range" min="0" max="5" step="1" value="0" />
+    <div class="label-strip" style="margin-top: 6px;">
+      <span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span>
+    </div>
+    <p class="text-on-surface-variant" style="font-size: 12px; margin: 8px 0 0;">
+      Owner only — nobody else sees this server in their explore menu.
+    </p>
+    <p class="text-on-surface-variant/70" style="font-size: 12px; font-style: italic; margin: 4px 0 0;">
+      Defaults to 0 hops — owner-only until you opt in. Raise this to let paired peers (or wider) see it in their explore menu.
+    </p>
+  </div>
+
+  <div class="bg-surface-container rounded-xl p-3" style="max-width: 640px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px;">
+      <span class="text-on-surface" style="font-size: 14px; font-weight: 500;">Home (slider raised → 3)</span>
+      <span class="text-on-surface-variant" style="font-size: 12px; font-family: ui-monospace, monospace;">3 hops</span>
+    </div>
+    <input type="range" min="0" max="5" step="1" value="3" />
+    <div class="label-strip" style="margin-top: 6px;">
+      <span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span>
+    </div>
+    <p class="text-on-surface-variant" style="font-size: 12px; margin: 8px 0 0;">
+      Three hops — pairs of pairs of pairs.
+    </p>
+    <p class="text-on-surface-variant/70" style="font-size: 12px; font-style: italic; margin: 4px 0 0;">
+      A visibility broadcast was just emitted on the gossipsub rotation topic — paired peers within 3 hops will refresh their explore-menu cache.
+    </p>
+  </div>
+</body>
+</html>

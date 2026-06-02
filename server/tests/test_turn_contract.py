@@ -182,7 +182,7 @@ def test_turn_entrypoint_derives_bind_ips_from_mapped_external_ip(tmp_path: Path
         "ARGS_FILE": str(args_file),
         "TURN_SECRET": "secret",
         "TURN_DOMAIN": "example.concordchat.net",
-        "TURN_EXTERNAL_IP": "162.195.121.21/192.168.1.145",
+        "TURN_EXTERNAL_IP": "203.0.113.10/10.0.0.10",
         "TURN_TLS_ENABLED": "false",
     })
 
@@ -196,8 +196,8 @@ def test_turn_entrypoint_derives_bind_ips_from_mapped_external_ip(tmp_path: Path
     )
 
     args = args_file.read_text(encoding="utf-8").splitlines()
-    assert "--external-ip=162.195.121.21/192.168.1.145" in args
-    assert "--listening-ip=192.168.1.145" in args
-    assert "--relay-ip=192.168.1.145" in args
+    assert "--external-ip=203.0.113.10/10.0.0.10" in args
+    assert "--listening-ip=10.0.0.10" in args
+    assert "--relay-ip=10.0.0.10" in args
     assert "--no-tls" in args
     assert "--no-dtls" in args

@@ -221,8 +221,8 @@ pub fn render_dendrite_config(
     // `std`, `syslog`, and `file`; Windows (per upstream's
     // log_windows.go:45 SetupHookLogging) only accepts `file`. Use the
     // `file` hook universally so the same config works on every
-    // platform — empirically observed on corr@win11 / 2026-04-28
-    // ("Unrecognised logging hook type: std" with type: std).
+    // platform — empirically observed on a Windows 11 test rig
+    // (2026-04-28: "Unrecognised logging hook type: std" with type: std).
     let logs_dir = format!("{}/logs", dd);
 
     // Heredoc-style string. Comments are sparse; the upstream
@@ -1120,6 +1120,7 @@ mod tests {
             listen_port: port,
             allow_privileged_port: false,
             enabled_transports: vec![TransportVariant::MatrixFederation],
+            profile: crate::servitude::config::Profile::P2pOnly,
         }
     }
 

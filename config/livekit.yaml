@@ -1,3 +1,7 @@
+# See docs/voice/port-coherence.md for the four-file port contract.
+# Editing port_range_start / port_range_end here REQUIRES co-editing
+# docker-compose.yml (livekit.ports[]) and verifying turnserver.conf
+# stays disjoint. CI's config-lint job enforces this on every PR.
 port: 7880
 log_level: info
 rtc:

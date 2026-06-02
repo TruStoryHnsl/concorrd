@@ -38,7 +38,13 @@ import {
   postToFrame,
   buildInitMessage,
   buildSurfaceResizeMessage,
+  buildStateEventMessage,
+  buildPermissionDeniedMessage,
+  isExtensionInboundMessage,
+  manifestAllows,
   type ConcordInitPayload,
+  type ConcordStateEventPayload,
+  type ExtensionSendStateEventPayload,
 } from "../../extensions/sdk";
 import type { ExtensionSurface } from "../../stores/extension";
 
@@ -124,6 +130,53 @@ interface ExtensionSurfaceManagerProps {
    * If absent, iframes are mounted without an init message (legacy behavior).
    */
   sdkInit?: Omit<ConcordInitPayload, "surfaces">;
+  /**
+   * INS-066 W5/W6/W7: extension manifest permissions array.
+   * Used as the gate for concord:state_event delivery (W5) and
+   * extension:send_state_event acceptance (W6). When absent, both are
+   * fail-closed (no events forwarded; verbs denied with manifest_unknown).
+   */
+  manifestPermissions?: readonly string[];
+  /**
+   * INS-066 W5: the Matrix room ID the extension session is attached to.
+   * Used as the source room for concord:state_event forwarding and the
+   * default target for extension:send_state_event. When absent, neither
+   * direction works (the shell logs a single warning and degrades).
+   */
+  roomId?: string;
+  /**
+   * INS-066 W5: subscribe to the Matrix room's incoming state/timeline
+   * events. Called once on mount with a callback the room store should
+   * invoke for each new event. Returns an unsubscribe function.
+   *
+   * Decoupled from any specific room store so this component stays
+   * testable in isolation; the call site wires it up.
+   */
+  subscribeRoomEvents?: (
+    handler: (ev: IncomingMatrixEvent) => void,
+  ) => () => void;
+  /**
+   * INS-066 W6: callback invoked when an extension's
+   * extension:send_state_event verb passes both gates (InputRouter +
+   * manifest). The handler is responsible for actually emitting via the
+   * room store / matrix-js-sdk client. Resolved value is ignored; reject
+   * the promise to surface a backend error to the extension as a
+   * permission_denied with reason="backend_error".
+   */
+  onSendStateEvent?: (
+    args: { roomId: string; eventType: string; stateKey: string; content: Record<string, unknown> },
+  ) => void | Promise<void>;
+}
+
+/** Shape of an incoming Matrix room event consumed by `subscribeRoomEvents`.
+ *  Modelled after matrix-js-sdk MatrixEvent.toJSON() but kept minimal so
+ *  the shell layer doesn't need to depend on the SDK type. */
+export interface IncomingMatrixEvent {
+  type: string;
+  content: Record<string, unknown>;
+  sender: string;
+  origin_server_ts: number;
+  state_key?: string;
 }
 
 /** Shortens a Matrix user ID to just the localpart (e.g. "@corr:server" → "corr"). */
@@ -271,6 +324,10 @@ export default function ExtensionSurfaceManager({
   mode = "shared",
   participantSeat = "participant",
   sdkInit,
+  manifestPermissions,
+  roomId,
+  subscribeRoomEvents,
+  onSendStateEvent,
 }: ExtensionSurfaceManagerProps) {
   // W4: Container ref for SDK message targeting and ResizeObserver.
   const containerRef = useRef<HTMLDivElement>(null);
@@ -372,6 +429,127 @@ export default function ExtensionSurfaceManager({
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, [mode, participantSeat]);
+
+  // INS-066 W5: forward Matrix room events to mounted extension iframes
+  // as `concord:state_event`, gated by manifest permissions
+  // (state_events OR matrix.read). When the manifest doesn't declare
+  // either, the extension never sees these events. Fail-closed by
+  // design — silently drops the subscription rather than throwing.
+  useEffect(() => {
+    if (!subscribeRoomEvents || !roomId) return;
+    if (!manifestAllows(manifestPermissions, ["state_events", "matrix.read"])) return;
+
+    const unsub = subscribeRoomEvents((ev) => {
+      const container = containerRef.current;
+      if (!container) return;
+      const payload: ConcordStateEventPayload = {
+        roomId,
+        eventType: ev.type,
+        content: ev.content,
+        sender: ev.sender,
+        originServerTs: ev.origin_server_ts,
+        ...(ev.state_key !== undefined ? { stateKey: ev.state_key } : {}),
+      };
+      const msg = buildStateEventMessage(payload);
+      const frames = container.querySelectorAll<HTMLIFrameElement>("iframe");
+      frames.forEach((frame) => postToFrame(frame, msg));
+    });
+    return unsub;
+  }, [subscribeRoomEvents, roomId, manifestPermissions]);
+
+  // INS-066 W6: handle inbound `extension:send_state_event` verbs.
+  // Two gates: (a) InputRouter check on (mode, seat, send_state_events),
+  // and (b) manifest permission must contain state_events or matrix.send.
+  // Both must pass; otherwise post back a structured
+  // `concord:permission_denied` to the originating iframe so the
+  // extension can react. On allow, the shell calls `onSendStateEvent` —
+  // the host (room store) is responsible for the actual emit.
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (!isExtensionInboundMessage(event.data)) return;
+      if (event.data.type !== "extension:send_state_event") return;
+
+      const payload = event.data.payload as ExtensionSendStateEventPayload;
+      const replyTo = event.source as Window | null;
+      const reply = (
+        reason: string,
+        detail?: string,
+      ) => {
+        if (!replyTo || !("postMessage" in replyTo)) return;
+        replyTo.postMessage(
+          buildPermissionDeniedMessage({
+            action: "extension:send_state_event",
+            reason,
+            ...(detail !== undefined ? { detail } : {}),
+          }),
+          "*",
+        );
+      };
+
+      // Gate 0: payload sanity.
+      if (
+        !payload ||
+        typeof payload.eventType !== "string" ||
+        typeof payload.content !== "object" ||
+        payload.content === null
+      ) {
+        reply("invalid_payload");
+        return;
+      }
+
+      // Gate 0.5: cross-room forbidden. If the extension supplied a
+      // roomId different from the session room, reject.
+      const targetRoom = payload.roomId ?? roomId;
+      if (!targetRoom) {
+        reply("invalid_payload", "no_room");
+        return;
+      }
+      if (payload.roomId && roomId && payload.roomId !== roomId) {
+        reply("session_role_forbidden", "cross_room");
+        return;
+      }
+
+      // Gate 1: InputRouter.
+      if (!check(mode, participantSeat, "send_state_events")) {
+        reply("session_role_forbidden");
+        return;
+      }
+
+      // Gate 2: manifest permission.
+      if (!manifestPermissions) {
+        reply("manifest_unknown");
+        return;
+      }
+      if (!manifestAllows(manifestPermissions, ["state_events", "matrix.send"])) {
+        reply("manifest_missing_permission", "state_events|matrix.send");
+        return;
+      }
+
+      // Allowed — emit via the host. We don't await the result here so
+      // the message handler stays synchronous; if the emit rejects, the
+      // host is expected to log and the extension simply doesn't see
+      // the event reflected back.
+      try {
+        const r = onSendStateEvent?.({
+          roomId: targetRoom,
+          eventType: payload.eventType,
+          stateKey: payload.stateKey ?? "",
+          content: payload.content,
+        });
+        if (r && typeof (r as Promise<void>).catch === "function") {
+          (r as Promise<void>).catch((err) => {
+            console.warn("[ExtensionSurfaceManager] send_state_event backend error", err);
+            reply("backend_error", String(err));
+          });
+        }
+      } catch (err) {
+        console.warn("[ExtensionSurfaceManager] send_state_event threw", err);
+        reply("backend_error", String(err));
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [mode, participantSeat, manifestPermissions, roomId, onSendStateEvent]);
 
   // Normalize: empty/absent → single default panel surface.
   const activeSurfaces =

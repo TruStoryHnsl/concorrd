@@ -120,6 +120,6 @@ no-graceful path is documented and intentional.
   passes — XDG_DATA_HOME wins on every platform that sets it.
 - Real Windows runtime verification: NOT YET RUN. Once the W-03
   CI workflow produces an artifact and W-01's verify script
-  installs it on `corr@win11.local`, the empirical proof will be
+  installs it on a Windows test rig, the empirical proof will be
   the screenshot showing the app booted (which only happens if
   `resolve_data_dir` returned a usable path).

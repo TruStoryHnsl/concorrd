@@ -15,16 +15,33 @@ Three pieces cooperate:
      enabled.
 
   3. On-disk bundles: ``<DATA_DIR>/extensions/<extension_id>/`` holds
-     the extracted Vite output (index.html + assets/). Serving is
-     delegated to the public ``/ext/<id>/<path>`` endpoint further
-     down so iframes resolve their relative ``./assets/`` requests
-     without a round-trip through Caddy.
+     the extracted Vite output (index.html + assets/). Static serving
+     of these bundles at ``/ext/<id>/<path>`` is owned by the
+     ``StaticFiles`` mounts in ``routers.extensions`` (INS-066 W3) —
+     this module no longer ships its own duplicate ``FileResponse``
+     handler.
 
 Only instance admins (per ``require_admin``) can mutate state. The
 endpoints are deliberately narrow: no arbitrary URL installs, no
 arbitrary file writes — the bundle_url must come out of the catalog,
 and the extracted path is clamped under the extensions data dir.
+
+DEPRECATION NOTICE (INS-066-FUP-B / INS-066-FUP-C, 2026-04-30):
+The catalog/install/uninstall endpoints in this module
+(``/api/admin/extensions/...``) are SUPERSEDED by the DB-backed
+runtime install pipeline in ``routers/extensions.py``
+(``POST /api/extensions/install``, ``DELETE /api/extensions/{id}``).
+The legacy endpoints are preserved here only so existing admin UIs
+keep working during the migration period; new code should not call
+them. The static-serve duplicate has already been removed (W3 mount
+is canonical). See PLAN.md INS-066-FUP-B for context.
 """
+
+# TODO(INS-NNN-followup): sunset legacy admin_extensions install/uninstall
+# once all clients have migrated to the DB-backed POST /api/extensions/install
+# pipeline. Track the cutover in a fresh INS-XXX entry; do not delete
+# without verifying no in-tree caller (UI, scripts, tests) still hits
+# /api/admin/extensions/install or /api/admin/extensions/<id> DELETE.
 
 from __future__ import annotations
 
@@ -42,9 +59,9 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from config import DATA_DIR
+from config import DATA_DIR, EXTENSIONS_DIR
 from routers.admin import require_admin
-from routers.servers import get_user_id
+from dependencies import get_user_id
 from routers import extensions as extensions_router
 
 logger = logging.getLogger(__name__)
@@ -55,9 +72,23 @@ router = APIRouter(prefix="/api/admin/extensions", tags=["admin-extensions"])
 # Paths + constants
 # ---------------------------------------------------------------------------
 
+# Remote catalog index for the public Concord extensions registry.
+#
+# The registry is its own repo (separate from the Concord client/server
+# repo) so extension authors can submit PRs without touching core
+# Concord code. Operators who run a private fork of the registry can
+# point at it via the ``CONCORD_EXTENSION_CATALOG_URL`` env var.
+#
+# P0 sprint Issue 4 — fresh installs (web + native) ship with zero
+# baked-in extensions; this URL is the ONLY source from which the
+# Extension Library populates. If the URL is unreachable, the
+# Extension Library renders an empty catalog with a Retry button (the
+# error path in ``admin_get_catalog`` raises 502 and the client UI's
+# `error` state surfaces a retry button — see
+# ``ExtensionLibraryPanel.tsx``).
 DEFAULT_CATALOG_URL = (
-    "https://raw.githubusercontent.com/TruStoryHnsl/"
-    "concord-extensions/main/catalog.json"
+    "https://raw.githubusercontent.com/concord-extensions/"
+    "registry/main/catalog.json"
 )
 
 # Headers that bypass intermediate HTTP caches (raw.githubusercontent.com
@@ -85,13 +116,12 @@ def _catalog_fetch_url() -> str:
     return f"{base}{sep}_t={int(time.time() * 1000)}"
 
 
-def _extensions_root() -> Path:
-    """Root directory under which each extension's bundle lives at
-    ``<root>/<extension_id>/``. Created on demand.
-    """
-    root = DATA_DIR / "extensions"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+# Note: the on-disk root for unpacked extension bundles lives at
+# ``EXTENSIONS_DIR`` (see ``server/config.py``) and is created at
+# module-load time there. We import it directly rather than
+# reconstructing ``DATA_DIR / "extensions"`` inline; that duplicate
+# was the proximate cause of INS-066-FUP-B's "two paths can drift"
+# risk and has been deduped.
 
 
 def _registry_path() -> Path:
@@ -244,7 +274,7 @@ async def admin_install_extension(
     # Extract into data/extensions/<id>/, clobbering any prior install.
     # Paths inside the zip are validated so a hostile archive can't
     # write outside the extension's own directory via ../ traversal.
-    dest = _extensions_root() / ext_id
+    dest = EXTENSIONS_DIR / ext_id
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
@@ -312,7 +342,7 @@ async def admin_uninstall_extension(
     require_admin(user_id)
     ext_id = _sanitize_id(extension_id)
 
-    dest = _extensions_root() / ext_id
+    dest = EXTENSIONS_DIR / ext_id
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
 
@@ -322,71 +352,3 @@ async def admin_uninstall_extension(
     logger.info("admin_uninstall_extension: removed %s by %s", ext_id, user_id)
 
 
-# ---------------------------------------------------------------------------
-# Public static serving for installed extension bundles
-# ---------------------------------------------------------------------------
-#
-# The concord-extensions build output references assets relatively
-# (``./assets/foo.js``), so an iframe loaded at ``/ext/<id>/`` will
-# resolve subresources to ``/ext/<id>/assets/foo.js`` — exactly what
-# this handler serves. Keeping the static-serve in-process (rather
-# than via Caddy) means the admin install flow is completely self-
-# contained: no host config edits required.
-
-public_router = APIRouter(tags=["extensions-static"])
-
-import mimetypes
-
-_SAFE_MIMES = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "application/javascript",
-    ".css": "text/css; charset=utf-8",
-    ".json": "application/json",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".woff": "font/woff",
-    ".woff2": "font/woff2",
-    ".ico": "image/x-icon",
-    ".map": "application/json",
-}
-
-
-def _mimetype_for(path: Path) -> str:
-    ext = path.suffix.lower()
-    if ext in _SAFE_MIMES:
-        return _SAFE_MIMES[ext]
-    guess, _ = mimetypes.guess_type(path.name)
-    return guess or "application/octet-stream"
-
-
-@public_router.get("/ext/{extension_id}/")
-async def serve_extension_index(extension_id: str):
-    return await _serve_extension_file(extension_id, "index.html")
-
-
-@public_router.get("/ext/{extension_id}/{subpath:path}")
-async def serve_extension_path(extension_id: str, subpath: str):
-    return await _serve_extension_file(extension_id, subpath or "index.html")
-
-
-async def _serve_extension_file(extension_id: str, subpath: str):
-    from fastapi.responses import FileResponse
-
-    ext_id = _sanitize_id(extension_id)
-    root = (_extensions_root() / ext_id).resolve()
-    if not root.exists():
-        raise HTTPException(404, "Extension not installed")
-
-    # Clamp the resolved path under the extension's own directory so a
-    # request like /ext/foo/../../etc/passwd falls back to 404 rather
-    # than succeeding.
-    target = (root / subpath).resolve()
-    if root not in target.parents and target != root:
-        raise HTTPException(404, "Not found")
-    if not target.is_file():
-        raise HTTPException(404, "Not found")
-
-    return FileResponse(target, media_type=_mimetype_for(target))

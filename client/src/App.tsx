@@ -6,18 +6,17 @@ import { useToastStore } from "./stores/toast";
 import { useVoiceStore, getPendingVoiceSession, clearPendingVoiceSession, MAX_RECONNECT_ATTEMPTS, RECONNECT_BASE_DELAY_MS } from "./stores/voice";
 import { useSettingsStore } from "./stores/settings";
 import { useServerConfigStore } from "./stores/serverConfig";
-import { isDesktopMode, getHomeserverUrl } from "./api/serverUrl";
+import { isDesktopMode } from "./api/serverUrl";
+import { joinVoiceSession } from "./components/voice/joinVoiceSession";
 import { usePlatform } from "./hooks/usePlatform";
 import { useServitudeLifecycle } from "./hooks/useServitudeLifecycle";
+import { runStartupCheck as runUpdaterStartupCheck } from "./lib/updater";
 import { computeInitialServerConnected } from "./serverPickerGate";
 import { redeemInvite, getInstanceInfo } from "./api/concord";
-import { getVoiceToken } from "./api/livekit";
 import { showBootSplash } from "./bootSplash";
 import { LoginForm } from "./components/auth/LoginForm";
 import { ServerPickerScreen } from "./components/auth/ServerPickerScreen";
 import { DockerFirstBootScreen } from "./components/auth/DockerFirstBootScreen";
-import { Welcome } from "./components/Welcome";
-import { useSourcesStore } from "./stores/sources";
 import { SubmitPage } from "./components/public/SubmitPage";
 import { ChatLayout } from "./components/layout/ChatLayout";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -27,6 +26,7 @@ import { ToastContainer } from "./components/ui/Toast";
 import { VoiceConnectionBar } from "./components/voice/VoiceConnectionBar";
 import { DirectInviteBanner } from "./components/DirectInviteBanner";
 import { CustomAudioRenderer } from "./components/voice/CustomAudioRenderer";
+import { classifyVoiceError } from "./components/voice/classifyVoiceError";
 import { FloatingVideoTiles } from "./components/voice/FloatingVideoTiles";
 import { buildLiveKitAudioCaptureOptions } from "./voice/noiseGate";
 
@@ -50,6 +50,25 @@ export default function App() {
   // relay. No-op outside Tauri. The hook attaches its own event
   // listeners and tears them down on unmount.
   useServitudeLifecycle();
+
+  // Phase 9 (bundle split): the per-tab js-libp2p node is no longer
+  // eagerly started on App mount. The ~600 KB libp2p stack is loaded
+  // lazily via `client/src/libp2p/lazyNode.ts` the first time a
+  // surface that actually needs it mounts (voice room with
+  // mesh-eligible participants, or the Paired Peers section in
+  // Settings → Profile). Sessions that never hit one of those
+  // surfaces pay zero libp2p cost. The `useBrowserLibp2p({ enabled:
+  // true })` opt-in from VoiceChannel / ProfileTab drives the lazy
+  // start path through the shared singleton node.
+
+  // In-app updater: native builds poll the GitHub releases listing on
+  // launch (6h debounce via localStorage) and prompt if a newer per-
+  // platform release is available. No-op outside Tauri. Manual
+  // re-check lives in Settings → About → "Check for updates".
+  useEffect(() => {
+    runUpdaterStartupCheck();
+  }, []);
+
   const [serverConnected, setServerConnected] = useState(() =>
     computeInitialServerConnected({
       isNative: isTauri,
@@ -222,7 +241,7 @@ export default function App() {
 
   const handleVoiceError = useCallback((error: Error) => {
     console.error("LiveKit connection error:", error);
-    addToast(`Voice failed: ${error.message}`, "error");
+    addToast(`Voice failed: ${classifyVoiceError(error)}`, "error");
     voiceDisconnect();
   }, [voiceDisconnect, addToast]);
 
@@ -294,8 +313,10 @@ export default function App() {
   // Auto-reconnect to voice after page refresh.
   // Retries up to MAX_RECONNECT_ATTEMPTS with exponential backoff
   // (1s, 2s, 4s) before giving up and clearing the pending session.
+  // Routes through joinVoiceSession() so the implementation is shared
+  // with the manual-join path — both paths hold the same connect-attempt
+  // lock so they can't run concurrently.
   const voiceReconnectHandled = useRef(false);
-  const voiceConnect = useVoiceStore((s) => s.connect);
   useEffect(() => {
     if (!isLoggedIn || !accessToken || voiceReconnectHandled.current) return;
     if (voiceConnected) return; // already connected
@@ -316,49 +337,20 @@ export default function App() {
 
       if (attempt > 0) {
         const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt - 1);
-        useVoiceStore.getState().setConnectionState("reconnecting");
         useVoiceStore.getState().incrementReconnectAttempt();
         await new Promise((r) => setTimeout(r, delay));
-      } else {
-        useVoiceStore.getState().setConnectionState("connecting");
       }
 
       try {
-        // Request mic permission (guard for webviews where mediaDevices
-        // may be undefined outside a secure context).
-        let micGrantedLocal = false;
-        if (navigator.mediaDevices?.getUserMedia) {
-          try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            stream.getTracks().forEach((t) => t.stop());
-            micGrantedLocal = true;
-          } catch {
-            // Continue without mic
-          }
-        }
-
-        const result = await getVoiceToken(session.channelId, accessToken);
-
-        // Same well-known-first resolution as VoiceChannel.tsx.
-        // Trailing slash is critical — see VoiceChannel.tsx comment.
-        const wkLivekit = useServerConfigStore.getState().config?.livekit_url;
-        const rawUrl = wkLivekit
-          || result.livekit_url
-          || `${getHomeserverUrl().replace(/^http/, "ws")}/livekit/`;
-        const lkUrl = rawUrl.endsWith("/") ? rawUrl : `${rawUrl}/`;
-
-        voiceConnect({
-          token: result.token,
-          livekitUrl: lkUrl,
-          iceServers: result.ice_servers?.length ? result.ice_servers : [],
-          serverId: session.serverId,
-          serverName: session.serverName ?? null,
-          channelId: session.channelId,
+        await joinVoiceSession({
+          roomId: session.channelId,
           channelName: session.channelName,
-          roomName: session.roomName,
+          serverId: session.serverId,
+          accessToken,
+          serverName: session.serverName ?? null,
           returnChannelId: session.returnChannelId ?? null,
           returnChannelName: session.returnChannelName ?? null,
-          micGranted: micGrantedLocal,
+          reconnecting: attempt > 0,
         });
 
         // Restore the associated text channel when we have one.
@@ -373,7 +365,7 @@ export default function App() {
     };
 
     attemptReconnect(0);
-  }, [isLoggedIn, accessToken, voiceConnected, voiceConnect, addToast]);
+  }, [isLoggedIn, accessToken, voiceConnected, addToast]);
 
   // The launch splash is a curtain: the app mounts and does its work
   // underneath while the splash covers it. The splash is isolated into
@@ -388,8 +380,18 @@ export default function App() {
   // ever causes a setState->re-render cycle, the unstable ref turns
   // it into an infinite loop. Memoizing keeps the dep stable.
   const handleLaunchDone = useCallback(() => setLaunchDone(true), []);
+  // Native builds get a longer splash-visibility floor so the
+  // animation plays as a proper launch animation rather than a
+  // sub-second flash. Web sessions keep the brief 1.5s floor so
+  // the chat is in the user's face fast; native users have a real
+  // "I just opened the app" moment that the animation should fill.
+  const launchMinDurationMs = isTauri ? 3000 : 1500;
   const launchOverlay = !launchDone ? (
-    <LaunchAnimation isLoading={isLoading} onDone={handleLaunchDone} />
+    <LaunchAnimation
+      isLoading={isLoading}
+      onDone={handleLaunchDone}
+      minDurationMs={launchMinDurationMs}
+    />
   ) : null;
 
   // Public submit page — no auth required
@@ -457,41 +459,36 @@ export default function App() {
     );
   }
 
-  if (!serverConnected) {
-    // W2-05 / INS-058: native first launch with no sources → Welcome.
-    // Existing-source path (e.g. user previously connected on a fresh
-    // install) falls through to the legacy ServerPickerScreen so the
-    // already-locked-in W-04 test plus existing INS-027 flow keep
-    // working. The Welcome → onboarding flows route back through
-    // `setServerConnected(true)` once a source is persisted.
-    const hasAnySource =
-      isTauri && useSourcesStore.getState().sources.length > 0;
-    if (isTauri && !hasAnySource) {
+  // Native installs drop straight into ChatLayout — no Welcome, no
+  // wizard, no LoginForm on first launch. The local porch is the
+  // user's device-local source; it's intrinsic, requires no account,
+  // and is reachable the moment the libp2p swarm comes up. Matrix
+  // accounts are only created the moment the user tries to add a
+  // remote auth-required source (Matrix homeserver, peer Concord),
+  // and that flow has its own embedded sign-in surface.
+  //
+  // Web builds still route through the existing ServerPickerScreen +
+  // LoginForm because docker stacks always have an external homeserver
+  // and the browser entry point has no local porch to land in.
+  if (!isTauri) {
+    if (!serverConnected) {
       return (
         <>
-          <Welcome onConnected={() => setServerConnected(true)} />
+          <ServerPickerScreen onConnected={() => setServerConnected(true)} />
           <MarkReady />
           {launchOverlay}
         </>
       );
     }
-    return (
-      <>
-        <ServerPickerScreen onConnected={() => setServerConnected(true)} />
-        <MarkReady />
-        {launchOverlay}
-      </>
-    );
-  }
-
-  if (!isLoggedIn) {
-    return (
-      <>
-        <LoginForm />
-        <MarkReady />
-        {launchOverlay}
-      </>
-    );
+    if (!isLoggedIn) {
+      return (
+        <>
+          <LoginForm />
+          <MarkReady />
+          {launchOverlay}
+        </>
+      );
+    }
   }
 
   // NOTE: <MarkReady /> intentionally NOT here. ChatLayout is the
@@ -545,17 +542,21 @@ export default function App() {
             }
             video={false}
             options={{
-              // webAudioMix=true makes LiveKit set up an AudioContext at
-              // room level, so later ``track.setAudioContext(ctx)`` (which
-              // fires AFTER createLocalTracks in 26604 of the esm bundle)
-              // has something to hand the track. It does NOT help the
-              // createLocalTracks → setProcessor path that bit us in the
-              // three-toast pileup — see buildLiveKitAudioCaptureOptions
-              // for why we don't attach the processor via capture defaults
-              // at all. Keeping webAudioMix on is still useful for the
-              // per-track audioContext pipeline once attachments land, and
-              // makes setSinkId-style output device switching work.
-              webAudioMix: true,
+              // Do NOT set ``webAudioMix: true``. It was added in v0.2.4 on
+              // a wrong premise (it is NOT required for the local-mic
+              // processor — ``Room.acquireAudioContext`` always creates a
+              // room AudioContext, and both ``LocalParticipant.createTracks``
+              // and ``publishOrRepublishTrack`` call
+              // ``LocalAudioTrack.setAudioContext`` unconditionally). Its
+              // actual effect is to also propagate the room AudioContext to
+              // every REMOTE audio track — which then hits
+              // ``RemoteAudioTrack.attach``'s ``connectWebAudio`` branch and
+              // pipes the remote stream through ``ctx.destination`` in
+              // PARALLEL with our ``CustomAudioRenderer`` Tier 2 cloned-
+              // track chain. Two simultaneous outputs of the same track
+              // create comb-filter coloration that users perceive as a
+              // tinny / "two streams overlapping" sound. Leave it off and
+              // let CustomAudioRenderer be the sole remote-playback path.
               audioCaptureDefaults: {
                 ...buildLiveKitAudioCaptureOptions({
                   masterInputVolume,

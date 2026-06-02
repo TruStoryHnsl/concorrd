@@ -4,7 +4,7 @@
 
   This is a CHECKLIST, not the live Info.plist. The live file is
   generated under src-tauri/gen/apple/concord_iOS/Info.plist by
-  `cargo tauri ios init` on orrpheus. When that init runs, the
+  `cargo tauri ios init` on a macOS build host. When that init runs, the
   porting step described in client/NATIVE_BUILD.md §8 must copy the
   keys below into the generated file.
 

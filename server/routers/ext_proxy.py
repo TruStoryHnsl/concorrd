@@ -25,9 +25,11 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from database import get_db
 from routers.admin import _read_instance_settings, _write_instance_settings, require_admin
-from routers.servers import get_user_id
+from dependencies import get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +352,7 @@ async def ext_proxy(
     path: str,
     request: Request,
     user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
 ):
     """Forward a request from an installed extension to the configured
     upstream provider, attaching server-side credentials as needed.
@@ -359,6 +362,29 @@ async def ext_proxy(
         raise HTTPException(404, f"Unknown provider {provider!r}")
     if request.method.upper() not in cfg.get("methods", ("GET",)):
         raise HTTPException(405, f"Method {request.method} not allowed for {provider}")
+
+    # INS-066 W7: enforce manifest permission `fetch:external`. The
+    # extension MUST have declared this in its manifest at install time,
+    # validated against ALLOWED_PERMISSIONS. Extensions installed before
+    # INS-066 (legacy static catalog only — no DB row) are NOT subject
+    # to the gate, since they predate the permissions registry; this
+    # preserves backward compatibility for worldview-map and friends.
+    # New runtime-installed extensions go through the strict gate.
+    from routers.extensions import (  # local import: avoid circular at import time
+        get_extension_manifest,
+        manifest_has_permission,
+    )
+    manifest = await get_extension_manifest(ext_id, db)
+    if manifest is not None:
+        if not manifest_has_permission(manifest, "fetch:external"):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "permission_denied",
+                    "permission": "fetch:external",
+                    "extension_id": ext_id,
+                },
+            )
 
     # Server-side rate cap — defense in depth against misbehaving iframes.
     # Note: _BUCKETS is process-local; on a multi-worker deploy the effective

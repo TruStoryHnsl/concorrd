@@ -39,6 +39,24 @@
  */
 
 /**
+ * INS-069 — per-instance branding surfaced via `.well-known/concord/client`.
+ *
+ * The server-side wire model uses snake_case (`primary_color`,
+ * `accent_color`, `logo_url`) while the client-side mirrors it in
+ * camelCase to match every other interface in this module's public API.
+ * The mapping happens once in {@link discoverHomeserver} so callers
+ * never have to think about wire-vs-client casing.
+ */
+export interface HomeserverBranding {
+  /** Six-digit hex string `#rrggbb` — tile's tinted background base. */
+  primaryColor: string;
+  /** Six-digit hex string `#rrggbb` — tile's accent ring. */
+  accentColor: string;
+  /** Optional HTTP/HTTPS logo URL. Falls back to the default Source brand icon. */
+  logoUrl?: string;
+}
+
+/**
  * Fully resolved endpoint configuration for a target Concord instance.
  * Produced by {@link discoverHomeserver}. Serializable — safe to persist
  * in a store or IPC between the main process and UI.
@@ -66,6 +84,12 @@ export interface HomeserverConfig {
   node_role?: string;
   /** Whether this instance acts as a tunnel anchor for other nodes. */
   tunnel_anchor?: boolean;
+  /**
+   * INS-069 — per-instance branding (primary/accent colours + optional logo).
+   * Absent when the operator has not configured branding; clients fall
+   * back to the default Source tile styling.
+   */
+  branding?: HomeserverBranding;
 }
 
 /** Raised when the target host cannot be reached at all (DNS/network). */
@@ -164,6 +188,26 @@ interface ConcordClientWellKnown {
   turn_servers?: Array<{ urls: string | string[] }>;
   node_role?: unknown;
   tunnel_anchor?: unknown;
+  /**
+   * INS-069 — server-side wire shape (snake_case). Mapped to
+   * camelCase {@link HomeserverBranding} during parse.
+   */
+  branding?: {
+    primary_color?: unknown;
+    accent_color?: unknown;
+    logo_url?: unknown;
+  } | null;
+}
+
+/**
+ * Validate a hex colour string (six-digit `#rrggbb`) — the same
+ * pattern the server enforces. Defensive: the wire is supposed to be
+ * pre-validated, but accepting whatever the server claims and shoving
+ * it into an inline-style attribute is a recipe for silent corruption
+ * if anyone ever ships an unvalidated branding write path.
+ */
+function isHexColor(raw: unknown): raw is string {
+  return typeof raw === "string" && /^#[0-9A-Fa-f]{6}$/.test(raw);
 }
 
 interface ElementWebConfig {
@@ -374,7 +418,7 @@ export async function discoverHomeserver(
   // ---------------------------------------------------------------
   // If the Concord well-known is absent (vanilla Matrix homeserver),
   // fall back to `https://<host>/api`. This keeps the helper
-  // backwards-compatible with the existing orrgate deployment where
+  // backwards-compatible with the standard deployment topology where
   // Caddy routes `/api/*` to the Concord container.
   let apiBase: string;
   let livekitUrl: string | undefined;
@@ -383,6 +427,7 @@ export async function discoverHomeserver(
   let turnServers: HomeserverConfig["turn_servers"] | undefined;
   let nodeRole: string | undefined;
   let tunnelAnchor: boolean | undefined;
+  let branding: HomeserverBranding | undefined;
   if (concordResult.status === "ok") {
     const body = concordResult.body;
     if (typeof body.api_base === "string" && body.api_base.length > 0) {
@@ -434,6 +479,24 @@ export async function discoverHomeserver(
     if (typeof body.tunnel_anchor === "boolean") {
       tunnelAnchor = body.tunnel_anchor;
     }
+    // INS-069 — per-instance branding. Server pre-validates, but we
+    // re-check the hex pattern on the way in so bad upstream values
+    // can never leak into a CSS-injected inline style.
+    if (body.branding && typeof body.branding === "object") {
+      const b = body.branding;
+      if (isHexColor(b.primary_color) && isHexColor(b.accent_color)) {
+        const logoRaw = b.logo_url;
+        const logo =
+          typeof logoRaw === "string" && /^https?:\/\/.+/.test(logoRaw)
+            ? logoRaw
+            : undefined;
+        branding = {
+          primaryColor: b.primary_color,
+          accentColor: b.accent_color,
+          logoUrl: logo,
+        };
+      }
+    }
   } else {
     apiBase = assertHttpsUrl(
       `https://${canonicalHost}/api`,
@@ -453,5 +516,6 @@ export async function discoverHomeserver(
     turn_servers: turnServers,
     node_role: nodeRole,
     tunnel_anchor: tunnelAnchor,
+    branding,
   };
 }

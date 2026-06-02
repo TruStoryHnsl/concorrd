@@ -20,6 +20,79 @@ pub const SERVITUDE_STORE_KEY: &str = "servitude";
 /// the rest of the Concord settings surface (see `lib.rs`).
 pub const SETTINGS_STORE_FILE: &str = "settings.json";
 
+/// Env var used to override the persisted [`Profile`] at boot.
+///
+/// docker-compose.yml sets this to `web_first` for the
+/// `concord-api` container so the docker stack always runs the full
+/// web stack regardless of whatever value made it onto disk from a
+/// prior native run. Native Tauri builds leave the variable unset,
+/// so the persisted (or defaulted) profile is what takes effect.
+pub const PROFILE_ENV_VAR: &str = "CONCORD_PROFILE";
+
+/// Deployment profile — which subset of services the servitude brings up.
+///
+/// Phase 7 (INS-019b) introduces the explicit native/web split. The same
+/// Rust binary ships in both contexts; only the chosen subset of
+/// transports actually starts. The Phase-0 hosting status surface
+/// (`/api/hosting/status`) is what the Settings UI uses to walk an
+/// operator through DNS + port-forward when they flip native to web.
+///
+/// Default for native Tauri builds is [`Profile::P2pOnly`] — libp2p
+/// runs, every other transport is gated behind an explicit toggle.
+/// Docker builds set `CONCORD_PROFILE=web_first` in docker-compose so
+/// every transport in `enabled_transports` materializes at boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Profile {
+    /// libp2p swarm only — no Caddy / LiveKit / coturn / sslh and no
+    /// Matrix federation child process. The default for native Tauri
+    /// builds: the install joins the Concord P2P mesh and can be
+    /// reached via Phase-5 peer pairing, but a browser tab cannot
+    /// load it directly because no public HTTP surface is bound.
+    P2pOnly,
+    /// Full web stack (Caddy + LiveKit + coturn + sslh, Matrix
+    /// federation child process, etc.) plus libp2p. The default for
+    /// docker / web-first deployments. Native installs flip to this
+    /// via the Settings → Profile → "Make this instance
+    /// web-accessible" toggle.
+    WebFirst,
+}
+
+impl Profile {
+    /// Parse a [`Profile`] from a string, matching the snake_case wire
+    /// form. Used by [`Self::from_env`] so an invalid env value falls
+    /// through to the persisted/default profile instead of crashing
+    /// the boot.
+    pub fn parse_str(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "p2p_only" | "p2ponly" => Some(Profile::P2pOnly),
+            "web_first" | "webfirst" => Some(Profile::WebFirst),
+            _ => None,
+        }
+    }
+
+    /// If the [`PROFILE_ENV_VAR`] is set and parseable, return its
+    /// value. Otherwise `None` and the caller falls back to the
+    /// persisted/default profile.
+    pub fn from_env() -> Option<Self> {
+        std::env::var(PROFILE_ENV_VAR)
+            .ok()
+            .and_then(|s| Self::parse_str(&s))
+    }
+}
+
+impl Default for Profile {
+    /// Native = `P2pOnly`. Docker = `WebFirst` via the
+    /// `CONCORD_PROFILE` env var set in `docker-compose.yml`. We can't
+    /// reliably tell at compile time which we are (the Rust binary in
+    /// the Tauri sidecar is the same in both contexts) so the
+    /// default is the safer one for native — and the docker stack
+    /// MUST set the env var to flip it.
+    fn default() -> Self {
+        Profile::P2pOnly
+    }
+}
+
 /// Layered transports the embedded servitude can advertise.
 ///
 /// The actual runtime wiring lives in a separate task — this enum is the
@@ -28,7 +101,7 @@ pub const SETTINGS_STORE_FILE: &str = "settings.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Transport {
-    /// WireGuard tunnels (orrtellite/headscale style). Stable backbone.
+    /// WireGuard tunnels (Headscale / Tailscale-style mesh). Stable backbone.
     WireGuard,
     /// Local-radio mesh (BLE / WiFi Direct / WiFi AP) for offline reach.
     Mesh,
@@ -73,12 +146,99 @@ pub struct ServitudeConfig {
     pub allow_privileged_port: bool,
 
     /// Layered transports this node will speak. At least one must be enabled.
-    #[serde(default = "default_transports")]
+    ///
+    /// Deserialized via [`deserialize_tolerant_transports`] so a stored
+    /// config from an older build that contains a now-removed variant
+    /// (e.g. `discord_bridge`, the deprecated bridge that shipped in
+    /// 0.4) does NOT brick the app at startup. Unknown variants are
+    /// logged + dropped; if every entry is unknown the field falls
+    /// back to [`default_transports`].
+    #[serde(
+        default = "default_transports",
+        deserialize_with = "deserialize_tolerant_transports"
+    )]
     pub enabled_transports: Vec<Transport>,
+
+    /// Deployment profile. Native Tauri builds default to
+    /// [`Profile::P2pOnly`]; the docker stack flips this to
+    /// [`Profile::WebFirst`] via the `CONCORD_PROFILE` env var at boot
+    /// (see [`PROFILE_ENV_VAR`] and [`Profile::from_env`]). The
+    /// persisted value is what the user-facing Settings toggle writes
+    /// to. The env var ALWAYS wins over the persisted value so the
+    /// docker stack can never accidentally come up in p2p-only mode
+    /// because of a stale on-disk config.
+    #[serde(default)]
+    pub profile: Profile,
 }
 
+/// Default `enabled_transports` for a fresh install / field-absent
+/// settings.json: `[MatrixFederation]`. The persisted default lists
+/// MatrixFederation but `Profile::default()` = `p2p_only` SKIPS it
+/// at runtime, so a fresh boot still comes up porch-only. When the
+/// HostOnboarding wizard later flips the profile to `web_first` to
+/// stand up the embedded homeserver, the runtime materializes the
+/// transport from this list — no separate "add MatrixFederation"
+/// step needed.
 fn default_transports() -> Vec<Transport> {
     vec![Transport::MatrixFederation]
+}
+
+/// Deserialize `enabled_transports` while tolerating unknown variants.
+///
+/// Older builds shipped transport variants that no longer exist (the
+/// most common offender is `discord_bridge`, removed pre-0.5 — a
+/// stored settings.json carrying it would fail the strict
+/// `Vec<Transport>` derive deserialize with a TOML/JSON parse error
+/// and brick the app on startup). Tolerant deserialization fixes
+/// that: every entry is read as a string, mapped to its `Transport`
+/// variant if known, and dropped with a warning if not. When the
+/// filter leaves the list empty (every entry was unknown) the field
+/// falls back to [`default_transports`] so the user's instance still
+/// comes up with a working transport set.
+fn deserialize_tolerant_transports<'de, D>(
+    d: D,
+) -> Result<Vec<Transport>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Vec<String> = Vec::<String>::deserialize(d)?;
+    let raw_was_empty = raw.is_empty();
+    let parsed: Vec<Transport> = raw
+        .into_iter()
+        .filter_map(|s| match s.as_str() {
+            "wire_guard" => Some(Transport::WireGuard),
+            "mesh" => Some(Transport::Mesh),
+            "tunnel" => Some(Transport::Tunnel),
+            "matrix_federation" => Some(Transport::MatrixFederation),
+            #[cfg(feature = "reticulum")]
+            "reticulum" => Some(Transport::Reticulum),
+            other => {
+                log::warn!(
+                    target: "concord::config",
+                    "skipping unknown enabled_transports variant {other:?} \
+                     (likely from a removed or feature-gated transport); \
+                     update the stored settings to silence this warning"
+                );
+                None
+            }
+        })
+        .collect();
+    // Respect an EXPLICITLY empty list — that's the operator saying
+    // "run only the libp2p baseline, no MatrixFederation, no nothing
+    // else." Falling back to defaults here would silently resurrect
+    // tuwunel on an install that explicitly opted out. The fallback
+    // is ONLY for the config-drift case: input was non-empty but
+    // every entry was an unknown / removed variant.
+    if parsed.is_empty() && !raw_was_empty {
+        log::warn!(
+            target: "concord::config",
+            "no recognized transports in enabled_transports; falling back \
+             to default ({:?})",
+            default_transports()
+        );
+        return Ok(default_transports());
+    }
+    Ok(parsed)
 }
 
 impl Default for ServitudeConfig {
@@ -88,7 +248,13 @@ impl Default for ServitudeConfig {
             max_peers: 32,
             listen_port: 8765,
             allow_privileged_port: false,
+            // Fresh install lists MatrixFederation but
+            // `Profile::default()` = `P2pOnly` SKIPS it at runtime so
+            // first boot still comes up porch-only. The wizard's
+            // profile flip to `WebFirst` is what makes the transport
+            // materialize from this list.
             enabled_transports: default_transports(),
+            profile: Profile::default(),
         }
     }
 }
@@ -103,9 +269,25 @@ impl ServitudeConfig {
 
     /// Parse a TOML string and run [`Self::validate`].
     pub fn from_toml_str(raw: &str) -> Result<Self, ConfigError> {
-        let cfg: Self = toml::from_str(raw).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        let mut cfg: Self =
+            toml::from_str(raw).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        cfg.apply_profile_env_override();
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// If [`PROFILE_ENV_VAR`] is set to a parseable value, override the
+    /// in-memory `profile` with it. The persisted value on disk is
+    /// untouched — the override only affects this loaded handle.
+    ///
+    /// Docker compose sets this env var so the stack is guaranteed to
+    /// boot in `web_first` regardless of any value the on-disk config
+    /// might carry. Native builds leave it unset and the persisted
+    /// (or default) value is what takes effect.
+    fn apply_profile_env_override(&mut self) {
+        if let Some(p) = Profile::from_env() {
+            self.profile = p;
+        }
     }
 
     /// Load a validated `ServitudeConfig` from the shared tauri settings
@@ -126,11 +308,14 @@ impl ServitudeConfig {
             .map_err(|e| ConfigError::Store(e.to_string()))?;
 
         let Some(value) = store.get(SERVITUDE_STORE_KEY) else {
-            return Ok(Self::default());
+            let mut cfg = Self::default();
+            cfg.apply_profile_env_override();
+            return Ok(cfg);
         };
 
-        let cfg: Self =
+        let mut cfg: Self =
             serde_json::from_value(value).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        cfg.apply_profile_env_override();
         cfg.validate()?;
         Ok(cfg)
     }
@@ -171,9 +356,13 @@ impl ServitudeConfig {
         if self.listen_port < 1024 && !self.allow_privileged_port {
             return Err(ConfigError::PrivilegedPortNotAllowed(self.listen_port));
         }
-        if self.enabled_transports.is_empty() {
-            return Err(ConfigError::NoTransportsEnabled);
-        }
+        // `enabled_transports` is allowed to be empty under the porch
+        // architecture: the libp2p baseline transport is always-on
+        // and is intentionally NOT declared in this list. An empty
+        // list = "porch-only install, no MatrixFederation, no
+        // optional transports." Rejecting empty here was a holdover
+        // from the pre-porch era when MatrixFederation was treated
+        // as load-bearing.
 
         Ok(())
     }
@@ -200,9 +389,6 @@ pub enum ConfigError {
     #[error("listen_port {0} is privileged (<1024); set allow_privileged_port = true to override")]
     PrivilegedPortNotAllowed(i64),
 
-    #[error("at least one transport must be enabled in enabled_transports")]
-    NoTransportsEnabled,
-
     #[error("settings store error: {0}")]
     Store(String),
 }
@@ -218,6 +404,7 @@ mod tests {
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::MatrixFederation],
+            profile: Profile::P2pOnly,
         }
     }
 
@@ -250,6 +437,7 @@ mod tests {
             listen_port: 31_337,
             allow_privileged_port: true,
             enabled_transports,
+            profile: Profile::WebFirst,
         };
 
         let json =
@@ -265,6 +453,7 @@ mod tests {
             original.allow_privileged_port
         );
         assert_eq!(decoded.enabled_transports, original.enabled_transports);
+        assert_eq!(decoded.profile, original.profile);
 
         // And the decoded config must still pass validation (catches
         // "serde accepted garbage but validator would have rejected it").
@@ -315,10 +504,16 @@ mod tests {
     }
 
     #[test]
-    fn test_config_validation_rejects_no_transports() {
+    fn test_config_validation_allows_empty_transports() {
+        // Empty `enabled_transports` is the porch-only configuration:
+        // the always-on libp2p baseline runs and no optional
+        // MatrixFederation / WireGuard / Mesh transports come up.
+        // validate() MUST accept it — rejecting empty here was a
+        // holdover from the pre-porch era and silently resurrected
+        // tuwunel on installs that explicitly opted out.
         let mut cfg = base();
         cfg.enabled_transports.clear();
-        assert_eq!(cfg.validate(), Err(ConfigError::NoTransportsEnabled));
+        cfg.validate().expect("empty enabled_transports is valid");
     }
 
     #[test]
@@ -368,6 +563,7 @@ listen_port = 8765
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::MatrixFederation],
+            profile: Profile::P2pOnly,
         };
         // This assertion currently PASSES — meaning validate() accepts
         // a null-only display name. That's the bug.
@@ -386,6 +582,7 @@ listen_port = 8765
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::MatrixFederation],
+            profile: Profile::P2pOnly,
         };
         // PASSES — validator does not reject embedded ANSI escapes.
         assert!(cfg.validate().is_ok());
@@ -423,6 +620,39 @@ listen_port = -1
         let err =
             ServitudeConfig::from_toml_str(raw).expect_err("negative port should fail validation");
         assert!(matches!(err, ConfigError::PortOutOfRange(-1)));
+    }
+
+    /// Regression: a stored config from an older build that contains
+    /// `discord_bridge` (or any other removed transport variant) MUST
+    /// NOT brick startup. The tolerant deserializer drops the unknown
+    /// and keeps the recognized variants.
+    #[test]
+    fn unknown_transport_variants_are_dropped_with_warning() {
+        let raw = r#"
+display_name = "stale-config"
+max_peers = 8
+listen_port = 8765
+enabled_transports = ["matrix_federation", "discord_bridge"]
+"#;
+        let cfg = ServitudeConfig::from_toml_str(raw)
+            .expect("stored config with one stale transport variant must still parse");
+        assert_eq!(cfg.enabled_transports, vec![Transport::MatrixFederation]);
+    }
+
+    /// Regression: a stored config whose ENTIRE `enabled_transports`
+    /// list is unknown variants falls back to the default rather than
+    /// failing validation with "at least one transport must be enabled".
+    #[test]
+    fn all_unknown_transport_variants_fall_back_to_default() {
+        let raw = r#"
+display_name = "everything-stale"
+max_peers = 8
+listen_port = 8765
+enabled_transports = ["discord_bridge", "icq_relay"]
+"#;
+        let cfg = ServitudeConfig::from_toml_str(raw)
+            .expect("all-unknown variants must fall back to the default");
+        assert_eq!(cfg.enabled_transports, default_transports());
     }
 
     #[test]

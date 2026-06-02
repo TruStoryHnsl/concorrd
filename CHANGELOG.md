@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — relicensed MIT → Fair Source (FSL-1.1-Apache-2.0)
+- **Concord is now licensed under the Functional Source License 1.1 with an Apache-2.0 future grant (`FSL-1.1-Apache-2.0`).** Users may freely use, modify, self-host, and share Concord for any purpose **except a Competing Use** — reselling it, or offering it to third parties as a paid/managed service. The Licensor (maintainer) is exempt and retains the sole right to commercialize (paid signed builds, paid hosting). **Each release auto-converts to the Apache License 2.0 two years after publication**, becoming unrestricted open source. Code from prior MIT-tagged releases stays MIT.
+- Added `TRADEMARKS.md` — the "Concord"/"Concorrd" name and logo are reserved and not granted by the code license.
+- Added `CLA.md` — contributors license their contributions to the maintainer so the Apache future-grant and commercial rights remain enforceable.
+- `src-tauri/Cargo.toml` license field updated; `README.md`, `CONTRIBUTING.md`, and `client/MONETIZATION_PROPOSAL.md` note the new posture. The donation-only end-user model is unchanged — the FSL governs *third-party* monetization, a separate axis.
+
+## [0.7.11] - 2026-05-13
+
+### Fixed — macos-intel cross-compile: bump min-macOS 10.12 → 11.0
+- **`.github/workflows/release.yml`** — `-mmacosx-version-min` in the macos-intel cross-compile env bumped from `10.12` to `11.0`. The `10.12` floor caused `rust-librocksdb-sys` (one of tuwunel's deps) to fail compilation: rocksdb's aligned `new`/`delete` operators are only available from macOS 10.13, and the C++ stdlib code rocksdb pulls in needs even newer than that. `11.0` matches the existing `tauri.conf.json` `macOS.minimumSystemVersion: "11.0"` — the desktop app already declared itself Big Sur-only, so compiling against an older SDK was pointlessly more permissive than the runtime target.
+
+## [0.7.10] - 2026-05-12
+
+### Fixed — macos-intel cross-compile: C deps now emit x86_64 object files
+- **`.github/workflows/release.yml`** — added a `cross_compile` matrix flag (set on `macos-intel`) plus a step that writes cross-compile C/linker env vars to `$GITHUB_ENV` before the tuwunel and Tauri build steps. Without these, `cargo --target x86_64-apple-darwin` cross-compiled the Rust crates correctly but C deps invoked via `cc-rs` (jemalloc-sys, aws-lc-sys, ring, lz4-sys, bzip2-sys, zstd-sys) picked up the host arm64 arch and emitted host-arch object files; the link step then rejected 1438 of them with `found architecture 'arm64', required architecture 'x86_64'`. The env vars set are: `CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS` (for autoconf-style ./configure builds — jemalloc uses configure), and the cc-rs target-specific variants `CC_x86_64_apple_darwin`, `CFLAGS_x86_64_apple_darwin`, etc. (for cc-rs target-side cross-builds), plus `CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER` + `RUSTFLAGS` so rustc invokes clang with `-arch x86_64` at link time. macos-arm64 is unaffected (`cross_compile` flag not set; native build).
+
+## [0.7.9] - 2026-05-12
+
+### Fixed — macos-intel cross-compile blocked on tuwunel's pinned toolchain
+- **`.github/workflows/release.yml`** — `rustup target add "${RUST_TARGET}"` now runs inside the tuwunel macOS build step before `cargo build`. tuwunel pins its own toolchain via `rust-toolchain.toml` (Rust 1.94.0); the target added by `dtolnay/rust-toolchain@stable` at the top of the job only lives on stable, not on the pinned toolchain that cargo switches to inside the tuwunel checkout. v0.7.8's macos-intel job failed `E0463 "can't find crate for core"` for exactly that reason. Adding the target on the pinned toolchain inside the tuwunel build step fixes it. macos-arm64 already builds because its target matches the host so no cross-arch lib is needed.
+
+## [0.7.8] - 2026-05-12
+
+### Fixed — macos-intel release job no longer blocked on GitHub runner queue
+- **`.github/workflows/release.yml`** — moved the `macos-intel` matrix entry from `macos-13` (Intel host) to `macos-14` (Apple Silicon host) and cross-compiles to `x86_64-apple-darwin` from there. GitHub's `macos-13` hosted runner queue is heavily rationed and v0.7.7 hit the 24-hour queue auto-cancel twice without ever starting the job. `macos-14` provisions in minutes; cargo's Rust toolchain plus Apple's bundled Xcode/clang carries the x86_64 SDK, so the Intel binary builds from the arm64 host with no other workflow changes. Other three platform jobs and the publish path are unchanged.
+
+## [0.7.7] - 2026-05-05
+
+### Fixed — release pipeline can actually publish per-platform releases
+- **`.github/workflows/release.yml`** had three latent bugs that masked each other in v0.7.6's first run: (1) the existence-check `gh api .../releases/tags/<tag> --jq .id 2>/dev/null` printed the 404 JSON body to STDOUT (gh api routes API errors there, not stderr), so `existing_id` was set to `{"message":"Not Found",…}` on every fresh run and the script tried to DELETE assets at a malformed URL. Replaced with `gh release view --json id --jq .id` which writes errors to stderr and exits non-zero on missing release. (2) `gh release upload --clobber` invokes `gh api /repos/...` internally; on Git Bash on `windows-latest`, MSYS path-conversion rewrites the leading slash to `C:/Program Files/Git/repos/...` and gh exits with "invalid API endpoint". `--clobber` is now dropped (we delete-then-create instead) and the asset-count verification reads through `gh release view` so no shell-converted slash paths remain. (3) On re-publish, the existing release is deleted whole rather than asset-by-asset, removing the second `gh api` call site that hit the same path-conversion trap.
+- **macOS source build of tuwunel pinned to `v1.6.1`** (was `v1.5.1`). `v1.5.1` referenced `Resource::RLIMIT_NPROC` and `Usage::default()` unconditionally, both of which the `nix` crate exposes only on non-macOS Unix. `v1.6.1` cfg-gates them to `cfg(all(unix, not(target_os = "macos")))` and `cfg(not(unix))` respectively, so the macOS x86_64 + arm64 source builds now compile.
+
+## [0.7.6] - 2026-05-05
+
+### Changed — desktop releases split into one GitHub Release per platform
+- **`.github/workflows/release.yml`** no longer publishes a single combined release with every installer attached. Pushing a SemVer tag (`vX.Y.Z`) now fans out to four parallel platform jobs, and each job creates its own GitHub Release at a suffix tag (`vX.Y.Z-windows`, `vX.Y.Z-macos-intel`, `vX.Y.Z-macos-arm64`, `vX.Y.Z-linux`) pointing at the parent commit. Each release contains EXACTLY ONE installer asset: NSIS `.exe` on Windows, per-arch `.dmg` on macOS, `.AppImage` on Linux. MSI / `.deb` / `.rpm` outputs and the old combined release are gone — anything an installer needs at runtime must be bundled inside the installer itself, no sidecar `.sig` / `.json` / `latest.yml` / checksums files are produced or attached. The parent `vX.Y.Z` tag is not promoted to a user-facing release; only the four platform suffix releases appear on the releases page.
+
 ### Added — Windows native build CI on `windows-latest`
 - **`.github/workflows/windows-build.yml`** runs on every push to `main`, every pull request, and on manual dispatch. Builds the React client, then `cargo tauri build --ci --bundles msi nsis` on a real Windows runner, then uploads `concord-windows-msi` and `concord-windows-nsis` artifacts (14-day retention). The runner caches the cargo registry/index across builds (~95% of cold-build time) and `src-tauri/target/` on a `Cargo.lock`-keyed cache so dep updates blow it cleanly.
 - Linux cross-compile via cargo-xwin remains blocked by libsodium-sys-stable (POSIX-only build deps in iota_stronghold) — the canonical path to a distributable Windows installer is now this CI workflow or a developer running `scripts/build_windows_native.ps1` on a Windows host. `scripts/build_windows_wsl.sh` retained for fast Rust-side iteration but exits with a clear diagnostic on the libsodium failure.

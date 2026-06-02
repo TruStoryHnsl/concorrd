@@ -95,6 +95,39 @@ async def invite_to_room(access_token: str, room_id: str, user_id: str) -> None:
         resp.raise_for_status()
 
 
+async def ban_from_room(
+    access_token: str, room_id: str, user_id: str, reason: str | None = None
+) -> None:
+    """Ban a user from a Matrix room.
+
+    Matrix bans are per-room (no space-level ban semantics). Callers banning
+    a user from a Concord server must fan this out across every channel of
+    that server. Banning is idempotent at the API level — re-banning a
+    user who is already banned returns 200.
+
+    Raises on any non-200 response so the caller can decide whether to
+    abort the broader operation (e.g. roll back a DB ban row).
+    """
+    async with httpx.AsyncClient() as client:
+        body: dict = {"user_id": user_id}
+        if reason:
+            body["reason"] = reason
+        resp = await client.post(
+            f"{MATRIX_HOMESERVER_URL}/_matrix/client/v3/rooms/{room_id}/ban",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=body,
+        )
+        if resp.status_code == 200:
+            return
+        try:
+            err = resp.json().get("error", "") or ""
+        except Exception:
+            err = ""
+        raise Exception(
+            f"Cannot ban {user_id} from room {room_id}: HTTP {resp.status_code} {err}"
+        )
+
+
 async def set_room_name(access_token: str, room_id: str, name: str) -> None:
     """Update the m.room.name state event on a Matrix room."""
     async with httpx.AsyncClient() as client:

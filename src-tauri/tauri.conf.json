@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../client/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "",
-    "beforeBuildCommand": ""
+    "beforeDevCommand": "npm --prefix ./client run dev",
+    "beforeBuildCommand": "npm --prefix ./client run build"
   },
   "app": {
     "windows": [
@@ -19,6 +19,7 @@
         "minHeight": 520,
         "resizable": true,
         "fullscreen": false,
+        "decorations": false,
         "backgroundColor": [12, 14, 17, 255]
       }
     ],
@@ -42,7 +43,8 @@
     ],
     "resources": [
       "resources/tuwunel/**/*",
-      "resources/dendrite/**/*"
+      "resources/dendrite/**/*",
+      "installer/macos-uninstall.sh"
     ],
     "linux": {
       "deb": {
@@ -60,17 +62,16 @@
       "nsis": {
         "displayLanguageSelector": false,
         "languages": ["English"],
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "compression": "lzma",
+        "installerHooks": "installer/nsis-hooks.nsh"
       },
       "wix": {
         "language": ["en-US"]
-      },
-      "webviewInstallMode": {
-        "type": "offlineInstaller"
       }
     },
     "iOS": {
-      "developmentTeam": "827D323V6Z",
+      "developmentTeam": "YOUR_TEAM_ID",
       "minimumSystemVersion": "15.0",
       "frameworks": []
     },
@@ -78,5 +79,12 @@
       "minSdkVersion": 24
     }
   },
-  "plugins": {}
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["concord"]
+      },
+      "mobile": []
+    }
+  }
 }

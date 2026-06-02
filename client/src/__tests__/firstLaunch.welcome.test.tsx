@@ -1,41 +1,31 @@
 /**
- * Empirical lock-in test for the W2 sprint: a fresh-install Tauri-v2
- * native client renders the Welcome screen on first launch, NOT the
- * legacy ServerPickerScreen modal.
+ * Empirical lock-in test for the post-HostOnboarding native first-launch
+ * contract: a fresh-install Tauri-v2 native client drops straight into
+ * ChatLayout. No Welcome screen, no Host CTA, no owner-registration
+ * wizard.
  *
- * This complements `noLegacyTauriGlobal.test.ts` (which scans source
- * for forbidden v1 reads) and `bootSplash.test.ts` (which exercises
- * pre-React boot sequencing). It tests the React render under jsdom
- * with __TAURI_INTERNALS__ stubbed and BOTH the sources store +
- * serverConfig store cleared — the scenario every fresh install hits.
+ * Background: the architecture removed account creation from first
+ * launch entirely. The local porch is implicit, materialized by the
+ * libp2p swarm; the user's only first-run knob is the vanity instance
+ * name in Settings → Hosting. Matrix-account / login flows happen
+ * per-source when the user adds an external auth-required source.
  *
- * What it verifies (W2-05, INS-058):
- *   1. Welcome screen is the first interactive render.
- *   2. Welcome shows two CTAs: "Connect to a Concord" + "Host a new
- *      Concord".
- *   3. Welcome is NOT the legacy ServerPickerScreen modal.
- *   4. Welcome is NOT LoginForm or ChatLayout.
+ * What this test verifies on a Tauri build with empty stores:
+ *   1. ChatLayout is the first interactive surface (no Welcome).
+ *   2. Welcome is NOT rendered.
+ *   3. ServerPickerScreen is NOT rendered.
+ *   4. LoginForm is NOT rendered.
  *
- * "WRITTEN IN BLOOD" rule: assert from a user-oriented perspective.
- * The user sees the Welcome screen and the two button labels — that's
+ * "WRITTEN IN BLOOD" rule: assert from a user-oriented perspective. The
+ * user opens a fresh native install and lands in the chat shell — that's
  * what we assert on, not internal component identity.
- *
- * Honest verification status:
- *   - jsdom render in this test on Linux host: PASS (when this test
- *     ships green).
- *   - Real-Windows-machine empirical confirmation: PENDING. Blocked
- *     on W2-13's CI artifact + corr@win11.local interactive session
- *     screenshot. The screenshot at first launch should show the
- *     "Welcome to Concord" headline and both CTAs.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
-// Mock Tauri APIs that App.tsx pulls in. Welcome itself doesn't
-// invoke() anything on the picker step — those calls only fire from
-// inside HostOnboarding when the user presses "Create owner".
+// Mock Tauri APIs that App.tsx pulls in.
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(() => Promise.resolve()),
 }));
@@ -66,10 +56,31 @@ vi.mock("../api/livekit", () => ({
   getVoiceToken: vi.fn(() => Promise.resolve(null)),
 }));
 
-describe("native first launch — Welcome screen (W2-05)", () => {
+// Replace ChatLayout with a sentinel — this test asserts WHICH screen
+// App renders on a native fresh install, not ChatLayout's internals.
+vi.mock("../components/layout/ChatLayout", () => ({
+  ChatLayout: () => <div data-testid="chat-layout">ChatLayout sentinel</div>,
+}));
+
+// Welcome should NOT render on native. If it ever does, surface it.
+vi.mock("../components/Welcome", () => ({
+  Welcome: () => <div data-testid="welcome-screen">Welcome sentinel</div>,
+}));
+
+// LoginForm and ServerPickerScreen are web-only first-launch surfaces.
+vi.mock("../components/auth/LoginForm", () => ({
+  LoginForm: () => <div data-testid="login-form">LoginForm sentinel</div>,
+}));
+
+vi.mock("../components/auth/ServerPickerScreen", () => ({
+  ServerPickerScreen: () => (
+    <div data-testid="server-picker-screen">ServerPickerScreen sentinel</div>
+  ),
+}));
+
+describe("native first launch — drops straight into ChatLayout", () => {
   beforeEach(() => {
-    // Stub the v2 Tauri global on the real window — Welcome's empty-
-    // state branch only fires on the isTauri path.
+    // Stub the v2 Tauri global on the real window.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).__TAURI_INTERNALS__ = {};
     // Fresh storage — no persisted sources, no persisted serverConfig.
@@ -88,62 +99,25 @@ describe("native first launch — Welcome screen (W2-05)", () => {
     vi.clearAllMocks();
   });
 
-  it("renders Welcome with two CTAs on a fresh install", async () => {
+  it("renders ChatLayout immediately — no Welcome, no LoginForm, no picker", async () => {
     // Lazy-import App AFTER the Tauri global is stubbed so module-
     // level initialization (e.g. computeInitialServerConnected) sees
     // the right environment.
     const { default: App } = await import("../App");
     render(<App />);
 
-    // Welcome screen container is present.
+    // The chat shell is the first interactive surface on native.
     expect(
-      await screen.findByTestId("welcome-screen", {}, { timeout: 3000 }),
+      await screen.findByTestId("chat-layout", {}, { timeout: 3000 }),
     ).toBeInTheDocument();
 
-    // Both CTAs render with user-readable labels.
-    const connectCta = await screen.findByTestId("welcome-connect-cta");
-    const hostCta = await screen.findByTestId("welcome-host-cta");
-    expect(connectCta).toBeInTheDocument();
-    expect(hostCta).toBeInTheDocument();
-    // The label text is the contract — these strings are what the user
-    // reads. If anyone changes the label, this test fails noisily.
-    expect(connectCta.textContent).toMatch(/Connect to a Concord/);
-    expect(hostCta.textContent).toMatch(/Host a new Concord/);
-  });
-
-  it("is NOT the legacy ServerPickerScreen modal", async () => {
-    const { default: App } = await import("../App");
-    render(<App />);
-    await screen.findByTestId("welcome-screen");
-
-    // ServerPickerScreen exposes well-known-config UI. Welcome does
-    // not. The presence of the Welcome testid + the absence of the
-    // ServerPickerScreen wellKnown machinery is the contract.
-    expect(
-      screen.queryByText(/\.well-known\/concord\/client/i),
-    ).not.toBeInTheDocument();
-    // ServerPickerScreen also has its own data-testid surface; assert
-    // none of those have shown up.
+    // None of the pre-W2-removed first-launch gates render.
+    expect(screen.queryByTestId("welcome-screen")).not.toBeInTheDocument();
     expect(screen.queryByTestId("server-picker-screen")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("server-picker-input")).not.toBeInTheDocument();
-  });
-
-  it("is NOT LoginForm or ChatLayout (no sign-in fields, no chat shell)", async () => {
-    const { default: App } = await import("../App");
-    render(<App />);
-
-    // Wait for the welcome screen to actually appear so we know we're
-    // past any spinner / loading states.
-    await screen.findByTestId("welcome-screen");
-
-    // No password field (LoginForm marker).
+    expect(screen.queryByTestId("login-form")).not.toBeInTheDocument();
+    // No password field anywhere on native first launch.
     expect(
       document.querySelectorAll('input[type="password"]').length,
     ).toBe(0);
-
-    // No chat shell — `ChatLayout` would render a sources/servers/
-    // channels skeleton. We assert no element exists with role
-    // "main" or testid hooks the chat layout typically exposes.
-    expect(screen.queryByTestId("chat-layout")).not.toBeInTheDocument();
   });
 });

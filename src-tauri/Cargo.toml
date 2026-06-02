@@ -3,7 +3,11 @@ name = "concord"
 version = "0.1.0"
 description = "Concord — Decentralized Communication Platform"
 authors = ["Colton Orr"]
-license = "MIT"
+# Fair Source: Functional Source License 1.1, converts to Apache-2.0 two years
+# after each release. Not an OSI/crates.io standard SPDX id, so expressed as a
+# LicenseRef pointing at the root LICENSE file. This crate is not published to
+# crates.io. See ../LICENSE and ../TRADEMARKS.md.
+license = "LicenseRef-FSL-1.1-Apache-2.0"
 edition = "2021"
 rust-version = "1.77.2"
 
@@ -12,8 +16,19 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
+# `default` intentionally omits `devtools` — release builds (which run
+# `cargo build --release` without `--features devtools`) must NOT bundle the
+# WebView2 inspector. Local dev that wants the inspector should pass
+# `--features devtools` to `cargo tauri dev` (or set `default = ["devtools"]`
+# locally — DO NOT commit such a change).
 default = []
 reticulum = []
+# Enables the Tauri webview inspector. Gated behind this feature so it can
+# only be turned on explicitly (via `cargo build --features devtools` or by
+# `cargo tauri dev`'s debug-only build). The corresponding runtime code that
+# calls `open_devtools()` is also gated on `cfg(feature = "devtools")` in
+# `src/lib.rs`.
+devtools = ["tauri/devtools"]
 
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }
@@ -22,13 +37,26 @@ tauri-build = { version = "2.5.6", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.10.3", features = ["devtools"] }
+# `devtools` is OFF by default — gated behind the `devtools` Cargo feature
+# declared in `[features]` above. Release builds (CI: `cargo tauri build` with
+# no `--features devtools`) never link the WebView2 inspector. Local dev that
+# needs the inspector should run `cargo tauri dev --features devtools` (Tauri
+# forwards `--features` straight to cargo).
+tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-store = "2"
 tauri-plugin-stronghold = { version = "2", features = ["kdf"] }
+# Phase 5 (INS-019b) — concord:// deeplink handler for QR-payload pairing.
+# The plugin parses incoming custom-scheme URLs and dispatches them into a
+# Rust callback registered at app build time. See `peer_store::deeplink`.
+tauri-plugin-deep-link = "2"
+# Porch Phase D — native folder picker for the Obsidian vault binding
+# UX. The owner picks a vault directory via `@tauri-apps/plugin-dialog`
+# on the JS side; this is the matching Rust-side plugin registration.
+tauri-plugin-dialog = "2"
 # Servitude embedded module dependencies
-toml = "0.8"
-thiserror = "1.0"
+toml = "0.9"
+thiserror = "2.0"
 # Async runtime + child process management for the embedded transport.
 # `process` — spawn/await tuwunel as a child.
 # `net` — TCP health probe against the tuwunel listen port.
@@ -53,12 +81,191 @@ regex = "1"
 reqwest = { version = "0.12", features = ["rustls-tls", "stream", "json"], default-features = false }
 # Async file IO for streaming downloads to disk.
 futures-util = "0.3"
+# SHA-256 for the peer-identity fingerprint (Phase 2 — P2P identity). Already
+# pulled in transitively by tauri-plugin-stronghold; declared here so this
+# crate's direct dependency on it is explicit. No new top-level crate is
+# added — we use the existing version pinned in Cargo.lock.
+sha2 = "0.10"
+# ed25519-dalek: the canonical Ed25519 implementation for Phase 2 + Phase 3
+# identity unification. The single per-install seed lives in Stronghold via
+# WriteVault; signing and public-key derivation happen via
+# `SigningKey::from_bytes(seed)`. Already in the transitive graph via libp2p,
+# declared here so identity.rs can name SigningKey/Verifier types directly.
+ed25519-dalek = "2"
+# iota_stronghold is pulled in transitively by tauri-plugin-stronghold;
+# declared here so identity.rs can name its Client/Location types directly.
+iota_stronghold = "2.1"
+
+# rust-libp2p — Phase 3 of the P2P-first native architecture (INS-019b).
+# Version pinned to 0.56 (latest stable at time of Phase 3 work). 0.56 raised
+# its MSRV to 1.83 — the workspace rustc is 1.94 so the published
+# `rust-version = "1.77.2"` field above is forward-tolerant. If a future
+# downgrade to <1.83 is required, pin libp2p back to 0.54.
+#
+# Feature set captures the post-2026-05-29 architecture redirect:
+#   * transports:   tcp + quic + noise + yamux
+#   * core protos:  mdns + identify + ping + gossipsub + request-response
+#   * NAT traversal: relay (server side) + dcutr (hole punching)
+#   * builder ergonomics: tokio + macros + ed25519
+#
+# mDNS handles LAN-local discovery silently (replaces the prior Kad DHT
+# bootstrap-list path). WAN peers come exclusively from the Phase-5
+# peer-card flow (QR / `concord://` deeplink / Matrix-room exchange).
+# No project-run bootstrap nodes — pairing is always intentional.
+#
+# `request-response`'s `cbor`/`json` codec helpers are NOT enabled — the
+# Phase 3 surface uses a hand-rolled length-delimited bytes codec
+# (see `servitude/p2p.rs::BytesCodec`) so we don't pull cbor4ii into the
+# build. Re-evaluate when concrete request/response payload types land.
+libp2p = { version = "0.56", features = [
+    "tokio",
+    "tcp",
+    "quic",
+    "noise",
+    "yamux",
+    "mdns",
+    "identify",
+    "ping",
+    "gossipsub",
+    "request-response",
+    "macros",
+    "ed25519",
+    "dcutr",
+    "relay",
+] }
+# Phase 6 (INS-019b) — protocol-agnostic federation payload layer over libp2p
+# streams. `libp2p-stream` is a separate companion crate (libp2p 0.56 does NOT
+# expose it as a feature flag); 0.4.0-alpha is the version that pins
+# libp2p-core 0.43 / libp2p-swarm 0.47 to match our libp2p 0.56 stack.
+libp2p-stream = "0.4.0-alpha"
+# In-memory zeroize for the libp2p secret-key bytes we have to materialize
+# outside Stronghold's protected runtime (Phase 3 trade-off — documented in
+# `servitude/identity.rs::export_or_create_libp2p_seed`).
+zeroize = "1"
+# ChaCha20-Poly1305 AEAD for the Phase 4 sibling-file seed persistence.
+# Already in the lock file transitively (via libp2p noise); declared here so
+# `servitude/identity.rs` can name `ChaCha20Poly1305` directly. Used to
+# encrypt the Ed25519 seed bytes alongside the Stronghold snapshot under the
+# same snapshot password — see the module-level note on cross-restart
+# persistence.
+chacha20poly1305 = "0.10"
+# futures::StreamExt is needed to drive `Swarm::select_next_some` in p2p.rs.
+futures = "0.3"
+# Phase 5 — UTC timestamps for the peer-store KnownPeer.first_seen / last_seen
+# fields. Already in the transitive graph; declared here so peer_store can
+# name DateTime/Utc directly without an internal-API rename.
+chrono = { version = "0.4", features = ["serde"] }
+# Phase 5 — base64url decoding for the concord:// deeplink payload.
+# Already in the transitive graph via libp2p; declared here so the deeplink
+# handler can name the URL_SAFE_NO_PAD engine directly.
+base64 = "0.22"
+
+# Phase 8 follow-up (voice media plane) — pure-Rust WebRTC stack. Pinned to
+# 0.8.0 (the latest stable major as of 2026-05; 0.9+ are alpha pre-releases
+# with unstable API). Provides `RTCPeerConnection`, SDP/ICE machinery,
+# `TrackLocalStaticRTP` for sending opus frames, and `TrackRemote` for the
+# inbound side.
+webrtc = "0.8"
+
+# Phase 8/9 follow-up — mesh audio capture + playback pipeline.
+#
+# These crates are gated behind `#[cfg(not(target_os = "ios"))]` in
+# `src-tauri/src/servitude/voice/audio.rs` — iOS uses AVAudioEngine which
+# lands in a separate follow-up; iOS mesh callers see
+# `VoiceError::AudioNotSupported` and the path-selector falls back to LiveKit.
+#
+# `rtp = "0.8"` matches webrtc-rs 0.8's internal version (see
+# `webrtc-0.8.0/Cargo.toml::[dependencies.rtp]`). Using the same major
+# avoids the `rtp::packet::Packet` type-identity mismatch with
+# `TrackLocalStaticRTP::write_rtp`.
+#
+# `audiopus = "0.3.0-rc.0"` is the stable shape of the Opus binding for
+# the encoder/decoder split we want (`audiopus::coder::{Encoder, Decoder}`).
+# 0.2 lacks the explicit `coder` submodule layout.
+cpal = "0.15"
+audiopus = "0.3.0-rc.0"
+rtp = "0.8"
+ringbuf = "0.4"
+
+# Porch Phase A — embedded local server backed by SQLite. `bundled`
+# pulls in the sqlite C source and compiles it as part of the build so
+# the runtime has no system-libsqlite3 dependency. Cross-platform
+# requirement (macOS Catalina ships an old libsqlite3; Windows has none
+# by default). The build pays a one-time C-compile cost; the resulting
+# binary is fully self-contained.
+rusqlite = { version = "0.36", features = ["bundled", "backup"] }
+# F1c — home-server data export. Argon2id passphrase-based key derivation
+# for `home_export_package`. ChaCha20-Poly1305 is already a top-level dep
+# above (Phase 4 sibling-file seed + Phase E backup); the export pipeline
+# reuses it with a passphrase-derived key instead of the install seed.
+argon2 = "0.5"
+# F1c — pure-Rust tarball builder for bundling `home.sqlite` +
+# `home_assets/` + `home_backups/` + `meta.json` ahead of encryption. No
+# system libtar dependency; binary stays fully self-contained on every
+# target.
+tar = "0.4"
+# ULID generator for porch message IDs. Lexicographically sortable +
+# monotonic-per-process so `ORDER BY id` is a stable tiebreaker when
+# two messages land in the same millisecond.
+ulid = "1"
+
+# Porch Phase E — encrypted-backup pipeline.
+#
+# `zstd` compresses the SQLite dump before encryption (typical compression
+# ratio 6-10x on chat-heavy databases). `chacha20poly1305` is already pulled
+# in above for the Phase 4 sibling-file seed persistence — we reuse the
+# same crate for AEAD on the backup blob (re-listing for documentation; cargo
+# de-dupes the dependency). `hkdf` derives the per-blob encryption key from
+# the Stronghold seed via HKDF-SHA256 with a versioned info string
+# (`concord/porch-backup/v1`); a future format bump issues a v2 info string
+# and v1 readers reject v2 blobs by construction.
+zstd = "0.13"
+hkdf = "0.12"
+
+# Porch Phase G — tunnel-only inbound hardening. `ipnet` parses + matches
+# CIDR blocks (IPv4 + IPv6) for the WireGuard / Tailscale interface CIDR
+# allow-list. Tiny dep (~13 KB compiled, no transitive crates) — picked
+# over `pnet_datalink` because we only need the CIDR math, not link-layer
+# packet parsing. Interface enumeration uses a hand-rolled probe in
+# `servitude/network/tunnel_detect.rs` (Linux: `/sys/class/net`,
+# macOS: `getifaddrs`, Windows: `GetAdaptersAddresses`).
+ipnet = { version = "2", features = ["serde"] }
+
+# F-WG — WireGuard wrap for native p2p egress (RFC #140 Architecture E).
+#
+# `boringtun` is Cloudflare's pure-Rust WireGuard protocol engine. Picked
+# over `wireguard-control` (which wraps a C library + needs `libwgembed`
+# on Windows + needs CAP_NET_ADMIN/root on Linux for the kernel module)
+# because boringtun runs entirely in-process with no kernel-side state and
+# no elevated privileges. The default feature set gives us the `Tunn`
+# state machine (handshake + encrypt + decrypt) without any socket/device
+# shim — we orchestrate the UDP socket + the in-process forwarder ourselves
+# in `servitude/network/wg_tunnel.rs` so the tunnel collapses synchronously
+# on `Drop` (Architecture E — hard-disconnect on app close).
+#
+# Cross-platform: works the same on Linux, macOS, and Windows. No kernel
+# WireGuard interface means no extra cleanup on app close — the tunnel
+# state lives entirely in the boringtun `Tunn` value and the bound UDP
+# socket, both of which collapse when the WgTunnel is dropped.
+boringtun = "0.7"
+# Static-secret + public-key wrapper types for boringtun. boringtun 0.7
+# accepts the raw x25519 byte arrays directly, but `x25519-dalek` gives
+# the unit tests a way to derive a deterministic public key from a
+# private key without spinning up a full boringtun handshake.
+# `static_secrets` is the feature that exposes `StaticSecret::from(bytes)`.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 # Unix-only deps for servitude child-process management. `nix::sys::signal`
 # gives us SIGTERM for graceful shutdown — std::process::Child::kill uses
 # SIGKILL only, which doesn't let tuwunel flush its RocksDB on exit.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal", "process"] }
+# Phase G — direct getifaddrs(3) for tunnel-interface enumeration on
+# Linux + macOS (see `servitude/network/tunnel_detect.rs`). `libc` is
+# already in the transitive graph (tokio, mio, etc.) — declared here
+# explicitly so the tunnel-detect probe can name `libc::ifaddrs`
+# without leaning on an internal-API name.
+libc = "0.2"
 
 # Linux-specific deps (handled transitively by tauri/webkit2gtk in normal builds,
 # this section is reserved for Linux-only crates Concord may add later).
@@ -85,7 +292,7 @@ nix = { version = "0.31", features = ["signal", "process"] }
 # without coordinating a Google TV check — Android TV reference devices are
 # often pinned to older sdk versions in the wild.
 [target.'cfg(target_os = "android")'.dependencies]
-# When real init runs on orrion, Tauri will auto-populate JNI glue. If
+# When real init runs on the Android build host, Tauri will auto-populate JNI glue. If
 # servitude needs to call into platform Android APIs (e.g. foreground
 # service control, Wi-Fi multicast locks for mDNS), add one of:
 #   jni = "0.21"
@@ -93,7 +300,7 @@ nix = { version = "0.31", features = ["signal", "process"] }
 #   android-activity = { version = "0.6", features = ["native-activity"] }
 # keeping them commented out here until a concrete caller exists.
 
-# iOS target deps. Real init must be done on orrpheus via `cargo tauri ios init`.
+# iOS target deps. Real init must be done on a macOS host via `cargo tauri ios init`.
 #
 # Target triples (added by `rustup target add`):
 #   aarch64-apple-ios      — device builds (iPhone + iPad physical hardware)
@@ -104,7 +311,7 @@ nix = { version = "0.31", features = ["signal", "process"] }
 # iPad shares the same Rust target as iPhone; the device family split is
 # done in the generated Info.plist via UIDeviceFamily = [1, 2].
 [target.'cfg(target_os = "ios")'.dependencies]
-# When real init runs on orrpheus, Tauri will auto-populate objc2 + swift-rs
+# When real init runs on the macOS build host, Tauri will auto-populate objc2 + swift-rs
 # bridging through its tauri-runtime. If servitude needs to call into
 # platform iOS APIs (e.g. MultipeerConnectivity, Network.framework
 # Bonjour browsing, AVAudioSession background mode), add one of:
@@ -123,3 +330,16 @@ nix = { version = "0.31", features = ["signal", "process"] }
 # it to the top [features] table.
 [dev-dependencies]
 # Servitude tests use only std + serde + toml; no extra deps required.
+# Phase-2 identity integration tests need an independent Ed25519 verifier
+# (so we don't ask Stronghold to verify its own signatures) plus snapshot
+# round-trip helpers. All three crates are ALREADY in the lock file via
+# iota_stronghold's transitive graph — declaring them here just exposes
+# them to the integration-test target.
+ed25519-zebra = "4"
+zeroize = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde_json = "1"
+# Porch Phase D — vault directory creation in tests. Already in the
+# transitive graph (tauri's webview deps pull it in); declared here so
+# `porch_obsidian_test.rs` can name `tempfile::TempDir` directly.
+tempfile = "3"
