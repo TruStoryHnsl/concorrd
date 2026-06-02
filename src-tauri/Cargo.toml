@@ -55,7 +55,7 @@ tauri-plugin-deep-link = "2"
 # on the JS side; this is the matching Rust-side plugin registration.
 tauri-plugin-dialog = "2"
 # Servitude embedded module dependencies
-toml = "0.8"
+toml = "0.9"
 thiserror = "2.0"
 # Async runtime + child process management for the embedded transport.
 # `process` — spawn/await tuwunel as a child.
