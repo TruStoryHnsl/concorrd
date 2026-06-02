@@ -149,7 +149,7 @@ jobs:
           head -40 "$target"
 
       - name: Set up Go toolchain
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           # Dendrite v0.13.x requires Go 1.21+. Pin a recent stable
           # release; setup-go resolves the latest patch automatically.
