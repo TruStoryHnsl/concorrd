@@ -2,7 +2,7 @@
 <!--
   Concord AndroidManifest template.
 
-  This is the SOURCE-OF-TRUTH CHECKLIST the orrion porting step reads
+  This is the SOURCE-OF-TRUTH CHECKLIST the Android porting step reads
   from after `cargo tauri android init` generates
   src-tauri/gen/android/app/src/main/AndroidManifest.xml. The generated
   file MUST end up with the union of whatever Tauri writes by default

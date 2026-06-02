@@ -137,9 +137,9 @@ function concordServer(
 // New tests for the restructured hydrator (local-domain bridge
 // spaces only, everything else silently dropped) MUST be written
 // in a different session than the one that shipped the hydrator
-// rewrite, per the MANDATORY testing rule in
-// `/home/corr/projects/CLAUDE.md`. Until then, this area has zero
-// coverage — flag it in the follow-up session.
+// rewrite, per the MANDATORY testing rule in the project CLAUDE.md.
+// Until then, this area has zero coverage — flag it in the
+// follow-up session.
 
 describe("useServerStore.leaveOrphanRooms", () => {
   beforeEach(() => {

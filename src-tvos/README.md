@@ -46,7 +46,7 @@ The TypeScript client module at `client/src/api/tvOSHost.ts` wraps these with ty
 
 ## Build
 
-Build on orrpheus (macOS, M1 Pro):
+Build on a macOS host (Xcode 15+):
 
 ```bash
 # Release build (device):

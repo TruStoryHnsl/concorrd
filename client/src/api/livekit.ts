@@ -49,8 +49,26 @@ export async function getVoiceToken(
 
   if (!resp.ok) {
     const error = await resp.json().catch(() => ({ detail: resp.statusText }));
-    const message = typeof error.detail === "string" ? error.detail : "Failed to get voice token";
-    throw new Error(message);
+    // The API has two error shapes in flight:
+    //   * legacy FastAPI HTTPException: { detail: "..." }
+    //   * ConcordError (server/errors.py): { error_code, message, details }
+    // The /api/voice/token endpoint returns the ConcordError shape for the
+    // VOICE_SUBSYSTEM_UNAVAILABLE 503 — reading only `.detail` here meant
+    // the actionable server message was discarded and the generic fallback
+    // string "Failed to get voice token" leaked out, which then matched
+    // a heuristic in VoiceChannel.tsx and was mislabeled as "Authentication
+    // failed." Prefer the ConcordError fields when present.
+    const concordCode = typeof error.error_code === "string" ? error.error_code : null;
+    const serverMessage =
+      (typeof error.message === "string" && error.message) ||
+      (typeof error.detail === "string" && error.detail) ||
+      "Failed to get voice token";
+    const err = new Error(serverMessage);
+    // Surface the structured fields so the caller can classify without
+    // string-matching on the human-readable message.
+    (err as Error & { status?: number; errorCode?: string | null }).status = resp.status;
+    (err as Error & { status?: number; errorCode?: string | null }).errorCode = concordCode;
+    throw err;
   }
 
   return resp.json();

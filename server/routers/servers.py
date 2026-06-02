@@ -5,10 +5,10 @@ import secrets
 import shutil
 import time
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -17,10 +17,22 @@ from sqlalchemy.orm import selectinload
 
 from config import DATA_DIR, MATRIX_HOMESERVER_URL, SOUNDBOARD_DIR
 from database import get_db
-from dependencies import require_server_member, require_server_admin, require_server_owner
+from dependencies import (
+    get_access_token,
+    get_user_id,
+    require_server_admin,
+    require_server_member,
+    require_server_owner,
+)
 from errors import ConcordError
 from models import Server, Channel, ServerMember, ServerBan, ServerWhitelist, SoundboardClip
-from services.matrix_admin import create_matrix_room, invite_to_room, join_room, set_room_name
+from services.matrix_admin import (
+    ban_from_room,
+    create_matrix_room,
+    invite_to_room,
+    join_room,
+    set_room_name,
+)
 
 # Server-tile custom icons (ISSUE D, 2026-04-18).
 # Stored on disk under DATA_DIR/server-icons/<server_id>.<ext>. Server.icon_url
@@ -49,13 +61,6 @@ _MATRIX_USER_ID_PATTERN = r"^@[a-zA-Z0-9._=\-/+]+:[a-zA-Z0-9.\-]+$"
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
-
-# Simple TTL cache for token -> user_id validation
-# Avoids hitting Matrix homeserver on every request
-_token_cache: dict[str, tuple[str, float]] = {}
-_token_cache_lock = asyncio.Lock()
-_CACHE_TTL = 300  # 5 minutes
-_CACHE_MAX_SIZE = 1000
 
 # One-shot per-process backfill tracking. When an owner first lists their
 # servers after a deploy, we fan out invites for any channel created BEFORE
@@ -195,75 +200,6 @@ class ServerDiscoverOut(BaseModel):
     member_count: int
 
 
-async def get_user_id(authorization: Optional[str] = Header(None)) -> str:
-    """Validate the Bearer token against the Matrix homeserver and return the user ID.
-
-    The client sends: Authorization: Bearer <matrix_access_token>
-    We call /_matrix/client/v3/account/whoami to verify ownership.
-    Results are cached for 5 minutes to reduce per-request overhead.
-    """
-    if authorization is None:
-        raise HTTPException(401, "Authorization header required")
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Authorization header must use Bearer scheme")
-
-    token = authorization[7:]  # Strip "Bearer "
-    if not token:
-        raise HTTPException(401, "Missing access token")
-
-    # Check cache (lock-free read for the fast path)
-    now = time.time()
-    cached = _token_cache.get(token)
-    if cached:
-        user_id, expires = cached
-        if now < expires:
-            return user_id
-
-    # Validate against Matrix homeserver
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{MATRIX_HOMESERVER_URL}/_matrix/client/v3/account/whoami",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-    except httpx.RequestError:
-        raise HTTPException(502, "Unable to reach Matrix homeserver for auth")
-
-    if resp.status_code == 401:
-        logger.warning("Auth failed: invalid or expired token (first 8 chars: %s...)", token[:8])
-        raise HTTPException(401, "Invalid or expired access token")
-    if resp.status_code != 200:
-        logger.warning("Auth failed: Matrix homeserver returned %d", resp.status_code)
-        raise HTTPException(502, "Matrix homeserver auth check failed")
-
-    user_id = resp.json().get("user_id")
-    if not user_id:
-        raise HTTPException(401, "Token did not resolve to a user")
-
-    # Write to cache under lock to prevent race conditions
-    async with _token_cache_lock:
-        # Evict if cache is at capacity
-        if len(_token_cache) >= _CACHE_MAX_SIZE:
-            expired = [k for k, (_, exp) in _token_cache.items() if now >= exp]
-            for k in expired:
-                del _token_cache[k]
-            if len(_token_cache) >= _CACHE_MAX_SIZE:
-                sorted_keys = sorted(_token_cache, key=lambda k: _token_cache[k][1])
-                for k in sorted_keys[: len(sorted_keys) // 4]:
-                    del _token_cache[k]
-
-        _token_cache[token] = (user_id, now + _CACHE_TTL)
-
-    return user_id
-
-
-def get_access_token(authorization: str = Header(...)) -> str:
-    """Extract the Matrix access token from the Authorization: Bearer header."""
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Authorization header must use Bearer scheme")
-    return authorization[7:]
-
-
 async def _backfill_channel_invites(
     server_id: str,
     owner_id: str,
@@ -334,7 +270,12 @@ async def list_servers(
 
     Also auto-joins the user to the default lobby if they aren't already a member.
     """
-    # Auto-join lobby for users who aren't members yet
+    # Auto-join lobby for users who aren't members yet. The DB membership
+    # row is only committed if EVERY Matrix room join succeeds. A partial
+    # join leaves the user with a Concord lobby tile that points at rooms
+    # they can't read — silent split-brain. On any failure: log the
+    # specific channels that failed, rollback the membership add, and
+    # let the next list_servers call retry the whole flow cleanly.
     try:
         import json
         from config import INSTANCE_SETTINGS_FILE
@@ -350,23 +291,38 @@ async def list_servers(
                     )
                 )
                 if not existing.scalar_one_or_none():
-                    db.add(ServerMember(
+                    membership = ServerMember(
                         server_id=default_id,
                         user_id=user_id,
                         role="member",
-                    ))
-                    # Join all lobby Matrix rooms
+                    )
+                    db.add(membership)
                     lobby_channels = await db.execute(
                         select(Channel).where(Channel.server_id == default_id)
                     )
+                    join_failures: list[tuple[str, str]] = []
                     for ch in lobby_channels.scalars().all():
                         try:
                             await join_room(access_token, ch.matrix_room_id)
-                        except Exception:
-                            pass
-                    await db.commit()
-                    logger.info("Auto-joined %s to lobby", user_id)
+                        except Exception as join_err:
+                            join_failures.append((ch.matrix_room_id, str(join_err)))
+                    if join_failures:
+                        await db.rollback()
+                        logger.warning(
+                            "Lobby auto-join aborted for %s: %d/%d channels "
+                            "failed: %s",
+                            user_id,
+                            len(join_failures),
+                            len(join_failures) + (
+                                lobby_channels.rowcount or 0
+                            ),
+                            join_failures,
+                        )
+                    else:
+                        await db.commit()
+                        logger.info("Auto-joined %s to lobby", user_id)
     except Exception as e:
+        await db.rollback()
         logger.warning("Lobby auto-join failed for %s: %s", user_id, e)
 
     result = await db.execute(
@@ -1473,9 +1429,17 @@ async def ban_user(
     server_id: str,
     body: BanCreate,
     user_id: str = Depends(get_user_id),
+    access_token: str = Depends(get_access_token),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ban a user from the server. Admin or owner only. Also kicks them."""
+    """Ban a user from every channel of the server. Admin or owner only.
+
+    Matrix has no space-level ban; this fans the ban out across each
+    channel's underlying Matrix room. The DB ban row + membership delete
+    are only committed when every Matrix ban succeeds — otherwise the
+    user keeps reading channel history while Concord thinks they're
+    banned (the original split-brain this rewrite fixes).
+    """
     await require_server_admin(server_id, user_id, db)
 
     server = await db.get(Server, server_id)
@@ -1484,7 +1448,6 @@ async def ban_user(
     if body.user_id == server.owner_id:
         raise HTTPException(400, "Cannot ban the server owner")
 
-    # Check if already banned
     existing = await db.execute(
         select(ServerBan).where(
             ServerBan.server_id == server_id,
@@ -1494,14 +1457,39 @@ async def ban_user(
     if existing.scalar_one_or_none():
         raise HTTPException(400, "User is already banned")
 
-    # Ban
+    channels_result = await db.execute(
+        select(Channel).where(Channel.server_id == server_id)
+    )
+    channels = list(channels_result.scalars().all())
+
+    ban_failures: list[tuple[str, str]] = []
+    for ch in channels:
+        try:
+            await ban_from_room(
+                access_token, ch.matrix_room_id, body.user_id,
+                reason="Banned from Concord server",
+            )
+        except Exception as ban_err:
+            ban_failures.append((ch.matrix_room_id, str(ban_err)))
+
+    if ban_failures:
+        logger.warning(
+            "Ban aborted: %d/%d channels failed to ban %s from %s: %s",
+            len(ban_failures), len(channels), body.user_id, server_id,
+            ban_failures,
+        )
+        raise HTTPException(
+            502,
+            "Ban could not be applied to every channel; no change committed. "
+            "Retry once the homeserver is reachable.",
+        )
+
     db.add(ServerBan(
         server_id=server_id,
         user_id=body.user_id,
         banned_by=user_id,
     ))
 
-    # Also kick if they're a member
     result = await db.execute(
         select(ServerMember).where(
             ServerMember.server_id == server_id,

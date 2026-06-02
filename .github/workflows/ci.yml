@@ -38,6 +38,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # INS-067 W2 - Static config coherence linter.
+  # Fast pre-test step. Asserts livekit.yaml, docker-compose.yml,
+  # config/turnserver.conf, and .env.example all agree on the LiveKit
+  # UDP port range (the contract that broke in the 2026-05-01 incident).
+  # No Python deps beyond the stdlib - runs in seconds.
+  config-lint:
+    name: config / port coherence lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run port-coherence lint
+        run: python3 scripts/lint_config_coherence.py
+
+      - name: TLS_MODE Caddyfile matrix lint
+        # Validates both Caddyfiles adapt cleanly across the three
+        # TLS_MODE values + unset fallback. Skips the DNS-01 case
+        # when concord-web image is not pre-built (CI doesn't build
+        # the web image at this stage). The plumbing check still
+        # runs via the Python lint above, so a missing snippet
+        # would already be caught at line 60.
+        run: bash scripts/lint_tls_mode_matrix.sh
+
   client-tests:
     name: client / vitest + build
     runs-on: ubuntu-latest
@@ -45,10 +75,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
@@ -73,10 +103,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -106,3 +136,125 @@ jobs:
           LIVEKIT_API_SECRET: ci-livekit-secret-at-least-32-chars
           LIVEKIT_URL: ws://livekit.invalid:7880
         run: pytest -v
+
+  # INS-067 W1 - voice integration smoke.
+  # Boots the full docker-compose.yml + docker-compose.dev.yml stack on
+  # the GitHub runner, waits for healthchecks, runs the TURN relay
+  # smoke against localhost (plaintext TCP STUN, no TLS), tears the
+  # stack down. The job FAILS the PR if smoke fails - catches port
+  # mapping drift between livekit.yaml and docker-compose.yml that the
+  # static linter (config-lint job) cannot model.
+  voice-integration:
+    name: voice / integration smoke (docker-compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [config-lint]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Render minimal .env for stack boot
+        env:
+          # Use a deterministic shared secret so the smoke can authenticate
+          # against the same coturn instance. Not a production secret.
+          TURN_SECRET_VALUE: ci-turn-shared-secret-do-not-use-in-prod
+          ADMIN_TOKEN_VALUE: ci-admin-token-do-not-use-in-prod
+        # The .env file is fed to docker-compose AND directly to
+        # turn_relay_smoke.py via --env-file, so the same TURN_SECRET
+        # value is used on both sides.
+        run: |
+          cat > .env <<EOF
+          CONDUWUIT_SERVER_NAME=ci.test.local
+          CONDUWUIT_PORT=6167
+          CONDUWUIT_REGISTRATION_TOKEN=ci-token-do-not-use-in-prod
+          HTTP_PORT=8080
+          BIND_HOST=0.0.0.0
+          LIVEKIT_API_KEY=ci-livekit-key
+          LIVEKIT_API_SECRET=ci-livekit-secret-at-least-32-chars
+          LIVEKIT_URL=ws://livekit:7880
+          TURN_SECRET=${TURN_SECRET_VALUE}
+          TURN_DOMAIN=ci.test.local
+          TURN_HOST=127.0.0.1
+          TURN_PUBLIC_TLS_PORT=5349
+          TURN_TLS_ENABLED=false
+          ADMIN_TOKEN=${ADMIN_TOKEN_VALUE}
+          EOF
+
+      - name: Materialize CI tuwunel.toml
+        run: |
+          # config/tuwunel.toml ships at mode 0600 (owner-only) for
+          # production secrets. The conduwuit container runs as non-root
+          # and can't read it under GitHub-runner ownership. Synthesize
+          # a throwaway tuwunel.toml from the .template at 0644 — values
+          # are public CI fixtures.
+          cp config/tuwunel.toml.template config/tuwunel.toml
+          chmod 0644 config/tuwunel.toml
+          ls -la config/tuwunel.toml
+
+      - name: Boot docker-compose stack
+        run: |
+          # Base compose only. The dev overlay adds vite-dev with an HMR
+          # node_modules named-volume mount that fails on GitHub runners
+          # ("read-only file system"). vite-dev is not required for the
+          # TURN/LiveKit relay smoke; the base stack (conduwuit + livekit
+          # + coturn + concord-api + web + docker-socket-proxy) is enough.
+          docker compose -f docker-compose.yml up -d
+          # Print initial state for debugging.
+          docker compose ps
+
+      - name: Wait for healthchecks
+        run: |
+          # Wait up to 90s for all containers with a healthcheck to be
+          # 'healthy'. coturn does not declare a healthcheck (host
+          # network), so we just check it accepts a TCP connection on 3478
+          # below.
+          deadline=$((SECONDS + 90))
+          while [ $SECONDS -lt $deadline ]; do
+            unhealthy=$(docker compose ps --format json 2>/dev/null \
+              | python3 -c "import json,sys; rows=[json.loads(l) for l in sys.stdin if l.strip()]; print('\n'.join(r['Name'] for r in rows if r.get('Health') and r['Health']!='healthy'))")
+            if [ -z "$unhealthy" ]; then
+              echo "All healthchecks green."
+              break
+            fi
+            echo "Still waiting on: $unhealthy"
+            sleep 3
+          done
+
+      - name: TCP probe coturn 3478
+        run: |
+          # Defense in depth: even if no healthcheck flagged a problem,
+          # confirm coturn is actually accepting connections before we
+          # invoke the TURN auth handshake.
+          for i in $(seq 1 30); do
+            if nc -z 127.0.0.1 3478; then
+              echo "coturn 3478 reachable."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "coturn 3478 never came up"
+          docker compose logs coturn || true
+          exit 1
+
+      - name: Run TURN relay smoke (--target localhost)
+        run: |
+          python3 scripts/turn_relay_smoke.py \
+            --env-file .env \
+            --target localhost \
+            --plaintext-port 3478 \
+            --timeout 30
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          docker compose logs --tail=200 || true
+
+      - name: Tear down stack
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v

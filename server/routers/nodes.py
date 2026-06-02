@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from errors import ConcordError
 from models import DisposableNode, Server
-from routers.servers import get_user_id
+from dependencies import get_user_id
 from config import ADMIN_USER_IDS
 
 logger = logging.getLogger(__name__)

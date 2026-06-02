@@ -123,6 +123,44 @@ detect_public_ip() {
 
 banner
 
+# ── Host allowlist ───────────────────────────────────────────────────────
+# Concord deploys ONLY on hosts in the allowlist. Forbidden hosts get a
+# loud refusal. See docs/deployment/host-allowlist.md for the policy and
+# the 2026-05-17 incident that motivated it.
+_CONCORD_ALLOWED_HOSTS=("orr1on" "orrion")
+_CONCORD_FORBIDDEN_HOSTS=("orrgate")
+
+_concord_hostname_lc="$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]' | awk -F. '{print $1}')"
+
+# Forbidden check first (explicit refusal beats allowlist miss).
+for _h in "${_CONCORD_FORBIDDEN_HOSTS[@]}"; do
+  if [[ "$_concord_hostname_lc" == "$_h" ]]; then
+    if [[ "${CONCORD_HOST_ALLOWLIST_BYPASS:-}" == "i-know-what-im-doing" ]]; then
+      warn "Host '$_concord_hostname_lc' is on the FORBIDDEN list — bypass env set, continuing anyway."
+    else
+      error "Concord must NEVER be deployed on '$_concord_hostname_lc'."
+      echo "  See docs/deployment/host-allowlist.md for the reason."
+      echo "  Production deploys belong on orr1on; dev runs on orrion."
+      echo "  If this is a deliberate recovery exercise, re-run with:"
+      echo "    CONCORD_HOST_ALLOWLIST_BYPASS=i-know-what-im-doing ./install.sh"
+      exit 1
+    fi
+  fi
+done
+
+# Allowlist check — warn (not fail) so install can still run on new hosts
+# that someone is deliberately bringing up, but make the deviation visible.
+_concord_host_allowed=0
+for _h in "${_CONCORD_ALLOWED_HOSTS[@]}"; do
+  [[ "$_concord_hostname_lc" == "$_h" ]] && _concord_host_allowed=1 && break
+done
+if [[ "$_concord_host_allowed" -eq 1 ]]; then
+  info "Host: $_concord_hostname_lc (allowlist OK)"
+else
+  warn "Host '$_concord_hostname_lc' is not on the concord allowlist (orr1on, orrion)."
+  warn "Continuing, but add the hostname to docs/deployment/host-allowlist.md if this is intentional."
+fi
+
 echo -e "${BOLD}── Checking prerequisites ──${NC}"
 
 if ! command -v curl &>/dev/null; then
@@ -232,6 +270,12 @@ SMTP_USER=""
 SMTP_PASS=""
 SMTP_FROM=""
 FREESOUND_KEY=""
+# TLS strategy threaded into Caddy via the TLS_MODE env var. Empty
+# falls back to each Caddyfile's documented default
+# (internal_longlived for dev, letsencrypt_http01 for prod). See
+# .env.example and config/Caddyfile* for the mode matrix.
+TLS_MODE=""
+ACME_EMAIL=""
 
 # ── Step 1: Server Name ──────────────────────────────────────────────
 
@@ -416,9 +460,11 @@ wizard_step_3() {
     echo ""
     echo -e "${DIM}This is the domain your users will visit to reach your server.${NC}"
     echo -e "${DIM}It must already be on Cloudflare (free plan works).${NC}"
+    echo -e "${DIM}If you have no custom domain, the canonical Concord default${NC}"
+    echo -e "${DIM}is <slug>.concordchat.net (INS-051).${NC}"
     echo ""
 
-    read_input "Domain (e.g. chat.example.com): " "${DOMAIN:-}" DOMAIN || return 1
+    read_input "Domain (e.g. chat.example.com or alpha.concordchat.net): " "${DOMAIN:-}" DOMAIN || return 1
 
     if [ -z "$DOMAIN" ]; then
       warn "A domain is required for tunnel setup."
@@ -737,6 +783,48 @@ wizard_step_3() {
         echo -e "${DIM}If your domain is behind a CDN, use a direct IP or subdomain.${NC}"
         read_input "TURN host: " "${TURN_HOST:-${LIVEKIT_TURN_DOMAIN}}" TURN_HOST || return 1
 
+        # ── TLS strategy (only meaningful when Caddy is fronting TLS) ──
+        # SITE_ADDRESS that's port-only (`:8080`) means Caddy serves
+        # plain HTTP and the TLS_MODE knob is a no-op — skip the prompt.
+        if [ "$USE_HTTPS" = true ]; then
+          echo ""
+          echo -e "${BOLD}TLS strategy${NC}"
+          echo -e "${DIM}How should Caddy obtain TLS certificates? See .env.example for full details.${NC}"
+          echo ""
+          echo -e "  ${BOLD}1${NC}  internal_longlived           ${DIM}Tailscale-only / LAN; self-signed (~9y)${NC}"
+          echo -e "  ${BOLD}2${NC}  letsencrypt_http01           ${DIM}Public origin reachable on port 80${NC}"
+          echo -e "  ${BOLD}3${NC}  letsencrypt_dns01_cloudflare ${DIM}Cloudflare DNS-01 (no public reachability)${NC}"
+          echo ""
+          local TLS_CHOICE
+          while true; do
+            echo -en "${CYAN}Choose [1-3, default 2]: ${NC}"
+            read -r TLS_CHOICE
+            if [ "$TLS_CHOICE" = "back" ]; then return 1; fi
+            TLS_CHOICE=${TLS_CHOICE:-2}
+            case "$TLS_CHOICE" in
+              1) TLS_MODE="internal_longlived"; break ;;
+              2) TLS_MODE="letsencrypt_http01"; break ;;
+              3) TLS_MODE="letsencrypt_dns01_cloudflare"; break ;;
+              *) warn "Please choose 1, 2, or 3." ;;
+            esac
+          done
+          if [[ "$TLS_MODE" == letsencrypt_* ]]; then
+            echo ""
+            echo -e "${DIM}Optional ACME contact email — Let's Encrypt uses this for expiry warnings.${NC}"
+            echo -e "${DIM}Leave blank to skip (Caddy creates an anonymous account).${NC}"
+            read_input "ACME email: " "${ACME_EMAIL:-}" ACME_EMAIL || return 1
+          fi
+          if [ "$TLS_MODE" = "letsencrypt_dns01_cloudflare" ]; then
+            echo ""
+            echo -e "${DIM}DNS-01 mode requires a Cloudflare API token with${NC}"
+            echo -e "${DIM}Zone.Zone:Read + Zone.DNS:Edit on the zone hosting your domain.${NC}"
+            echo -e "${DIM}See .env.example for the token-minting walkthrough. Paste it below${NC}"
+            echo -e "${DIM}or leave blank and set CLOUDFLARE_API_TOKEN in .env later.${NC}"
+            read_input "CLOUDFLARE_API_TOKEN: " "${DNS_API_TOKEN:-}" DNS_API_TOKEN || return 1
+          fi
+          info "TLS_MODE=${TLS_MODE}"
+        fi
+
         echo ""
         info "Manual network configuration set"
         ;;
@@ -961,6 +1049,15 @@ SITE_URL="${SITE_URL}"
 # ── Cloudflare Tunnel ────────────────────────────────────────────
 # Set by the installer when using automatic mode. Leave empty to disable.
 TUNNEL_TOKEN="${TUNNEL_TOKEN}"
+
+# ── TLS strategy (Caddy) ───────────────────────────────────────────
+# Empty falls back to each Caddyfile's documented default
+# (internal_longlived for dev, letsencrypt_http01 for prod). See
+# .env.example for the full mode matrix.
+TLS_MODE="${TLS_MODE}"
+ACME_EMAIL="${ACME_EMAIL}"
+# Cloudflare API token — only consumed when TLS_MODE=letsencrypt_dns01_cloudflare.
+CLOUDFLARE_API_TOKEN="${DNS_API_TOKEN:-}"
 
 # ── LiveKit (Voice/Video) ─────────────────────────────────────────
 LIVEKIT_API_KEY="${LK_KEY}"

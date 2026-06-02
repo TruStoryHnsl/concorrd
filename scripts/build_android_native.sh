@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # build_android_native.sh — Build Concord as an Android APK via Tauri v2.
 #
-# Designed to run on orrion (CachyOS, RTX 3070). Produces either a debug
-# APK (fast iteration) or a signed release APK suitable for distribution.
+# Designed to run on a Linux x86_64 host with the Android SDK + NDK
+# installed. Produces either a debug APK (fast iteration) or a signed
+# release APK suitable for distribution.
 #
 # Companion to scripts/build_ios_native.sh and scripts/build_macos_native.sh.
 # Same shape, same exit codes, same env-var discipline.
@@ -155,7 +156,7 @@ fi
 # Platform check
 # ----------------------------------------------------------------------------
 if [[ "$(uname -s)" != "Linux" ]]; then
-    warn "This script is designed for Linux (orrion). Current uname: $(uname -s)"
+    warn "This script is designed for Linux. Current uname: $(uname -s)"
     warn "Android builds may work on macOS/Windows but are not tested."
 fi
 
@@ -239,7 +240,7 @@ log "release_dir:    ${RELEASE_DIR}"
 # sources land after init.
 if [[ ! -d "${ANDROID_GEN_DIR}/app/src/main" ]]; then
     die "Android project not found at ${ANDROID_GEN_DIR}/app/src/main.
-Run 'cd src-tauri && cargo tauri android init' first (one-time setup on orrion).
+Run 'cd src-tauri && cargo tauri android init' first (one-time setup on the Linux build host).
 See client/NATIVE_BUILD.md §7 for the full scaffolding guide." 1
 fi
 

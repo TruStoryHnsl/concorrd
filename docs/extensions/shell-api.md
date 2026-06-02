@@ -202,11 +202,88 @@ window.addEventListener("message", (event) => {
 | `concord:participant_leave` | m.room.member leave event | Shell caller (manual postToFrame call) |
 | `concord:host_transfer` | host seat change | Shell caller (manual postToFrame call) |
 | `concord:surface_resize` | ResizeObserver fires | Shell (automatic via containerRef) |
+| `concord:state_event` | Matrix room event observed (W5) | Shell (automatic via subscribeRoomEvents prop) |
+| `concord:permission_denied` | extension verb rejected (W6) | Shell (auto reply to inbound message) |
 
 ---
 
-## 6. Protocol Version History
+## 6. INS-066 Additions
+
+### 6.1 `concord:state_event` — Matrix event delivery (shell → iframe)
+
+The shell forwards Matrix room state/timeline events to the extension iframe IFF the extension's manifest permissions include `state_events` OR `matrix.read`. Without those, the iframe never sees this message — fail-closed.
+
+**Payload:**
+
+```ts
+{
+  roomId:         string;                    // Matrix room ID
+  eventType:      string;                    // e.g. "m.room.message"
+  content:        Record<string, unknown>;   // raw event content
+  sender:         string;                    // Matrix user ID
+  originServerTs: number;                    // ms since epoch
+  stateKey?:      string;                    // present on state events
+}
+```
+
+### 6.2 `extension:send_state_event` — Matrix emit (iframe → shell)
+
+Inbound verb. The extension requests the shell emit a Matrix state event on its behalf. Two gates apply:
+
+1. **InputRouter** — the participant's seat must be permitted to perform `send_state_events` in the current session mode (see [`session-model.md`](./session-model.md) §2.6).
+2. **Manifest** — the extension's manifest permissions must include `state_events` OR `matrix.send`.
+
+**Payload:**
+
+```ts
+{
+  roomId?:    string;                    // optional; defaults to current session room.
+                                         // Cross-room sends are rejected.
+  eventType:  string;                    // Matrix event type to emit
+  stateKey?:  string;                    // defaults to ""
+  content:    Record<string, unknown>;   // event content
+}
+```
+
+**Envelope shape (note the `extension:` prefix):**
+
+```ts
+{
+  type:    "extension:send_state_event",
+  payload: <see above>,
+  version: 1,
+}
+```
+
+### 6.3 `concord:permission_denied` — verb rejection (shell → iframe)
+
+When an inbound `extension:*` verb is rejected, the shell posts this back to the originating iframe.
+
+**Payload:**
+
+```ts
+{
+  action:  string;   // the rejected verb, e.g. "extension:send_state_event"
+  reason:  string;   // stable identifier — see below
+  detail?: string;   // optional context (e.g. missing permission name)
+}
+```
+
+Stable `reason` values:
+
+| reason | meaning |
+|---|---|
+| `manifest_unknown` | Shell has no manifest record for this extension. |
+| `manifest_missing_permission` | Manifest didn't request the required permission. `detail` lists the gate options. |
+| `session_role_forbidden` | InputRouter denied the seat for this action, or a cross-room send was attempted. |
+| `invalid_payload` | Payload shape was wrong. |
+| `backend_error` | Host's emit failed. `detail` carries the error message. |
+
+---
+
+## 7. Protocol Version History
 
 | Version | Date | Changes |
 |---|---|---|
 | 1 | 2026-04-15 | Initial protocol: init, participant join/leave, host_transfer, surface_resize |
+| 1 | 2026-04-30 | INS-066 additive: state_event, permission_denied (out); extension:send_state_event (in). Same envelope version — extensions that ignore unknown types stay compatible. |

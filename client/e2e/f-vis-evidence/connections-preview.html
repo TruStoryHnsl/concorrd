@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>F-VIS Settings → Connections per-peer access toggle</title>
+  <script
+    src="https://cdn.tailwindcss.com/3.4.16"
+    integrity="sha384-mS5Uq7sE90lgbBDN8xgf34ibEgbZo4gB3tfLY40ZRle+M188BQw8onzNHg6GUZaA"
+    crossorigin="anonymous"
+  ></script>
+  <style>
+    :root {
+      --surface: #1a1b1f;
+      --surface-container: #1d1f23;
+      --surface-container-high: #2a2c31;
+      --on-surface: #e2e3e8;
+      --on-surface-variant: #cdd0d6;
+      --primary: #b9c6ff;
+      --error: #ffb4ab;
+      --error-bg: rgba(255, 180, 171, 0.1);
+    }
+    body { margin: 0; background: #0b0c0f; padding: 32px; font-family: ui-sans-serif, system-ui, sans-serif; color: var(--on-surface); }
+    .text-on-surface { color: var(--on-surface); }
+    .text-on-surface-variant { color: var(--on-surface-variant); }
+    .text-error { color: var(--error); }
+    .bg-surface-container-high { background: var(--surface-container-high); }
+    .bg-error-10 { background: var(--error-bg); }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 8px; border-radius: 6px; }
+    .row:hover { background: var(--surface-container-high); }
+    .pid { font-family: ui-monospace, monospace; font-size: 13px; color: var(--on-surface-variant); }
+    .chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+    .chip.source { background: var(--surface-container-high); color: var(--on-surface-variant); }
+    .chip.revoked { background: var(--error-bg); color: var(--error); }
+    .last-seen { font-size: 12px; color: var(--on-surface-variant); white-space: nowrap; }
+    .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--on-surface-variant); }
+    input[type="checkbox"] { accent-color: var(--primary); }
+    button.remove { background: transparent; color: var(--on-surface-variant); border: none; padding: 4px 6px; cursor: pointer; border-radius: 6px; }
+    button.remove:hover { color: var(--error); background: var(--error-bg); }
+  </style>
+</head>
+<body>
+  <h1 style="font-size: 16px; color: var(--on-surface-variant); margin: 0 0 12px 0;">
+    Settings → Connections → Paired Peers (F-VIS: visible vs. access)
+  </h1>
+  <p style="font-size: 12px; color: var(--on-surface-variant); max-width: 720px; margin: 0 0 24px 0;">
+    Every paired peer stays in this list, even after access is revoked.
+    The toggle on each row controls whether that peer can dial in.
+    Revoking does NOT remove the peer — Architecture B keeps the visible
+    list separate from the access list.
+  </p>
+
+  <ul style="max-width: 640px; list-style: none; padding: 0; margin: 0;">
+    <li class="row">
+      <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;">
+        <span class="pid">12D3KooWAbcD…</span>
+        <span class="chip source">QR</span>
+      </div>
+      <span class="last-seen">3m ago</span>
+      <label class="toggle">
+        <input type="checkbox" checked />
+        Access
+      </label>
+      <button class="remove" title="Remove paired peer">🗑</button>
+    </li>
+    <li class="row">
+      <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;">
+        <span class="pid">12D3KooWXyz9…</span>
+        <span class="chip source">Link</span>
+        <span class="chip revoked" title="In the visible list but cannot dial in.">Access revoked</span>
+      </div>
+      <span class="last-seen">5h ago</span>
+      <label class="toggle">
+        <input type="checkbox" />
+        Access
+      </label>
+      <button class="remove" title="Remove paired peer">🗑</button>
+    </li>
+    <li class="row">
+      <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;">
+        <span class="pid">12D3KooWMnoP…</span>
+        <span class="chip source">Matrix</span>
+      </div>
+      <span class="last-seen">1d ago</span>
+      <label class="toggle">
+        <input type="checkbox" checked />
+        Access
+      </label>
+      <button class="remove" title="Remove paired peer">🗑</button>
+    </li>
+    <li class="row">
+      <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;">
+        <span class="pid">12D3KooWQrSt…</span>
+        <span class="chip source">DHT</span>
+        <span class="chip revoked" title="Timed out — still visible but access revoked.">Access revoked</span>
+      </div>
+      <span class="last-seen">14d ago</span>
+      <label class="toggle">
+        <input type="checkbox" />
+        Access
+      </label>
+      <button class="remove" title="Remove paired peer">🗑</button>
+    </li>
+  </ul>
+  <p style="margin-top: 24px; font-size: 12px; color: var(--on-surface-variant); max-width: 720px;">
+    Rows 2 and 4 are visible-only (access revoked). The user still sees them — re-toggling the "Access" checkbox re-affirms the peer back into the access list and emits no other state change.
+  </p>
+</body>
+</html>

@@ -1,7 +1,7 @@
 # verify_windows_dendrite_e2e.ps1 — Wave 3 sprint W3-09
 #
-# End-to-end verification of the dendrite-on-Windows backend. Run from
-# corr@win11.local in an interactive PowerShell session (so screenshot
+# End-to-end verification of the dendrite-on-Windows backend. Run on a
+# Windows test rig in an interactive PowerShell session (so screenshot
 # capture works against the user desktop).
 #
 # Steps:

@@ -208,7 +208,7 @@
       fetched but never promoted to a stylesheet — leaving Material
       Symbols ligatures rendering as raw text ("volume_up", "settings",
       "person_add", "tune", "play_arrow") on the Windows native build.
-      Empirically observed on corr@win11 / 2026-04-27 from a
+      Empirically observed on a Windows 11 test rig (2026-04-27) from a
       CI-built MSI; see INS-060.
     -->
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300..800&family=Space+Grotesk:wght@300..700&display=swap" />
@@ -218,15 +218,10 @@
     <div id="boot-splash" data-state="visible" aria-hidden="true">
       <div id="boot-splash-logo">
         <!--
-          Hand-crafted Blender animation. Plays exactly ONCE, then
-          freezes on the last frame. No `loop` attribute, no JS swap.
-          The previous ping-pong dual-video setup was cycling 4-5
-          times during slow boots and the loop boundary read as a
-          visible "reset" because the first and last frames differ
-          by ~4% in the lower mark area. Holding the last frame
-          (which is the logo at rest, ball seated in the lower ring)
-          is the rest pose the user expects to see while waiting for
-          the app to finish hydrating.
+          Hand-crafted Blender animation. Loops continuously — the
+          splash is a cyclical animation and the user wants it to
+          keep playing as long as we're still loading, not freeze on
+          the last frame. The mp4 is authored to seam cleanly.
         -->
         <video
           id="boot-splash-anim"
@@ -234,22 +229,14 @@
           src="/boot-splash.mp4"
           autoplay
           muted
+          loop
           playsinline
           preload="auto"
           aria-hidden="true"
         ></video>
       </div>
       <div id="boot-splash-brand">Concord</div>
-      <div id="boot-splash-status">Waiting for host</div>
     </div>
-    <script>
-      (() => {
-        const status = document.getElementById("boot-splash-status");
-        if (status) {
-          status.textContent = `Waiting for ${window.location.host || "host"}`;
-        }
-      })();
-    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

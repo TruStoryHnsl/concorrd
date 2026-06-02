@@ -58,6 +58,39 @@ services:
   # comment in docker-compose.yml).
   web:
     command: caddy run --config /etc/concord-config/Caddyfile.dev --adapter caddyfile
+    # Publish 443 on the host for Tailscale-reachable dev origins.
+    #
+    # The base compose maps 8080→8080 (HTTP only). For dev deployments that
+    # serve over TLS to Tailscale peers (the dev origin's A record is a
+    # 100.x Tailscale IP), the browser dials https://host:443. Without
+    # this mapping nothing listens on 443 and the browser sees
+    # "connection refused".
+    #
+    # 443 binds to 0.0.0.0 by default, which means it's exposed on every
+    # host interface — both ens18 (LAN/WAN) and tailscale0. Tailscale-only
+    # isolation comes from the fact that no router port-forward exists on
+    # 443 → orrion; the LAN-side listener is only reachable from the LAN
+    # itself, and there's no internet path to it. The Tailscale peer path
+    # is the intended consumer.
+    #
+    # Caddy fronts 443 directly here — no sslh mux in front. DNS-01 ACME
+    # via Cloudflare means LE never needs to reach 443 from the public
+    # internet to issue/renew the cert, so Tailscale-only origins work
+    # cleanly.
+    ports:
+      # Map host 443 -> container 8443. The dev Caddyfile global block pins
+      # `https_port 8443` (legacy from rootless-docker compat where Caddy
+      # couldn't bind ports < 1024). Browsers dial the dev origin on
+      # 443 over the Tailscale interface; Docker forwards to Caddy's
+      # actual HTTPS listener inside the container.
+      - "${BIND_HOST:-0.0.0.0}:443:8443"
+    environment:
+      # Override the prod-default TLS_MODE so the dev stack falls back
+      # to internal_longlived when the operator leaves TLS_MODE empty
+      # in .env. ACME_EMAIL / CLOUDFLARE_API_TOKEN are inherited from
+      # the base compose's web env block. See .env.example for the
+      # operator-facing TLS_MODE matrix.
+      TLS_MODE: ${TLS_MODE:-internal_longlived}
     depends_on:
       conduwuit:
         condition: service_started

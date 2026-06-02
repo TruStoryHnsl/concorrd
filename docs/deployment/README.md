@@ -2,12 +2,51 @@
 
 Operator runbooks for deploying Concord. Start with the target that matches your environment.
 
+> **Before you deploy:** read [`host-allowlist.md`](./host-allowlist.md). Concord runs only on `orr1on` (production) and `orrion` (development). `install.sh` will refuse to run on `orrgate` and warn on any other host.
+
 | Guide | Target | When to use |
 |-------|--------|-------------|
-| [orrgate.md](./orrgate.md) | Single-host Docker Compose on a Linux VM | First real deployment. Self-hosted, federation-enabled, behind Caddy + Cloudflare. |
+| [host-allowlist.md](./host-allowlist.md) | All deploys | Pre-flight — which hosts may run concord, which may not, and why. |
+| [tls-mode.md](./tls-mode.md) | All deploys | Pick a TLS strategy (`TLS_MODE`): Caddy internal CA, Let's Encrypt HTTP-01, or Let's Encrypt DNS-01 via Cloudflare. |
 | [github_bug_report_token.md](./github_bug_report_token.md) | GitHub PAT rotation | You set up `GITHUB_BUG_REPORT_TOKEN` and need to rotate the credential or audit its scope. |
 
 New environments should land their own `.md` file in this directory and link into the table above.
+
+---
+
+## Tailscale-only dev deployment (TLS via Cloudflare DNS-01)
+
+A development Concord instance can be served exclusively over Tailscale — the
+host's public internet ingress is never used and no router port-forward is
+required. The topology: a Cloudflare DNS A record (gray-cloud, proxy OFF) for
+`dev.<your-zone>` points directly at the host's Tailscale 100.x IP. Tailscale
+peers route to that IP through the WireGuard mesh; non-peers can't resolve it
+to anything reachable. The web container's Caddy publishes `443` on the host
+(binding all interfaces, including `tailscale0`), so a peer's browser hitting
+`https://dev.<your-zone>/` connects to Caddy on the Tailscale side — no public
+ingress involved.
+
+Two TLS strategies cover this topology:
+
+- `TLS_MODE=internal_longlived` — the dev default. Caddy issues a self-signed
+  cert with a ~9-year leaf; operators accept the cert exception once per
+  device. This is what PR #91 shipped and what every Tailscale-only operator
+  is on today by default.
+- `TLS_MODE=letsencrypt_dns01_cloudflare` — public Let's Encrypt via DNS-01.
+  DNS-01 proves zone control by writing a transient `_acme-challenge.<host>`
+  TXT record via the Cloudflare API, which works even though the origin is
+  invisible to the public internet. Set `CLOUDFLARE_API_TOKEN` in `.env`
+  alongside the TLS_MODE choice (see `.env.example` for the required token
+  scope and minting steps).
+
+The base `docker-compose.yml` threads `TLS_MODE`, `ACME_EMAIL`, and
+`CLOUDFLARE_API_TOKEN` into the `web` service's environment; the dev override
+flips the default TLS_MODE to `internal_longlived`. The Caddy image is built
+with `xcaddy` against the `caddy-dns/cloudflare` plugin (see `web/Dockerfile`);
+plain `caddy:alpine` does not include this provider, so the DNS-01 mode only
+works against the project-built image.
+
+See [tls-mode.md](./tls-mode.md) for the full strategy matrix.
 
 ---
 
