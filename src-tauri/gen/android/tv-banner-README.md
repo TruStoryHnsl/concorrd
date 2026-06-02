@@ -21,7 +21,7 @@ to `res/drawable-xhdpi/tv_banner.png` in the generated Android project.
 
 ## Where to drop it once generated
 
-After `cargo tauri android init` runs on orrion, the Android resource
+After `cargo tauri android init` runs on the Linux build host, the Android resource
 tree at `src-tauri/gen/android/app/src/main/res/` will contain empty
 `drawable-*` directories. Place the banner at:
 

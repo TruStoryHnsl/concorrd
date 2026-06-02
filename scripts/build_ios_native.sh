@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # build_ios_native.sh — Build Concord as an iOS app via Tauri v2.
 #
-# Designed to run on orrpheus (M1 Pro, macOS 14+). Produces either a
-# simulator-arch debug .app (for on-box smoke tests) or a device-arch
-# release .app / .ipa (for sideloading to a physical iPhone).
+# Designed to run on a macOS 14+ host (Apple Silicon or Intel).
+# Produces either a simulator-arch debug .app (for on-box smoke tests)
+# or a device-arch release .app / .ipa (for sideloading to a physical
+# iPhone).
 #
 # Companion to scripts/build_macos_native.sh. Same shape, same exit
 # codes, same env-var discipline, so CI / humans can trust both scripts
@@ -145,7 +146,7 @@ fi
 # Platform check
 # ----------------------------------------------------------------------------
 if [[ "$(uname -s)" != "Darwin" ]]; then
-    die "this script must run on macOS (orrpheus). Current uname: $(uname -s)" 1
+    die "this script must run on macOS. Current uname: $(uname -s)" 1
 fi
 
 # ----------------------------------------------------------------------------
@@ -174,7 +175,7 @@ done
 # clone that hasn't run the one-time init step yet.
 if [[ ! -d "${APPLE_GEN_DIR}/concord.xcodeproj" ]]; then
     die "no Xcode project found at ${APPLE_GEN_DIR}/concord.xcodeproj.
-Run 'cd src-tauri && cargo tauri ios init' first (one-time setup on orrpheus).
+Run 'cd src-tauri && cargo tauri ios init' first (one-time setup on the macOS build host).
 See client/NATIVE_BUILD.md §8 for the full scaffolding guide." 1
 fi
 

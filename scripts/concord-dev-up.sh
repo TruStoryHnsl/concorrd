@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# concord-dev-up.sh — bring up Concord in dev mode with HMR on orrgate.
+# concord-dev-up.sh — bring up Concord in dev mode with HMR.
 #
-# Run this ON orrgate (where the docker stack lives).
+# Run this on the host where the docker stack lives (set CONCORD_DIR to
+# point at the compose root).
 #
 # Steps:
 #   1. Verify we're in the concord stack directory
@@ -14,13 +15,13 @@
 #   4. Scan vite-dev logs for "Failed to resolve import" — a signal that
 #      node_modules is out of sync with package-lock.json (shouldn't happen
 #      with the runtime npm ci approach, but surface it if it does)
-#   5. Trigger a Syncthing rescan on the concord-dev folder so any changes
-#      the user just made on orrion propagate immediately
+#   5. Optionally trigger a Syncthing rescan on the configured folder so
+#      any source changes propagate immediately (no-op if not using Syncthing)
 #   6. Print the final compose status table
 #
 # Usage:
-#   Local:  /docker/stacks/concord/scripts/concord-dev-up.sh [--build]
-#   Remote: ssh orrgate '/docker/stacks/concord/scripts/concord-dev-up.sh'
+#   Local:  CONCORD_DIR=/path/to/concord ./scripts/concord-dev-up.sh [--build]
+#   Remote: ssh <host> 'CONCORD_DIR=/path/to/concord /path/to/concord/scripts/concord-dev-up.sh'
 #
 # Exit codes:
 #   0 = dev stack is up and vite-dev is serving
@@ -35,8 +36,8 @@ CONCORD_DIR="${CONCORD_DIR:-/docker/stacks/concord}"
 VITE_SERVICE="vite-dev"
 VITE_CONTAINER="concord-vite-dev-1"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-180}"
-SYNCTHING_FOLDER="concord-dev"
-SYNCTHING_API="http://localhost:8384"
+SYNCTHING_FOLDER="${SYNCTHING_FOLDER:-}"
+SYNCTHING_API="${SYNCTHING_API:-http://localhost:8384}"
 
 # Compose overlay: base + the production override (for the 8443 port mapping)
 # + the dev overlay. Order matters — later files override earlier.
@@ -115,8 +116,10 @@ if docker logs "$VITE_CONTAINER" 2>&1 | grep -q "Failed to resolve import"; then
   warn "Hint: try '$0 --build' to force a rebuild of the vite-dev image."
 fi
 
-# --- trigger Syncthing rescan on concord-dev folder (best-effort) ---
-if command -v curl >/dev/null && [[ -r "$HOME/.local/state/syncthing/config.xml" ]]; then
+# --- trigger Syncthing rescan (best-effort, only if SYNCTHING_FOLDER is set) ---
+if [[ -n "$SYNCTHING_FOLDER" ]] \
+   && command -v curl >/dev/null \
+   && [[ -r "$HOME/.local/state/syncthing/config.xml" ]]; then
   api_key=$(grep -oP '(?<=<apikey>)[^<]+' "$HOME/.local/state/syncthing/config.xml" 2>/dev/null || true)
   if [[ -n "$api_key" ]]; then
     if curl -sS -m 5 -X POST -H "X-API-Key: $api_key" \
@@ -133,7 +136,7 @@ log "--- Stack status ---"
 docker compose "${COMPOSE_FILES[@]}" ps --format 'table {{.Service}}\t{{.Status}}'
 
 if (( ready == 1 && resolve_errors == 0 )); then
-  log "Dev stack is up. HMR is active — saves on orrion will propagate via Syncthing and hot-reload in your browser."
+  log "Dev stack is up. HMR is active — saves on the source host will propagate via Syncthing (if configured) and hot-reload in your browser."
   exit 0
 else
   exit 1

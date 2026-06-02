@@ -54,7 +54,7 @@ body:
         - Voice / LiveKit
         - Soundboard
         - Servitude (host-from-app)
-        - concord-beta mesh track
+        - P2P / mesh (libp2p / Reticulum / WireGuard)
   - type: textarea
     id: extra
     attributes:

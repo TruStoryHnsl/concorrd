@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   isTauri,
-  servitudeStart,
   servitudeStatus,
   servitudeStop,
   type ServitudeState,
 } from "../../api/servitude";
+import { startHostingServitude } from "../../api/hostingProfile";
 import { usePlatform } from "../../hooks/usePlatform";
 import { HostPairingQR } from "../pairing/HostPairingQR";
 
@@ -89,7 +89,11 @@ export function NodeHostingTab() {
   const handleStart = useCallback(async () => {
     setBusy(true);
     try {
-      await servitudeStart();
+      // Host-capable start: ensures the `web_first` profile (embedded
+      // homeserver) before bringing the lifecycle up. A bare
+      // servitudeStart on a `p2p_only` install would come up without a
+      // homeserver. See startHostingServitude's doc-comment.
+      await startHostingServitude();
       await refresh();
     } catch (err) {
       setStatus({

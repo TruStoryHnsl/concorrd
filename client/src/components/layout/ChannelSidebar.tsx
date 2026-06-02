@@ -343,7 +343,7 @@ export const ChannelSidebar = memo(function ChannelSidebar({ mobile: _mobile, on
   };
 
   return (
-    <div className="w-full flex flex-col min-h-0 bg-surface-container-low">
+    <div className="w-full h-full flex flex-col min-h-0 bg-surface-container-low">
       {/* Server header */}
       <div className="p-3 flex items-center justify-between relative">
         <button

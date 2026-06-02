@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from errors import ConcordError
 from models import DMConversation
-from routers.servers import get_user_id, get_access_token
+from dependencies import get_user_id, get_access_token
 from services.matrix_admin import create_dm_room
 
 logger = logging.getLogger(__name__)

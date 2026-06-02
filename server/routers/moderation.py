@@ -13,7 +13,7 @@ from models import (
     Channel, ChannelLock, Server, ServerMember, ServerBan,
     VoteKick, KickRecord, IPBan,
 )
-from routers.servers import get_user_id
+from dependencies import get_user_id
 
 
 # Same Matrix user ID shape as in dms.py.

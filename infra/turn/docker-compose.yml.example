@@ -1,0 +1,70 @@
+# Copy this file to ``docker-compose.yml`` next to it, then create a
+# ``.env`` file in the same directory populated from ``.env.example``.
+# The live ``docker-compose.yml`` and ``.env`` are gitignored.
+#
+# Required env vars (loaded from ./.env):
+#   CONCORD_PUBLIC_DOMAIN   Public hostname the operator's Concord instance
+#                           answers to (e.g. ``chat.example.com``). Used by
+#                           the sslh healthcheck so it actually exercises
+#                           sslh -> NPM -> conduwuit, not just sslh TCP
+#                           accept (which kept succeeding during the
+#                           2026-05-09 wedge while TLS hung).
+
+services:
+  sslh:
+    # Pinned: ``latest`` previously masked a config-compat regression
+    # (top-level ``keepalive`` accepted in some builds, rejected in
+    # v2.3.1) that took prod down on 2026-05-17. Bump deliberately
+    # with a test run after.
+    image: ghcr.io/yrutschle/sslh:2.3.1
+    container_name: sslh
+    restart: unless-stopped
+    ports:
+      - "443:443/tcp"
+    volumes:
+      - ./sslh.conf:/etc/sslh/sslh.cfg:ro
+    command: ["-F/etc/sslh/sslh.cfg"]
+    network_mode: bridge
+    # 2026-05-12: ulimit + healthcheck + autoheal label added after the
+    # 25-day uptime wedge. Defaults of 1024 fds + no liveness probe meant
+    # accumulated half-open TURN forwards eventually starved sslh and there
+    # was no automatic recovery — site stayed dark until manual restart.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    extra_hosts:
+      - "${CONCORD_PUBLIC_DOMAIN:?CONCORD_PUBLIC_DOMAIN must be set in ./.env}:127.0.0.1"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --timeout=3 --no-check-certificate -O /dev/null https://${CONCORD_PUBLIC_DOMAIN}/_matrix/client/versions"]
+      interval: 30s
+      timeout: 5s
+      retries: 2
+      start_period: 20s
+    labels:
+      - "autoheal=true"
+
+  coturn:
+    image: coturn/coturn:latest
+    container_name: coturn
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./turnserver.conf:/etc/turnserver.conf:ro
+      - ./certs:/etc/turn-certs:ro
+    command: ["-c", "/etc/turnserver.conf"]
+
+  # Watches all containers with label ``autoheal=true``. When a healthcheck
+  # marks one ``unhealthy``, autoheal issues ``docker restart``. Standalone
+  # docker-compose has no native "restart on unhealthy" — this is the
+  # canonical pattern. docker.sock mounted read-only.
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    container_name: turn-autoheal
+    restart: unless-stopped
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=30
+      - AUTOHEAL_START_PERIOD=30
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro

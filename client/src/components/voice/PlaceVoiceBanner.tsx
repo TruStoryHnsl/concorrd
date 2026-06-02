@@ -1,5 +1,6 @@
 import { memo, useState } from "react";
 import { Avatar } from "../ui/Avatar";
+import { BringingUpSplash } from "../BringingUpSplash";
 
 interface Participant {
   userId: string;
@@ -30,7 +31,16 @@ export const PlaceVoiceBanner = memo(function PlaceVoiceBanner({
 
   return (
     <div
-      className={`flex-shrink-0 border-b border-outline-variant/20 bg-surface-container-low flex items-${hasVideo ? "stretch" : "center"} gap-2 px-3 ${hasVideo ? "" : "py-1.5"}`}
+      className={`flex-shrink-0 border-b border-outline-variant/20 bg-surface-container-low flex items-${hasVideo ? "stretch" : "center"} gap-2 px-3 ${hasVideo ? "pt-1.5" : "pt-1.5"} pb-3`}
+      // Bottom padding has two jobs:
+      //   1. Normal browsers — give the mic/cam/leave controls a comfortable
+      //      gap to the bottom edge (the banner used to slam controls flush
+      //      against the chat layout's bottom border).
+      //   2. Mobile / installed-PWA / Tauri iOS — respect
+      //      `env(safe-area-inset-bottom)` so the iOS home indicator does
+      //      not overlap the controls. `max()` floors at 0.75rem so the
+      //      desktop padding never collapses below the Tailwind `pb-3`.
+      style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
     >
       {/* Participant pills */}
       <div className="flex-1 flex gap-2 overflow-x-auto min-w-0 py-1">
@@ -38,7 +48,10 @@ export const PlaceVoiceBanner = memo(function PlaceVoiceBanner({
           <PlacePill key={p.userId} participant={p} onVideoClick={onVideoClick} />
         ))}
         {participants.length === 0 && (
-          <span className="text-xs text-on-surface-variant/60 font-label">Connecting...</span>
+          <span className="inline-flex items-center gap-1.5 text-xs text-on-surface-variant/60 font-label">
+            <BringingUpSplash size="inline" />
+            Connecting…
+          </span>
         )}
       </div>
 

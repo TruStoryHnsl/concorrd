@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 from database import get_db
 from dependencies import require_server_admin
 from models import DirectInvite, ServerMember, Channel, ServerBan
-from routers.servers import get_user_id, get_access_token
+from dependencies import get_user_id, get_access_token
 from services.matrix_admin import join_room
 
 logger = logging.getLogger(__name__)

@@ -39,15 +39,36 @@
 //!      `Stopping` because that would wedge the UI.
 
 pub mod config;
+pub mod concord_user;
+pub mod federation;
+// F-C — Hero-account binding stub (Architecture C gate (i)). Real
+// lookup wires through Architecture A's `concord_user_get_for_peer`
+// when that PR merges; for now this returns `None` for every peer so
+// the hero gate is closed by default.
+pub mod hero_binding;
+// F-C — Tailscale-gated hero sync orchestration. Holds the two-gate
+// evaluator, the `/concord/hero-sync/1.0.0` protocol handler, the
+// anchor mode resolver, and the conflict-queue hand-off for
+// Architecture D.
+pub mod hero_sync;
+pub mod identity;
 pub mod lifecycle;
+pub mod mesh_propagation;
+pub mod network;
+pub mod p2p;
+pub mod peer_store;
 pub mod transport;
+pub mod voice;
 
 pub use config::{ServitudeConfig, Transport};
 pub use lifecycle::{LifecycleError, LifecycleState};
-pub use transport::{TransportError, TransportRuntime};
+pub use transport::{LibP2pRuntime, TransportError, TransportRuntime};
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use thiserror::Error;
+
+use crate::servitude::identity::StrongholdHandle;
 
 /// Top-level error type for the servitude module.
 ///
@@ -100,13 +121,72 @@ impl ServitudeHandle {
     /// Transport runtimes are built eagerly from `config.enabled_transports`
     /// via [`TransportRuntime::for_variant`]. This is a cheap operation
     /// (pure data-carrier construction); nothing is spawned until `start`.
+    ///
+    /// Backward-compatible thin wrapper around [`Self::new_with_identity`]
+    /// for call sites (and tests) that don't have the install's shared
+    /// `StrongholdHandle` to hand. No libp2p swarm is constructed in that
+    /// case — the Phase 3 P2P transport is opt-in via the identity arg.
     pub fn new(config: ServitudeConfig) -> Result<Self, ServitudeError> {
+        Self::new_with_identity(config, None)
+    }
+
+    /// Same as [`Self::new`] but threads through the install's shared
+    /// peer-identity `StrongholdHandle`. When present, the handle adds
+    /// a Phase 3 [`TransportRuntime::LibP2p`] runtime to the transport
+    /// list — the libp2p swarm becomes the always-on baseline P2P
+    /// transport whose `PeerId` derives from the same Ed25519 seed
+    /// backing the Phase 2 `PeerIdentity.fingerprint`.
+    ///
+    /// `None` preserves the prior behavior for tests that drive the
+    /// lifecycle without a Stronghold (and for embedded callers that
+    /// haven't yet wired one).
+    pub fn new_with_identity(
+        config: ServitudeConfig,
+        stronghold: Option<Arc<StrongholdHandle>>,
+    ) -> Result<Self, ServitudeError> {
         config.validate()?;
-        let transports = config
+        // Phase 7 profile gating (INS-019b): on `P2pOnly` we only
+        // materialize the libp2p baseline transport. Every other
+        // `enabled_transports` entry stays in the persisted config
+        // (so the user's intent isn't lost) but is NOT spawned at
+        // boot. Flipping the profile to `WebFirst` in Settings → and
+        // the next `servitude_start` materializes them. Docker /
+        // `web_first` profile materializes everything as before.
+        let p2p_only = matches!(config.profile, config::Profile::P2pOnly);
+        let mut transports: Vec<TransportRuntime> = config
             .enabled_transports
             .iter()
-            .map(|variant| TransportRuntime::for_variant(*variant, &config))
+            .filter_map(|variant| {
+                if p2p_only {
+                    log::info!(
+                        target: "concord::servitude",
+                        "transport {:?} skipped: profile=p2p_only",
+                        variant
+                    );
+                    None
+                } else {
+                    Some(TransportRuntime::for_variant(*variant, &config))
+                }
+            })
             .collect();
+        if let Some(sh) = stronghold {
+            // libp2p is the always-on baseline P2P transport regardless
+            // of profile. It is NOT declared in `config.enabled_transports`
+            // — the config enum existed before Phase 3 and `Mesh`
+            // placeholders predate the real libp2p wiring. Append rather
+            // than prepend so existing transports keep their start order.
+            let mut runtime = LibP2pRuntime::new(sh);
+            // Vanity instance-name → Identify agent_version. Peers see
+            // this on connect to confirm they reached the device they
+            // intended. Empty display_name is treated as "unset" so
+            // peers fall back to the bare `concord/<version>` form
+            // rather than `concord/<version> ()`.
+            let trimmed = config.display_name.trim();
+            if !trimmed.is_empty() {
+                runtime.set_instance_name(Some(trimmed.to_string()));
+            }
+            transports.push(TransportRuntime::LibP2p(runtime));
+        }
         Ok(Self {
             config,
             lifecycle: lifecycle::Lifecycle::new(),
@@ -152,6 +232,221 @@ impl ServitudeHandle {
     /// a full rollback and the handle ends up in `Stopped`.
     pub fn degraded_transports(&self) -> &HashMap<String, String> {
         &self.degraded
+    }
+
+    /// The embedded tuwunel's per-instance registration token, if a
+    /// MatrixFederation transport is enabled AND `start()` has run
+    /// successfully. The Host onboarding flow (W2-06) reads this via
+    /// `servitude_get_registration_token` to drive the
+    /// `m.login.registration_token` UI-Authentication flow when
+    /// creating the owner account on a freshly-spawned local
+    /// homeserver.
+    ///
+    /// Returns `None` if no MatrixFederation transport is enabled
+    /// in the config, OR if the token has not been materialized yet
+    /// (the homeserver was never started, or start failed before
+    /// reaching the token-ensure step).
+    pub fn registration_token(&self) -> Option<&str> {
+        for runtime in &self.transports {
+            if let Some(t) = runtime.registration_token() {
+                return Some(t);
+            }
+        }
+        None
+    }
+
+    /// Drive owner-account registration against the active embedded
+    /// homeserver. Wave 3 sprint W3-05.
+    ///
+    /// Selects the right protocol per backend (tuwunel UIA dance vs
+    /// dendrite create-account CLI) and returns the resulting
+    /// (user_id, access_token, device_id) tuple via the shared
+    /// [`crate::servitude::transport::dendrite_federation::RegisterOwnerResponse`].
+    /// Errors out if no MatrixFederation transport is enabled OR if
+    /// none of the runtimes can drive the registration.
+    pub async fn register_owner(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<
+        crate::servitude::transport::dendrite_federation::RegisterOwnerResponse,
+        ServitudeError,
+    > {
+        for runtime in &self.transports {
+            // Skip non-Matrix runtimes; only one runtime can drive
+            // owner registration.
+            match runtime {
+                TransportRuntime::MatrixFederation(_)
+                | TransportRuntime::DendriteFederation(_) => {
+                    return runtime
+                        .register_owner(username, password)
+                        .await
+                        .map_err(ServitudeError::Transport);
+                }
+                _ => continue,
+            }
+        }
+        Err(ServitudeError::Transport(TransportError::NotImplemented(
+            "no MatrixFederation transport configured for register_owner",
+        )))
+    }
+
+    /// Clone of the running libp2p swarm's broadcast sender, if a
+    /// libp2p runtime is part of this handle AND `start()` has run
+    /// successfully. The Tauri layer calls this after `start()` to
+    /// register the sender into a `tauri::State<...>` and mirror
+    /// swarm events into the frontend via `emit_all`.
+    ///
+    /// Returns `None` for handles built without a `StrongholdHandle`
+    /// (the libp2p runtime is opt-in via [`Self::new_with_identity`])
+    /// or when the swarm has not been started yet.
+    pub fn libp2p_event_sender(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Sender<crate::servitude::p2p::SwarmEvent>> {
+        for runtime in &self.transports {
+            if let Some(tx) = runtime.libp2p_event_sender() {
+                return Some(tx);
+            }
+        }
+        None
+    }
+
+    /// Local libp2p `PeerId` for the running swarm. Same lifecycle
+    /// gating as [`Self::libp2p_event_sender`].
+    pub fn libp2p_local_peer_id(&self) -> Option<libp2p::PeerId> {
+        for runtime in &self.transports {
+            if let Some(pid) = runtime.libp2p_local_peer_id() {
+                return Some(pid);
+            }
+        }
+        None
+    }
+
+    /// Phase 8 follow-up — wire the voice-call registry into the
+    /// libp2p runtime so the signaling handler routes inbound
+    /// envelopes through the orchestrator. MUST be called BEFORE
+    /// `start()` for the real sink to be installed.
+    pub fn set_voice_registry(
+        &mut self,
+        registry: std::sync::Arc<crate::servitude::voice::VoiceCallRegistry>,
+    ) {
+        for runtime in &mut self.transports {
+            runtime.set_voice_registry(registry.clone());
+        }
+    }
+
+    /// Phase 8 follow-up — clone of the outbound voice signaling
+    /// sender. Returns `None` for handles with no libp2p runtime.
+    pub fn voice_outbound_sender(
+        &self,
+    ) -> Option<
+        tokio::sync::mpsc::Sender<(
+            libp2p::PeerId,
+            crate::servitude::voice::SignalingMessage,
+        )>,
+    > {
+        for runtime in &self.transports {
+            if let Some(tx) = runtime.voice_outbound_sender() {
+                return Some(tx);
+            }
+        }
+        None
+    }
+
+    /// Porch Phase A — wire the shared [`crate::porch::Porch`] into the
+    /// libp2p runtime so the `/concord/porch/1.0.0` handler dispatches
+    /// against it. MUST be called BEFORE `start()`.
+    pub fn set_porch(&mut self, porch: std::sync::Arc<crate::porch::Porch>) {
+        for runtime in &mut self.transports {
+            runtime.set_porch(porch.clone());
+        }
+    }
+
+    /// Porch Phase A — clone of the libp2p stream control captured at
+    /// `start()`, suitable for opening outbound porch streams. `None`
+    /// while no libp2p runtime has been started.
+    pub fn porch_stream_control(&self) -> Option<libp2p_stream::Control> {
+        for runtime in &self.transports {
+            if let Some(c) = runtime.porch_stream_control() {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    /// F-VIS — broadcast a serialized [`crate::porch::VisibilityUpdate`]
+    /// over the libp2p gossipsub mesh. Returns the typed error if no
+    /// libp2p runtime is running OR the bounded outbound queue is full
+    /// (a runaway producer); the caller should log + swallow and
+    /// retry on the next slider change. Returns `Ok(())` if the
+    /// payload was successfully queued for publish (the actual
+    /// `gossipsub.publish` happens inside the swarm event loop).
+    pub fn broadcast_visibility(
+        &mut self,
+        update: &crate::porch::VisibilityUpdate,
+    ) -> Result<(), ServitudeError> {
+        let sender = self
+            .transports
+            .iter()
+            .find_map(|r| r.visibility_broadcast_sender())
+            .ok_or(ServitudeError::NotRunning)?;
+        let payload = update.encode();
+        // try_send so a full queue surfaces immediately as an error
+        // rather than blocking the Tauri command thread.
+        sender.try_send(payload).map_err(|e| {
+            // No dedicated error variant — funnel through the existing
+            // Transport variant. The producer side already logs the
+            // returned error at the caller (`visibility_set_server`).
+            ServitudeError::Transport(TransportError::StartFailed(format!(
+                "visibility broadcast queue: {e}"
+            )))
+        })
+    }
+
+    /// Phase G — wire the inbound-gate state into the libp2p runtime.
+    /// MUST be called BEFORE `start()` for the operator's persisted
+    /// tunnel-only preferences to be in effect when the swarm comes
+    /// up. Calling later is a soft no-op (the running swarm keeps
+    /// whatever state was wired before start).
+    pub fn set_gate_state(
+        &mut self,
+        state: crate::servitude::network::connection_gate::GateState,
+    ) {
+        for runtime in &mut self.transports {
+            runtime.set_gate_state(state.clone());
+        }
+    }
+
+    /// Phase G — clone of the libp2p runtime's inbound-gate state.
+    /// `None` when no libp2p runtime is started or wired. The Tauri
+    /// `tunnel_set_config` command uses this to hot-swap the running
+    /// swarm's gate without restarting it.
+    pub fn gate_state(
+        &self,
+    ) -> Option<crate::servitude::network::connection_gate::GateState> {
+        for runtime in &self.transports {
+            if let Some(s) = runtime.gate_state() {
+                return Some(s);
+            }
+        }
+        None
+    }
+
+    /// F-WG — clone of the libp2p runtime's WireGuard tunnel
+    /// registry. `None` when no libp2p runtime is in this handle's
+    /// transport list. The Tauri `wg_tunnel_status` /
+    /// `wg_tunnel_force_disconnect_all` commands read from it; the
+    /// app close-event handler invokes `force_disconnect_all()` on
+    /// it before the binary exits (Architecture E).
+    pub fn wg_registry(
+        &self,
+    ) -> Option<crate::servitude::network::wg_tunnel::WgRegistry> {
+        for runtime in &self.transports {
+            if let Some(r) = runtime.wg_registry() {
+                return Some(r);
+            }
+        }
+        None
     }
 
     /// Drive the state machine `Stopped -> Starting -> Running`, bringing
@@ -318,6 +613,7 @@ mod tests {
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::MatrixFederation],
+            profile: crate::servitude::config::Profile::WebFirst,
         }
     }
 
@@ -388,6 +684,9 @@ mod tests {
                 Transport::MatrixFederation,
                 Transport::Tunnel,
             ],
+            // WebFirst so both transports materialize; under P2pOnly
+            // non-libp2p transports would be skipped (Phase 7).
+            profile: crate::servitude::config::Profile::WebFirst,
         };
         let handle = ServitudeHandle::new(cfg).expect("config must validate");
         assert_eq!(handle.transports.len(), 2);
@@ -462,6 +761,7 @@ mod tests {
             listen_port: 8765,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::MatrixFederation],
+            profile: crate::servitude::config::Profile::WebFirst,
         };
 
         let mut handle = ServitudeHandle::new_with_runtimes_for_test(
@@ -491,6 +791,7 @@ mod tests {
             listen_port: 9999,
             allow_privileged_port: false,
             enabled_transports: vec![Transport::WireGuard, Transport::Tunnel],
+            profile: crate::servitude::config::Profile::WebFirst,
         };
 
         // This block mirrors exactly what the fixed `servitude_start`

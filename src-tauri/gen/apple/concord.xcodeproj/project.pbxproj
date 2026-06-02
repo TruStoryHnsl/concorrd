@@ -205,7 +205,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					E652CBA2FCA4A3C93D9B5548 = {
-						DevelopmentTeam = 827D323V6Z;
+						DevelopmentTeam = YOUR_TEAM_ID;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -353,7 +353,7 @@
 				CODE_SIGN_ENTITLEMENTS = concord_iOS/concord_iOS.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "827D323V6Z";
+				DEVELOPMENT_TEAM = "YOUR_TEAM_ID";
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -387,7 +387,7 @@
 				CODE_SIGN_ENTITLEMENTS = concord_iOS/concord_iOS.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "827D323V6Z";
+				DEVELOPMENT_TEAM = "YOUR_TEAM_ID";
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
