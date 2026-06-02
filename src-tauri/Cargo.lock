@@ -1068,7 +1068,7 @@ dependencies = [
  "libp2p",
  "libp2p-stream",
  "log",
- "nix 0.29.0",
+ "nix 0.31.3",
  "rand 0.8.5",
  "regex",
  "reqwest 0.12.28",
@@ -1087,9 +1087,9 @@ dependencies = [
  "tauri-plugin-store",
  "tauri-plugin-stronghold",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
- "toml 0.8.2",
+ "toml 0.9.12+spec-1.1.0",
  "ulid",
  "webrtc",
  "x25519-dalek",
@@ -1596,7 +1596,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4626,18 +4626,6 @@ dependencies = [
  "cfg-if 1.0.4",
  "libc",
  "memoffset 0.6.5",
-]
-
-[[package]]
-name = "nix"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
-dependencies = [
- "bitflags 2.11.0",
- "cfg-if 1.0.4",
- "cfg_aliases",
- "libc",
 ]
 
 [[package]]

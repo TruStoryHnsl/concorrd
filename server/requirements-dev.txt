@@ -11,7 +11,7 @@
 
 -r requirements.txt
 
-pytest==8.3.4
+pytest==9.0.3
 # pytest-asyncio 1.x eliminated the asyncio.get_event_loop_policy()
 # deprecation warnings that 0.x emitted on Python 3.14+ (the API is
 # slated for removal in 3.16). The 1.x default loop scopes match what
