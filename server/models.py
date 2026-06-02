@@ -166,6 +166,12 @@ class SoundboardClip(Base):
     __tablename__ = "soundboard_clips"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # INS-073: server_id is now the *originating* server (attribution only).
+    # Clips are visible instance-wide regardless of which server uploaded
+    # them. Kept non-null because every existing clip already has one and
+    # we still want a back-pointer for "who put this in the library".
+    # File storage path remains SOUNDBOARD_DIR/<server_id>/<filename> so
+    # existing on-disk files are reachable without a filesystem migration.
     server_id: Mapped[str] = mapped_column(String, ForeignKey("servers.id"), nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     filename: Mapped[str] = mapped_column(String, nullable=False)  # stored filename on disk
@@ -173,6 +179,19 @@ class SoundboardClip(Base):
     duration: Mapped[float | None] = mapped_column(Float, nullable=True)  # seconds
     keybind: Mapped[str | None] = mapped_column(String, nullable=True)  # e.g. "Alt+1"
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # INS-073: Freesound license + attribution metadata. CC-licensed clips
+    # imported from freesound.org MUST persist their original license id
+    # (e.g. "Creative Commons 0", "Attribution 4.0") and the original
+    # uploader's name for compliance with each clip's attribution clause.
+    # These columns are NULL for clips uploaded directly by users (no
+    # third-party license to track). When source != "freesound" or NULL,
+    # the clip is treated as user-original.
+    source: Mapped[str | None] = mapped_column(String, nullable=True)  # "freesound" | None
+    source_id: Mapped[str | None] = mapped_column(String, nullable=True)  # external id, e.g. "12345"
+    license: Mapped[str | None] = mapped_column(String, nullable=True)  # CC license name from Freesound
+    license_url: Mapped[str | None] = mapped_column(String, nullable=True)  # canonical license URL
+    attribution: Mapped[str | None] = mapped_column(String, nullable=True)  # original author/uploader
 
     server: Mapped["Server"] = relationship()
 
@@ -342,6 +361,85 @@ class DisposableNode(Base):
         default=lambda: datetime.now(timezone.utc) + timedelta(hours=24),
     )
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class Extension(Base):
+    """Runtime-installed extension (INS-066 W1).
+
+    Each row corresponds to an extension installed via
+    POST /api/extensions/install. The legacy static catalog
+    (installed_extensions.json) is still honoured as a fallback for
+    pre-INS-066 deployments — new installs write here, and the listing
+    endpoint merges DB rows with the static catalog (DB authoritative
+    on collision).
+
+    Columns:
+      id          reverse-domain extension identifier (e.g.
+                  ``com.concord.orrdia-bridge``). Primary key.
+      version     semver string from the manifest.
+      pricing     manifest ``pricing`` field (``"free"``, ``"paid"``,
+                  etc.). Defaults to ``"free"`` so pre-paid manifests
+                  don't accidentally insert NULL.
+      enabled     admin toggle to hide an installed extension without
+                  uninstalling. Defaults True.
+      cached_at   install timestamp (UTC). Set on insert; not updated
+                  on enable/disable.
+      remote_url  origin URL the ``.zip`` was fetched from. NULL for
+                  sideloaded local installs.
+      manifest    full validated manifest JSON, stored as TEXT (SQLite
+                  has no native JSON column; downstream readers
+                  ``json.loads()`` it). Includes the ``permissions``
+                  array enforced by W7.
+    """
+
+    __tablename__ = "extensions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[str] = mapped_column(String, nullable=False)
+    pricing: Mapped[str] = mapped_column(String, default="free")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    cached_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    remote_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    manifest: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class User(Base):
+    """Per-user record for features that aren't covered by Matrix identity.
+
+    Concord delegates authentication and identity to the Matrix homeserver
+    (tuwunel/conduwuit) — there is no separate Concord-side login. Most
+    user state therefore lives in Matrix or is derived from
+    ``server_members`` rows. This table exists for the rare cases where
+    we need to persist data that belongs to the user account *outside*
+    Matrix's storage model.
+
+    INS-071 Phase A — recovery email:
+        ``recovery_email`` is the user-supplied address for password
+        recovery. Phase A stores it in plaintext, with a hard
+        admin-blind invariant: NO API surface returns the column.
+        Only direct DB access reveals it. Phase B (INS-071-FUP)
+        will add encryption-at-rest. ``recovery_token_hash`` holds
+        the SHA-256 of an active password-reset token; the
+        plaintext token is sent only to the user's recovery email
+        and never stored. ``recovery_token_expires`` enforces a
+        1-hour TTL.
+    """
+
+    __tablename__ = "users"
+
+    user_id: Mapped[str] = mapped_column(String, primary_key=True)
+    recovery_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    recovery_token_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    recovery_token_expires: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 
 class PlaceLedgerHeader(Base):

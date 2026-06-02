@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback, useRef, Component, type ReactNode } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import type { IPublicRoomsChunkRoom } from "matrix-js-sdk";
 import {
   useMatrixSync,
@@ -14,7 +14,6 @@ import type { ChatMessage } from "../../hooks/useMatrix";
 import { useTypingUsers, useSendTyping } from "../../hooks/useTyping";
 import { useAuthStore } from "../../stores/auth";
 import { useServerStore } from "../../stores/server";
-import { useServerConfigStore } from "../../stores/serverConfig";
 import { usePlatform } from "../../hooks/usePlatform";
 import { useDpadNav } from "../../hooks/useDpadNav";
 import { useSendReadReceipt } from "../../hooks/useUnreadCounts";
@@ -22,7 +21,16 @@ import { useNotifications } from "../../hooks/useNotifications";
 import { useSettingsStore } from "../../stores/settings";
 import { useVoiceStore } from "../../stores/voice";
 import { useHostingStatus } from "../settings/HostingTab";
+import { SectionBoundary } from "./SectionBoundary";
 import { SourcesPanel } from "./SourcesPanel";
+import { BringingUpSplash } from "../BringingUpSplash";
+import { HelpModal, OnboardingGuide, RulesGate } from "./OnboardingViews";
+import { AccountSheet, DesktopAccountButton } from "./AccountUI";
+import {
+  HostingStatusButton,
+  TopBarIconButton,
+  TopBarMoreMenu,
+} from "./TopBarMenu";
 import {
   sourceMatchesMatrixDomain,
   useSourcesStore,
@@ -32,12 +40,21 @@ import { useDMStore } from "../../stores/dm";
 import { useToastStore } from "../../stores/toast";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { useExtension } from "../../hooks/useExtension";
+import { useExtensionRoomBridge } from "../../hooks/useExtensionBridge";
 import { useExtensionStore } from "../../stores/extension";
 import ExtensionEmbed from "../extension/ExtensionEmbed";
 import ExtensionMenu from "../extension/ExtensionMenu";
+import { ExtensionCatalogModal } from "../extension/ExtensionCatalogModal";
+import { LocalHostingControl } from "../sources/LocalHostingControl";
+import { PeerCardScanner } from "../peers/PeerCardScanner";
 import { ServerSidebar } from "./ServerSidebar";
-import { Avatar } from "../ui/Avatar";
 import { ChannelSidebar, UserBar } from "./ChannelSidebar";
+import { LocalServerSidebar } from "../local/LocalServerSidebar";
+import { LocalChannelSidebar } from "../local/LocalChannelSidebar";
+import { LocalChatPane } from "../local/LocalChatPane";
+import { usePorchStore } from "../../stores/porchStore";
+import { useInstanceNameStore } from "../../stores/instanceName";
+import { useHomeServerNameStore } from "../../stores/homeServerName";
 import { DMSidebar } from "../dm/DMSidebar";
 import { ExploreModal } from "../server/ExploreModal";
 import { MessageList } from "../chat/MessageList";
@@ -51,11 +68,9 @@ import { BugReportModal } from "../BugReportModal";
 import { StatsModal } from "../StatsModal";
 import { SourceBrandIcon, inferSourceBrand } from "../sources/sourceBrand";
 import {
-  getMyStats,
   getRoomDiagnostics,
   getServerRules,
   type RoomDiagnostics,
-  type UserStats,
 } from "../../api/concord";
 import {
   buildMatrixSourceDraft,
@@ -70,48 +85,9 @@ import {
 import { useFormatStore } from "../../stores/format";
 import { useBootReadyStore } from "../../stores/bootReady";
 
-/** RulesGate — full-panel screen shown to members who haven't accepted the server rules yet. */
-function RulesGate({ rulesText, onAccept }: { rulesText: string; onAccept: () => void }) {
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center p-8 gap-6 min-h-0 overflow-y-auto">
-      <div className="max-w-lg w-full space-y-4">
-        <div className="flex items-center gap-3">
-          <span className="material-symbols-outlined text-primary text-2xl">gavel</span>
-          <h2 className="text-xl font-headline font-semibold text-on-surface">Server Rules</h2>
-        </div>
-        <p className="text-xs text-on-surface-variant">
-          Please read and accept the rules before participating in this server.
-        </p>
-        <div className="px-4 py-4 bg-surface-container border border-outline-variant/20 rounded-lg text-sm text-on-surface whitespace-pre-wrap leading-relaxed max-h-80 overflow-y-auto">
-          {rulesText}
-        </div>
-        <button
-          onClick={onAccept}
-          className="w-full py-2.5 primary-glow hover:brightness-110 text-on-surface font-medium text-sm rounded-lg transition-colors"
-        >
-          I accept the rules
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /** localStorage key for tracking rules acceptance per server per user. */
 function rulesAcceptedKey(userId: string, serverId: string) {
   return `concord_rules_accepted:${userId}:${serverId}`;
-}
-
-/** Lightweight error boundary that silently recovers instead of hiding content. */
-class SilentBoundary extends Component<{ children: ReactNode; fallback?: ReactNode }, { ok: boolean }> {
-  state = { ok: true };
-  static getDerivedStateFromError() { return { ok: false }; }
-  componentDidCatch(err: Error) {
-    console.warn("SilentBoundary caught:", err.message);
-    setTimeout(() => this.setState({ ok: true }), 100);
-  }
-  render() {
-    return this.state.ok ? this.props.children : (this.props.fallback ?? null);
-  }
 }
 
 type MobileView = "sources" | "servers" | "channels" | "chat" | "dms" | "settings";
@@ -201,6 +177,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   useNotifications();
   const [roomDiagnostics, setRoomDiagnostics] = useState<RoomDiagnostics | null>(null);
   const [roomDiagnosticsLoading, setRoomDiagnosticsLoading] = useState(false);
+  const [diagnosticsPopupOpen, setDiagnosticsPopupOpen] = useState(false);
 
   // INS-020 iPad layout — when running on an iPad (native Tauri iOS
   // build or web browser with iPad-class touch screen), force the
@@ -226,6 +203,28 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const [statsTarget, setStatsTarget] = useState<{ type: "user" } | { type: "server"; serverId: string } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [placeBannerDismissed, setPlaceBannerDismissed] = useState(false);
+  // INS-070 — admin gate + Extension Library modal visibility.
+  const [isInstanceAdmin, setIsInstanceAdmin] = useState(false);
+  const [extensionCatalogOpen, setExtensionCatalogOpen] = useState(false);
+  useEffect(() => {
+    if (!accessToken) {
+      setIsInstanceAdmin(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { checkAdmin } = await import("../../api/concord");
+        const result = await checkAdmin(accessToken);
+        if (!cancelled) setIsInstanceAdmin(result.is_admin);
+      } catch {
+        if (!cancelled) setIsInstanceAdmin(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken]);
 
   // INS-044: Multi-tab browse. Each BrowseTab has its own page-depth
   // position (sources → servers → channels → chat). Overlay views
@@ -274,59 +273,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     }
   }, []);
 
-  const _addBrowseTab = useCallback(() => {
-    const outServerId = useServerStore.getState().activeServerId;
-    const outChannelId = useServerStore.getState().activeChannelId;
-    const outDmActive = useDMStore.getState().dmActive;
-    const outDmRoomId = useDMStore.getState().activeDMRoomId;
-    const id = newTabId();
-    setTabState((prev) => ({
-      tabs: [
-        ...prev.tabs.map((t) =>
-          t.id === prev.activeId
-            ? { ...t, serverId: outServerId, channelId: outChannelId, dmActive: outDmActive, dmRoomId: outDmRoomId }
-            : t,
-        ),
-        { id, pageView: "sources", serverId: null, channelId: null, dmActive: false, dmRoomId: null },
-      ],
-      activeId: id,
-    }));
-    // New tab starts fresh — no server or channel selected
-    useServerStore.setState({ activeServerId: null, activeChannelId: null });
-    useDMStore.setState({ dmActive: false, activeDMRoomId: null });
-    setOverlayView(null);
-  }, []);
-
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _switchToTab = useCallback((targetId: string) => {
-    const outServerId = useServerStore.getState().activeServerId;
-    const outChannelId = useServerStore.getState().activeChannelId;
-    const outDmActive = useDMStore.getState().dmActive;
-    const outDmRoomId = useDMStore.getState().activeDMRoomId;
-    setTabState((prev) => {
-      if (!prev.tabs.find((t) => t.id === targetId)) return prev;
-      const targetTab = prev.tabs.find((t) => t.id === targetId)!;
-      // Restore incoming tab's saved navigation state
-      useServerStore.setState({ activeServerId: targetTab.serverId, activeChannelId: targetTab.channelId });
-      useDMStore.setState({ dmActive: targetTab.dmActive, activeDMRoomId: targetTab.dmRoomId });
-      return {
-        tabs: prev.tabs.map((t) =>
-          t.id === prev.activeId
-            ? { ...t, serverId: outServerId, channelId: outChannelId, dmActive: outDmActive, dmRoomId: outDmRoomId }
-            : t,
-        ),
-        activeId: targetId,
-      };
-    });
-    setOverlayView(null);
-  }, []);
-
-  // Reserved for INS-044 multitab wiring; reference to satisfy noUnusedLocals
-  // until the new mobile pill row is wired in.
-  void _addBrowseTab;
-  void _switchToTab;
-  void _MobilePillRow;
-
   // Mobile account sheet (T003)
   const [accountSheetOpen, setAccountSheetOpen] = useState(false);
   const [desktopAccountPopoverOpen, setDesktopAccountPopoverOpen] = useState(false);
@@ -339,6 +285,12 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // App.tsx escape hatch so the hollow-shell boot can open this
   // modal from outside; internally, tiles call `setAddSourceOpen`.
   const [addSourceOpen, setAddSourceOpen] = useState(false);
+  // Pending initial-screen request from the Connections tab (or any
+  // other deep-link surface). Cleared when the modal mounts so a later
+  // open without a request defaults back to "pick".
+  const [addSourceInitialScreen, setAddSourceInitialScreen] = useState<
+    string | null
+  >(null);
   const openAddSource = useCallback(() => {
     setAddSourceOpen(true);
     onAddSource?.();
@@ -351,12 +303,15 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   // Settings panel's Connections tab can request the Add-Source modal
   // (e.g. "Connect another Concord instance"). Consume and open the
-  // modal whenever a pending request shows up.
+  // modal whenever a pending request shows up. The requested screen is
+  // forwarded to the modal as its initial state so e.g. "pair-peer"
+  // deep-links straight into the scanner UI.
   const pendingAddSourceScreen = useSettingsStore((s) => s.pendingAddSourceScreen);
   const consumeAddSourceRequest = useSettingsStore((s) => s.consumeAddSourceRequest);
   useEffect(() => {
     if (pendingAddSourceScreen !== null) {
-      consumeAddSourceRequest();
+      const requested = consumeAddSourceRequest();
+      setAddSourceInitialScreen(requested);
       setAddSourceOpen(true);
       onAddSource?.();
     }
@@ -379,6 +334,71 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     },
     [],
   );
+
+  // Local source — when active, ChatLayout renders the porch through
+  // its existing server/channel/message panes (same visual primitives
+  // as Matrix, Discord, Mozilla, Concord federation sources). The
+  // data backing the panes is `usePorchStore`, not matrix-js-sdk —
+  // honest source-kind-aware composition rather than a Matrix shim.
+  //
+  // See:
+  //   - client/src/components/local/LocalServerSidebar.tsx
+  //   - client/src/components/local/LocalChannelSidebar.tsx
+  //   - client/src/components/local/LocalChatPane.tsx
+  const [localActive, setLocalActive] = useState(false);
+  const porchSelectedChannel = usePorchStore((s) =>
+    s.channels.find((c) => c.id === s.selectedChannelId) ?? null,
+  );
+  const porchVanityName = useInstanceNameStore((s) => s.name);
+  const porchLabel = porchVanityName.trim() || "porch";
+  const loadPorchChannels = usePorchStore((s) => s.loadChannels);
+  // F1b-IMPL — hydrate the persistent home-server name on first
+  // ChatLayout mount so the home tile in LocalServerSidebar renders
+  // the user-set label from first paint. `load()` is idempotent and
+  // a no-op on web (no persistent SQLite layer there).
+  const loadHomeServerName = useHomeServerNameStore((s) => s.load);
+  useEffect(() => {
+    void loadHomeServerName();
+  }, [loadHomeServerName]);
+  const openLocal = useCallback(() => {
+    // Activate the local source. Clear DM + Matrix server selection
+    // so the existing panes don't try to render a stale Matrix room
+    // beneath the porch surface. The Matrix tiles still highlight when
+    // tapped — see the Matrix-tile click handlers in ServerSidebar /
+    // SourcesPanel, which clear `localActive` via the effects below.
+    setLocalActive(true);
+    useDMStore.getState().setDMActive(false);
+    useServerStore.setState({ activeServerId: null, activeChannelId: null });
+    // Kick a channel-list load so the channel column populates as soon
+    // as the user lands. `loadChannels` is idempotent + safe on web.
+    void loadPorchChannels();
+  }, [loadPorchChannels]);
+
+  // Clear localActive whenever a Matrix source / DM / server becomes
+  // active — keeps the porch tile and Matrix tiles mutually exclusive
+  // in the active-source semantics.
+  useEffect(() => {
+    if (activeServerId || activeChannelId || dmActive) {
+      setLocalActive(false);
+    }
+  }, [activeServerId, activeChannelId, dmActive]);
+
+  // Auto-activate the porch on first ChatLayout mount when nothing
+  // else is selected — the porch IS the device's default surface, so
+  // requiring the user to click the home tile just to see it is wrong.
+  // Skips when any external source / DM is already active (returning
+  // visitors keep their last selection) and skips on web (the porch
+  // doesn't exist there).
+  const autoActivatedRef = useRef(false);
+  useEffect(() => {
+    if (autoActivatedRef.current) return;
+    const isNativeApp =
+      typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    if (!isNativeApp) return;
+    if (activeServerId || activeChannelId || dmActive) return;
+    autoActivatedRef.current = true;
+    openLocal();
+  }, [activeServerId, activeChannelId, dmActive, openLocal]);
 
   // Resizable channel sidebar (desktop only)
   const SIDEBAR_MIN = 160;
@@ -488,57 +508,34 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeServerId, userId, accessToken, dmActive]);
+  // Friendly empty-channel placeholder. The verbose diagnostics block
+  // used to render here directly, which made every empty room look
+  // like an error report. Now the channel just invites the user to
+  // post, and a small wrench button opens the diagnostics in a popup
+  // for the case where the room actually IS broken.
+  const hasDiagnosticsPayload = roomDiagnosticsLoading || !!roomDiagnostics;
   const emptyState = useMemo(() => {
     if (!activeRoomId) return undefined;
-    if (roomDiagnosticsLoading) {
-      return (
-        <div className="max-w-xl px-6 py-5 rounded-lg border border-outline-variant/20 bg-surface-container text-left">
-          <p className="text-sm font-medium text-on-surface">No messages loaded yet</p>
-          <p className="mt-2 text-xs text-on-surface-variant">
-            Inspecting room binding and homeserver history access for {activeRoomId}.
-          </p>
-        </div>
-      );
-    }
-    if (!roomDiagnostics) return undefined;
     return (
-      <div className="max-w-2xl px-6 py-5 rounded-lg border border-outline-variant/20 bg-surface-container text-left">
-        <p className="text-sm font-semibold text-on-surface">Room diagnostics</p>
-        <p className="mt-2 text-xs text-on-surface-variant break-all">
-          room: {roomDiagnostics.room_id}
+      <div className="flex flex-col items-center gap-3 text-center">
+        <p className="text-base text-on-surface font-body">
+          Be the first to say something!
         </p>
-        <p className="mt-1 text-sm text-on-surface-variant">
-          {roomDiagnostics.summary}
-        </p>
-        <p className="mt-2 text-xs text-on-surface-variant">
-          inference: {roomDiagnostics.inference}
-        </p>
-        <div className="mt-3 space-y-2">
-          {roomDiagnostics.steps.map((step) => (
-            <div
-              key={step.step}
-              className="rounded-md border border-outline-variant/15 bg-surface px-3 py-2"
-            >
-              <div className="flex items-center gap-2 text-xs">
-                <span className={step.ok ? "text-[#4ade80]" : "text-[#f87171]"}>
-                  {step.ok ? "OK" : "FAIL"}
-                </span>
-                <span className="font-medium text-on-surface">{step.step}</span>
-                <span className="text-on-surface-variant">
-                  {step.status ?? "no-status"}
-                </span>
-              </div>
-              {step.detail && (
-                <p className="mt-1 text-[11px] text-on-surface-variant break-all">
-                  {step.detail}
-                </p>
-              )}
-            </div>
-          ))}
-        </div>
+        {hasDiagnosticsPayload && (
+          <button
+            type="button"
+            onClick={() => setDiagnosticsPopupOpen(true)}
+            title="Show room diagnostics"
+            aria-label="Show room diagnostics"
+            className="btn-press flex items-center gap-1 px-2 py-1 rounded-md text-xs text-on-surface-variant/70 hover:text-on-surface hover:bg-surface-container-high transition-colors"
+          >
+            <span className="material-symbols-outlined text-sm" style={{ fontSize: "14px" }}>build</span>
+            Diagnostics
+          </button>
+        )}
       </div>
     );
-  }, [activeRoomId, roomDiagnostics, roomDiagnosticsLoading]);
+  }, [activeRoomId, hasDiagnosticsPayload]);
   const settingsOpen = useSettingsStore((s) => s.settingsOpen);
   const closeSettings = useSettingsStore((s) => s.closeSettings);
   const serverSettingsId = useSettingsStore((s) => s.serverSettingsId);
@@ -618,6 +615,13 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const extensionMenuOpen = useExtensionStore((s) => s.menuOpen);
   const setExtensionMenuOpen = useExtensionStore((s) => s.setMenuOpen);
   const extensionCatalog = useExtensionStore((s) => s.catalog);
+
+  // INS-066-FUP-A: bridge between matrix-js-sdk client + room store and the
+  // <ExtensionEmbed/> SDK ports. This is the call-site wiring W5/W6 deferred —
+  // without it, `subscribeRoomEvents` + `onSendStateEvent` are undefined and
+  // the SDK channels graceful no-op. With it, real Matrix events round-trip
+  // through the iframe boundary.
+  const extensionBridge = useExtensionRoomBridge(client, activeChannelId);
 
   // Extension / chat vertical split resize (desktop)
   // The legacy "extension on top, chat below" vertical split state
@@ -840,33 +844,40 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-surface">
               <div className="flex min-h-0 flex-1">
                 <div className="w-[41px] mr-[2px] flex-shrink-0">
-                  <SilentBoundary>
+                  <SectionBoundary>
                     <SourcesPanel
                       onAddSource={openAddSource}
                       onSourceOpen={openSourceBrowser}
+                      onLocalOpen={openLocal}
                       onExplore={openExplore}
                     />
-                  </SilentBoundary>
+                  </SectionBoundary>
                 </div>
 
-                <SilentBoundary>
-                  <ServerSidebar />
-                </SilentBoundary>
+                <SectionBoundary>
+                  {localActive ? <LocalServerSidebar /> : <ServerSidebar />}
+                </SectionBoundary>
 
                 {/* Channel / DM sidebar */}
                 <div className="flex min-h-0" style={{ width: sidebarWidth, minWidth: SIDEBAR_MIN, maxWidth: SIDEBAR_MAX }}>
-                  <SilentBoundary>
-                    {dmActive ? <DMSidebar /> : <ChannelSidebar onServerTitleClick={() => {
-                      if (activeServerId) setStatsTarget({ type: "server", serverId: activeServerId });
-                    }} />}
-                  </SilentBoundary>
+                  <SectionBoundary>
+                    {localActive ? (
+                      <LocalChannelSidebar />
+                    ) : dmActive ? (
+                      <DMSidebar />
+                    ) : (
+                      <ChannelSidebar onServerTitleClick={() => {
+                        if (activeServerId) setStatsTarget({ type: "server", serverId: activeServerId });
+                      }} />
+                    )}
+                  </SectionBoundary>
                 </div>
               </div>
 
               {userId && (
-                <SilentBoundary>
+                <SectionBoundary>
                   <UserBar userId={userId} logout={logout} />
-                </SilentBoundary>
+                </SectionBoundary>
               )}
             </div>
 
@@ -929,25 +940,28 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const scrollStripRef = useRef<HTMLDivElement>(null);
   const tabIndicatorRef = useRef<HTMLDivElement>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Programmatic-scroll guard. When `scrollToPanel` runs (state change,
+  // initial sync, page-tab tap), we must NOT let the resulting scroll
+  // events feed back into `setMobileView` via handleScrollSnap. Without
+  // this, joining a voice room would set mobileView=chat → scrollToPanel
+  // smooth → voice connect reflows ChatLayout (VoiceConnectionBar
+  // appears below it) → mid-scroll snap-type re-snaps to nearest →
+  // handleScrollSnap reads scrollLeft≈0 → setMobileView("sources").
+  // Holds the guard for 500ms after every programmatic scroll, which is
+  // long enough for the smooth animation + any reflow snap to settle.
+  const programmaticScrollUntilRef = useRef(0);
   // INS-047: restore the page-depth view when closing settings/DMs
   const prevPageDepthRef = useRef<MobileView>("chat");
-  // INS-042: pill hide/show on chat scroll
-  const [pillHidden, setPillHidden] = useState(false);
-  const pillLastScrollY = useRef(0);
-  const swipeTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   // INS-045: left-edge tap zone overlay
   const [leftEdgeOverlay, setLeftEdgeOverlay] = useState<"servers" | "sources" | null>(null);
   // INS-046: right-edge tap zone overlay
   const [rightEdgeOverlay, setRightEdgeOverlay] = useState(false);
 
-  // INS-043: When a pill tap directly scrolls via behavior:"instant", suppress
-  // the subsequent useEffect re-trigger so we don't double-animate.
-  const skipNextScrollSyncRef = useRef(false);
-
-  const scrollToPanel = useCallback((panelIndex: number, behavior: ScrollBehavior = "smooth") => {
+  const scrollToPanel = useCallback((panelIndex: number, behavior: ScrollBehavior = "instant") => {
     const strip = scrollStripRef.current;
     if (!strip) return;
     const panelWidth = strip.clientWidth;
+    programmaticScrollUntilRef.current = Date.now() + 500;
     strip.scrollTo({ left: panelIndex * panelWidth, behavior });
   }, []);
 
@@ -963,11 +977,13 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   // Debounced scroll handler — updates mobileView when the user finishes
   // scrolling. Uses a 100ms debounce so we don't spam state updates during
-  // the momentum phase.
+  // the momentum phase. Skips the write entirely when the scroll was
+  // programmatic (state-driven), which is what happens on tab taps,
+  // channel selection, voice join, settings open/close, and so on.
   const handleScrollSnap = useCallback(() => {
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
     scrollTimerRef.current = setTimeout(() => {
-      if (skipNextScrollSyncRef.current) { skipNextScrollSyncRef.current = false; return; }
+      if (Date.now() < programmaticScrollUntilRef.current) return;
       const strip = scrollStripRef.current;
       if (!strip) return;
       const panelWidth = strip.clientWidth;
@@ -982,65 +998,14 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     }, 100);
   }, [mobileView]);
 
-  // Sync scroll position when mobileView changes from outside (e.g. pill tap).
-  // INS-043: pill taps set skipNextScrollSyncRef to avoid re-animating.
+  // Sync scroll position when mobileView changes from outside (e.g. page tab tap,
+  // channel select, settings open/close). Always uses `instant` so external
+  // state changes can't be hijacked by a half-finished smooth scroll being
+  // re-snapped during a layout reflow.
   useEffect(() => {
-    if (skipNextScrollSyncRef.current) {
-      skipNextScrollSyncRef.current = false;
-      return;
-    }
     const depthIdx = PAGE_DEPTH.indexOf(mobileView);
     if (depthIdx >= 0) scrollToPanel(depthIdx);
   }, [mobileView, scrollToPanel]);
-
-  // INS-042: hide pill row when scrolling down in chat, show on scroll up / near top.
-  useEffect(() => {
-    if (mobileView !== "chat") {
-      setPillHidden(false);
-      pillLastScrollY.current = 0;
-      return;
-    }
-    const handleScroll = (e: Event) => {
-      const target = e.target as Element;
-      if (!target || !("scrollTop" in target)) return;
-      const scrollTop = (target as Element).scrollTop;
-      if (scrollTop - pillLastScrollY.current > 50) {
-        setPillHidden(true);
-        pillLastScrollY.current = scrollTop;
-      } else if (pillLastScrollY.current - scrollTop > 10 || scrollTop < 100) {
-        setPillHidden(false);
-        pillLastScrollY.current = scrollTop;
-      }
-    };
-    document.addEventListener("scroll", handleScroll, { capture: true });
-    return () => document.removeEventListener("scroll", handleScroll, { capture: true });
-  }, [mobileView]);
-
-  // Swipe-from-bottom-edge to raise pill; swipe down anywhere to hide.
-  // Touch must START in the bottom 20% of the screen to raise the pill —
-  // this prevents chat scroll-up from accidentally triggering it.
-  const handleSwipeStart = useCallback((e: React.TouchEvent) => {
-    const t = e.touches[0];
-    swipeTouchStartRef.current = { x: t.clientX, y: t.clientY };
-  }, []);
-
-  const handleSwipeEnd = useCallback((e: React.TouchEvent) => {
-    if (!swipeTouchStartRef.current) return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - swipeTouchStartRef.current.x;
-    const dy = t.clientY - swipeTouchStartRef.current.y;
-    const startY = swipeTouchStartRef.current.y;
-    swipeTouchStartRef.current = null;
-    if (Math.abs(dy) <= Math.abs(dx)) return; // horizontal — ignore
-    if (dy > 60) {
-      // Swipe down → hide pill (works from anywhere)
-      setPillHidden(true);
-    } else if (dy < -60) {
-      // Swipe up → only raise pill if touch started in bottom 20% of screen
-      const screenH = window.innerHeight;
-      if (startY >= screenH * 0.8) setPillHidden(false);
-    }
-  }, []);
 
   // The chain MUST NOT be broken by any new ancestor introducing overflow:
   // visible or removing min-h-0 — that would let MessageInput's auto-grow
@@ -1048,7 +1013,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   // MessageInput's internal useLayoutEffect caps the textarea at
   // min(viewport*0.4, 8*22px) and switches to internal scroll above that.
   const renderMobileLayout = () => (
-    <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-hidden bg-surface text-on-surface" onTouchStart={handleSwipeStart} onTouchEnd={handleSwipeEnd}>
+    <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-hidden bg-surface text-on-surface">
       {/* Top bar — safe-top lives on the OUTER wrapper so the safe-area
           inset adds transparent padding ABOVE the 48px content bar instead
           of stealing from its interior (which was cutting off icons on
@@ -1198,6 +1163,9 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               openSettings();
               setMobileView("settings");
             }}
+            onExtensionLibrary={
+              isInstanceAdmin ? () => setExtensionCatalogOpen(true) : undefined
+            }
           />
         </div>
         {/* T003: Account button — visible on every mobile view */}
@@ -1222,7 +1190,6 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               <button
                 key={view}
                 onClick={() => {
-                  skipNextScrollSyncRef.current = true;
                   setMobileView(view as MobileView);
                 }}
                 className={`flex-1 flex items-center justify-center gap-1 py-1 text-xs font-label transition-colors ${
@@ -1264,19 +1231,38 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               onSourceSelect={() => scrollToPanel(1)}
               onExplore={openExplore}
               onSourceOpen={openSourceBrowser}
+              onLocalOpen={() => {
+                openLocal();
+                scrollToPanel(1);
+              }}
             />
+
           </div>
           {/* Panel: Servers */}
           <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
-            <SilentBoundary>
-              <ServerSidebar mobile onServerSelect={() => setMobileView("channels")} />
-            </SilentBoundary>
+            <SectionBoundary>
+              {localActive ? (
+                <LocalServerSidebar
+                  mobile
+                  onServerSelect={() => setMobileView("channels")}
+                />
+              ) : (
+                <ServerSidebar mobile onServerSelect={() => setMobileView("channels")} />
+              )}
+            </SectionBoundary>
           </div>
           {/* Panel: Channels */}
           <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
-            <SilentBoundary>
-              <ChannelSidebar mobile onChannelSelect={(chId) => { handleMobileChannelSelect(chId); setMobileView("chat"); }} />
-            </SilentBoundary>
+            <SectionBoundary>
+              {localActive ? (
+                <LocalChannelSidebar
+                  mobile
+                  onChannelSelect={() => setMobileView("chat")}
+                />
+              ) : (
+                <ChannelSidebar mobile onChannelSelect={(chId) => { handleMobileChannelSelect(chId); setMobileView("chat"); }} />
+              )}
+            </SectionBoundary>
           </div>
           {/* Panel: Chat */}
           <div className="w-full h-full flex-shrink-0" style={{ scrollSnapAlign: "start" }}>
@@ -1299,9 +1285,9 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         {/* DMs overlay — absolute so the strip keeps its scroll position */}
         {mobileView === "dms" && (
           <div className="absolute inset-0 z-10 bg-surface">
-            <SilentBoundary>
+            <SectionBoundary>
               <DMSidebar mobile onDMSelect={handleMobileDMSelect} />
-            </SilentBoundary>
+            </SectionBoundary>
           </div>
         )}
 
@@ -1378,18 +1364,10 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         )}
       </div>
 
-      {/* Pill collapse toggle — hidden in settings/DMs where the pill isn't shown */}
-      {!(mobileView === "settings" || mobileView === "dms") && <div className="flex justify-end px-3 flex-shrink-0">
-        <button
-          onClick={() => setPillHidden((h) => !h)}
-          aria-label={pillHidden ? "Show navigation" : "Hide navigation"}
-          className="btn-press w-8 h-4 flex items-center justify-center rounded-t-lg bg-surface-container text-on-surface-variant hover:text-on-surface transition-colors"
-        >
-          <span className="material-symbols-outlined text-sm" style={{ fontSize: "14px" }}>
-            {pillHidden ? "expand_less" : "expand_more"}
-          </span>
-        </button>
-      </div>}
+      {/* Pill collapse toggle removed — swipe up from the bottom edge raises
+          the nav, swipe down anywhere hides it. The dedicated arrow tile
+          was a vestigial second affordance that just clipped to the
+          bottom-right of the page. */}
 
       {/* MobilePillRow removed. It implemented tabs via imperative state-
          swapping on useServerStore / useDMStore — each pill click called
@@ -1458,7 +1436,38 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         {/* Channel / DM header */}
         <div className="h-12 flex items-center px-4 bg-surface-container-low flex-shrink-0 gap-2">
           <div className="flex-1 min-w-0 flex items-center">
-            {dmActive && dmConversation ? (
+            {localActive ? (
+              // Local porch header — same shape as the Matrix channel
+              // header (hashmark icon + channel name) so the visual
+              // primitive is identical.
+              <div className="flex items-center gap-3 min-w-0">
+                <h2
+                  data-testid="local-chat-header"
+                  className="font-headline font-semibold truncate"
+                >
+                  <span className="text-on-surface-variant mr-1">#</span>
+                  {porchSelectedChannel?.name ?? porchLabel}
+                </h2>
+                {showInlineAccountBanner && (
+                  <DesktopAccountButton
+                    desktopAccountRef={desktopAccountRef}
+                    open={desktopAccountPopoverOpen}
+                    userId={userId}
+                    accessToken={accessToken}
+                    onToggle={() => setDesktopAccountPopoverOpen((open) => !open)}
+                    onClose={() => setDesktopAccountPopoverOpen(false)}
+                    onOpenSettings={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      openSettings("profile");
+                    }}
+                    onOpenStats={() => {
+                      setDesktopAccountPopoverOpen(false);
+                      setStatsTarget({ type: "user" });
+                    }}
+                  />
+                )}
+              </div>
+            ) : dmActive && dmConversation ? (
               <div className="flex items-center gap-3 min-w-0">
                 <span className="material-symbols-outlined text-on-surface-variant text-base">chat_bubble</span>
                 <DMHeaderName userId={dmConversation.other_user_id} />
@@ -1555,7 +1564,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               <span className="text-on-surface-variant font-body">
                 {!syncing || !serversLoaded ? (
                   <span className="flex items-center gap-2">
-                    <span className="inline-block w-3 h-3 border-2 border-on-surface-variant border-t-primary rounded-full animate-spin" />
+                    <BringingUpSplash size="inline" />
                     {!syncing ? "Connecting..." : "Loading servers..."}
                   </span>
                 ) : servers.length === 0 ? (
@@ -1603,6 +1612,9 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               onStats={() => setStatsTarget({ type: "user" })}
               onBug={() => setShowBugReport(true)}
               onSettings={() => openSettings()}
+              onExtensionLibrary={
+                isInstanceAdmin ? () => setExtensionCatalogOpen(true) : undefined
+              }
             />
             <TopBarIconButton
               icon={sidebarCollapsed ? "left_panel_open" : "left_panel_close"}
@@ -1638,6 +1650,11 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
 
   // Shared chat/voice content
   const renderChatContent = () => {
+    // Local porch chat — reuses MessageList + MessageInput so the
+    // visual surface matches every other server source.
+    if (localActive) {
+      return <LocalChatPane />;
+    }
     // DM chat
     if (dmActive && activeDMRoomId && dmConversation) {
       return (
@@ -1689,7 +1706,7 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
         <div className="flex-1 flex flex-col min-h-0">
           {!roomReady && (
             <div className="px-4 py-3 bg-primary/10 border-b border-primary/20 flex items-center gap-2 flex-shrink-0">
-              <span className="inline-block w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              <BringingUpSplash size="inline" />
               <span className="text-sm text-on-surface-variant">Loading room…</span>
             </div>
           )}
@@ -1777,6 +1794,23 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
               hostUserId={userId ?? ""}
               isHost={false}
               onStop={handleStopAppChannel}
+              // INS-066-FUP-A: wire SDK channels to live matrix-js-sdk room.
+              // `manifestPermissions` gates concord:state_event delivery
+              // and extension:send_state_event acceptance fail-closed —
+              // legacy static-catalog entries surface as `[]`, so they
+              // can neither receive nor send state events without an
+              // explicit manifest declaration. `roomId` + bridge come
+              // from the active matrix room; if either is missing the
+              // shell silently degrades to no-op (graceful path tested
+              // in state_event_roundtrip).
+              manifestPermissions={appExt.permissions ?? []}
+              {...(activeChannelId ? { roomId: activeChannelId } : {})}
+              {...(extensionBridge
+                ? {
+                    subscribeRoomEvents: extensionBridge.subscribeRoomEvents,
+                    onSendStateEvent: extensionBridge.onSendStateEvent,
+                  }
+                : {})}
             />
           </div>
         );
@@ -1818,6 +1852,11 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
             roomId={activeChannelId}
             channelName={activeChannel.name}
             serverId={activeServerId!}
+            onOpenSettings={(tab) => {
+              if (PAGE_DEPTH.includes(mobileView)) prevPageDepthRef.current = mobileView;
+              openSettings(tab);
+              setMobileView("settings");
+            }}
           />
         );
       }
@@ -1862,12 +1901,10 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
     return (
       <div className="flex-1 flex items-center justify-center p-8">
         {!syncing || !serversLoaded ? (
-          <div className="flex flex-col items-center gap-3">
-            <span className="inline-block w-6 h-6 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
-            <p className="text-on-surface-variant text-sm font-body">
-              {!syncing ? "Connecting..." : "Loading your servers..."}
-            </p>
-          </div>
+          <BringingUpSplash
+            size="compact"
+            status={!syncing ? "Connecting…" : "Loading your servers…"}
+          />
         ) : servers.length === 0 ? (
           <OnboardingGuide />
         ) : (
@@ -1889,19 +1926,19 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
   const renderTVLayout = () => (
     <div className="h-full w-full min-h-0 min-w-0 flex overflow-hidden bg-surface text-on-surface tv-layout" data-concord-layout="tv">
       {/* Server sidebar — TV: icon-only rail with focus targets */}
-      <SilentBoundary>
+      <SectionBoundary>
         <div data-focus-group="tv-main">
           <ServerSidebar />
         </div>
-      </SilentBoundary>
+      </SectionBoundary>
 
       {/* Channel sidebar */}
       <div className="flex min-h-0 tv-channel-sidebar" style={{ width: 320, minWidth: 200 }}>
-        <SilentBoundary>
+        <SectionBoundary>
           <div className="w-full" data-focus-group="tv-main">
             {dmActive ? <DMSidebar /> : <ChannelSidebar />}
           </div>
-        </SilentBoundary>
+        </SectionBoundary>
       </div>
 
       {/* Main content */}
@@ -1982,9 +2019,14 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
       {/* INS-020: Add Source modal — shared between mobile + desktop native */}
       {addSourceOpen && (
         <AddSourceModal
-          onClose={() => setAddSourceOpen(false)}
+          initialScreen={addSourceInitialScreen}
+          onClose={() => {
+            setAddSourceOpen(false);
+            setAddSourceInitialScreen(null);
+          }}
           onSourceAdded={() => {
             setAddSourceOpen(false);
+            setAddSourceInitialScreen(null);
             if (scrollStripRef.current) scrollToPanel(1);
           }}
         />
@@ -1999,12 +2041,93 @@ export function ChatLayout({ onAddSource }: { onAddSource?: () => void } = {}) {
           />
         );
       })()}
+      {/* INS-070: admin-only Extension Library modal — surfaced from
+          the Tools dropdown so installs are one click instead of
+          two-clicks-deep in Settings → Admin → Extensions. */}
+      {extensionCatalogOpen && (
+        <ExtensionCatalogModal onClose={() => setExtensionCatalogOpen(false)} />
+      )}
+      {/* Room diagnostics popup — opened from the small wrench button
+          in the empty-channel placeholder. The verbose binding /
+          history-access report no longer renders inline; only users
+          who actually want to debug a broken room see it. */}
+      {diagnosticsPopupOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setDiagnosticsPopupOpen(false)}
+        >
+          <div
+            className="relative max-w-2xl w-full max-h-[80vh] overflow-y-auto rounded-2xl border border-outline-variant/30 bg-surface-container shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 flex items-center justify-between px-5 py-3 border-b border-outline-variant/20 bg-surface-container">
+              <h3 className="text-base font-headline font-semibold text-on-surface">Room diagnostics</h3>
+              <button
+                type="button"
+                onClick={() => setDiagnosticsPopupOpen(false)}
+                aria-label="Close diagnostics"
+                className="text-on-surface-variant hover:text-on-surface transition-colors"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="px-5 py-4">
+              {roomDiagnosticsLoading && (
+                <div className="text-left">
+                  <p className="text-sm font-medium text-on-surface">No messages loaded yet</p>
+                  <p className="mt-2 text-xs text-on-surface-variant">
+                    Inspecting room binding and homeserver history access for {activeRoomId}.
+                  </p>
+                </div>
+              )}
+              {!roomDiagnosticsLoading && roomDiagnostics && (
+                <div className="text-left">
+                  <p className="text-xs text-on-surface-variant break-all">
+                    room: {roomDiagnostics.room_id}
+                  </p>
+                  <p className="mt-1 text-sm text-on-surface-variant">
+                    {roomDiagnostics.summary}
+                  </p>
+                  <p className="mt-2 text-xs text-on-surface-variant">
+                    inference: {roomDiagnostics.inference}
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {roomDiagnostics.steps.map((step) => (
+                      <div
+                        key={step.step}
+                        className="rounded-md border border-outline-variant/15 bg-surface px-3 py-2"
+                      >
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className={step.ok ? "text-[#4ade80]" : "text-[#f87171]"}>
+                            {step.ok ? "OK" : "FAIL"}
+                          </span>
+                          <span className="font-medium text-on-surface">{step.step}</span>
+                          <span className="text-on-surface-variant">
+                            {step.status ?? "no-status"}
+                          </span>
+                        </div>
+                        {step.detail && (
+                          <p className="mt-1 text-[11px] text-on-surface-variant break-all">
+                            {step.detail}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
 
 /* ── Source Server Browser ── */
-function SourceServerBrowser({
+// Exported (in addition to its primary use inside ChatLayout below) so
+// INS-068 cross-instance directory tests can mount it standalone.
+export function SourceServerBrowser({
   source,
   onClose,
 }: {
@@ -2049,7 +2172,10 @@ function SourceServerBrowser({
   );
 
   useEffect(() => {
-    if (!source || source.platform !== "matrix" || source.authFlows?.length) return;
+    // INS-068: Concord-instance sources also expose a Matrix public-room
+    // directory (their homeserver is Matrix-compatible). The only
+    // platform that has no Matrix room directory at all is Reticulum.
+    if (!source || source.platform === "reticulum" || source.authFlows?.length) return;
     let cancelled = false;
     import("../../api/matrix")
       .then(({ fetchLoginFlows }) => fetchLoginFlows(source.homeserverUrl))
@@ -2063,7 +2189,9 @@ function SourceServerBrowser({
   }, [source, updateSource]);
 
   const loadSourceDirectory = useCallback(async () => {
-    if (!source || source.platform !== "matrix") return;
+    // INS-068: skip only Reticulum — concord/matrix both have a Matrix
+    // public-room directory the federated `publicRooms` call can target.
+    if (!source || source.platform === "reticulum") return;
     setPublicRoomsLoading(true);
     setPublicRoomsError(null);
     setAuthRequired(false);
@@ -2113,7 +2241,9 @@ function SourceServerBrowser({
   }, [source, updateSource, userId]);
 
   useEffect(() => {
-    if (source?.platform !== "matrix") return;
+    // INS-068: load directory for both concord and matrix sources;
+    // skip only reticulum (no Matrix directory).
+    if (!source || source.platform === "reticulum") return;
     loadSourceDirectory();
   }, [source?.id, source?.platform, loadSourceDirectory]);
 
@@ -2371,223 +2501,6 @@ function SourceServerBrowser({
   );
 }
 
-function formatVoiceSummary(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  return `${hours}h ${minutes}m`;
-}
-
-function UserStatsPopover({
-  accessToken,
-  userId,
-  onClose,
-  onOpenSettings,
-  onOpenStats,
-}: {
-  accessToken: string | null;
-  userId: string;
-  onClose: () => void;
-  onOpenSettings: () => void;
-  onOpenStats: () => void;
-}) {
-  const [stats, setStats] = useState<UserStats | null>(null);
-  const [loading, setLoading] = useState(() => Boolean(accessToken));
-
-  useEffect(() => {
-    if (!accessToken) return;
-    let cancelled = false;
-    setLoading(true);
-    getMyStats(accessToken, 14)
-      .then((result) => {
-        if (!cancelled) setStats(result);
-      })
-      .catch(() => {
-        if (!cancelled) setStats(null);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [accessToken]);
-
-  const username = userId.split(":")[0].replace("@", "");
-  const activeSinceLabel = stats?.active_since
-    ? new Date(stats.active_since).toLocaleDateString(undefined, {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      })
-    : "No activity yet";
-
-  return (
-    <div className="absolute right-0 top-full mt-2 z-40 w-72 glass-panel rounded-2xl border border-outline-variant/20 p-4 shadow-2xl">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-label uppercase tracking-widest text-on-surface-variant/70">
-            Account
-          </p>
-          <p className="mt-1 text-sm font-headline font-semibold text-on-surface truncate">
-            {username}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="btn-press w-8 h-8 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
-          aria-label="Close account panel"
-        >
-          <span className="material-symbols-outlined text-base">close</span>
-        </button>
-      </div>
-
-      <div className="mt-4 rounded-xl bg-surface-container-high/60 border border-outline-variant/10 p-3">
-        {loading ? (
-          <p className="text-xs text-on-surface-variant">Loading your stats…</p>
-        ) : (
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-lg bg-surface-container px-3 py-2">
-                <p className="text-[10px] uppercase tracking-wide text-on-surface-variant/70">
-                  Messages
-                </p>
-                <p className="mt-1 text-lg font-semibold text-on-surface">
-                  {stats?.total_messages ?? 0}
-                </p>
-              </div>
-              <div className="rounded-lg bg-surface-container px-3 py-2">
-                <p className="text-[10px] uppercase tracking-wide text-on-surface-variant/70">
-                  Voice
-                </p>
-                <p className="mt-1 text-lg font-semibold text-on-surface">
-                  {formatVoiceSummary(stats?.total_voice_seconds ?? 0)}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center justify-between gap-3 text-xs">
-              <span className="text-on-surface-variant">Active since</span>
-              <span className="text-on-surface">{activeSinceLabel}</span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="mt-3 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          className="flex-1 px-3 py-2 rounded-xl bg-primary text-on-primary text-sm font-medium hover:bg-primary/90 transition-colors"
-        >
-          Open settings
-        </button>
-        <button
-          type="button"
-          onClick={onOpenStats}
-          className="px-3 py-2 rounded-xl bg-surface-container-high text-on-surface text-sm font-medium hover:bg-surface-container-highest transition-colors"
-        >
-          Full stats
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function DesktopAccountButton({
-  desktopAccountRef,
-  open,
-  userId,
-  accessToken,
-  onToggle,
-  onClose,
-  onOpenSettings,
-  onOpenStats,
-}: {
-  desktopAccountRef: { current: HTMLDivElement | null };
-  open: boolean;
-  userId: string | null;
-  accessToken: string | null;
-  onToggle: () => void;
-  onClose: () => void;
-  onOpenSettings: () => void;
-  onOpenStats: () => void;
-}) {
-  if (!userId) return null;
-  return (
-    <div ref={desktopAccountRef} className="relative ml-2 flex-shrink-0">
-      <button
-        onClick={onToggle}
-        className="flex items-center gap-1.5 hover:bg-surface-container-high rounded-lg px-2 py-1 transition-colors"
-        title="Account"
-      >
-        <Avatar userId={userId} size="sm" showPresence />
-        <span className="text-xs text-on-surface-variant truncate max-w-[80px]">
-          {userId.split(":")[0].replace("@", "")}
-        </span>
-        <span className="material-symbols-outlined text-sm text-on-surface-variant/70">
-          expand_more
-        </span>
-      </button>
-      {open && (
-        <UserStatsPopover
-          accessToken={accessToken}
-          userId={userId}
-          onClose={onClose}
-          onOpenSettings={onOpenSettings}
-          onOpenStats={onOpenStats}
-        />
-      )}
-    </div>
-  );
-}
-
-/* ── Account Sheet (Mobile, T003) ── */
-function AccountSheet({
-  userId,
-  onClose,
-}: {
-  userId: string | null;
-  onClose: () => void;
-}) {
-  const handleLogout = () => {
-    onClose();
-    useAuthStore.getState().logout();
-  };
-  const username = userId?.split(":")[0].replace("@", "") ?? "Signed in";
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-black/60 backdrop-blur-sm animate-[fadeIn_0.2s_ease-out]"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="glass-panel w-full max-w-sm rounded-t-2xl md:rounded-2xl p-5 m-0 md:m-4 animate-[fadeSlideUp_0.25s_ease-out] safe-bottom">
-        <div className="flex items-center gap-3 mb-4 min-w-0">
-          <div className="w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center flex-shrink-0">
-            <span className="material-symbols-outlined text-on-surface-variant">person</span>
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs text-on-surface-variant font-label">Signed in as</p>
-            <p className="text-sm font-headline font-semibold text-on-surface break-all min-w-0">{username}</p>
-          </div>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="btn-press w-9 h-9 flex items-center justify-center rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
-          >
-            <span className="material-symbols-outlined text-base">close</span>
-          </button>
-        </div>
-        <button
-          onClick={handleLogout}
-          className="w-full px-4 py-3 rounded-xl text-error border border-error/30 hover:bg-error/10 transition-colors text-sm font-label font-medium min-h-[44px]"
-        >
-          Logout
-        </button>
-      </div>
-    </div>
-  );
-}
 
 /* ── Mobile Nav Items (shared by pill row + full sheet) ── */
 // Page-depth hierarchy for swipe navigation. Swiping left goes deeper,
@@ -2603,146 +2516,6 @@ const PAGE_PILL_META: Record<string, { icon: string; label: string }> = {
   chat: { icon: "forum", label: "Chat" },
 };
 
-/* ── Mobile Pill Row (INS-016 → INS-020 → INS-044 redesign) ──
-   Layout: [+] [browse-tab-1] [browse-tab-2...] [⚡ Actions] [💬 DMs] [⚙️ Settings]
-   The + button creates a new independent browse tab starting at the welcome page.
-   Each browse tab shows the page-depth icon for that tab's current position.
-   Tapping a tab switches to it (clearing any overlay). Voice pill inserts
-   dynamically when in a voice call. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function _MobilePillRow({
-  active,
-  onNavigate,
-  pageDepth: _pageDepth,
-  voiceActive,
-  voiceChannelName,
-  onVoiceReturn,
-  browseTabs,
-  activeTabId,
-  onAddTab,
-  onSwitchTab,
-  hidden,
-}: {
-  active: MobileView;
-  onNavigate: (view: MobileView) => void;
-  pageDepth: MobileView;
-  voiceActive?: boolean;
-  voiceChannelName?: string;
-  onVoiceReturn?: () => void;
-  /** INS-044: the full list of open browse tabs. */
-  browseTabs?: BrowseTab[];
-  /** INS-044: the ID of the currently-active tab. */
-  activeTabId?: string;
-  /** INS-044: callback to open a new browse tab. */
-  onAddTab?: () => void;
-  /** INS-044: callback to switch to an existing tab. */
-  onSwitchTab?: (id: string) => void;
-  /** INS-042: hide the pill row (e.g. when scrolling down in chat). */
-  hidden?: boolean;
-}) {
-  const isOnPage = PAGE_DEPTH.includes(active);
-  const tabs = browseTabs ?? [];
-
-  // Fixed right-hand pills: [💬 DMs] (+ optional Voice)
-  // Settings moved to top bar (INS-040). Actions removed (INS-041).
-  const rightPills: { key: string; icon: string; label: string; isActive: boolean; onClick: () => void }[] = [
-    ...(voiceActive
-      ? [{
-          key: "voice",
-          icon: "mic",
-          label: voiceChannelName ?? "Voice",
-          isActive: false,
-          onClick: () => onVoiceReturn?.(),
-        }]
-      : []),
-    {
-      key: "dms",
-      icon: "chat_bubble",
-      label: "DMs",
-      isActive: active === "dms",
-      onClick: () => onNavigate("dms"),
-    },
-  ];
-
-  return (
-    <div className={`concord-mobile-nav-wrap safe-bottom flex-shrink-0 transition-all duration-300 overflow-hidden ${hidden ? "max-h-0 opacity-0 pointer-events-none" : "max-h-24"}`}>
-      <nav
-        className="concord-mobile-pill-row mx-3 mb-2 rounded-full relative flex items-center gap-1 px-2 py-1.5"
-        aria-label="Mobile navigation"
-      >
-        {/* + button — opens a new browse tab */}
-        <button
-          type="button"
-          onClick={onAddTab}
-          aria-label="New tab"
-          className="concord-mobile-pill flex items-center justify-center min-h-[44px] min-w-[36px] h-9 w-9 flex-shrink-0 rounded-full active:scale-95 transition-all duration-150 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/40"
-        >
-          <span className="material-symbols-outlined text-lg">add</span>
-        </button>
-
-        {/* Browse tabs — flex-1 so they share available space equally */}
-        <div className="flex flex-1 min-w-0 gap-1">
-          {tabs.map((tab) => {
-            const isActiveTab = tab.id === activeTabId && isOnPage;
-            const tabMeta = PAGE_PILL_META[tab.pageView] ?? PAGE_PILL_META.servers;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => onSwitchTab?.(tab.id)}
-                aria-label={`Browse tab: ${tabMeta.label}`}
-                aria-current={isActiveTab ? "page" : undefined}
-                className={`concord-mobile-pill relative flex items-center justify-center min-h-[44px] min-w-[36px] h-9 flex-1 rounded-full active:scale-95 transition-all duration-150 ${
-                  isActiveTab
-                    ? "concord-mobile-pill-active text-on-surface"
-                    : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/40"
-                }`}
-              >
-                <span
-                  className="material-symbols-outlined text-lg transition-all duration-200"
-                  style={
-                    isActiveTab
-                      ? { fontVariationSettings: '"FILL" 1, "wght" 600, "GRAD" 0, "opsz" 24' }
-                      : undefined
-                  }
-                >
-                  {tabMeta.icon}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Right-hand fixed pills: Actions, DMs, Settings (+ optional Voice) */}
-        {rightPills.map(({ key, icon, label, isActive, onClick }) => (
-          <button
-            key={key}
-            type="button"
-            onClick={onClick}
-            aria-label={label}
-            aria-current={isActive ? "page" : undefined}
-            className={`concord-mobile-pill relative flex items-center justify-center min-h-[44px] min-w-[44px] h-9 w-11 flex-shrink-0 rounded-full active:scale-95 transition-all duration-150 ${
-              isActive
-                ? "concord-mobile-pill-active text-on-surface"
-                : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/40"
-            }`}
-          >
-            <span
-              className="material-symbols-outlined text-lg transition-all duration-200"
-              style={
-                isActive
-                  ? { fontVariationSettings: '"FILL" 1, "wght" 600, "GRAD" 0, "opsz" 24' }
-                  : undefined
-              }
-            >
-              {icon}
-            </span>
-          </button>
-        ))}
-      </nav>
-    </div>
-  );
-}
 
 // ActionsPanel and QuickActionButton removed (INS-041).
 
@@ -2752,24 +2525,57 @@ function _MobilePillRow({
    Step 2: Validate token against the instance.
    Step 3: Show login/register form scoped to that instance.
    Step 4: On success, add the source and close. */
-function AddSourceModal({
+export function AddSourceModal({
+  initialScreen,
   onClose,
   onSourceAdded,
 }: {
+  initialScreen?: string | null;
   onClose: () => void;
   onSourceAdded: () => void;
 }) {
   type Screen =
+    | "address"
     | "pick"
     | "concord"
     | "matrix"
     | "matrix-auth"
     | "reticulum"
+    | "pair-peer"
     | "validating"
     | "error";
 
-  const [screen, setScreen] = useState<Screen>("pick");
+  // Only honor an `initialScreen` value that this modal actually owns
+  // (e.g. "pair-peer", "concord", "matrix"). Domain hints like
+  // "matrix.org" or "chat.mozilla.org" are handled by callers as a
+  // shortcut to open the modal — they don't map to a screen here, so we
+  // fall back to "address" (the unified detection screen) for them.
+  // Avoids surfacing an unknown-screen blank state. Feature F2 made
+  // "address" the default landing, with "pick" reachable via the
+  // "More options" link in case the user wants to bypass detection.
+  const KNOWN_SCREENS: ReadonlySet<Screen> = new Set([
+    "address",
+    "pick",
+    "concord",
+    "matrix",
+    "reticulum",
+    "pair-peer",
+  ]);
+  const startScreen: Screen =
+    initialScreen && KNOWN_SCREENS.has(initialScreen as Screen)
+      ? (initialScreen as Screen)
+      : "address";
+  const [screen, setScreen] = useState<Screen>(startScreen);
   const [error, setError] = useState("");
+
+  // Feature F2 — unified address screen. The user types one thing and
+  // we figure out which protocol it is. The detection sub-state lives
+  // beside the existing per-protocol form state so each screen keeps
+  // its own self-contained inputs (back-navigation preserves drafts).
+  const [addressInput, setAddressInput] = useState("");
+  const [detectPhase, setDetectPhase] = useState<
+    "idle" | "inspect" | "probe-concord" | "probe-matrix"
+  >("idle");
 
   // Concord form state
   const [host, setHost] = useState("");
@@ -2823,6 +2629,64 @@ function AddSourceModal({
       });
   }, [onSourceAdded, updateSource]);
 
+  /**
+   * Feature F2 — run unified address detection, then route to the
+   * correct protocol-specific screen. We pre-populate the destination
+   * screen's form state so the user doesn't have to retype the address
+   * (e.g. detecting `matrix.org` lands them in matrix-auth with the
+   * homeserver field already filled). Unknown → fall back to the
+   * legacy picker with the address pre-filled so the user can pick a
+   * protocol manually without losing what they typed.
+   *
+   * Detection is purely a routing step: the actual well-known fetch
+   * + login flow still happens via the existing per-screen handlers
+   * once we land on `concord` / `matrix-auth` / `pair-peer`. This
+   * keeps the wire-level discovery logic in one place (`api/wellKnown`)
+   * and avoids duplicating the well-known parse across two callsites.
+   */
+  const handleDetectAddress = async () => {
+    const trimmed = addressInput.trim();
+    if (!trimmed) return;
+    setDetectPhase("inspect");
+    setScreen("validating");
+    try {
+      const { detectAddressKind } = await import("../../lib/detectAddress");
+      const verdict = await detectAddressKind(trimmed, {
+        onProgress: (phase) => setDetectPhase(phase),
+      });
+      switch (verdict.kind) {
+        case "concord-http":
+          setHost(verdict.host);
+          setToken("");
+          setScreen("concord");
+          break;
+        case "matrix":
+          await handleDiscoverPresetMatrix(verdict.host);
+          break;
+        case "concord-p2p":
+          setScreen("pair-peer");
+          break;
+        case "unknown":
+          // Pre-fill both possible destinations so the manual picker
+          // user just has to click "Concord" or "Matrix" and continue.
+          setHost(verdict.host);
+          setMatrixHost(verdict.host);
+          setError(verdict.detail);
+          setScreen("pick");
+          break;
+        case "invalid":
+          setError(verdict.detail);
+          setScreen("error");
+          break;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Detection failed");
+      setScreen("error");
+    } finally {
+      setDetectPhase("idle");
+    }
+  };
+
   const handleConnectConcord = async () => {
     const trimmed = host.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
     if (!trimmed) { setError("Enter a hostname"); setScreen("error"); return; }
@@ -2849,6 +2713,7 @@ function AddSourceModal({
         status: "connected",
         enabled: true,
         platform: "concord",
+        branding: config.branding,
       });
       onSourceAdded();
     } catch (err) {
@@ -2983,11 +2848,77 @@ function AddSourceModal({
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="w-full sm:max-w-sm sm:mx-4 bg-surface-container rounded-t-2xl sm:rounded-2xl border border-outline-variant/20 shadow-2xl p-4 sm:p-6 max-h-[88vh] overflow-y-auto safe-bottom">
 
+        {/* ── Screen: address (Feature F2 — unified create-server flow) ──
+            One input field. Accepts a hostname, a Matrix domain, a
+            Concord well-known URL, a `concord://peer/` deeplink, a
+            `concord+pair://` URL, a libp2p multiaddr, or a bare peer
+            id. We auto-detect which protocol the address belongs to
+            and route the user to the matching sub-flow behind the
+            scenes — they never have to know which protocol they
+            picked. See `lib/detectAddress.ts` for the precedence
+            order. */}
+        {screen === "address" && (
+          <>
+            <Header title="Add a place" />
+            <div className="space-y-4">
+              <p className="text-xs text-on-surface-variant">
+                You arrive at a "place" and that place has servers you may have access to. Paste an address — a hostname, an invite link, or a peer card — and Concord figures out the rest.
+              </p>
+              <div>
+                <label className="text-xs font-label text-on-surface-variant mb-1.5 block">
+                  Address
+                </label>
+                <input
+                  type="text"
+                  value={addressInput}
+                  onChange={(e) => setAddressInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && addressInput.trim()) {
+                      void handleDetectAddress();
+                    }
+                  }}
+                  placeholder="chat.example.com, matrix.org, concord://peer/…"
+                  data-testid="add-source-address-input"
+                  autoFocus
+                  className="w-full px-3 py-2 bg-surface-container-highest rounded-lg text-sm text-on-surface border border-outline-variant/20 focus:border-primary/50 focus:outline-none"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleDetectAddress()}
+                disabled={!addressInput.trim()}
+                data-testid="add-source-address-continue"
+                className="w-full py-2.5 bg-primary text-on-primary rounded-lg text-sm font-medium disabled:opacity-40 hover:bg-primary/90 transition-colors"
+              >
+                Continue
+              </button>
+              <button
+                type="button"
+                onClick={() => setScreen("pick")}
+                data-testid="add-source-address-more-options"
+                className="w-full text-xs text-on-surface-variant hover:text-on-surface underline-offset-2 hover:underline transition-colors"
+              >
+                More options — pick a protocol manually
+              </button>
+            </div>
+          </>
+        )}
+
         {/* ── Screen: pick ── */}
         {screen === "pick" && (
           <>
-            <Header title="Explore Sources" />
+            <Header title="Explore Sources" onBack={() => setScreen("address")} />
             <div className="space-y-2">
+              {/*
+                "Start / Stop local hosting" sits at the top of the pick
+                screen on Tauri builds only. Web builds hide it entirely
+                (web hosts via Docker, outside the app). Native installs
+                never need account creation — the local porch is implicit
+                — so this control just toggles the embedded servitude
+                daemon. There is no bootstrap wizard path anymore.
+              */}
+              <LocalHostingControl />
+
               <button
                 onClick={() => setScreen("concord")}
                 className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-primary/40 hover:bg-surface-container-high transition-all text-left group"
@@ -3040,6 +2971,22 @@ function AddSourceModal({
                 <div>
                   <p className="text-sm font-medium text-on-surface">Custom Matrix Homeserver</p>
                   <p className="text-xs text-on-surface-variant">Enter any Matrix domain manually</p>
+                </div>
+                <span className="material-symbols-outlined text-on-surface-variant/40 ml-auto group-hover:text-on-surface-variant">chevron_right</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setScreen("pair-peer")}
+                data-testid="add-source-tile-pair-peer"
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-outline-variant/20 hover:border-primary/40 hover:bg-surface-container-high transition-all text-left group"
+              >
+                <div className="w-8 h-8 rounded-lg bg-surface-container-high ring-1 ring-outline-variant/15 flex items-center justify-center flex-shrink-0">
+                  <span className="material-symbols-outlined text-on-surface-variant">hub</span>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-on-surface">Pair a peer</p>
+                  <p className="text-xs text-on-surface-variant">Connect directly to another Concord install via QR, deeplink, or Matrix room.</p>
                 </div>
                 <span className="material-symbols-outlined text-on-surface-variant/40 ml-auto group-hover:text-on-surface-variant">chevron_right</span>
               </button>
@@ -3255,12 +3202,42 @@ function AddSourceModal({
           </>
         )}
 
-        {/* ── Screen: validating ── */}
-        {screen === "validating" && (
-          <div className="flex flex-col items-center gap-3 py-8">
-            <span className="inline-block w-6 h-6 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
-            <p className="text-sm text-on-surface-variant">Connecting…</p>
+        {/* ── Screen: pair-peer (peer pairing flow, added 2026-05-30) ──
+            Re-uses the existing PeerCardScanner which handles camera +
+            paste + matrix-room tabs (the scanner is itself a
+            fixed-inset modal that stacks over the AddSource modal). On
+            a successful pair or explicit close the scanner calls
+            `onClose`, which here fires `onSourceAdded` to dismiss the
+            whole AddSource modal — paired peers persist via the
+            peer-store, not as a sources-store entry, so we don't add a
+            source row. */}
+        {screen === "pair-peer" && (
+          <div data-testid="add-source-screen-pair-peer">
+            <PeerCardScanner onClose={onSourceAdded} />
           </div>
+        )}
+
+        {/* ── Screen: validating ──
+            Shared between Feature F2 detection and the per-protocol
+            login round-trips. When detection is mid-probe we show a
+            phase-specific subtitle so the user knows which protocol
+            is being probed; everything else gets the generic
+            "Connecting…". The BringingUpSplash is mandatory — never
+            invent a new spinner here (see CLAUDE.md). */}
+        {screen === "validating" && (
+          <BringingUpSplash
+            size="compact"
+            status={
+              detectPhase === "probe-concord"
+                ? "Detecting Concord HTTP…"
+                : detectPhase === "probe-matrix"
+                  ? "Detecting Matrix…"
+                  : detectPhase === "inspect"
+                    ? "Detecting…"
+                    : "Connecting…"
+            }
+            testId="add-source-validating-splash"
+          />
         )}
 
         {/* ── Screen: error ── */}
@@ -3283,269 +3260,7 @@ function AddSourceModal({
   );
 }
 
-/**
- * Small pill showing which Concord instance the client is currently
- * connected to (INS-027 follow-up). Resolution order:
- *
- *   1. `serverConfig.config` — set by the first-launch server-picker
- *      flow on native builds. Shows `instance_name` if present,
- *      falling back to `host`.
- *   2. `window.location.hostname` — the browser origin. This covers
- *      the web deploy where the picker is never shown.
- *
- * Rendered inline in the top bar, small and unobtrusive. On mobile
- * the label truncates at the first dot so "chat.example.com" becomes
- * "chat" to save horizontal space; tapping is NOT wired to
- * anything (purely informational for now).
- */
-function ConnectedHostLabel({ compact = false }: { compact?: boolean }) {
-  const config = useServerConfigStore((s) => s.config);
 
-  const display = useMemo(() => {
-    if (config) {
-      return config.instance_name || config.host;
-    }
-    if (typeof window !== "undefined") {
-      return window.location.hostname || "web";
-    }
-    return "web";
-  }, [config]);
-
-  // On compact mode (mobile ≤360px), trim to the first dot so long
-  // domains don't crowd the top bar.
-  const shown = compact ? display.split(".")[0] : display;
-
-  return (
-    <span
-      className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container-high/60 text-[10px] font-label font-medium text-on-surface-variant max-w-[140px] truncate"
-      title={`Connected to ${display}`}
-      aria-label={`Connected to ${display}`}
-    >
-      <span
-        className="w-1.5 h-1.5 rounded-full bg-secondary flex-shrink-0"
-        aria-hidden="true"
-      />
-      <span className="truncate">{shown}</span>
-    </span>
-  );
-}
-
-/* ── Top Bar Icon Button (INS-011) ──
-   Shared styling for the bug/stats/help buttons in the top bar. Matches the
-   account-icon footprint (w-11 h-11) so the four icons form a balanced row.
-   Also used on desktop's channel header, which gives us pixel-identical
-   icon-button styling across viewports. */
-function TopBarIconButton({
-  icon,
-  label,
-  onClick,
-  ref,
-  className = "",
-}: {
-  icon: string;
-  label: string;
-  onClick: () => void;
-  ref?: React.Ref<HTMLButtonElement>;
-  className?: string;
-}) {
-  return (
-    <button
-      ref={ref}
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-      className={`btn-press flex items-center justify-center w-11 h-11 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0 ${className}`}
-    >
-      <span className="material-symbols-outlined text-xl">{icon}</span>
-    </button>
-  );
-}
-
-/* ── Hosting Status Button ──
-   A colored dot button indicating the Servitude / hosting module state.
-   Green = running, Orange = stopped/not configured, Red = error. */
-function HostingStatusButton({
-  status,
-  onClick,
-}: {
-  status: import("../settings/HostingTab").HostingStatus;
-  onClick: () => void;
-}) {
-  const dotColor =
-    status === "running" ? "bg-green-500" :
-    status === "error" ? "bg-red-500" :
-    status === "loading" ? "bg-outline-variant/40 animate-pulse" :
-    "bg-orange-400";
-  const label =
-    status === "running" ? "Hosting active" :
-    status === "error" ? "Hosting error" :
-    "Hosting offline";
-  return (
-    <button
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-      className="btn-press flex items-center justify-center w-11 h-11 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
-    >
-      <div className={`w-2.5 h-2.5 rounded-full ${dotColor}`} />
-    </button>
-  );
-}
-
-/* ── Top Bar More Menu ──
-   Wrench button that opens a dropdown containing all secondary actions.
-   Replaces the old overflow menu and the individual help/stats/bug buttons.
-   Always rendered at every viewport size — no more breakpoint branching. */
-function TopBarMoreMenu({
-  voiceMicActive,
-  showExtension,
-  onExtension,
-  onHelp,
-  onStats,
-  onBug,
-  onSettings,
-}: {
-  voiceMicActive?: boolean;
-  showExtension?: boolean;
-  onExtension?: () => void;
-  onHelp: () => void;
-  onStats: () => void;
-  onBug: () => void;
-  onSettings: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const handle = (fn: () => void) => () => { setOpen(false); fn(); };
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        aria-label="Menu"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title="Menu"
-        className="btn-press flex items-center justify-center w-11 h-11 rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex-shrink-0"
-      >
-        <span className="material-symbols-outlined text-xl">handyman</span>
-      </button>
-      {open && (
-        <div
-          role="menu"
-          className="absolute right-0 top-full mt-1 z-40 min-w-[200px] glass-panel rounded-xl py-1 animate-[fadeSlideUp_0.15s_ease-out] shadow-2xl"
-        >
-          {/* Connected host info row */}
-          <div className="px-3 py-2 flex items-center gap-2 border-b border-outline-variant/10">
-            {voiceMicActive && (
-              <div className="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Microphone active" />
-            )}
-            <ConnectedHostLabel />
-          </div>
-          {showExtension && onExtension && (
-            <OverflowMenuItem icon="extension" label="Extensions" onClick={handle(onExtension)} />
-          )}
-          <OverflowMenuItem icon="help" label="Help" onClick={handle(onHelp)} />
-          <OverflowMenuItem icon="bar_chart" label="Your stats" onClick={handle(onStats)} />
-          <OverflowMenuItem icon="bug_report" label="Report a bug" onClick={handle(onBug)} />
-          <div className="mx-3 my-1 border-t border-outline-variant/15" />
-          {/* ISSUE C (2026-04-18): outer Tools/wrench button keeps `handyman`
-           *  (it's the button that OPENS this menu), but the inner Settings
-           *  row must use the universal gear glyph `settings` — `handyman`
-           *  inside `handyman` looked like "tools inside tools". */}
-          <OverflowMenuItem icon="settings" label="Settings" onClick={handle(onSettings)} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function OverflowMenuItem({
-  icon,
-  label,
-  onClick,
-}: {
-  icon: string;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      role="menuitem"
-      onClick={onClick}
-      className="w-full flex items-center gap-3 px-3 py-2.5 min-h-[44px] text-sm font-label text-on-surface hover:bg-surface-container-high transition-colors text-left"
-    >
-      <span className="material-symbols-outlined text-lg text-on-surface-variant">{icon}</span>
-      {label}
-    </button>
-  );
-}
-
-/* ── Onboarding Guide ── */
-function OnboardingGuide() {
-  return (
-    <div className="max-w-md w-full space-y-6 animate-[fadeSlideUp_0.5s_ease-out]">
-      <div className="text-center space-y-2">
-        <h2 className="text-2xl font-headline font-bold text-on-surface">Welcome to Concord</h2>
-        <p className="text-on-surface-variant text-sm font-body" style={{ lineHeight: "1.6" }}>
-          Get started by joining or creating a server.
-        </p>
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex items-start gap-3 p-4 rounded-xl bg-surface-container">
-          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-            <span className="material-symbols-outlined text-primary text-lg">add</span>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-on-surface font-headline">Create or browse servers</p>
-            <p className="text-xs text-on-surface-variant mt-0.5 font-body">
-              Tap the <strong className="text-on-surface">+</strong> button to create your own server or browse public ones.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-start gap-3 p-4 rounded-xl bg-surface-container">
-          <div className="w-8 h-8 rounded-full bg-secondary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-            <span className="material-symbols-outlined text-secondary text-lg">link</span>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-on-surface font-headline">Got an invite link?</p>
-            <p className="text-xs text-on-surface-variant mt-0.5 font-body">
-              Paste the invite URL in your browser to automatically join a server.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-start gap-3 p-4 rounded-xl bg-surface-container">
-          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-            <span className="material-symbols-outlined text-primary text-lg">tune</span>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-on-surface font-headline">Customize your profile</p>
-            <p className="text-xs text-on-surface-variant mt-0.5 font-body">
-              Open settings to configure two-factor auth, passwords, and audio devices.
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /* ── DM Header Name (uses hook, must be a component) ── */
 function DMHeaderName({ userId }: { userId: string }) {
@@ -3553,23 +3268,3 @@ function DMHeaderName({ userId }: { userId: string }) {
   return <h2 className="font-headline font-semibold truncate">{name}</h2>;
 }
 
-/* ── Help Modal ── */
-function HelpModal({ onClose }: { onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="relative glass-panel rounded-2xl p-6 animate-[fadeSlideUp_0.3s_ease-out]">
-        <button
-          onClick={onClose}
-          className="absolute -top-3 -right-3 w-8 h-8 flex items-center justify-center rounded-full bg-surface-container-highest text-on-surface-variant hover:text-on-surface transition-colors z-10"
-          title="Close"
-        >
-          <span className="material-symbols-outlined text-lg">close</span>
-        </button>
-        <OnboardingGuide />
-      </div>
-    </div>
-  );
-}

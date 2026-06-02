@@ -3,6 +3,7 @@ import type { ChatMessage } from "../../hooks/useMatrix";
 import { useToastStore } from "../../stores/toast";
 import { useFormatStore } from "../../stores/format";
 import { ChatToolsPanel, type ChatTool } from "./ChatToolsPanel";
+import { BringingUpSplash } from "../BringingUpSplash";
 
 interface MessageInputProps {
   onSend: (message: string) => Promise<void>;
@@ -266,7 +267,7 @@ export function MessageInput({
       )}
       {uploading && (
         <div className="flex items-center gap-2 px-4 pt-2 text-xs text-primary font-label">
-          <span className="inline-block w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <BringingUpSplash size="inline" />
           Uploading...
         </div>
       )}

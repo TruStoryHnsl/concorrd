@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # build_tvos_native.sh — Build the Concord tvOS (Apple TV) app.
 #
-# Runs on orrpheus (macOS, M1 Pro). Builds the SwiftUI Path C shell
-# from src-tvos/ConcordTV.xcodeproj targeting the Apple TV SDK.
+# Runs on macOS (Xcode 15+). Builds the SwiftUI Path C shell from
+# src-tvos/ConcordTV.xcodeproj targeting the Apple TV SDK.
 #
 # =================================================================
 # Usage:

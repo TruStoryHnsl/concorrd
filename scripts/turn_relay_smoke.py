@@ -194,10 +194,132 @@ def first_attr(attrs: Iterable[tuple[int, bytes]], attr_type: int) -> bytes | No
     return None
 
 
-def run_smoke(turn_host: str, public_tls_port: int, shared_secret: str, timeout: float, ttl_seconds: int) -> dict[str, object]:
+def _run_smoke_plaintext(
+    *,
+    turn_host: str,
+    port: int,
+    username: str,
+    password: str,
+    timeout: float,
+    require_public_relay: bool,
+    started: float,
+) -> dict[str, object]:
+    """Plaintext-TCP variant of run_smoke for ``--target localhost`` (CI).
+
+    Keeps the same allocate+challenge handshake but skips ssl.wrap_socket
+    and the public-relay-IP assertion. Used by the CI integration job
+    against a freshly-booted docker-compose stack where coturn listens
+    on 3478/tcp without TLS termination.
+    """
+    with socket.create_connection((turn_host, port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+
+        first_txid = secrets.token_bytes(12)
+        sock.sendall(build_unauthenticated_allocate_request(first_txid))
+        first_type, _, first_body = recv_message(sock)
+        first_attrs = parse_attrs(first_body)
+
+        if first_type != ALLOCATE_ERROR_RESPONSE:
+            raise SmokeFailure(f"Expected TURN allocate challenge, got 0x{first_type:04x}")
+
+        error_value = first_attr(first_attrs, ATTR_ERROR_CODE)
+        if error_value is None:
+            raise SmokeFailure("TURN challenge missing ERROR-CODE")
+        error_code, error_reason = parse_error_code(error_value)
+        if error_code != 401:
+            raise SmokeFailure(f"Expected TURN 401 challenge, got {error_code} {error_reason}")
+
+        realm_value = first_attr(first_attrs, ATTR_REALM)
+        nonce_value = first_attr(first_attrs, ATTR_NONCE)
+        if realm_value is None or nonce_value is None:
+            raise SmokeFailure("TURN challenge missing REALM or NONCE")
+
+        realm = realm_value.decode("utf-8", "replace")
+        nonce = nonce_value.decode("utf-8", "replace")
+
+        second_txid = secrets.token_bytes(12)
+        sock.sendall(
+            build_authenticated_allocate_request(
+                second_txid,
+                username=username,
+                realm=realm,
+                nonce=nonce,
+                password=password,
+            )
+        )
+
+        second_type, relay_txid, second_body = recv_message(sock)
+        second_attrs = parse_attrs(second_body)
+
+        if second_type != ALLOCATE_SUCCESS_RESPONSE:
+            error_value = first_attr(second_attrs, ATTR_ERROR_CODE)
+            if error_value is not None:
+                error_code, error_reason = parse_error_code(error_value)
+                raise SmokeFailure(f"TURN allocate failed: {error_code} {error_reason}")
+            raise SmokeFailure(f"Expected TURN allocate success, got 0x{second_type:04x}")
+
+        relay_value = first_attr(second_attrs, ATTR_XOR_RELAYED_ADDRESS)
+        if relay_value is None:
+            raise SmokeFailure("TURN allocate succeeded but omitted XOR-RELAYED-ADDRESS")
+
+        relay_host, relay_port = decode_xor_address(relay_value, relay_txid)
+        if require_public_relay:
+            relay_ip = ipaddress.ip_address(relay_host)
+            if not relay_ip.is_global:
+                raise SmokeFailure(f"TURN relay address is not public: {relay_host}:{relay_port}")
+
+        duration_ms = round((time.perf_counter() - started) * 1000, 1)
+        return {
+            "turn_host": turn_host,
+            "public_tls_port": port,
+            "username": username,
+            "realm": realm,
+            "relay_host": relay_host,
+            "relay_port": relay_port,
+            "tls_version": "plaintext",
+            "certificate_subject": (),
+            "certificate_san": (),
+            "duration_ms": duration_ms,
+        }
+
+
+def run_smoke(
+    turn_host: str,
+    public_tls_port: int,
+    shared_secret: str,
+    timeout: float,
+    ttl_seconds: int,
+    *,
+    plaintext: bool = False,
+    require_public_relay: bool = True,
+) -> dict[str, object]:
+    """Run the TURN allocate handshake against a deployed edge.
+
+    ``plaintext=True`` drops the TLS wrap and connects plaintext TCP to
+    ``(turn_host, public_tls_port)``. Used by ``--target localhost`` for
+    CI integration smoke against a freshly-booted docker-compose stack
+    where coturn listens on 3478/tcp without TLS termination.
+
+    ``require_public_relay=False`` skips the assertion that the relay
+    address allocated by TURN is globally routable. The loopback /
+    docker-bridged relay assigned by a local boot will be private, so
+    the check is meaningless in CI integration mode. Production smoke
+    must keep this True.
+    """
     username = f"{int(time.time()) + ttl_seconds}:smoke"
     password = turn_rest_password(shared_secret, username)
     started = time.perf_counter()
+
+    if plaintext:
+        return _run_smoke_plaintext(
+            turn_host=turn_host,
+            port=public_tls_port,
+            username=username,
+            password=password,
+            timeout=timeout,
+            require_public_relay=require_public_relay,
+            started=started,
+        )
 
     context = ssl.create_default_context()
     with socket.create_connection((turn_host, public_tls_port), timeout=timeout) as raw_sock:
@@ -281,6 +403,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=10.0, help="Socket timeout in seconds")
     parser.add_argument("--ttl-seconds", type=int, default=900, help="Credential TTL for the smoke username")
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of human-readable text")
+    # INS-067 W1: localhost integration mode for CI. Targets a freshly-booted
+    # docker-compose stack rather than a production TLS edge.
+    #   * Connects plaintext TCP to coturn's listening-port (default 3478)
+    #     on 127.0.0.1 (no TLS, no SNI verification — the local stack does
+    #     not terminate TLS at coturn; production TLS is fronted by sslh
+    #     forwarding 443/tcp → 5349/tcp coturn-tls, which CI doesn't replicate).
+    #   * Skips the "relay address must be globally routable" assertion
+    #     since the loopback relay returns a private 127.0.0.1 address.
+    #   * Reads TURN_SECRET / TURN_REALM from the env-file as usual.
+    parser.add_argument(
+        "--target",
+        default="",
+        choices=("", "localhost"),
+        help="Use 'localhost' for CI integration boot (plaintext TCP STUN against 127.0.0.1:3478)",
+    )
+    parser.add_argument(
+        "--plaintext-port",
+        type=int,
+        default=3478,
+        help="Port for --target localhost plaintext STUN (default 3478)",
+    )
     return parser.parse_args()
 
 
@@ -292,19 +435,30 @@ def main() -> int:
         env.update(load_env_file(args.env_file))
     env.update({key: value for key, value in os.environ.items() if key.startswith("TURN_")})
 
-    turn_host = args.turn_host or env.get("TURN_HOST", "").strip()
+    plaintext_mode = args.target == "localhost"
+
+    if plaintext_mode:
+        # Localhost CI integration mode: TURN_HOST defaults to 127.0.0.1
+        # and TLS is intentionally bypassed (the local stack does not
+        # terminate TLS at coturn). TURN_SECRET still required because
+        # auth machinery is what we're smoke-testing.
+        turn_host = args.turn_host or env.get("TURN_HOST", "").strip() or "127.0.0.1"
+        public_tls_port_raw = args.public_tls_port or args.plaintext_port
+    else:
+        turn_host = args.turn_host or env.get("TURN_HOST", "").strip()
+        public_tls_port_raw = args.public_tls_port or int(env.get("TURN_PUBLIC_TLS_PORT", "443") or "443")
+        tls_enabled = env.get("TURN_TLS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not tls_enabled:
+            print("FAIL TURN_TLS_ENABLED is false; this smoke expects turns: TLS relay", file=sys.stderr)
+            return 2
+
     shared_secret = env.get("TURN_SECRET", "").strip()
-    public_tls_port_raw = args.public_tls_port or int(env.get("TURN_PUBLIC_TLS_PORT", "443") or "443")
-    tls_enabled = env.get("TURN_TLS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
     if not turn_host:
         print("FAIL missing TURN_HOST", file=sys.stderr)
         return 2
     if not shared_secret:
         print("FAIL missing TURN_SECRET", file=sys.stderr)
-        return 2
-    if not tls_enabled:
-        print("FAIL TURN_TLS_ENABLED is false; this smoke expects turns: TLS relay", file=sys.stderr)
         return 2
 
     try:
@@ -314,6 +468,8 @@ def main() -> int:
             shared_secret=shared_secret,
             timeout=args.timeout,
             ttl_seconds=args.ttl_seconds,
+            plaintext=plaintext_mode,
+            require_public_relay=not plaintext_mode,
         )
     except Exception as exc:
         if args.json:

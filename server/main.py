@@ -18,7 +18,8 @@ logging.basicConfig(
 
 from database import async_session, init_db
 from errors import ConcordError, ErrorResponse
-from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_extensions, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms, service_node, ext_proxy
+from routers import servers, invites, registration, voice, soundboard, webhooks, admin, admin_extensions, direct_invites, stats, totp, moderation, preview, media, dms, nodes, explore, wellknown, extensions, rooms, service_node, ext_proxy, auth_recovery, matrix_proxy, hosting
+from services import voice_health
 
 
 logger = logging.getLogger("concord.main")
@@ -60,6 +61,22 @@ async def lifespan(app: FastAPI):
     _bootstrap_tuwunel_config()
 
     await init_db()
+
+    # Alembic-driven schema migrations. apply_migrations() handles three
+    # cases: a fresh DB (runs full migration history), an existing
+    # pre-Alembic DB (stamps head without re-running anything), or an
+    # Alembic-tracked DB (applies pending revisions).
+    #
+    # The inline ``_migrate()`` block below is the FROZEN history of the
+    # pre-Alembic era. It still runs on every startup as a safety net
+    # for stamped legacy DBs, but DO NOT add new ``ALTER TABLE`` entries
+    # here — new schema work goes through alembic/versions/. See
+    # server/migrations.py for the rationale.
+    from migrations import apply_migrations
+    try:
+        apply_migrations()
+    except Exception as e:
+        logger.warning("Alembic apply_migrations failed: %s", e)
 
     # Migrate existing tables: add new columns if missing
     from database import engine
@@ -344,8 +361,36 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).warning("Lobby welcome setup failed: %s", e)
 
     extensions.init_catalog()
+    # INS-066-FUP-C: one-shot migration of static-catalog entries to DB
+    # rows so ``GET /api/extensions`` surfaces a permissions array for
+    # every extension and the ext_proxy fetch:external gate covers them
+    # uniformly. Idempotent — already-DB-installed extensions are not
+    # touched. Failure here does NOT crash startup (logged + skipped).
+    try:
+        from database import async_session as _async_session
+        async with _async_session() as _db:
+            await extensions.migrate_static_catalog(_db)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Static-catalog DB migration failed (continuing without it): %s", e
+        )
+    # INS-066 W3: mount StaticFiles routes for every installed extension
+    # found under EXTENSIONS_DIR. Subsequent installs register their
+    # mounts at request time via routers.extensions.register_mount().
+    extensions.mount_installed(app)
+
+    # Start the voice-subsystem health probe loop. Runs in the
+    # background; never blocks startup. If the probe finds the local
+    # TURN relay is misconfigured or unreachable, /api/hosting/status
+    # surfaces the failure to the operator and /api/voice/token returns
+    # 503 with a clear remediation message — but the rest of the API
+    # stays available so the Concord *client* role still works.
+    voice_health.start_background_probe()
 
     yield
+
+    await voice_health.stop_background_probe()
 
 
 LOBBY_WELCOME_POST_VERSION = 2
@@ -423,8 +468,18 @@ async def _seed_default_server():
     instance_name = settings.get("name", INSTANCE_NAME_DEFAULT)
     server_name = f"{instance_name} Lobby"
 
-    # Define the pre-created channels
-    channel_defs = [
+    # Define the pre-created channels.
+    #
+    # INVARIANT (P0 sprint Issue 4): the clean lobby ships TEXT + VOICE
+    # channels only. NO application/extension channels (Card Game Suite,
+    # Orrdia Bridge, Worldview, etc.) get auto-seeded on first boot —
+    # those install via the Extension Library at the admin's discretion
+    # (see routers/admin_extensions.py). A fresh `docker compose up -d`
+    # MUST produce exactly the 7 channels below; adding an extension
+    # channel here regresses the issue and breaks the "empty lobby on
+    # fresh install" acceptance criterion. Channel additions go through
+    # the Server settings UI after seed — they are not part of the seed.
+    channel_defs: list[tuple[str, str]] = [
         ("welcome", "text"),
         ("general", "text"),
         ("off-topic", "text"),
@@ -433,6 +488,13 @@ async def _seed_default_server():
         ("hangout", "voice"),
         ("music-lounge", "voice"),
     ]
+    # Defense-in-depth: assert no channel_type is anything other than
+    # text/voice. If a future contributor adds an "app" channel here,
+    # this fails fast in CI rather than shipping a regression.
+    assert all(t in ("text", "voice") for _, t in channel_defs), (
+        "lobby seed must only create text + voice channels; "
+        "extensions install at runtime, not at seed time"
+    )
 
     general_room_id = None
 
@@ -659,11 +721,17 @@ app.include_router(explore.router)
 app.include_router(wellknown.router)
 app.include_router(extensions.router)
 app.include_router(admin_extensions.router)
-app.include_router(admin_extensions.public_router)
+# Note (INS-066-FUP-B): the legacy `admin_extensions.public_router`
+# previously served /ext/{id}/ via FileResponse — removed in favor
+# of the canonical `routers.extensions` StaticFiles mount registered
+# in the lifespan via `extensions.mount_installed(app)`.
 app.include_router(ext_proxy.router)
 app.include_router(ext_proxy.admin_router)
 app.include_router(rooms.router)
 app.include_router(service_node.router)
+app.include_router(matrix_proxy.router)
+app.include_router(auth_recovery.router)
+app.include_router(hosting.router)
 
 
 @app.get("/api/health")

@@ -79,7 +79,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from main import app  # noqa: E402
 import database  # noqa: E402 — we monkey-patch the engine below
 from database import Base  # noqa: E402
-from routers.servers import get_user_id, get_access_token  # noqa: E402
+from dependencies import get_user_id, get_access_token  # noqa: E402
 
 
 # ---------------------------------------------------------------------

@@ -11,12 +11,13 @@ import { useServerConfigStore } from "../../stores/serverConfig";
 import { useSourcesStore } from "../../stores/sources";
 import { usePlatform } from "../../hooks/usePlatform";
 import { ConcordLogo } from "../brand/ConcordLogo";
+import { BringingUpSplash } from "../BringingUpSplash";
 import {
   isTauri as isTauriRuntime,
-  servitudeStart,
   servitudeStatus,
   type ServitudeState,
 } from "../../api/servitude";
+import { startHostingServitude } from "../../api/hostingProfile";
 import { GuestPairingScanner } from "../pairing/GuestPairingScanner";
 import { createGuestSession } from "../../api/concord";
 
@@ -420,7 +421,11 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
     // itself rejects we surface that to the failed sub-state.
     void (async () => {
       try {
-        await servitudeStart();
+        // Host-capable start: flips to the `web_first` profile so the
+        // bundled tuwunel homeserver actually materializes before we
+        // poll for Running. A bare servitudeStart on the default
+        // `p2p_only` profile would report Running with no homeserver.
+        await startHostingServitude();
       } catch (err) {
         if (hostingGenerationRef.current !== generation) return;
         setState({
@@ -632,9 +637,15 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
   // scopes DPAD navigation to this screen only. The extra class is
   // additive — desktop / mobile viewports render identically to the
   // pre-TV layout.
+  // `min-h-screen` + `overflow-y-auto` so the screen scrolls when the
+  // join-options list is taller than the viewport (small notebooks,
+  // mobile in landscape, etc). `items-start sm:items-center` centers
+  // vertically on roomy screens but starts at the top on short ones —
+  // a strict `items-center` would push the first options above the
+  // viewport top with no way to scroll up.
   const rootClassName = isTV
-    ? "h-screen bg-surface flex items-center justify-center mesh-background tv-server-picker"
-    : "h-screen bg-surface flex items-center justify-center mesh-background";
+    ? "min-h-screen overflow-y-auto bg-surface flex items-start sm:items-center justify-center py-8 mesh-background tv-server-picker"
+    : "min-h-screen overflow-y-auto bg-surface flex items-start sm:items-center justify-center py-8 mesh-background";
   const tvFocusProps = isTV
     ? { "data-focusable": "true", "data-focus-group": "tv-server-picker" }
     : {};
@@ -814,7 +825,7 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
                       check_circle
                     </span>
                   ) : (
-                    <span className="inline-block w-8 h-8 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
+                    <BringingUpSplash size="compact" />
                   )}
                   <p className="text-sm text-on-surface font-medium">
                     {state.message}
@@ -967,11 +978,11 @@ export function ServerPickerScreen({ onConnected, onSkip, onGuestSession }: Prop
         )}
 
         {state.phase === "connecting" && (
-          <div className="flex flex-col items-center gap-3 py-8" data-testid="server-picker-connecting">
-            <span className="inline-block w-6 h-6 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />
-            <p className="text-sm text-on-surface-variant">
-              Discovering Concord endpoints on {host.trim()}…
-            </p>
+          <div data-testid="server-picker-connecting">
+            <BringingUpSplash
+              size="compact"
+              status={`Discovering Concord endpoints on ${host.trim()}…`}
+            />
           </div>
         )}
 

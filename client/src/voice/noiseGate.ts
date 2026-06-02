@@ -441,5 +441,13 @@ export function buildLiveKitAudioCaptureOptions(
   // room. That guard is the single source of truth for "is it safe to
   // enable processors on this track" — don't add the processor back
   // here without removing the guard there first.
+  //
+  // Note: this works regardless of ``RoomOptions.webAudioMix``. The room
+  // always creates an audioContext in ``acquireAudioContext`` and
+  // unconditionally hands it to ``LocalAudioTrack.setAudioContext``
+  // during ``createTracks`` and ``publishOrRepublishTrack``.
+  // ``webAudioMix`` only controls whether REMOTE tracks get the
+  // audioContext propagated; for the local-mic-processor path it is a
+  // no-op. See App.tsx for why we deliberately leave it off.
   return buildMicTrackConstraints(settings);
 }

@@ -2,9 +2,10 @@
 # build_linux_native.sh — Build Concord as a native Linux desktop bundle
 # (AppImage + .deb) via Tauri v2.
 #
-# Designed to run on orrion (CachyOS) but works on any Linux x86_64 host with
-# the listed prerequisites installed. See client/NATIVE_BUILD.md for the full
-# prerequisite matrix and machine-split convention.
+# Designed to run on any Linux x86_64 host with the listed prerequisites
+# installed (tested on CachyOS / Arch / Debian / Ubuntu). See
+# client/NATIVE_BUILD.md for the full prerequisite matrix and
+# machine-split convention.
 #
 # Usage:
 #   scripts/build_linux_native.sh           # build only

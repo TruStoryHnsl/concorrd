@@ -1,6 +1,7 @@
 import asyncio
 import mimetypes
 import secrets
+import time
 from pathlib import Path
 
 import httpx
@@ -14,7 +15,7 @@ from config import SOUNDBOARD_DIR, FREESOUND_API_KEY, ADMIN_USER_IDS
 from database import get_db
 from dependencies import require_server_member
 from models import SoundboardClip, Server
-from routers.servers import get_user_id
+from dependencies import get_user_id
 
 router = APIRouter(prefix="/api/soundboard", tags=["soundboard"])
 
@@ -34,13 +35,35 @@ MAGIC_BYTES = {
 class ClipOut(BaseModel):
     id: int
     name: str = Field(min_length=1, max_length=100)
-    server_id: str
+    server_id: str  # originating/attribution server (instance-wide visibility)
     uploaded_by: str
     duration: float | None
     keybind: str | None = None
     url: str
+    # INS-073: Freesound attribution surfaces in the listing so the UI can
+    # display "via freesound.org · CC0 · by <author>" next to the clip.
+    source: str | None = None
+    license: str | None = None
+    license_url: str | None = None
+    attribution: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+def _clip_to_out(clip: SoundboardClip) -> "ClipOut":
+    return ClipOut(
+        id=clip.id,
+        name=clip.name,
+        server_id=clip.server_id,
+        uploaded_by=clip.uploaded_by,
+        duration=clip.duration,
+        keybind=clip.keybind,
+        url=f"/api/soundboard/file/{clip.id}",
+        source=clip.source,
+        license=clip.license,
+        license_url=clip.license_url,
+        attribution=clip.attribution,
+    )
 
 
 # IMPORTANT: /file/{clip_id} must be declared BEFORE /{server_id}
@@ -52,11 +75,23 @@ async def serve_clip(
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Serve a soundboard clip file. Requires server membership."""
+    """Serve a soundboard clip file.
+
+    INS-073: clips are instance-wide — any authenticated user with access
+    to *any* server on the instance can fetch the file. We verify the user
+    is a member of at least the originating server (cheap proxy for
+    "user is on this instance"). This deliberately drops the previous
+    per-server gate so users see the full library no matter which server
+    they're currently viewing.
+    """
     clip = await db.get(SoundboardClip, clip_id)
     if not clip:
         raise HTTPException(404, "Clip not found")
 
+    # Membership in the originating server is sufficient. Users joined to
+    # any server on the instance can access the instance-wide library; the
+    # originating-server check is the cheapest existence proof we have
+    # without introducing a new "instance member" concept.
     await require_server_member(clip.server_id, user_id, db)
 
     file_path = SOUNDBOARD_DIR / clip.server_id / clip.filename
@@ -74,6 +109,12 @@ class LibraryResult(BaseModel):
     name: str
     duration: float
     preview_url: str
+    # INS-073: surface license + attribution to the client so users see
+    # what they're importing BEFORE the import call lands them in the
+    # instance-wide library with permanent attribution.
+    license: str | None = None
+    license_url: str | None = None
+    username: str | None = None
 
 
 FREESOUND_SORT_OPTIONS = {
@@ -84,6 +125,37 @@ FREESOUND_SORT_OPTIONS = {
     "shortest": "duration_asc",
     "longest": "duration_desc",
 }
+
+
+# INS-073: lightweight in-process cache for Freesound search results.
+# Their API has a per-token rate limit (60/min last we checked). The UI
+# allows users to thrash the search box, so caching identical queries for
+# 60s avoids exhausting the budget. Keyed on (q, sort, page); value is
+# (expiry_unix_ts, results_list). Capped at 256 entries — when full, the
+# oldest expiring entry is evicted lazily on each lookup.
+_FREESOUND_CACHE: dict[tuple[str, str, int], tuple[float, list["LibraryResult"]]] = {}
+_FREESOUND_CACHE_TTL_SECONDS = 60.0
+_FREESOUND_CACHE_MAX_ENTRIES = 256
+
+
+def _cache_get(key: tuple[str, str, int]) -> list["LibraryResult"] | None:
+    entry = _FREESOUND_CACHE.get(key)
+    if entry is None:
+        return None
+    expiry, results = entry
+    if expiry <= time.time():
+        _FREESOUND_CACHE.pop(key, None)
+        return None
+    return results
+
+
+def _cache_put(key: tuple[str, str, int], results: list["LibraryResult"]) -> None:
+    if len(_FREESOUND_CACHE) >= _FREESOUND_CACHE_MAX_ENTRIES:
+        # Drop the entry with the smallest expiry (closest to expiring).
+        # Cheap O(n) sweep — acceptable at n=256 and only on overflow.
+        oldest_key = min(_FREESOUND_CACHE, key=lambda k: _FREESOUND_CACHE[k][0])
+        _FREESOUND_CACHE.pop(oldest_key, None)
+    _FREESOUND_CACHE[key] = (time.time() + _FREESOUND_CACHE_TTL_SECONDS, results)
 
 
 @router.get("/library/search", response_model=list[LibraryResult])
@@ -99,12 +171,19 @@ async def search_library(
 
     fs_sort = FREESOUND_SORT_OPTIONS.get(sort, "score")
 
+    cache_key = (q.strip(), fs_sort, page)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(
             "https://freesound.org/apiv2/search/text/",
             params={
                 "query": q,
-                "fields": "id,name,duration,previews",
+                # INS-073: also pull license + username so attribution can
+                # be persisted on import without a second round-trip.
+                "fields": "id,name,duration,previews,license,username",
                 "page": page,
                 "page_size": 15,
                 "filter": "duration:[0.1 TO 30]",
@@ -116,7 +195,7 @@ async def search_library(
             raise HTTPException(502, "Freesound API error")
 
     data = resp.json()
-    results = []
+    results: list[LibraryResult] = []
     for item in data.get("results", []):
         previews = item.get("previews", {})
         preview_url = previews.get("preview-hq-mp3") or previews.get("preview-lq-mp3", "")
@@ -126,7 +205,11 @@ async def search_library(
                 name=item["name"],
                 duration=item.get("duration", 0),
                 preview_url=preview_url,
+                license=item.get("license"),
+                license_url=item.get("license"),  # Freesound returns the canonical URL in the license field
+                username=item.get("username"),
             ))
+    _cache_put(cache_key, results)
     return results
 
 
@@ -134,6 +217,14 @@ class ImportRequest(BaseModel):
     freesound_id: int
     name: str = Field(min_length=1, max_length=100)
     preview_url: str
+    # INS-073: client must echo back the license + attribution it saw so
+    # the user has *seen* what they're agreeing to before it's persisted.
+    # All three default to None for backward-compat with older clients;
+    # the server fills "Unknown" / the freesound URL where the field is
+    # missing rather than rejecting the import outright.
+    license: str | None = None
+    license_url: str | None = None
+    attribution: str | None = None
 
 
 @router.post("/library/import/{server_id}", response_model=ClipOut)
@@ -143,7 +234,12 @@ async def import_from_library(
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Import a sound from Freesound into a server's soundboard."""
+    """Import a sound from Freesound into the instance-wide soundboard.
+
+    INS-073: server_id in the URL is the *originating* server for
+    attribution + file storage path. Once imported the clip is visible to
+    every user on the instance via GET /api/soundboard/library.
+    """
     if not FREESOUND_API_KEY:
         raise HTTPException(501, "Sound library not configured")
 
@@ -174,26 +270,52 @@ async def import_from_library(
     file_path = server_dir / stored_name
     await asyncio.to_thread(file_path.write_bytes, content)
 
-    # Create DB record
+    # Create DB record. INS-073: persist license + attribution. We never
+    # want a Freesound-sourced clip in the library without these — even
+    # if the client omitted them we record sentinel strings so a future
+    # operator can audit which rows lack proper provenance.
     clip = SoundboardClip(
         server_id=server_id,
         name=body.name,
         filename=stored_name,
         uploaded_by=user_id,
+        source="freesound",
+        source_id=str(body.freesound_id),
+        license=body.license or "unknown",
+        license_url=body.license_url or f"https://freesound.org/s/{body.freesound_id}/",
+        attribution=body.attribution or "unknown",
     )
     db.add(clip)
     await db.commit()
     await db.refresh(clip)
 
-    return ClipOut(
-        id=clip.id,
-        name=clip.name,
-        server_id=clip.server_id,
-        uploaded_by=clip.uploaded_by,
-        duration=clip.duration,
-        keybind=clip.keybind,
-        url=f"/api/soundboard/file/{clip.id}",
-    )
+    return _clip_to_out(clip)
+
+
+# INS-073: instance-wide library endpoint. Returns every clip on the
+# instance regardless of which server originated it. Auth is verified via
+# get_user_id (any logged-in user). Existing per-server endpoint below
+# kept for backward compatibility — older clients filter to one server,
+# new clients use this one.
+@router.get("/library", response_model=list[ClipOut])
+async def list_library(
+    q: str | None = Query(None, max_length=200),
+    user_id: str = Depends(get_user_id),  # noqa: ARG001 — auth gate only
+    db: AsyncSession = Depends(get_db),
+):
+    """List the instance-wide soundboard library.
+
+    Optional `q` does a case-insensitive substring match on the clip name
+    so the client can render a search box without paginating. The library
+    is small (low thousands at most) so we return everything in one shot.
+    """
+    stmt = select(SoundboardClip).order_by(SoundboardClip.name)
+    if q:
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(SoundboardClip.name.ilike(like))
+    result = await db.execute(stmt)
+    clips = result.scalars().all()
+    return [_clip_to_out(c) for c in clips]
 
 
 @router.get("/{server_id}", response_model=list[ClipOut])
@@ -202,26 +324,22 @@ async def list_clips(
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all soundboard clips for a server. Requires server membership."""
+    """List soundboard clips visible from this server.
+
+    INS-073: this endpoint is now an *alias* for the instance-wide library
+    — every member of any server on the instance sees every clip. The
+    server_id param is retained for URL compatibility (and to verify the
+    requester is a member of *something*, not just any authenticated
+    Matrix user) but no longer filters the result set. Older clients that
+    GET /api/soundboard/{server_id} therefore see the full library
+    automatically; newer clients should prefer GET /api/soundboard/library.
+    """
     await require_server_member(server_id, user_id, db)
     result = await db.execute(
-        select(SoundboardClip)
-        .where(SoundboardClip.server_id == server_id)
-        .order_by(SoundboardClip.name)
+        select(SoundboardClip).order_by(SoundboardClip.name)
     )
     clips = result.scalars().all()
-    return [
-        ClipOut(
-            id=c.id,
-            name=c.name,
-            server_id=c.server_id,
-            uploaded_by=c.uploaded_by,
-            duration=c.duration,
-            keybind=c.keybind,
-            url=f"/api/soundboard/file/{c.id}",
-        )
-        for c in clips
-    ]
+    return [_clip_to_out(c) for c in clips]
 
 
 @router.post("/{server_id}", response_model=ClipOut)
@@ -232,7 +350,13 @@ async def upload_clip(
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upload a soundboard clip. Requires server membership."""
+    """Upload a soundboard clip.
+
+    INS-073: the upload endpoint still takes a server_id (used as the
+    originating/attribution server and as the file storage subdirectory)
+    but the resulting clip is visible instance-wide via the library
+    endpoint. There is no per-server scoping anymore.
+    """
     await require_server_member(server_id, user_id, db)
 
     # Verify server exists
@@ -276,7 +400,8 @@ async def upload_clip(
     file_path = server_dir / stored_name
     await asyncio.to_thread(file_path.write_bytes, content)
 
-    # Create DB record
+    # Create DB record. INS-073: source/license/attribution stay NULL —
+    # this is a user-original upload, no third-party license involved.
     clip = SoundboardClip(
         server_id=server_id,
         name=name,
@@ -287,15 +412,7 @@ async def upload_clip(
     await db.commit()
     await db.refresh(clip)
 
-    return ClipOut(
-        id=clip.id,
-        name=clip.name,
-        server_id=clip.server_id,
-        uploaded_by=clip.uploaded_by,
-        duration=clip.duration,
-        keybind=clip.keybind,
-        url=f"/api/soundboard/file/{clip.id}",
-    )
+    return _clip_to_out(clip)
 
 
 class ClipUpdate(BaseModel):
@@ -310,7 +427,7 @@ async def update_clip(
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a soundboard clip (name, keybind). Requires uploader, server owner, or admin."""
+    """Update a soundboard clip (name, keybind). Requires uploader, originating-server owner, or admin."""
     clip = await db.get(SoundboardClip, clip_id)
     if not clip:
         raise HTTPException(404, "Clip not found")
@@ -334,12 +451,15 @@ async def delete_clip(
     user_id: str = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a soundboard clip. Requires uploader, server owner, or admin."""
+    """Delete a soundboard clip. Requires uploader, originating-server owner, or admin."""
     clip = await db.get(SoundboardClip, clip_id)
     if not clip:
         raise HTTPException(404, "Clip not found")
 
-    # Allow deletion by the uploader, server owner, or global admin
+    # Allow deletion by the uploader, originating-server owner, or global admin.
+    # INS-073: deletion is destructive across the whole instance now —
+    # every user on every server loses access to the clip. The
+    # uploader/owner/admin gate matches the prior security posture.
     if clip.uploaded_by != user_id and user_id not in ADMIN_USER_IDS:
         server = await db.get(Server, clip.server_id)
         if not server or server.owner_id != user_id:

@@ -1,0 +1,239 @@
+# Windows native build (Tauri v2 / MSI + NSIS).
+#
+# Why this exists
+# ---------------
+# Concord ships a native Windows client via Tauri v2. Cross-compiling
+# from Linux is blocked by libsodium-sys-stable (POSIX-only build deps
+# in the iota_stronghold tree — see scripts/build_windows_wsl.sh for
+# the diagnostic). The supported way to produce a distributable .msi /
+# NSIS .exe today is to build on a real Windows host. This workflow IS
+# that host. Every PR that touches Windows-relevant code can prove the
+# build is still green here, regardless of whether the developer is on
+# Linux, macOS, or Windows.
+#
+# What this workflow does NOT do
+# ------------------------------
+# - It does NOT sign the installers. Concord does not yet have a
+#   code-signing cert, so installs trip Windows SmartScreen ("Windows
+#   protected your PC") on download. Adding signing is its own task —
+#   this workflow's contract is "the build compiles, the bundle exists,
+#   it has not been corrupted."
+# - It does NOT release. Tag-driven release publishing is handled by
+#   .github/workflows/release.yml (when added). This workflow exists
+#   so feature PRs can be reviewed against a real Windows artifact.
+#
+# Triggers
+# --------
+# - push:main          — every commit to main rebuilds; the artifact
+#                        is the latest "what users would download
+#                        if they grabbed main right now."
+# - pull_request:*     — every PR proves it didn't break Windows.
+# - workflow_dispatch  — manual run, e.g. for spot checks before a
+#                        release.
+#
+# Injection safety
+# ----------------
+# Per the GitHub Actions injection guide
+# (https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/),
+# this workflow only interpolates `github.ref` into the concurrency
+# group expression — that's a sanitised ref name, not user input. No
+# `run:` block uses any `github.event.*`, `github.head_ref`, or other
+# attacker-controllable field. Future jobs that need PR titles,
+# commit messages, etc. MUST route them through `env:` with proper
+# quoting; never substitute them directly into shell.
+#
+# Caveats specific to GitHub-hosted windows-latest runners
+# --------------------------------------------------------
+# - The runner image already has VS 2022 Build Tools, the Windows SDK,
+#   and Rustup pre-installed. We still rustup-target-add msvc to be
+#   explicit (no-op when already present).
+# - WiX 3.x is fetched on-demand by Tauri's MSI bundler. The runner
+#   image's PATH already contains it; if a future image change drops
+#   it, Tauri will download a copy automatically.
+# - Caching: cargo registry + git index get reused across runs (the
+#   biggest win); target/ is intentionally cached for windows-latest
+#   only so we don't smear stale objects between PR branches. We key
+#   on `Cargo.lock` so dep updates invalidate the build cache.
+# - No fail-fast — if a future job is added (e.g. a parallel sign
+#   step), one failing should not cancel the artifact-producing one.
+
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # Cancel older runs on the same branch when new commits land.
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: tauri build (msi + nsis) on windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    # Pinned dendrite version. Windows uses dendrite (matrix-org/dendrite),
+    # not tuwunel. The Linux/macOS native builds keep tuwunel — the per-OS
+    # backend selection happens in src-tauri/src/servitude/transport/mod.rs
+    # via cfg(target_os = "windows") arms. When this pin moves, bump the
+    # string AND ensure a corresponding `dendrite-windows-v<ver>` release
+    # exists on this repo (built by the build-dendrite-windows.yml
+    # workflow). Until that release exists, the "Stage bundled dendrite"
+    # step warn-skips and the produced MSI ships without an embedded
+    # homeserver. servitude_start will surface BinaryNotFound at runtime
+    # but the rest of the client still loads — acceptable for first-pass
+    # smoke tests.
+    env:
+      DENDRITE_VERSION: "v0.13.8"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install Rust toolchain (stable, msvc target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry + git index
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          # Keyed on host OS + lockfile — dep changes blow the cache.
+          key: cargo-cache-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-cache-${{ runner.os }}-
+
+      - name: Cache cargo target/
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target/
+          key: cargo-target-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-
+
+      - name: Install Tauri CLI v2
+        # `cargo install` is idempotent when the binary already exists
+        # at the requested version, so this is fast on cache hits.
+        # `--locked` pins transitive deps to Cargo.lock — required
+        # because the cache may already contain a different lockfile
+        # and cargo-install otherwise drifts.
+        run: cargo install tauri-cli --version "^2.0" --locked
+
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci --no-audit --no-fund
+
+      - name: Build React client
+        working-directory: client
+        run: npm run build
+
+      - name: Stage bundled dendrite
+        # Downloads dendrite.exe + create-account.exe + generate-keys.exe
+        # from the latest dendrite-windows-v<ver> release on this repo
+        # (built by build-dendrite-windows.yml) and stages them at
+        # src-tauri/resources/dendrite/ so tauri.conf.json's
+        # `bundle.resources: ["resources/dendrite/**/*"]` glob picks them
+        # up. If no such release exists yet (first run before the W3-01
+        # release ships), this step warn-skips so the build still
+        # produces a functional-but-degraded MSI for smoke testing.
+        # Tuwunel is no longer staged on Windows — Linux/macOS keep
+        # tuwunel via their native build scripts.
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          DENDRITE_VERSION: ${{ env.DENDRITE_VERSION }}
+        run: |
+          $tag = "dendrite-windows-$env:DENDRITE_VERSION"
+          $dest = "src-tauri/resources/dendrite"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $patterns = @("dendrite.exe", "create-account.exe", "generate-keys.exe")
+          $downloaded = $false
+          $fileResults = @{}
+          try {
+            foreach ($pattern in $patterns) {
+              Write-Host "Attempting: gh release download $tag --pattern $pattern -> $dest"
+              gh release download $tag --pattern $pattern --dir $dest --repo $env:GH_REPO
+              $exe = Join-Path $dest $pattern
+              if (-not (Test-Path $exe)) {
+                throw "gh release download exited 0 but $exe is not present"
+              }
+              $size = (Get-Item $exe).Length
+              # 1MB floor: even stripped Go binaries are >5MB; below 1MB
+              # implies a corrupted download or stub.
+              if ($size -lt 1MB) {
+                throw "$pattern is suspiciously small ($size bytes); rejecting"
+              }
+              Write-Host "Staged $exe (size: $size bytes)"
+              $fileResults[$pattern] = $size
+            }
+            $downloaded = $true
+          } catch {
+            Write-Warning "dendrite assets NOT staged for $tag — building MSI without bundled homeserver. servitude_start will surface BinaryNotFound at runtime. Detail: $_"
+            # gh release download leaves $LASTEXITCODE non-zero on its
+            # native side; pwsh propagates that as the script's exit
+            # code at end-of-script, killing the whole job. We've
+            # intentionally swallowed that error here, so reset
+            # $LASTEXITCODE so subsequent steps see a clean slate.
+            $global:LASTEXITCODE = 0
+          }
+          # Echo to summary so a reviewer skimming the run page can see
+          # the binding state at a glance.
+          if ($downloaded) {
+            "dendrite assets: STAGED ($tag)" >> $env:GITHUB_STEP_SUMMARY
+            foreach ($k in $fileResults.Keys) {
+              "  - ${k}: $($fileResults[$k]) bytes" >> $env:GITHUB_STEP_SUMMARY
+            }
+          } else {
+            "dendrite assets: NOT STAGED — bundle will run without embedded homeserver" >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Tauri build (MSI + NSIS, no debug)
+        working-directory: src-tauri
+        # `--bundles msi nsis` produces both installers in one cargo
+        # build pass; without an explicit list Tauri skips bundling on
+        # some Windows-toolchain edge cases. `--ci` opts into machine-
+        # parseable output and prevents prompts.
+        run: cargo tauri build --ci --bundles msi nsis
+
+      - name: List artifacts (debug)
+        if: always()
+        shell: bash
+        run: |
+          echo "=== bundle/msi ==="
+          ls -la src-tauri/target/release/bundle/msi/ || true
+          echo "=== bundle/nsis ==="
+          ls -la src-tauri/target/release/bundle/nsis/ || true
+
+      - name: Upload MSI installer
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: concord-windows-msi
+          path: src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload NSIS installer
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: concord-windows-nsis
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14

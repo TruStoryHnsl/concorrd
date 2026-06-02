@@ -3,7 +3,7 @@
   Concord iOS / iPadOS entitlements template.
 
   This file is COMMITTED BEFORE `cargo tauri ios init` has been run on
-  orrpheus. Once Tauri generates the full Xcode project at
+  the macOS build host. Once Tauri generates the full Xcode project at
   src-tauri/gen/apple/concord_iOS/concord_iOS.entitlements, port these
   keys into the generated file — do NOT check the generated copy in
   separately. This file is the source-of-truth checklist the porting

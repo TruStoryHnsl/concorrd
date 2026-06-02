@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import type { LocalParticipant, LocalTrackPublication } from "livekit-client";
 import { Track } from "livekit-client";
 import {
-  listSoundboardClips,
+  listSoundboardLibrary,
   uploadSoundboardClip,
   deleteSoundboardClip,
   updateSoundboardClip,
@@ -53,17 +53,21 @@ export function SoundboardPanel({
   const participantRef = useRef(localParticipant);
   participantRef.current = localParticipant;
 
+  // INS-073: load from the instance-wide library, not a per-server slice.
+  // Every clip uploaded on this instance, by any user on any server, is
+  // visible here. The dual-mode browse UI further down switches between
+  // this local pool and the online Freesound discovery feed.
   const loadClips = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const data = await listSoundboardClips(serverId, accessToken);
+      const data = await listSoundboardLibrary(accessToken);
       setClips(data);
     } catch (err) {
       console.error("Failed to load clips:", err);
     } finally {
       setLoading(false);
     }
-  }, [serverId, accessToken]);
+  }, [accessToken]);
 
   useEffect(() => {
     loadClips();
@@ -319,13 +323,22 @@ export function SoundboardPanel({
         />
       )}
 
-      {/* Library browser */}
+      {/* INS-073: dual-mode library browser — Local (instance-wide pool) +
+          Discover (Freesound). The Local tab lets the user pick any clip
+          already in the instance library to play directly; the Discover
+          tab is the existing Freesound search/import flow. */}
       {showLibrary && (
         <LibraryBrowser
           serverId={serverId}
+          existingClips={clips}
           onImported={(clip) => {
             setClips((prev) => [...prev, clip]);
           }}
+          onPlayLocal={(clip) => {
+            if (playingId) return;
+            playClip(clip);
+          }}
+          isPlaying={(clipId) => playingId === clipId}
         />
       )}
 
@@ -516,14 +529,27 @@ function UploadForm({
   );
 }
 
+/**
+ * INS-073: dual-mode browser. "Local" lists every clip in the
+ * instance-wide library (with a name filter); "Discover" runs Freesound
+ * searches and imports into the same instance-wide library. The two
+ * modes share a header but otherwise render independent panels.
+ */
 function LibraryBrowser({
   serverId,
+  existingClips,
   onImported,
+  onPlayLocal,
+  isPlaying,
 }: {
   serverId: string;
+  existingClips: SoundboardClip[];
   onImported: (clip: SoundboardClip) => void;
+  onPlayLocal: (clip: SoundboardClip) => void;
+  isPlaying: (clipId: number) => boolean;
 }) {
   const accessToken = useAuthStore((s) => s.accessToken);
+  const [mode, setMode] = useState<"local" | "discover">("local");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<LibrarySortOption>("relevance");
   const [results, setResults] = useState<LibrarySound[]>([]);
@@ -534,6 +560,18 @@ function LibraryBrowser({
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastQueryRef = useRef("");
+
+  // Local-mode filter: case-insensitive substring match on the existing
+  // (already-loaded) instance-wide library. We deliberately filter on the
+  // client rather than calling /api/soundboard/library?q=... again — the
+  // parent already has the full list cached, so re-fetching wastes a
+  // round-trip and risks a flicker.
+  const localMatches = (() => {
+    if (mode !== "local") return existingClips;
+    const trimmed = query.trim().toLowerCase();
+    if (!trimmed) return existingClips;
+    return existingClips.filter((c) => c.name.toLowerCase().includes(trimmed));
+  })();
 
   const doSearch = useCallback(async (q: string, s: LibrarySortOption) => {
     if (!q.trim() || !accessToken) return;
@@ -591,12 +629,21 @@ function LibraryBrowser({
         .replace(/[-_]/g, " ")
         .slice(0, 50)
         .trim();
+      // INS-073: forward license + attribution. We capture exactly what
+      // the user saw in the search row so the persisted record matches
+      // the consent the user gave by clicking Add. The server backfills
+      // sentinels if any field is missing.
       const clip = await importLibrarySound(
         serverId,
         sound.id,
         cleanName || sound.name,
         sound.preview_url,
         accessToken,
+        {
+          license: sound.license ?? null,
+          license_url: sound.license_url ?? null,
+          attribution: sound.username ?? null,
+        },
       );
       onImported(clip);
     } catch (err) {
@@ -632,25 +679,128 @@ function LibraryBrowser({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 px-3 py-3 bg-surface-container/30 border-b border-outline-variant/15 gap-2">
-      <form onSubmit={handleSearch} className="flex gap-2 flex-shrink-0">
+      {/* INS-073: dual-mode tab switcher. Local = instance library,
+          Discover = Freesound search/import. Resetting query on switch
+          would surprise users who toggle to compare results, so we
+          deliberately keep the query box across modes. */}
+      <div className="flex gap-1 flex-shrink-0" role="tablist" aria-label="Soundboard browse mode">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "local"}
+          onClick={() => setMode("local")}
+          className={`flex-1 px-3 py-1 text-xs rounded transition-colors ${
+            mode === "local"
+              ? "bg-primary text-on-surface"
+              : "bg-surface-container-high text-on-surface-variant hover:text-on-surface hover:bg-surface-container-highest"
+          }`}
+        >
+          Local
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "discover"}
+          onClick={() => setMode("discover")}
+          className={`flex-1 px-3 py-1 text-xs rounded transition-colors ${
+            mode === "discover"
+              ? "bg-primary text-on-surface"
+              : "bg-surface-container-high text-on-surface-variant hover:text-on-surface hover:bg-surface-container-highest"
+          }`}
+        >
+          Discover
+        </button>
+      </div>
+
+      <form
+        onSubmit={mode === "discover" ? handleSearch : (e) => e.preventDefault()}
+        className="flex gap-2 flex-shrink-0"
+      >
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search sound effects..."
+          placeholder={mode === "local" ? "Filter library..." : "Search sound effects..."}
           className="flex-1 px-3 py-1.5 bg-surface-container border border-outline-variant rounded text-sm text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
         />
-        <button
-          type="submit"
-          disabled={!query.trim() || searching}
-          className="px-3 py-1.5 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface text-xs rounded transition-colors"
-        >
-          {searching ? "..." : "Search"}
-        </button>
+        {mode === "discover" && (
+          <button
+            type="submit"
+            disabled={!query.trim() || searching}
+            className="px-3 py-1.5 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface text-xs rounded transition-colors"
+          >
+            {searching ? "..." : "Search"}
+          </button>
+        )}
       </form>
 
+      {/* INS-073: Local mode — render the instance-wide library list,
+          filtered by `query`. Clicking a row plays the clip directly. */}
+      {mode === "local" && (
+        <div className="flex-1 overflow-y-auto space-y-1 min-h-0">
+          {localMatches.length === 0 ? (
+            <p className="text-xs text-on-surface-variant text-center py-4">
+              {existingClips.length === 0
+                ? "No clips in the library yet. Use Discover to find some, or upload your own."
+                : "No matches. Clear the filter to see everything."}
+            </p>
+          ) : (
+            localMatches.map((clip) => (
+              <div
+                key={clip.id}
+                className="flex items-center gap-2 px-2 py-1.5 rounded bg-surface-container hover:bg-surface-container-high"
+              >
+                <button
+                  onClick={() => onPlayLocal(clip)}
+                  className={`w-6 h-6 flex-shrink-0 flex items-center justify-center rounded transition-colors ${
+                    isPlaying(clip.id)
+                      ? "bg-primary text-on-surface"
+                      : "bg-surface-container-highest text-on-surface-variant hover:text-on-surface"
+                  }`}
+                  title={isPlaying(clip.id) ? "Playing" : "Play"}
+                >
+                  {isPlaying(clip.id) ? (
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                      <rect x="6" y="4" width="4" height="16" />
+                      <rect x="14" y="4" width="4" height="16" />
+                    </svg>
+                  ) : (
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  )}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-on-surface truncate">{clip.name}</p>
+                  {/* INS-073: surface attribution for Freesound clips so the
+                      CC license obligation is visible at the point of use. */}
+                  {clip.source === "freesound" && (
+                    <p className="text-[9px] text-on-surface-variant truncate">
+                      {clip.attribution ? `by ${clip.attribution} · ` : ""}
+                      {clip.license_url ? (
+                        <a
+                          href={clip.license_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:text-on-surface underline"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {clip.license || "view license"}
+                        </a>
+                      ) : (
+                        <span>{clip.license || "freesound.org"}</span>
+                      )}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
       {/* Sort options — shown after first search */}
-      {(results.length > 0 || lastQueryRef.current) && (
+      {mode === "discover" && (results.length > 0 || lastQueryRef.current) && (
         <div className="flex gap-1 flex-shrink-0 flex-wrap">
           {(["relevance", "popular", "rating", "newest", "shortest", "longest"] as LibrarySortOption[]).map((opt) => (
             <button
@@ -670,7 +820,7 @@ function LibraryBrowser({
 
       {error && <p className="text-xs text-error flex-shrink-0">{error}</p>}
 
-      {results.length > 0 && (
+      {mode === "discover" && results.length > 0 && (
         <div className="flex-1 overflow-y-auto space-y-1 min-h-0">
           {results.map((sound) => (
             <div
@@ -699,10 +849,34 @@ function LibraryBrowser({
                 )}
               </button>
 
-              {/* Name + duration */}
+              {/* Name + duration + license preview */}
               <div className="flex-1 min-w-0">
                 <p className="text-xs text-on-surface truncate">{sound.name}</p>
-                <p className="text-[10px] text-on-surface-variant">{sound.duration.toFixed(1)}s</p>
+                <p className="text-[10px] text-on-surface-variant truncate">
+                  {sound.duration.toFixed(1)}s
+                  {sound.username && (
+                    <span className="ml-1.5">· by {sound.username}</span>
+                  )}
+                  {sound.license && (
+                    // INS-073: show the CC license inline so the user sees
+                    // the obligation BEFORE clicking Add.
+                    <span className="ml-1.5">·{" "}
+                      {sound.license_url ? (
+                        <a
+                          href={sound.license_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:text-on-surface underline"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          license
+                        </a>
+                      ) : (
+                        "licensed"
+                      )}
+                    </span>
+                  )}
+                </p>
               </div>
 
               {/* Trim button */}
@@ -733,9 +907,11 @@ function LibraryBrowser({
         </div>
       )}
 
-      <p className="text-[10px] text-on-surface-variant/50 text-center flex-shrink-0">
-        Powered by Freesound.org
-      </p>
+      {mode === "discover" && (
+        <p className="text-[10px] text-on-surface-variant/50 text-center flex-shrink-0">
+          Powered by Freesound.org
+        </p>
+      )}
     </div>
   );
 }

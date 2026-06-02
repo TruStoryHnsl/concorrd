@@ -1,9 +1,72 @@
 {
     http_port 8080
     https_port 8443
+    # pki block for the internal_longlived TLS_MODE snippet. Harmless
+    # for the public-ACME modes — Caddy only consults `pki` when an
+    # `issuer internal` directive is active on a site.
+    pki {
+        ca local {
+            root_cn "Concord Local Root"
+            intermediate_cn "Concord Local Intermediate"
+            intermediate_lifetime 80000h
+        }
+    }
+}
+
+# ── TLS_MODE snippets ──────────────────────────────────────────────────
+# Imported at the top of the {$SITE_ADDRESS} block based on the
+# TLS_MODE env var. See .env.example for the operator-facing description
+# of each mode. Kept in lockstep with config/Caddyfile.dev so both
+# surfaces share an identical mode matrix.
+
+# Caddy's internal CA with a long-lived leaf cert (~9 years).
+# Tailscale-only / LAN-only deployment. Operators add Caddy's root
+# CA to their trust store (or accept the cert exception) once.
+# See the matching snippet comment in Caddyfile.dev for the full
+# rationale on why the lifetime override is load-bearing.
+(tls_mode_internal_longlived) {
+    tls {
+        issuer internal {
+            lifetime 78000h
+        }
+    }
+}
+
+# Public ACME via HTTP-01. Requires port 80 reachable from the
+# public internet for the validation handshake. Default for the
+# production Caddyfile. ACME_EMAIL is optional — when set, Caddy
+# uses it as the ACME account contact; when blank, Caddy auto-generates
+# an anonymous account. The placeholder `internal@example.invalid`
+# never reaches Let's Encrypt: it only gets written into the ACME
+# account if the operator actually leaves ACME_EMAIL blank AND Caddy
+# falls all the way back to the literal default, which is harmless
+# (LE allows non-existent emails for the account record itself; it
+# only matters when LE wants to email expiry warnings).
+(tls_mode_letsencrypt_http01) {
+    tls {$ACME_EMAIL:internal@example.invalid}
+}
+
+# Public ACME via DNS-01 against Cloudflare. No public reachability
+# required. Requires CLOUDFLARE_API_TOKEN with Zone.Zone:Read +
+# Zone.DNS:Edit on the zone hosting SITE_ADDRESS. Same ACME_EMAIL
+# fallback as the HTTP-01 snippet.
+(tls_mode_letsencrypt_dns01_cloudflare) {
+    tls {$ACME_EMAIL:internal@example.invalid} {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
 }
 
 {$SITE_ADDRESS} {
+    # TLS strategy is operator-pickable via the TLS_MODE env var.
+    # See .env.example for the full description of each mode. The
+    # default for the prod Caddyfile is `letsencrypt_http01` — the
+    # historical auto-ACME behaviour when SITE_ADDRESS is a public
+    # hostname. Caddyfile has no real `if/else`, so each mode is a
+    # named snippet defined at the bottom of this file and imported
+    # by name. The `{$TLS_MODE:letsencrypt_http01}` default applies
+    # when the operator leaves TLS_MODE empty in .env.
+    import tls_mode_{$TLS_MODE:letsencrypt_http01}
+
     # Compression
     encode gzip
 
@@ -18,6 +81,20 @@
     # Max upload size (media, soundboard clips)
     request_body {
         max_size 20MB
+    }
+
+    # Matrix login — rate-limited via concord-api (2026-05-18 pentest F1).
+    # Tuwunel has no per-IP login throttle, and the catch-all /_matrix/*
+    # block below would otherwise let a hostile page mount an unbounded
+    # online dictionary attack from any visitor's browser. concord-api
+    # applies the same sliding-window deque-per-IP limiter that protects
+    # /api/register (server/routers/matrix_proxy.py) and proxies onward
+    # to tuwunel. Order matters: this handle must come BEFORE /_matrix/*.
+    handle /_matrix/client/*/login {
+        reverse_proxy concord-api:8000 {
+            header_up X-Forwarded-Proto {http.request.scheme}
+            flush_interval -1
+        }
     }
 
     # Matrix Client-Server API (streaming, no buffering)

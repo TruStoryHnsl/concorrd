@@ -5,6 +5,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useToastStore } from "../../stores/toast";
 import { FederationBadge } from "../ui/FederationBadge";
 import { useLocalServerName } from "../../hooks/useFederation";
+import { BringingUpSplash } from "../BringingUpSplash";
 import {
   updateServerSettings,
   listMembers,
@@ -758,7 +759,7 @@ function BansTab({ serverId, accessToken }: { serverId: string; accessToken: str
       </form>
 
       {loading ? (
-        <p className="text-on-surface-variant text-sm">Loading...</p>
+        <BringingUpSplash size="compact" status="Loading…" />
       ) : bans.length === 0 ? (
         <p className="text-on-surface-variant text-sm">No banned users</p>
       ) : (
@@ -849,7 +850,7 @@ function WhitelistTab({ serverId, accessToken }: { serverId: string; accessToken
       </form>
 
       {loading ? (
-        <p className="text-on-surface-variant text-sm">Loading...</p>
+        <BringingUpSplash size="compact" status="Loading…" />
       ) : entries.length === 0 ? (
         <p className="text-on-surface-variant text-sm">No whitelisted users</p>
       ) : (
@@ -979,7 +980,7 @@ function WebhooksTab({ serverId, accessToken }: { serverId: string; accessToken:
       </form>
 
       {loading ? (
-        <p className="text-on-surface-variant text-sm">Loading...</p>
+        <BringingUpSplash size="compact" status="Loading…" />
       ) : webhooks.length === 0 ? (
         <p className="text-on-surface-variant text-sm">No webhooks configured</p>
       ) : (
@@ -1113,7 +1114,7 @@ function ModerationTab({ serverId, accessToken }: { serverId: string; accessToke
     }
   };
 
-  if (loading) return <p className="text-on-surface-variant text-sm">Loading...</p>;
+  if (loading) return <BringingUpSplash size="compact" status="Loading…" />;
 
   const nonOwnerMembers = members.filter((m) => m.role !== "owner");
 

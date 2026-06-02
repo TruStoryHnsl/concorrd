@@ -29,7 +29,7 @@ import os
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from routers.servers import get_user_id
+from dependencies import get_user_id
 from services.tuwunel_config import (
     decode_server_name_patterns,
     read_federation,
