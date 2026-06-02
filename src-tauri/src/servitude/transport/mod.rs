@@ -546,6 +546,27 @@ impl LibP2pRuntime {
             transport.register_federation_handler(handler);
         }
 
+        // F-A / F-C — register the Concord user-definition protocol
+        // responder on `/concord/user-profile/1.0.0`. This is what makes
+        // an inbound `GetSelf` get a real descriptor back; without it the
+        // F-C hero binding's `lookup_peer_hero` against a peer would
+        // never receive a hero pubkey and the hero gate could never open.
+        // Backed by the SAME Stronghold seed + trust log the host's own
+        // `concord_user_get_self` Tauri command reads, so the peer-to-peer
+        // answer and the local answer are identical. The vanity instance
+        // name (when set) is the descriptor's display label.
+        {
+            use crate::servitude::concord_user::{
+                ConcordUserHandler, StrongholdDescriptorApi,
+            };
+            let api = std::sync::Arc::new(StrongholdDescriptorApi::new(
+                self.stronghold.clone(),
+                self.instance_name.clone(),
+            ));
+            let handler = std::sync::Arc::new(ConcordUserHandler::new(api));
+            transport.register_federation_handler(handler);
+        }
+
         // Capture the stream control before run() consumes the
         // transport so the porch visit commands can open outbound
         // streams. Held until stop() clears it.

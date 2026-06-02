@@ -234,6 +234,58 @@ mod tests {
         });
     }
 
+    /// With a libp2p control WIRED (the production binding shape), the
+    /// hero gate is consulted only AFTER the tailscale gate passes. When
+    /// tailscale fails the lookup is short-circuited — proven here by the
+    /// fact that the evaluation returns cleanly with `hero_passes=false`
+    /// even though the control points at no live swarm (a real lookup
+    /// against this control would block/fail; it never runs).
+    #[test]
+    fn control_wired_gate_short_circuits_when_tailscale_fails() {
+        let binding = HeroBinding::with_control(
+            Some(local_hero(0xAA)),
+            std::sync::Arc::new(tokio::sync::Mutex::new(
+                libp2p_stream::Behaviour::new().new_control(),
+            )),
+        );
+        let peer = peer();
+        // Non-tailnet peer addr → gate (ii) fails.
+        let peer_addrs = vec![ma("/ip4/192.168.1.123/tcp/4001")];
+        with_local_ips(vec![Ipv4Addr::new(192, 168, 1, 152)], || {
+            let outcome =
+                block(evaluate_gates(&binding, &peer, &peer_addrs)).unwrap();
+            assert!(!outcome.tailscale_passes);
+            assert!(!outcome.hero_passes);
+            assert!(!outcome.both_pass());
+        });
+    }
+
+    /// When tailscale PASSES, the hero binding IS consulted (not
+    /// bypassed). Demonstrated with a control-less binding so the lookup
+    /// resolves deterministically to a closed gate (`Ok(None)` →
+    /// `hero_passes=false`) without any network op: the consult path runs
+    /// (it's the only way `hero_passes` gets evaluated at all), it just
+    /// returns the safe closed value. Contrast with
+    /// `control_wired_gate_short_circuits_when_tailscale_fails`, where the
+    /// consult path is skipped entirely.
+    #[test]
+    fn hero_gate_is_consulted_when_tailscale_passes() {
+        let binding = HeroBinding::new(Some(local_hero(0xAA)));
+        assert!(!binding.has_control());
+        let peer = peer();
+        let peer_addrs = vec![ma("/ip4/100.78.87.6/tcp/4001")];
+        with_local_ips(vec![Ipv4Addr::new(100, 78, 87, 5)], || {
+            let outcome =
+                block(evaluate_gates(&binding, &peer, &peer_addrs)).unwrap();
+            assert!(outcome.tailscale_passes);
+            // Consulted → returns closed (no control) rather than a free
+            // pass. hero_passes is the *result* of the consult, not a
+            // short-circuit default.
+            assert!(!outcome.hero_passes);
+            assert!(outcome.diagnostic().contains("hero"));
+        });
+    }
+
     #[test]
     fn diagnostic_partitions_peer_and_local_misses() {
         // peer not advertising a tailnet addr; local IS on tailnet.

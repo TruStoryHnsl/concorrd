@@ -1,9 +1,22 @@
-//! F-C — Hero-account binding stub.
+//! F-C — Hero-account binding (wired in production 2026-06-01).
 //!
 //! Architecture C's hero-sync rule requires two independent gates: (i)
 //! the local install and the remote peer share a hero account, AND (ii)
 //! the two machines are reachable through Tailscale. This module is the
 //! plumbing for gate (i).
+//!
+//! ## Production wiring (2026-06-01)
+//!
+//! [`HeroBinding`] is no longer test-only. The Tauri runtime assembles a
+//! production binding via [`HeroBinding::with_control`]: the local
+//! [`HeroDescriptor`] is derived from the install's Stronghold seed (see
+//! [`local_hero_descriptor`]) and the libp2p control is cloned from the
+//! running transport. The `hero_sync_evaluate_gate` Tauri command builds
+//! that live binding and runs [`crate::servitude::hero_sync::gate::evaluate_gates`]
+//! against a real peer's known multiaddrs. The closed-gate-without-control
+//! invariant below is unchanged: a binding built without a control (the
+//! `new`/`Default` constructors, used by unit tests and pre-swarm
+//! contexts) still returns `None` for every lookup.
 //!
 //! ## F-A is wired (2026-06-01)
 //!
@@ -115,6 +128,20 @@ impl HeroBinding {
         }
     }
 
+    /// The local install's hero descriptor, if one is set. Used by
+    /// diagnostics + the production-constructor tests to confirm the
+    /// Stronghold-derived pubkey was carried in.
+    pub fn local(&self) -> Option<&HeroDescriptor> {
+        self.local.as_ref()
+    }
+
+    /// Whether a libp2p stream control is wired. `true` only for the
+    /// production [`Self::with_control`] path; `false` for the
+    /// test/pre-swarm `new`/`Default` constructors (closed gate).
+    pub fn has_control(&self) -> bool {
+        self.control.is_some()
+    }
+
     /// Lookup the remote peer's hero descriptor via F-A's
     /// user-definition protocol.
     ///
@@ -170,19 +197,43 @@ impl HeroBinding {
     }
 
     /// Direct comparator — for tests that already have both descriptors
-    /// in hand and want to skip the (currently stubbed) lookup.
+    /// in hand and want to skip the networked lookup.
     pub fn pubkeys_match(local: &HeroDescriptor, remote: &HeroDescriptor) -> bool {
         local.hero_pubkey == remote.hero_pubkey
     }
 }
 
-/// Error surface for the hero binding. Currently only `Unavailable`;
-/// F-A will add concrete variants once the lookup is real.
+/// Build the LOCAL install's [`HeroDescriptor`] from the persisted
+/// Stronghold seed. The hero pubkey is the install's `concord_uid`
+/// (`ConcordUid::as_bytes`, the 32-byte Ed25519 pubkey shared by every
+/// device of the same hero); the label is the resolved display name.
+///
+/// Reuses [`crate::servitude::concord_user::build_local_descriptor`] so
+/// the hero pubkey advertised on the wire (via the F-A responder) and the
+/// pubkey the local gate compares against are derived from ONE source —
+/// no drift between "what we tell peers" and "what we compare locally".
+pub async fn local_hero_descriptor(
+    stronghold: &crate::servitude::identity::StrongholdHandle,
+    display_name: Option<&str>,
+) -> Result<HeroDescriptor, HeroBindingError> {
+    let descriptor =
+        crate::servitude::concord_user::build_local_descriptor(stronghold, display_name)
+            .await
+            .map_err(|e| HeroBindingError::Unavailable(e.to_string()))?;
+    Ok(HeroDescriptor {
+        hero_pubkey: *descriptor.concord_uid.as_bytes(),
+        display_label: descriptor.display_name,
+    })
+}
+
+/// Error surface for the hero binding.
 #[derive(Debug, thiserror::Error)]
 pub enum HeroBindingError {
-    /// Architecture A's lookup surface is not available — should never
-    /// fire while the stub is in place, but reserved so the
-    /// integration-point swap doesn't break the call surface.
+    /// The F-A descriptor lookup (or the local descriptor build) failed —
+    /// e.g. the libp2p stream could not open, the peer hung up, or the
+    /// Stronghold seed could not be read. A failure here is NOT a closed
+    /// gate decision (those return `Ok(None)`); it is a transport/identity
+    /// fault the caller surfaces as a diagnostic.
     #[error("hero-binding lookup unavailable: {0}")]
     Unavailable(String),
 }

@@ -291,3 +291,49 @@ impl ConcordUserApi for StaticDescriptorApi {
         Ok(self.descriptor.clone())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Stronghold-backed descriptor source — the PRODUCTION responder.
+// ---------------------------------------------------------------------------
+
+/// The production [`ConcordUserApi`]: builds THIS install's descriptor
+/// on demand from the persisted Stronghold seed + trust log via
+/// [`super::build_local_descriptor`]. Registered by the transport's
+/// `start()` so an inbound `GetSelf` on `/concord/user-profile/1.0.0`
+/// returns the real local hero descriptor — without which F-C's
+/// `HeroBinding::lookup_peer_hero` against this peer would always get an
+/// empty answer (closed gate).
+///
+/// The descriptor is rebuilt per request rather than cached so a freshly
+/// added trust edge or a renamed install is reflected on the next peer
+/// fetch with no swarm restart.
+pub struct StrongholdDescriptorApi {
+    stronghold: Arc<crate::servitude::identity::StrongholdHandle>,
+    /// Operator vanity name (the transport's `instance_name`). `None`
+    /// collapses to the `hero-<uid8>` placeholder inside the builder.
+    display_name: Option<String>,
+}
+
+impl StrongholdDescriptorApi {
+    pub fn new(
+        stronghold: Arc<crate::servitude::identity::StrongholdHandle>,
+        display_name: Option<String>,
+    ) -> Self {
+        Self {
+            stronghold,
+            display_name,
+        }
+    }
+}
+
+#[async_trait]
+impl ConcordUserApi for StrongholdDescriptorApi {
+    async fn get_self(&self) -> Result<ConcordUserDescriptor, ConcordUserErrorBody> {
+        super::build_local_descriptor(&self.stronghold, self.display_name.as_deref())
+            .await
+            .map_err(|e| ConcordUserErrorBody {
+                code: 500,
+                message: format!("local descriptor build failed: {e}"),
+            })
+    }
+}

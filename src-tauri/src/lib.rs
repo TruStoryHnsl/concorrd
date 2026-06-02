@@ -2915,9 +2915,8 @@ async fn log_diagnostic(app: tauri::AppHandle, msg: String) -> Result<(), String
 // ---------------------------------------------------------------------------
 
 use servitude::concord_user::{
-    derive_signing_key, AvatarRef, ConcordUserDescriptor, ConcordUserRequest,
-    ServerId, ServerProfile, TrustEdge, TrustEdgeRevocation, TrustLogEntry,
-    CONCORD_USER_PROTOCOL_ID,
+    derive_signing_key, ConcordUserDescriptor, ConcordUserRequest, ServerId, TrustEdge,
+    TrustEdgeRevocation, TrustLogEntry, CONCORD_USER_PROTOCOL_ID,
 };
 
 /// Build the LOCAL install's [`ConcordUserDescriptor`]. The descriptor is
@@ -2937,50 +2936,13 @@ async fn concord_user_get_self(
     app: tauri::AppHandle,
 ) -> Result<ConcordUserDescriptor, String> {
     let stronghold = get_or_open_peer_identity(&state, &app).await?;
-    let seed = identity::peer_seed(&stronghold)
-        .await
-        .map_err(|e| format!("peer_seed: {e}"))?;
-    let (signing_key, uid) = derive_signing_key(&seed);
-
     let cfg = ServitudeConfig::from_store(&app).map_err(|e| e.to_string())?;
-    let display_name = if cfg.display_name.trim().is_empty()
-        || cfg.display_name.trim() == "concord-node"
-    {
-        // Fresh install with no name yet — fall back to a stable
-        // placeholder derived from the uid hex (first 8 chars) so
-        // the descriptor still verifies and the JSON stays
-        // deterministic for round-trip tests.
-        format!("hero-{}", &uid.to_hex()[..8])
-    } else {
-        cfg.display_name.clone()
-    };
-
-    let mut descriptor = ConcordUserDescriptor::empty(uid, display_name.clone());
-
-    // Seed the descriptor with one row for this install's own porch.
-    // The porch server_id is `porch:<peerid-base58>`; we already derive
-    // the peerid from the same seed, so we can fabricate it without
-    // going through the swarm.
-    let porch_server_id = porch_server_id_for(&seed);
-    let porch_row = ServerProfile::sign_new(
-        &signing_key,
-        &uid,
-        ServerId::new(porch_server_id),
-        display_name,
-        None,
-        AvatarRef::None,
-    );
-    descriptor.upsert_server_profile(porch_row);
-
-    // Replay the trust log into the descriptor so the merge view picks
-    // up any user-declared edges.
-    let log = servitude::concord_user::trust_store_list_log(&stronghold)
+    // The display-name fallback (empty / "concord-node" → "hero-<uid8>")
+    // now lives inside the shared builder, so the peer-to-peer F-A
+    // responder and this command return byte-identical descriptors.
+    servitude::concord_user::build_local_descriptor(&stronghold, Some(&cfg.display_name))
         .await
-        .map_err(|e| format!("trust_store_list_log: {e}"))?;
-    for entry in log {
-        descriptor.append_trust(entry);
-    }
-    Ok(descriptor)
+        .map_err(|e| format!("build_local_descriptor: {e}"))
 }
 
 /// Fetch a paired peer's descriptor over the `/concord/user-profile/1.0.0`
@@ -3089,20 +3051,136 @@ async fn concord_user_revoke_trust_edge(
     Ok(())
 }
 
-/// Derive the canonical `porch:<peerid>` server id for the local
-/// install from its Ed25519 seed. Public-key derivation is
-/// deterministic, so this function is pure given the seed bytes.
-fn porch_server_id_for(seed: &zeroize::Zeroizing<[u8; identity::SECRET_SEED_LEN]>) -> String {
-    use libp2p::identity::Keypair;
-    let kp = Keypair::ed25519_from_bytes(seed.to_vec())
-        .expect("ed25519 keypair from 32-byte seed must succeed");
-    let peer_id = libp2p::PeerId::from(kp.public());
-    format!("porch:{}", peer_id)
+// ---------------------------------------------------------------------------
+// F-C — Tailscale-gated hero-sync: live two-gate evaluation command.
+//
+// This is the production seam the future connection-triggered sync driver
+// will call. It assembles a LIVE `HeroBinding` — local hero descriptor
+// derived from the install's Stronghold seed + the running transport's
+// libp2p stream control — and runs the two-gate evaluator against a real
+// peer's known multiaddrs (from the peer store). Proving the gate opens
+// against a same-hero peer on the tailnet was impossible before this:
+// `HeroBinding` was constructed only in tests and `evaluate_gates` was
+// never reachable from a live code path.
+//
+// NOT auto-fired on `ConnectionEstablished` yet: the swarm run loop in
+// `servitude/p2p.rs` has no handle to the install's Stronghold (it
+// bootstraps from the seed only), so deriving the local hero descriptor
+// inside the connection callback would require threading a
+// `StrongholdHandle` (and the trust-store read path) into the swarm task
+// — a substantial refactor the task scope explicitly defers. The command
+// below is the smaller correct change; the connection-loop auto-hook is
+// the documented remaining work.
+// ---------------------------------------------------------------------------
+
+/// Serializable result of one live two-gate evaluation, returned across
+/// the Tauri IPC boundary. Flattens [`servitude::hero_sync::GateOutcome`]
+/// (which is not `Serialize`) plus the human-readable diagnostic.
+#[derive(Debug, Clone, serde::Serialize)]
+struct HeroGateReport {
+    /// Gate (ii) — Tailscale reachability — passed.
+    tailscale_passes: bool,
+    /// Gate (i) — shared hero account — passed.
+    hero_passes: bool,
+    /// BOTH gates passed; the only state in which a hero-sync round may
+    /// be triggered.
+    both_pass: bool,
+    /// Whether a peer multiaddr advertised a CGNAT-range (tailnet) IP.
+    peer_in_cgnat: bool,
+    /// Whether the local install has a CGNAT-range (tailnet) IP bound.
+    local_in_cgnat: bool,
+    /// Number of known multiaddrs consulted for `peer_id`.
+    peer_multiaddr_count: usize,
+    /// Human-readable diagnostic for the UI banner / logs.
+    diagnostic: String,
 }
 
-// Touch the protocol-id symbol so it's wired into the type-export
-// surface even before any caller pulls it in directly. Removable when
-// the next phase wires the handler into the swarm's registration loop.
+/// F-C — run the live two-gate hero-sync evaluation against a single
+/// peer. Builds a production [`servitude::hero_binding::HeroBinding`]
+/// (local hero from Stronghold + libp2p control from the running
+/// transport) and evaluates both gates against the peer's known
+/// multiaddrs from the peer store.
+///
+/// Returns a [`HeroGateReport`]. `both_pass = true` is the signal that a
+/// hero-sync round MAY be triggered for this peer. The evaluator
+/// short-circuits closed on the cheap tailscale probe before consulting
+/// the (networked) hero binding, so a non-tailnet peer never triggers a
+/// libp2p descriptor fetch.
+#[tauri::command]
+async fn hero_sync_evaluate_gate(
+    servitude_state: tauri::State<'_, ServitudeState>,
+    identity_state: tauri::State<'_, PeerIdentityState>,
+    app: tauri::AppHandle,
+    peer_id: String,
+) -> Result<HeroGateReport, String> {
+    use servitude::hero_binding::{local_hero_descriptor, HeroBinding};
+    use servitude::hero_sync::evaluate_gates;
+
+    let peer: libp2p::PeerId = peer_id
+        .parse()
+        .map_err(|e| format!("invalid peer_id: {e}"))?;
+
+    // Stronghold: source of the local hero descriptor AND the peer-store
+    // multiaddrs. Same handle the running transport derives its identity
+    // from (see `servitude_start`), so the local hero pubkey here matches
+    // what this install advertises over `/concord/user-profile/1.0.0`.
+    let stronghold = get_or_open_peer_identity(&identity_state, &app).await?;
+    let cfg = ServitudeConfig::from_store(&app).map_err(|e| e.to_string())?;
+    let local_hero = local_hero_descriptor(&stronghold, Some(&cfg.display_name))
+        .await
+        .map_err(|e| format!("local_hero_descriptor: {e}"))?;
+
+    // Live libp2p stream control from the running transport. Cloned the
+    // same way the porch visit commands obtain theirs.
+    let control = {
+        let guard = servitude_state.0.lock().await;
+        let handle = guard
+            .as_ref()
+            .ok_or_else(|| "servitude is not running".to_string())?;
+        handle
+            .porch_stream_control()
+            .ok_or_else(|| "libp2p runtime is not running".to_string())?
+    };
+
+    // Known multiaddrs for the peer, from the peer store. Empty list →
+    // the tailscale gate fails (no advertised tailnet address) and the
+    // hero lookup is short-circuited.
+    let peer_multiaddrs: Vec<libp2p::Multiaddr> = servitude::peer_store::list(&stronghold)
+        .await
+        .map_err(|e| format!("peer_store::list: {e}"))?
+        .into_iter()
+        .find(|p| p.peer_id == peer_id)
+        .map(|p| {
+            p.multiaddrs
+                .iter()
+                .filter_map(|s| s.parse::<libp2p::Multiaddr>().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let binding = HeroBinding::with_control(
+        Some(local_hero),
+        std::sync::Arc::new(tokio::sync::Mutex::new(control)),
+    );
+
+    let outcome = evaluate_gates(&binding, &peer, &peer_multiaddrs)
+        .await
+        .map_err(|e| format!("evaluate_gates: {e}"))?;
+
+    Ok(HeroGateReport {
+        tailscale_passes: outcome.tailscale_passes,
+        hero_passes: outcome.hero_passes,
+        both_pass: outcome.both_pass(),
+        peer_in_cgnat: outcome.tailscale_snapshot.peer_in_cgnat,
+        local_in_cgnat: outcome.tailscale_snapshot.local_in_cgnat,
+        peer_multiaddr_count: peer_multiaddrs.len(),
+        diagnostic: outcome.diagnostic(),
+    })
+}
+
+// Touch the protocol-id symbol so it stays in the type-export surface.
+// The handler itself is now registered in the transport's `start()`
+// (`servitude/transport/mod.rs`), so this is purely a re-export anchor.
 #[allow(dead_code)]
 const _: &str = CONCORD_USER_PROTOCOL_ID;
 // Touch the log-entry type-import so refactors that move the protocol
@@ -3448,6 +3526,8 @@ pub fn run() {
             concord_user_add_trust_edge,
             concord_user_list_trust_edges,
             concord_user_revoke_trust_edge,
+            // F-C — live two-gate hero-sync evaluation.
+            hero_sync_evaluate_gate,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
