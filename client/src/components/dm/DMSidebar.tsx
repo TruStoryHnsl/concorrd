@@ -32,7 +32,7 @@ export const DMSidebar = memo(function DMSidebar({ mobile, onDMSelect }: DMSideb
   };
 
   return (
-    <div className="w-full flex flex-col min-h-0 bg-surface-container-low">
+    <div className="w-full h-full flex flex-col min-h-0 bg-surface-container-low">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-outline-variant/10">
         <h3 className="text-xs font-label font-medium text-on-surface-variant uppercase tracking-widest">

@@ -3,10 +3,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { NodeHostingTab } from "../NodeHostingTab";
 import * as servitudeApi from "../../../api/servitude";
+import * as hostingProfileApi from "../../../api/hostingProfile";
 
 /**
  * Partial-mock the servitude API. We keep the real `isServitudeState` and
- * `ServitudeState` type so type imports still resolve, but stub the three
+ * `ServitudeState` type so type imports still resolve, but stub the
  * side-effecting calls plus the `isTauri` detector so each test can pin
  * the environment explicitly.
  */
@@ -16,14 +17,24 @@ vi.mock("../../../api/servitude", async (importOriginal) => {
   return {
     ...actual,
     isTauri: vi.fn(),
-    servitudeStart: vi.fn(),
     servitudeStop: vi.fn(),
     servitudeStatus: vi.fn(),
   };
 });
 
+/**
+ * The Start button now goes through `startHostingServitude`, which flips
+ * the deployment profile to the host-capable `web_first` before bringing
+ * the lifecycle up (so the embedded homeserver is materialized). We mock
+ * that helper here — its own behavior is unit-tested in
+ * `api/__tests__/hostingProfile.test.ts`.
+ */
+vi.mock("../../../api/hostingProfile", () => ({
+  startHostingServitude: vi.fn(),
+}));
+
 const mockedIsTauri = vi.mocked(servitudeApi.isTauri);
-const mockedStart = vi.mocked(servitudeApi.servitudeStart);
+const mockedStart = vi.mocked(hostingProfileApi.startHostingServitude);
 const mockedStop = vi.mocked(servitudeApi.servitudeStop);
 const mockedStatus = vi.mocked(servitudeApi.servitudeStatus);
 
@@ -86,7 +97,7 @@ describe("<NodeHostingTab />", () => {
     expect(screen.getByTestId("node-hosting-stop")).toBeDisabled();
   });
 
-  it("clicking Start calls servitudeStart and transitions the UI to Running", async () => {
+  it("clicking Start calls startHostingServitude and transitions the UI to Running", async () => {
     mockedIsTauri.mockReturnValue(true);
     // First status() call (on mount) returns stopped. Second call
     // (post-Start refresh) returns running.
@@ -188,7 +199,7 @@ describe("<NodeHostingTab />", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows an error banner when servitudeStart rejects, and the Retry button refetches status", async () => {
+  it("shows an error banner when startHostingServitude rejects, and the Retry button refetches status", async () => {
     mockedIsTauri.mockReturnValue(true);
     mockedStatus
       // initial mount: Stopped (so Start is enabled)
@@ -216,7 +227,7 @@ describe("<NodeHostingTab />", () => {
 
     // Retry resolves the error and goes back to the Stopped state
     // (note: Retry only refetches status — it does NOT re-invoke
-    // servitudeStart. That is deliberate; the user must click Start
+    // startHostingServitude. That is deliberate; the user must click Start
     // again to re-try the action.)
     await user.click(screen.getByText("Retry"));
 

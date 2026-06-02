@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
-from routers.servers import get_user_id
+from dependencies import get_user_id
 
 router = APIRouter(prefix="/api", tags=["preview"])
 

@@ -102,6 +102,18 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
       LIVEKIT_URL: ws://livekit:7880
+      # PUBLIC_BASE_URL is the canonical public origin clients reach this
+      # instance at. server/config.py derives INSTANCE_DOMAIN from it
+      # (which in turn feeds TURN_HOST / TURN_DOMAIN derivations in
+      # server/routers/voice.py when those env vars aren't usable —
+      # e.g. when TURN_HOST is an RFC1918 address that off-LAN browsers
+      # can't reach). Without this passthrough, INSTANCE_DOMAIN falls
+      # back to ``localhost`` (from SITE_URL's default), TURN_HOST
+      # derives to ``turn.localhost`` -> 127.0.0.1, the voice-health
+      # probe correctly flags that as private, and /api/voice/token
+      # 503s every voice-join. .env already carries PUBLIC_BASE_URL;
+      # this line just routes it into the api container.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       TURN_SECRET: ${TURN_SECRET:-}
       TURN_HOST: ${TURN_HOST:-}
       TURN_DOMAIN: ${TURN_DOMAIN:-localhost}
@@ -118,6 +130,11 @@ services:
       # INS-050: Pre-populates the domain confirm field in the first-boot Host/Join picker.
       # Defaults to CONDUWUIT_SERVER_NAME if not set explicitly.
       CONCORD_DOMAIN: ${CONCORD_DOMAIN:-${CONDUWUIT_SERVER_NAME}}
+      # INS-051: canonical default domain root. Bare-slug server names
+      # are advertised as <slug>.concordchat.net unless overridden
+      # explicitly via CONCORD_DEFAULT_DOMAIN_ROOT (alternate forks
+      # who maintain a different generic domain).
+      CONCORD_DEFAULT_DOMAIN_ROOT: ${CONCORD_DEFAULT_DOMAIN_ROOT:-concordchat.net}
       # FastAPI CORSMiddleware allow-origins. When unset, main.py falls back
       # to a localhost/tauri-only default. Operators add their public
       # hostname(s) here so cross-origin flows work — e.g. adding a
@@ -130,6 +147,13 @@ services:
       TUWUNEL_CONFIG_PATH: /etc/concord-config/tuwunel.toml
       # docker-socket-proxy endpoint for the restart-on-apply flow.
       DOCKER_PROXY_URL: http://docker-socket-proxy:2375
+      # Phase 7 (INS-019b): pin the docker deployment to the web-first
+      # profile. The Tauri sidecar and the server both read this — the
+      # Rust side gates non-libp2p transports behind WebFirst, and the
+      # FastAPI hosting endpoints report it via /api/hosting/profile.
+      # Native installs leave this unset; their persisted profile
+      # defaults to p2p_only.
+      CONCORD_PROFILE: web_first
     depends_on:
       conduwuit:
         condition: service_started
@@ -147,19 +171,47 @@ services:
       - concord
 
   livekit:
-    image: livekit/livekit-server:v1.8
+    image: livekit/livekit-server:v1.9
     restart: unless-stopped
     dns:
       - 8.8.8.8
       - 1.1.1.1
+    # See docs/voice/port-coherence.md for the four-file port contract.
+    # The container-side range here (right of `:`) MUST equal
+    # config/livekit.yaml rtc.port_range_start..port_range_end.
+    # CI's config-lint job enforces this on every PR.
     ports:
       - "${LIVEKIT_TCP_PORT:-7881}:7881"
       - "${LIVEKIT_UDP_START:-50000}-${LIVEKIT_UDP_END:-50100}:50000-50100/udp"
     volumes:
       - ./config/livekit.yaml:/etc/livekit.yaml:ro
+      - ./config/livekit-entrypoint.sh:/etc/concord-livekit/entrypoint.sh:ro
     environment:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
-    command: --config /etc/livekit.yaml
+      # Optional override of LiveKit's ICE host candidate IP. Empty by
+      # default — LiveKit STUN-discovers the container's external view
+      # (correct for public deployments with port-forwarded WAN). Set
+      # in .env to an interface the browser can actually route to when
+      # STUN's answer doesn't match reality: e.g. a Tailscale-only dev
+      # origin where STUN returns the operator's home WAN IP but the
+      # browser is on Tailscale and can never reach it. Without this
+      # override, the signaling WebSocket connects fine but every ICE
+      # candidate pair fails and the RTCPeerConnection times out with
+      # "could not establish pc connection".
+      LIVEKIT_RTC_NODE_IP: "${LIVEKIT_RTC_NODE_IP:-}"
+    entrypoint: ["/bin/sh", "/etc/concord-livekit/entrypoint.sh"]
+    # INS-067 W3 (deferred): a runtime UDP-bound healthcheck would
+    # detect the docker-port-mapping black-hole that caused the
+    # 2026-05-01 incident, but LiveKit doesn't pre-bind the ICE range
+    # — UDP sockets open on-demand per peer connection. At idle,
+    # /proc/net/udp{,6} contain ZERO entries for the port_range. There
+    # is no practical container-side health probe that succeeds at
+    # idle and detects misconfig. The catch-the-misconfig safeguards
+    # are: (1) INS-067 W2's static config-coherence linter (catches
+    # drift at PR time), (2) INS-067 W1's CI smoke (boots the stack
+    # and exercises a real relay allocation against the actual host
+    # port mapping). Filed as INS-067-FUP if a sidecar-based runtime
+    # check is wanted later.
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:7880"]
       interval: 30s
@@ -203,6 +255,28 @@ services:
       # to https://<CONDUWUIT_SERVER_NAME>. The Caddyfile uses this for
       # the m.homeserver.base_url in /.well-known/matrix/client.
       MATRIX_BASE_URL: ${PUBLIC_BASE_URL:-https://${CONDUWUIT_SERVER_NAME}}
+      # TLS strategy picker — drives the `import tls_mode_<mode>` line
+      # in both Caddyfile and Caddyfile.dev. See .env.example for the
+      # documented matrix. Empty falls back to each Caddyfile's
+      # built-in default. The prod default is `letsencrypt_http01`;
+      # the dev override (docker-compose.dev.yml) substitutes
+      # `internal_longlived` so Caddyfile.dev keeps its historical
+      # Tailscale-friendly behaviour when TLS_MODE is unset in .env.
+      TLS_MODE: ${TLS_MODE:-letsencrypt_http01}
+      # Optional ACME contact email. Consumed by the letsencrypt_*
+      # TLS_MODE snippets via Caddy's `{$ACME_EMAIL:fallback}` syntax;
+      # the fallback only fires when the env var is UNSET (not when
+      # set-to-empty), so we always pass an effective placeholder
+      # value. `internal@example.invalid` is the operator-anonymous
+      # default — Let's Encrypt accepts non-existent emails for ACME
+      # account records but won't be able to send expiry warnings.
+      # Override with a real email in .env to receive renewal alerts.
+      ACME_EMAIL: ${ACME_EMAIL:-internal@example.invalid}
+      # Cloudflare API token. Consumed by the
+      # letsencrypt_dns01_cloudflare TLS_MODE snippet. Token scope:
+      # Zone.Zone:Read + Zone.DNS:Edit on the zone hosting SITE_ADDRESS.
+      # Empty is fine when TLS_MODE is not the DNS-01 mode.
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
     depends_on:
       conduwuit:
         condition: service_started
@@ -218,6 +292,52 @@ services:
       start_period: 5s
     networks:
       - concord
+
+  # Bundled SNI multiplexer on the operator's public 443.
+  #
+  # sslh sniffs the ClientHello of each inbound TCP/443 connection and
+  # routes by SNI:
+  #
+  #   * SNI == turn.<INSTANCE_DOMAIN>  -> coturn TLS on 5349
+  #   * everything else                -> Caddy web on 8080 (HTTPS)
+  #
+  # This is what lets a single port-forwarded 443 on the operator's home
+  # router carry BOTH the regular Concord web UI AND TURN-over-TLS for
+  # WebRTC media. Without this multiplexer, the operator would need to
+  # port-forward both 443 (web) and 5349 (TURN-TLS) — and ISPs frequently
+  # block uncommon ports while leaving 443 open.
+  #
+  # Disabled-by-default: present in the compose but only started when
+  # ``COMPOSE_PROFILES=public-ingress`` is set. Native builds (which
+  # default to P2P-first and don't expose a public web surface) omit the
+  # profile and so don't start sslh. Docker / public-web operators set
+  # the profile in their .env and get the multiplexer at boot.
+  sslh:
+    image: ghcr.io/yrutschle/sslh:2.3.1
+    container_name: concord-sslh
+    restart: unless-stopped
+    profiles: ["public-ingress"]
+    network_mode: host
+    volumes:
+      - ./config/sslh.conf:/etc/sslh/sslh.cfg:ro
+    command: ["-F/etc/sslh/sslh.cfg"]
+    # Match the ulimit + healthcheck + autoheal pattern that the prior
+    # infra/turn/ edge stack used — those mitigations exist because the
+    # default 1024-fd ceiling combined with no liveness probe caused
+    # sslh to wedge on accumulated half-open TURN connections on a
+    # 25-day uptime. Same risk applies wherever sslh runs.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "ss -ltn 'sport = :443' | grep -q LISTEN || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 2
+      start_period: 10s
+    labels:
+      - "autoheal=true"
 
   # Bundled TURN relay for NAT traversal.
   #

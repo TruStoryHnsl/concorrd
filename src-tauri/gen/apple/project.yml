@@ -12,19 +12,18 @@ settingGroups:
     base:
       PRODUCT_NAME: Concord
       PRODUCT_BUNDLE_IDENTIFIER: com.concord.chat
-      # INS-020 signed-build settings — paid Apple Developer Program team.
-      # Team 827D323V6Z was originally a free personal team under
-      # colton.j.orr@gmail.com; paid enrollment upgraded it in-place on
-      # 2026-04-09 (same team ID, tier flipped free→paid portal-side).
-      # The cert in the keychain is `Apple Development: colton.j.orr@
-      # gmail.com (HRGZN35L9K)` — the `HRGZN35L9K` parenthetical is a
-      # per-certificate uniqueness tag, NOT a team ID. The real team ID
-      # is in the cert's OU field, which is 827D323V6Z.
+      # INS-020 signed-build settings — Apple Developer Program team.
+      #
+      # OVERRIDE THIS FOR YOUR BUILD: replace the placeholder team ID
+      # below with your own Apple Developer team ID (10 characters,
+      # found in the membership page of developer.apple.com). The
+      # corresponding signing certificate must already be installed in
+      # the macOS login keychain.
       #
       # Managed signing: Xcode auto-fetches the provisioning profile on
       # first build (cargo tauri ios build passes -allowProvisioningUpdates
       # to xcodebuild automatically).
-      DEVELOPMENT_TEAM: 827D323V6Z
+      DEVELOPMENT_TEAM: YOUR_TEAM_ID
       CODE_SIGN_STYLE: Automatic
       CODE_SIGN_IDENTITY: "Apple Development"
 targetTemplates:

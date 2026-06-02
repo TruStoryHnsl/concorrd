@@ -1,0 +1,735 @@
+# Per-platform desktop + docker release pipeline.
+#
+# When a SemVer tag (vX.Y.Z) is pushed, fans out parallel builds
+# across Windows / macOS x86_64 / macOS aarch64 / Linux / Docker.
+# Each platform job creates its OWN GitHub Release with a suffix
+# tag (vX.Y.Z-windows, vX.Y.Z-macos-intel, vX.Y.Z-macos-arm64,
+# vX.Y.Z-linux, vX.Y.Z-docker) pointing at the parent commit, and
+# attaches one primary installer asset:
+#   - windows      -> Concord_<ver>_x64-setup.exe (NSIS)
+#   - macos-intel  -> Concord_<ver>_x64.dmg
+#   - macos-arm64  -> Concord_<ver>_aarch64.dmg
+#   - linux        -> concord_<ver>_amd64.AppImage
+#   - docker       -> concord-docker-stack-v<ver>.zip
+#
+# Native platform releases ALSO attach a single `updater-manifest.json`
+# sidecar (one per release) — the in-app updater
+# (client/src/lib/updater.ts) reads it to learn the installer URL and
+# release notes. The docker release does not need a manifest because
+# Docker hosts pull from GHCR (ghcr.io/<owner>/concord-{web,concord-api})
+# rather than running an in-app updater.
+#
+# Internal build-dep tags (dendrite-windows-*, tuwunel-windows-*)
+# do NOT match v*.*.* and never trigger this workflow. The parent
+# vX.Y.Z tag itself is NOT promoted to a user-facing release; only
+# the four suffix releases appear on the releases page.
+#
+# Embedded homeserver staging:
+#   - Linux: tuwunel extracted from upstream .deb (mirrors
+#     scripts/build_linux_native.sh).
+#   - macOS x86_64/aarch64: tuwunel built from source on the runner
+#     with --no-default-features to drop Linux-only io_uring +
+#     systemd, plus the Linux-default feature set minus those two.
+#   - Windows: dendrite downloaded from the dendrite-windows-vX.Y.Z
+#     internal build-dep release (mirrors windows-build.yml).
+#
+# Code signing: nothing signed. Project owner directive: free path
+# only, ship unsigned, accept SmartScreen + Gatekeeper warnings.
+#
+# Injection safety: every untrusted value is routed through env:
+# before any shell substitution. The only user-controllable inputs
+# are github.ref_name (a tag, whitelist-validated against a strict
+# SemVer regex before use) and the workflow_dispatch tag input
+# (same validation).
+
+name: Release (desktop, per-platform)
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to (re)build (e.g. v0.7.6). Must already exist."
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: prepare release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      notes: ${{ steps.notes.outputs.notes }}
+      commit_sha: ${{ steps.resolve.outputs.commit_sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve and validate version
+        id: resolve
+        env:
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${DISPATCH_TAG:-}" ]]; then
+            tag="${DISPATCH_TAG}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          if ! [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$ ]]; then
+            echo "Refusing to build with tag '${tag}' - not a SemVer release tag."
+            exit 1
+          fi
+          version="${tag#v}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "commit_sha=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved tag=${tag} version=${version} sha=${GITHUB_SHA}"
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes_file="$(mktemp)"
+          if [[ -f CHANGELOG.md ]]; then
+            awk -v ver="${VERSION}" '
+              $0 ~ "^## \\[" ver "\\]" {flag=1; next}
+              flag && $0 ~ "^## \\[" {exit}
+              flag {print}
+            ' CHANGELOG.md > "${notes_file}"
+          fi
+          if [[ ! -s "${notes_file}" ]]; then
+            printf 'Concord %s desktop release.\n' "v${VERSION}" > "${notes_file}"
+          fi
+          {
+            echo 'notes<<EOF_NOTES'
+            cat "${notes_file}"
+            echo 'EOF_NOTES'
+          } >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: build ${{ matrix.platform }}
+    needs: prepare
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            release_suffix: linux
+            release_title_suffix: "Linux"
+            os: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
+            tauri_args: "--bundles appimage"
+            stage_homeserver: linux
+            installer_glob: "appimage/*.AppImage"
+          - platform: macos-intel
+            release_suffix: macos-intel
+            release_title_suffix: "macOS (Intel)"
+            # Was `macos-13` (Intel host). GitHub's macos-13 hosted runner
+            # queue is severely rationed — both v0.7.7 attempts hit the 24h
+            # queue-cancel and never started. macos-14 is Apple Silicon and
+            # provisions in minutes; we cross-compile to x86_64. Apple's
+            # Xcode/clang on macos-14 carries the x86_64 SDK, and the
+            # `cross_compile: true` flag below triggers a step that exports
+            # the cc-rs + linker env vars (CC_x86_64_apple_darwin, CFLAGS,
+            # CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER, etc.) so tuwunel's
+            # C deps (jemalloc-sys, aws-lc-sys, ring, lz4-sys, bzip2-sys)
+            # emit x86_64 object files instead of the host arm64. Without
+            # those env vars, v0.7.9 link-failed on 1438 arch-mismatch
+            # objects (the Rust crates cross-compiled fine; the C deps
+            # alone defaulted to host arch).
+            os: macos-14
+            rust_target: x86_64-apple-darwin
+            tauri_args: "--target x86_64-apple-darwin --bundles dmg"
+            stage_homeserver: macos
+            installer_glob: "dmg/*.dmg"
+            cross_compile: true
+          - platform: macos-arm64
+            release_suffix: macos-arm64
+            release_title_suffix: "macOS (Apple Silicon)"
+            os: macos-14
+            rust_target: aarch64-apple-darwin
+            tauri_args: "--target aarch64-apple-darwin --bundles dmg"
+            stage_homeserver: macos
+            installer_glob: "dmg/*.dmg"
+          - platform: windows
+            release_suffix: windows
+            release_title_suffix: "Windows"
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            tauri_args: "--bundles nsis"
+            stage_homeserver: windows
+            installer_glob: "nsis/*.exe"
+    runs-on: ${{ matrix.os }}
+    env:
+      # v1.6.1+ gates RLIMIT_NPROC behind `cfg(all(unix, not(target_os =
+      # "macos")))` and gates `Usage::default()` to non-unix targets — both
+      # of which v1.5.1 referenced unconditionally and broke the macOS source
+      # build (E0599 on `Resource::RLIMIT_NPROC` and `Usage::default()`).
+      TUWUNEL_VERSION: "v1.6.1"
+      DENDRITE_VERSION: "v0.13.8"
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+    steps:
+      - name: Check out repository at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache cargo registry + git index
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-cache-${{ matrix.platform }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-cache-${{ matrix.platform }}-
+
+      - name: Cache Concord cargo target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target/
+          key: cargo-target-${{ matrix.platform }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ matrix.platform }}-
+
+      - name: Install Linux build deps
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libssl-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libasound2-dev \
+            libopus-dev \
+            patchelf \
+            build-essential \
+            curl \
+            file \
+            wget \
+            xdg-utils
+          # libasound2-dev: cpal links against ALSA for mic capture +
+          # speaker playback in the libp2p-mesh voice path (shipped in
+          # PR #102). libopus-dev: audiopus links against libopus for
+          # the 48 kHz opus encode/decode in the same pipeline. Without
+          # both, `cargo build --release` fails at link time on Linux.
+
+      - name: Sync version into tauri.conf.json
+        env:
+          NEW_VERSION: ${{ env.VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          p = "src-tauri/tauri.conf.json"
+          v = os.environ["NEW_VERSION"]
+          with open(p) as f:
+              conf = json.load(f)
+          conf["version"] = v
+          with open(p, "w") as f:
+              json.dump(conf, f, indent=2)
+              f.write("\n")
+          print(f"tauri.conf.json version -> {v}")
+          PY
+
+      - name: Stage tuwunel (Linux)
+        if: matrix.stage_homeserver == 'linux'
+        env:
+          TUWUNEL_VERSION: ${{ env.TUWUNEL_VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="${TUWUNEL_VERSION}-release-all-x86_64-v1-linux-gnu-tuwunel.deb"
+          url="https://github.com/matrix-construct/tuwunel/releases/download/${TUWUNEL_VERSION}/${asset}"
+          dest="src-tauri/resources/tuwunel"
+          mkdir -p "${dest}"
+          tmpd="$(mktemp -d)"
+          echo "Fetching ${url}"
+          curl -sSL -o "${tmpd}/tuwunel.deb" "${url}"
+          dpkg-deb -x "${tmpd}/tuwunel.deb" "${tmpd}/extracted"
+          if [[ -f "${tmpd}/extracted/usr/bin/tuwunel" ]]; then
+            cp "${tmpd}/extracted/usr/bin/tuwunel" "${dest}/tuwunel"
+          else
+            found="$(find "${tmpd}/extracted" -name tuwunel -type f | head -n1)"
+            if [[ -z "${found}" ]]; then
+              echo "Could not locate tuwunel binary inside the .deb."
+              exit 1
+            fi
+            cp "${found}" "${dest}/tuwunel"
+          fi
+          chmod +x "${dest}/tuwunel"
+          ls -la "${dest}/"
+          file "${dest}/tuwunel"
+
+      # NOTE on cross-compile env strategy (v0.7.12+):
+      #
+      # The previous iteration wrote CFLAGS / CC / linker env vars to
+      # $GITHUB_ENV — meaning they applied to EVERY subsequent step in
+      # the job. That broke v0.7.11's macos-intel build because
+      # `cargo install tauri-cli` (a host-arch install) inherited the
+      # x86_64 CFLAGS and emitted x86_64 lzma-sys object files while the
+      # final link still targeted the arm64 host toolchain. End result:
+      # 1438 arch-mismatch link errors.
+      #
+      # Fix: scope the cross-compile env to ONLY the two steps that
+      # actually cross-compile (Stage tuwunel + Tauri build). Steps that
+      # build host-arch tooling (cargo install tauri-cli, npm build)
+      # run with the runner's native env so they target arm64 cleanly.
+      # See the inline `env:` blocks on those two steps below.
+
+      - name: Stage tuwunel (macOS, build from source)
+        if: matrix.stage_homeserver == 'macos'
+        env:
+          TUWUNEL_VERSION: ${{ env.TUWUNEL_VERSION }}
+          RUST_TARGET: ${{ matrix.rust_target }}
+          # Cross-compile env — only set for the matrix.cross_compile case
+          # (macos-intel target on macos-14 arm64 host). For macos-arm64
+          # the matrix.cross_compile flag is false and these vars resolve
+          # to empty strings, leaving the native build untouched.
+          CC: ${{ matrix.cross_compile && 'clang' || '' }}
+          CXX: ${{ matrix.cross_compile && 'clang++' || '' }}
+          CFLAGS: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CXXFLAGS: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          LDFLAGS: ${{ matrix.cross_compile && '-arch x86_64' || '' }}
+          CC_x86_64_apple_darwin: ${{ matrix.cross_compile && 'clang' || '' }}
+          CFLAGS_x86_64_apple_darwin: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CXX_x86_64_apple_darwin: ${{ matrix.cross_compile && 'clang++' || '' }}
+          CXXFLAGS_x86_64_apple_darwin: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER: ${{ matrix.cross_compile && 'clang' || '' }}
+          CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS: ${{ matrix.cross_compile && '-Clink-arg=-arch -Clink-arg=x86_64' || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$(mktemp -d)/tuwunel"
+          git clone --depth 1 --branch "${TUWUNEL_VERSION}" \
+            https://github.com/matrix-construct/tuwunel.git "${src}"
+          cd "${src}"
+          # tuwunel pins its own toolchain via `rust-toolchain.toml`
+          # (currently Rust 1.94.0). The toolchain installed by
+          # dtolnay/rust-toolchain@stable in this job has the
+          # matrix target, but the rustup-installed pinned toolchain
+          # tuwunel switches to inside its source tree does NOT —
+          # building cross-arch (macos-14 arm64 host → x86_64-apple-
+          # darwin target) failed with E0463 "can't find crate for
+          # core" because the pinned toolchain had no x86_64 std lib.
+          # Adding the target on the pinned toolchain here fixes it.
+          rustup target add "${RUST_TARGET}"
+          cargo build --release \
+            --bin tuwunel \
+            --target "${RUST_TARGET}" \
+            --no-default-features \
+            --features brotli_compression,element_hacks,gzip_compression,jemalloc,jemalloc_conf,media_thumbnail,release_max_log_level,url_preview,zstd_compression
+          built="target/${RUST_TARGET}/release/tuwunel"
+          if [[ ! -f "${built}" ]]; then
+            built="target/release/tuwunel"
+          fi
+          if [[ ! -f "${built}" ]]; then
+            echo "tuwunel binary not found after build"
+            exit 1
+          fi
+          dest="${GITHUB_WORKSPACE}/src-tauri/resources/tuwunel"
+          mkdir -p "${dest}"
+          cp "${built}" "${dest}/tuwunel"
+          chmod +x "${dest}/tuwunel"
+          file "${dest}/tuwunel"
+
+      - name: Stage dendrite (Windows)
+        if: matrix.stage_homeserver == 'windows'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          DENDRITE_VERSION: ${{ env.DENDRITE_VERSION }}
+        shell: pwsh
+        run: |
+          $tag = "dendrite-windows-$env:DENDRITE_VERSION"
+          $dest = "src-tauri/resources/dendrite"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $patterns = @("dendrite.exe", "create-account.exe", "generate-keys.exe")
+          foreach ($pattern in $patterns) {
+            Write-Host "Downloading $pattern from $tag"
+            gh release download $tag --pattern $pattern --dir $dest --repo $env:GH_REPO
+            $exe = Join-Path $dest $pattern
+            if (-not (Test-Path $exe)) {
+              throw "gh release download exited 0 but $exe is not present"
+            }
+            $size = (Get-Item $exe).Length
+            if ($size -lt 1MB) {
+              throw "$pattern is suspiciously small ($size bytes); rejecting"
+            }
+            Write-Host "Staged $exe ($size bytes)"
+          }
+
+      - name: Build React client
+        working-directory: client
+        env:
+          # Vite injects this into the bundle at build time so the in-app
+          # updater knows what version is running. See
+          # client/src/lib/updater.ts ::getCurrentVersion.
+          VITE_CONCORD_VERSION: ${{ env.VERSION }}
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Install Tauri CLI v2
+        run: cargo install tauri-cli --version "^2.0" --locked
+
+      - name: Tauri build
+        working-directory: src-tauri
+        shell: bash
+        env:
+          TAURI_ARGS: ${{ matrix.tauri_args }}
+          # Vite reads VITE_CONCORD_VERSION at build time (see
+          # client/src/lib/updater.ts). The Tauri build already shells
+          # into the client subtree via the beforeBuildCommand in
+          # tauri.conf.json, so exporting it on this step propagates.
+          VITE_CONCORD_VERSION: ${{ env.VERSION }}
+          # Cross-compile env (matrix.cross_compile only — empty
+          # otherwise). Mirrors the tuwunel step above. Tauri delegates
+          # to `cargo build` for the Rust side, so cc-rs and the C
+          # toolchain pick up the same x86_64 force-flags here that they
+          # did during tuwunel's compile, and the resulting bundle is a
+          # uniform x86_64 binary.
+          CC: ${{ matrix.cross_compile && 'clang' || '' }}
+          CXX: ${{ matrix.cross_compile && 'clang++' || '' }}
+          CFLAGS: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CXXFLAGS: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          LDFLAGS: ${{ matrix.cross_compile && '-arch x86_64' || '' }}
+          CC_x86_64_apple_darwin: ${{ matrix.cross_compile && 'clang' || '' }}
+          CFLAGS_x86_64_apple_darwin: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CXX_x86_64_apple_darwin: ${{ matrix.cross_compile && 'clang++' || '' }}
+          CXXFLAGS_x86_64_apple_darwin: ${{ matrix.cross_compile && '-arch x86_64 -mmacosx-version-min=11.0' || '' }}
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER: ${{ matrix.cross_compile && 'clang' || '' }}
+          CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS: ${{ matrix.cross_compile && '-Clink-arg=-arch -Clink-arg=x86_64' || '' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          cargo tauri build --ci ${TAURI_ARGS}
+
+      - name: Pick single installer artifact
+        id: pick
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          RUST_TARGET: ${{ matrix.rust_target }}
+          INSTALLER_GLOB: ${{ matrix.installer_glob }}
+        run: |
+          set -euo pipefail
+          roots=(
+            "src-tauri/target/${RUST_TARGET}/release/bundle"
+            "src-tauri/target/release/bundle"
+          )
+          shopt -s nullglob
+          found=()
+          for root in "${roots[@]}"; do
+            [[ -d "${root}" ]] || continue
+            for f in ${root}/${INSTALLER_GLOB}; do
+              [[ -f "${f}" ]] || continue
+              found+=("${f}")
+            done
+          done
+          if [[ "${#found[@]}" -eq 0 ]]; then
+            echo "No installer matching '${INSTALLER_GLOB}' produced for ${PLATFORM}."
+            exit 1
+          fi
+          if [[ "${#found[@]}" -gt 1 ]]; then
+            echo "Multiple installers matched '${INSTALLER_GLOB}' for ${PLATFORM} - rule 2 violation:"
+            printf '  %s\n' "${found[@]}"
+            exit 1
+          fi
+          installer="${found[0]}"
+          echo "Selected installer: ${installer}"
+          echo "installer_path=${installer}" >> "${GITHUB_OUTPUT}"
+          echo "installer_name=$(basename "${installer}")" >> "${GITHUB_OUTPUT}"
+
+      - name: Create per-platform GitHub Release with single asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PARENT_TAG: ${{ env.TAG }}
+          COMMIT_SHA: ${{ env.COMMIT_SHA }}
+          RELEASE_SUFFIX: ${{ matrix.release_suffix }}
+          TITLE_SUFFIX: ${{ matrix.release_title_suffix }}
+          INSTALLER_PATH: ${{ steps.pick.outputs.installer_path }}
+          NOTES: ${{ needs.prepare.outputs.notes }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          platform_tag="${PARENT_TAG}-${RELEASE_SUFFIX}"
+          title="Concord ${PARENT_TAG} - ${TITLE_SUFFIX}"
+
+          # Existence check uses `gh release view`. `gh api ... --jq` is a
+          # trap on 404: gh api writes the error JSON body to STDOUT (not
+          # stderr), so `2>/dev/null` does not suppress it. `gh release view`
+          # writes the not-found message to stderr and exits non-zero, so a
+          # plain `if ...; then` distinguishes "exists" from "missing".
+          if gh release view "${platform_tag}" --repo "${GH_REPO}" --json id --jq .id >/dev/null 2>&1; then
+            echo "Existing release ${platform_tag} found; deleting it for a clean re-publish."
+            gh release delete "${platform_tag}" --repo "${GH_REPO}" --yes
+          fi
+
+          echo "Creating release ${platform_tag} -> ${COMMIT_SHA}"
+          gh release create "${platform_tag}" \
+            --repo "${GH_REPO}" \
+            --title "${title}" \
+            --notes "${NOTES}" \
+            --target "${COMMIT_SHA}"
+
+          # Upload the single installer. We deliberately do NOT pass
+          # `--clobber`: on Git Bash on windows-latest, gh's clobber path
+          # invokes `gh api /repos/...` internally, and MSYS path-conversion
+          # rewrites the leading slash to `C:/Program Files/Git/repos/...`,
+          # producing "invalid API endpoint" 1-exit. We've just created the
+          # release fresh above, so there is nothing to clobber.
+          echo "Uploading single installer: ${INSTALLER_PATH}"
+          gh release upload "${platform_tag}" "${INSTALLER_PATH}" --repo "${GH_REPO}"
+
+          # Updater manifest sidecar. The native in-app updater
+          # (client/src/lib/updater.ts) reads this to learn the
+          # installer URL + version. We synthesize it here so the
+          # client never has to fetch the entire release body — and
+          # so the manifest format stays a server-side contract.
+          installer_name="$(basename "${INSTALLER_PATH}")"
+          installer_url="https://github.com/${GH_REPO}/releases/download/${platform_tag}/${installer_name}"
+          manifest_path="$(mktemp -d)/updater-manifest.json"
+          # Notes are passed via env to avoid bash-escaping shenanigans
+          # when the changelog contains backticks / quotes.
+          NOTES="${NOTES}" python3 - "${VERSION}" "${platform_tag}" "${installer_url}" "${installer_name}" "${RELEASE_SUFFIX}" "${manifest_path}" <<'PY'
+          import json, os, sys
+          version, tag, url, name, suffix, out = sys.argv[1:]
+          json.dump({
+            "version": version,
+            "tag": tag,
+            "installerUrl": url,
+            "installerName": name,
+            "platform": suffix,
+            "notes": os.environ.get("NOTES", ""),
+          }, open(out, "w"), indent=2)
+          PY
+          echo "Uploading updater manifest: ${manifest_path}"
+          gh release upload "${platform_tag}" "${manifest_path}" --repo "${GH_REPO}"
+
+          # Verify the expected asset count: 1 installer + 1 manifest.
+          # `gh release view` instead of `gh api` for the same MSYS
+          # path-conversion reason as above.
+          asset_count="$(gh release view "${platform_tag}" --repo "${GH_REPO}" --json assets --jq '.assets | length')"
+          if [[ "${asset_count}" != "2" ]]; then
+            echo "Release ${platform_tag} has ${asset_count} assets; expected 2 (installer + updater-manifest.json)."
+            exit 1
+          fi
+          echo "Release ${platform_tag} published with 1 installer + 1 manifest."
+
+  docker:
+    name: build docker (concord-web, concord-api) + stack archive
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+    steps:
+      - name: Check out repository at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Both images go to GHCR under the org (lowercased) namespace. The
+      # owner string from GitHub is mixed-case ("TruStoryHnsl") and GHCR
+      # rejects uppercase characters in image paths, so we normalize.
+      - name: Resolve GHCR namespace
+        id: ns
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "owner_lc=${owner_lc}" >> "${GITHUB_OUTPUT}"
+          echo "Using GHCR namespace ghcr.io/${owner_lc}"
+
+      - name: Build + push concord-web
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: web/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-web:${{ env.VERSION }}
+            ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-web:latest
+
+      - name: Build + push concord-api
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          push: true
+          tags: |
+            ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-concord-api:${{ env.VERSION }}
+            ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-concord-api:latest
+
+      # GHCR creates packages with `visibility: private` on first push even
+      # when the source repo is public — packages and repos are separate
+      # permission domains and GitHub picks the safe default. Without this
+      # step, every new image needs a manual UI toggle before operators can
+      # `docker pull` it. Workflow-token has `packages: write` granted above,
+      # which is enough to PATCH the visibility. `|| true` keeps this
+      # best-effort — if visibility is already public OR the token lacks the
+      # needed user-scope, we don't fail the release.
+      - name: Force GHCR images public
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER_TYPE: ${{ github.repository_owner_type }}
+          OWNER_LC: ${{ steps.ns.outputs.owner_lc }}
+        run: |
+          set -uo pipefail
+          if [[ "${OWNER_TYPE}" == "Organization" ]]; then
+            base="/orgs/${OWNER_LC}/packages/container"
+          else
+            base="/users/${OWNER_LC}/packages/container"
+          fi
+          for pkg in concord-web concord-concord-api; do
+            echo "Making ${pkg} public via ${base}/${pkg}"
+            if gh api -X PATCH "${base}/${pkg}" -f visibility=public 2>&1; then
+              echo "  -> visibility set to public"
+            else
+              echo "  -> visibility flip failed (likely token lacks user-package admin; flip via UI once: https://github.com/users/${OWNER_LC}/packages/container/${pkg}/settings)"
+            fi
+          done
+
+      # Assemble the operator-facing stack archive. Operators unzip this,
+      # edit .env, and run `docker compose up -d`. We include only the
+      # files an operator actually needs at deploy time — not the full
+      # source tree.
+      - name: Stage stack archive
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$(mktemp -d)/concord-docker-stack-v${VERSION}"
+          mkdir -p "${stage}"
+          cp docker-compose.yml "${stage}/"
+          cp .env.example "${stage}/.env.example"
+          if [[ -d config ]]; then
+            cp -R config "${stage}/config"
+          fi
+          if [[ -f install.sh ]]; then
+            cp install.sh "${stage}/install.sh"
+          fi
+          # README describing the archive contents.
+          cat > "${stage}/README.md" <<EOF
+          # Concord docker stack v${VERSION}
+
+          Prebuilt-image deployment of Concord. The compose file references
+          \`ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-web:${VERSION}\` and
+          \`ghcr.io/${{ steps.ns.outputs.owner_lc }}/concord-concord-api:${VERSION}\`
+          plus the upstream tuwunel + LiveKit + coturn images.
+
+          ## Quickstart
+
+              cp .env.example .env
+              \$EDITOR .env  # set CONDUWUIT_SERVER_NAME and SITE_ADDRESS
+              docker compose up -d
+
+          See the upstream README at
+          https://github.com/${GITHUB_REPOSITORY} for full configuration.
+          EOF
+          out="${GITHUB_WORKSPACE}/concord-docker-stack-v${VERSION}.zip"
+          (cd "$(dirname "${stage}")" && zip -r "${out}" "$(basename "${stage}")")
+          echo "archive=${out}" >> "${GITHUB_OUTPUT}"
+          ls -la "${out}"
+
+      - name: Create -docker release with stack archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PARENT_TAG: ${{ env.TAG }}
+          COMMIT_SHA: ${{ env.COMMIT_SHA }}
+          ARCHIVE: ${{ steps.stage.outputs.archive }}
+          NOTES: ${{ needs.prepare.outputs.notes }}
+          GHCR_NS: ${{ steps.ns.outputs.owner_lc }}
+          VERSION: ${{ env.VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          platform_tag="${PARENT_TAG}-docker"
+          title="Concord ${PARENT_TAG} - Docker (self-hosted server)"
+
+          # Augment notes with GHCR pull commands so the release page is
+          # self-documenting for operators landing here from search.
+          body_file="$(mktemp)"
+          {
+            printf '%s\n\n' "${NOTES}"
+            printf '## Container images\n\n'
+            printf '    docker pull ghcr.io/%s/concord-web:%s\n' "${GHCR_NS}" "${VERSION}"
+            printf '    docker pull ghcr.io/%s/concord-concord-api:%s\n\n' "${GHCR_NS}" "${VERSION}"
+            printf 'Or use `:latest` to follow the rolling release channel.\n\n'
+            printf '## Stack archive\n\n'
+            printf 'Unzip `concord-docker-stack-v%s.zip`, copy `.env.example` to `.env`, set `CONDUWUIT_SERVER_NAME` and `SITE_ADDRESS`, and run `docker compose up -d`.\n' "${VERSION}"
+          } > "${body_file}"
+
+          if gh release view "${platform_tag}" --repo "${GH_REPO}" --json id --jq .id >/dev/null 2>&1; then
+            echo "Existing release ${platform_tag} found; deleting it for a clean re-publish."
+            gh release delete "${platform_tag}" --repo "${GH_REPO}" --yes
+          fi
+
+          gh release create "${platform_tag}" \
+            --repo "${GH_REPO}" \
+            --title "${title}" \
+            --notes-file "${body_file}" \
+            --target "${COMMIT_SHA}"
+
+          gh release upload "${platform_tag}" "${ARCHIVE}" --repo "${GH_REPO}"
+
+          asset_count="$(gh release view "${platform_tag}" --repo "${GH_REPO}" --json assets --jq '.assets | length')"
+          if [[ "${asset_count}" != "1" ]]; then
+            echo "Release ${platform_tag} has ${asset_count} assets; expected 1."
+            exit 1
+          fi
+          echo "Release ${platform_tag} published with 1 asset."

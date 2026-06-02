@@ -1,5 +1,6 @@
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.3
+alembic==1.14.0
 aiosignal==1.4.0
 aiosmtplib==3.0.2
 aiosqlite==0.22.1
@@ -22,7 +23,7 @@ livekit-api==1.1.0
 livekit-protocol==1.1.2
 multidict==6.7.1
 propcache==0.4.1
-protobuf==6.33.5
+protobuf==7.34.1
 pydantic==2.12.5
 pydantic_core==2.41.5
 PyJWT==2.11.0
@@ -33,7 +34,7 @@ python-multipart==0.0.22
 PyYAML==6.0.3
 SQLAlchemy==2.0.46
 starlette==0.52.1
-types-protobuf==6.32.1.20260221
+types-protobuf==7.34.1.20260408
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 uvicorn==0.41.0

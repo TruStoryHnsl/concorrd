@@ -157,6 +157,13 @@ export interface ServerExtension {
   url: string;
   icon: string;
   description: string;
+  /**
+   * INS-066-FUP-A: manifest permissions array, surfaced from the server's
+   * `/api/extensions` endpoint. Always present in the response (empty list
+   * for legacy static-catalog entries that have no manifest). Optional in
+   * the type for backward compat with mocks/old captures.
+   */
+  permissions?: string[];
 }
 
 export async function listExtensions(accessToken: string): Promise<ServerExtension[]> {
@@ -379,11 +386,36 @@ export async function getVoiceParticipants(
 export interface SoundboardClip {
   id: number;
   name: string;
+  /** Originating / attribution server. Clips are visible instance-wide
+   * regardless of which server they were uploaded to (INS-073). */
   server_id: string;
   uploaded_by: string;
   duration: number | null;
   keybind: string | null;
   url: string;
+  /** "freesound" if imported from freesound.org, null for user uploads. */
+  source?: string | null;
+  /** CC license name (e.g. "Creative Commons 0") for Freesound-sourced clips. */
+  license?: string | null;
+  /** Canonical license URL, used by the UI to link to the legal text. */
+  license_url?: string | null;
+  /** Original uploader's name on the source platform. Required for CC-BY etc. */
+  attribution?: string | null;
+}
+
+/** INS-073: list every clip on the instance.
+ *
+ * Replaces the per-server `listSoundboardClips` for the new dual-mode UI.
+ * The legacy function is kept and now also returns the full library
+ * (the server alias-routes `/soundboard/{server_id}` to the instance-wide
+ * pool), so existing callers continue to work without code changes.
+ */
+export async function listSoundboardLibrary(
+  accessToken: string,
+  query?: string,
+): Promise<SoundboardClip[]> {
+  const q = query ? `?q=${encodeURIComponent(query)}` : "";
+  return apiFetch(`/soundboard/library${q}`, {}, accessToken);
 }
 
 export async function listSoundboardClips(
@@ -443,6 +475,13 @@ export interface LibrarySound {
   name: string;
   duration: number;
   preview_url: string;
+  /** CC license name from Freesound (e.g. "Creative Commons 0", "Attribution 4.0").
+   * Surfaced so the UI can show users what license they're agreeing to BEFORE import. */
+  license?: string | null;
+  /** Canonical license URL (Freesound returns the canonical CC URL here). */
+  license_url?: string | null;
+  /** Original uploader's username on freesound.org. Required for CC-BY attribution. */
+  username?: string | null;
 }
 
 export type LibrarySortOption = "relevance" | "popular" | "rating" | "newest" | "shortest" | "longest";
@@ -466,6 +505,14 @@ export async function importLibrarySound(
   name: string,
   previewUrl: string,
   accessToken: string,
+  /** INS-073: pass the license/attribution the user saw in the search
+   * results so the server persists the same metadata they consented to.
+   * All optional for backward-compat with older callers. */
+  meta?: {
+    license?: string | null;
+    license_url?: string | null;
+    attribution?: string | null;
+  },
 ): Promise<SoundboardClip> {
   return apiFetch(
     `/soundboard/library/import/${serverId}`,
@@ -476,6 +523,9 @@ export async function importLibrarySound(
         freesound_id: freesoundId,
         name,
         preview_url: previewUrl,
+        license: meta?.license ?? null,
+        license_url: meta?.license_url ?? null,
+        attribution: meta?.attribution ?? null,
       }),
     },
     accessToken,
@@ -849,6 +899,37 @@ export async function changePassword(
   );
 }
 
+// --- Recovery Email (INS-071 Phase A) ---
+//
+// Privacy invariant: the API never echoes the actual recovery_email back
+// to the client. The status endpoint returns ONLY a boolean. The setter
+// endpoint returns 204 (no body). The client must not log or persist
+// the value beyond the form submission lifetime.
+
+export interface RecoveryEmailStatus {
+  has_recovery_email: boolean;
+}
+
+export async function setRecoveryEmail(
+  recoveryEmail: string | null,
+  accessToken: string,
+): Promise<void> {
+  return apiFetch(
+    "/user/recovery-email",
+    {
+      method: "PUT",
+      body: JSON.stringify({ recovery_email: recoveryEmail }),
+    },
+    accessToken,
+  );
+}
+
+export async function getRecoveryEmailStatus(
+  accessToken: string,
+): Promise<RecoveryEmailStatus> {
+  return apiFetch("/user/recovery-email-status", {}, accessToken);
+}
+
 // --- Bug Reports ---
 
 export async function submitBugReport(
@@ -1113,6 +1194,22 @@ export async function updateInstanceSettings(
   return apiFetch(
     "/admin/instance",
     { method: "PATCH", body: JSON.stringify(settings) },
+    accessToken,
+  );
+}
+
+/**
+ * INS-069 — write the per-instance branding block to ``instance.json``.
+ * Server returns 204 No Content on success; ``apiFetch`` returns
+ * ``undefined`` for void bodies.
+ */
+export async function setInstanceBranding(
+  branding: { primary_color: string; accent_color: string; logo_url?: string | null },
+  accessToken: string,
+): Promise<void> {
+  await apiFetch(
+    "/admin/instance/branding",
+    { method: "POST", body: JSON.stringify(branding) },
     accessToken,
   );
 }

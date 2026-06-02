@@ -1,6 +1,6 @@
 # build_windows_native.ps1 — Build Concord as a native Windows .msi via Tauri v2.
 #
-# Designed to run on a Windows host (or orrion's Windows partition if dual-booted).
+# Designed to run on a Windows host (native or dual-booted).
 # Produces a signed-ready .msi installer in
 # src-tauri\target\release\bundle\msi\.
 #

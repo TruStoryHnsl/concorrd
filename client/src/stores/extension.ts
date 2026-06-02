@@ -10,6 +10,14 @@ export interface ExtensionDefinition {
   url: string;
   icon: string;
   description: string;
+  /**
+   * INS-066-FUP-A: extension manifest permissions. Surfaced from
+   * `/api/extensions` so `<ExtensionSurfaceManager>` can gate
+   * `concord:state_event` forwarding and `extension:send_state_event`
+   * acceptance per the W5/W6 SDK contract. Defaults to an empty list
+   * for legacy static-catalog entries.
+   */
+  permissions: string[];
 }
 
 export type ExtensionSessionMode =
@@ -267,6 +275,7 @@ export const useExtensionStore = create<ExtensionState>((set, get) => ({
           url: e.url,
           icon: e.icon,
           description: e.description,
+          permissions: e.permissions ?? [],
         })),
         catalogLoaded: true,
       });
@@ -291,6 +300,7 @@ export const useExtensionStore = create<ExtensionState>((set, get) => ({
           url: e.url,
           icon: e.icon,
           description: e.description,
+          permissions: e.permissions ?? [],
         })),
         catalogLoaded: true,
       });
