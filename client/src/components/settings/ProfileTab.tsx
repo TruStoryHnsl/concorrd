@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 import { useAuthStore } from "../../stores/auth";
 import { useToastStore } from "../../stores/toast";
-import { changePassword, getTOTPStatus, setupTOTP, verifyTOTP, disableTOTP, type TOTPSetupResult } from "../../api/concord";
+import { changePassword, getTOTPStatus, setupTOTP, verifyTOTP, disableTOTP, getRecoveryEmailStatus, setRecoveryEmail, type TOTPSetupResult } from "../../api/concord";
 import { Avatar } from "../ui/Avatar";
+import { IdentityTrustSection } from "./IdentityTrustSection";
 
 export function ProfileTab() {
   const client = useAuthStore((s) => s.client);
@@ -123,18 +124,67 @@ export function ProfileTab() {
       {/* Password change */}
       <PasswordChangeSection />
 
+      {/* Recovery email (INS-071 Phase A) */}
+      <RecoveryEmailSection />
+
       {/* Two-factor authentication */}
       <TOTPSection />
 
-      <div className="border-t border-outline-variant/15 pt-6">
+      {/* F-A — Concord-native user-definition protocol: trust edges */}
+      <IdentityTrustSection />
+
+      <div className="border-t border-outline-variant/15 pt-6 flex flex-wrap gap-3">
         <button
           onClick={logout}
           className="text-error border border-error/30 rounded px-4 py-2 hover:bg-error/10 transition-colors text-sm font-label font-medium min-h-[44px]"
         >
           Logout
         </button>
+        <CloseConcordButton />
       </div>
     </div>
+  );
+}
+
+/**
+ * Close Concord — quits the native window. `tauri.conf.json` ships
+ * with `decorations: false` (the user runs their compositor with
+ * system decorations off, so the OS-painted title bar would render
+ * either oversized or in the wrong colour). Without decorations
+ * there's no system X button; this row gives the user an explicit
+ * way to quit from inside the app.
+ *
+ * Web build: self-hides. Web sessions are tabs; the tab close lives
+ * in the browser chrome.
+ */
+function CloseConcordButton() {
+  const [supported, setSupported] = useState(false);
+
+  useEffect(() => {
+    setSupported(
+      typeof window !== "undefined" && "__TAURI_INTERNALS__" in window,
+    );
+  }, []);
+
+  if (!supported) return null;
+
+  const handleClose = async () => {
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().close();
+    } catch (err) {
+      console.warn("[profile] close window failed", err);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleClose}
+      className="text-on-surface-variant border border-outline-variant/40 rounded px-4 py-2 hover:bg-surface-container-high transition-colors text-sm font-label font-medium min-h-[44px]"
+      data-testid="close-concord-button"
+    >
+      Close Concord
+    </button>
   );
 }
 
@@ -366,6 +416,112 @@ function TOTPSection() {
             {working ? "Setting up..." : "Set Up Authenticator"}
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * INS-071 Phase A — recovery email section.
+ *
+ * Privacy invariant: this component NEVER displays the actual recovery
+ * email value. The only state it ever knows about the existing email is
+ * a boolean (configured / not set). Operators reviewing the rendered DOM
+ * cannot read another user's recovery email from this UI.
+ */
+function RecoveryEmailSection() {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const addToast = useToastStore((s) => s.addToast);
+  const [hasEmail, setHasEmail] = useState<boolean | null>(null);
+  const [input, setInput] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    getRecoveryEmailStatus(accessToken)
+      .then((r) => setHasEmail(r.has_recovery_email))
+      .catch(() => setHasEmail(false));
+  }, [accessToken]);
+
+  const handleSave = async (clear: boolean) => {
+    if (!accessToken) return;
+    const value = clear ? null : input.trim();
+    if (!clear && (!value || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value))) {
+      addToast("Please enter a valid email address");
+      return;
+    }
+    setSaving(true);
+    try {
+      await setRecoveryEmail(value, accessToken);
+      setHasEmail(value !== null);
+      setInput("");
+      addToast(
+        clear ? "Recovery email removed" : "Recovery email saved",
+        "success",
+      );
+    } catch (err) {
+      addToast(
+        err instanceof Error ? err.message : "Failed to save recovery email",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (hasEmail === null) return null;
+
+  return (
+    <div className="border-t border-outline-variant/15 pt-6 space-y-3">
+      <h4 className="text-sm font-medium text-on-surface">Recovery Email</h4>
+      <p className="text-xs text-on-surface-variant">
+        Optional. Used to send a password reset link if you forget your
+        password. The server stores this only for recovery; it is never
+        displayed back to you, to admins, or anywhere else in the app.
+      </p>
+      <div className="flex items-center gap-2">
+        <span
+          className={
+            "w-2 h-2 rounded-full " +
+            (hasEmail ? "bg-secondary" : "bg-on-surface-variant/40")
+          }
+        />
+        <span
+          className={
+            "text-sm " + (hasEmail ? "text-secondary" : "text-on-surface-variant")
+          }
+        >
+          {hasEmail ? "Recovery email configured" : "Recovery email not set"}
+        </span>
+      </div>
+      <div className="flex gap-2">
+        <input
+          type="email"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={
+            hasEmail
+              ? "Enter a new email to replace"
+              : "you@example.com"
+          }
+          autoComplete="email"
+          className="flex-1 px-3 py-2 bg-surface-container border border-outline-variant rounded text-sm text-on-surface placeholder-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+        />
+        <button
+          onClick={() => handleSave(false)}
+          disabled={saving || input.trim().length === 0}
+          className="px-4 py-2 primary-glow hover:brightness-110 disabled:opacity-40 text-on-surface text-sm rounded-md transition-colors"
+        >
+          {saving ? "Saving..." : "Save"}
+        </button>
+      </div>
+      {hasEmail && (
+        <button
+          onClick={() => handleSave(true)}
+          disabled={saving}
+          className="text-xs text-error hover:underline"
+        >
+          Remove recovery email
+        </button>
       )}
     </div>
   );

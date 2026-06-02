@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   DndContext,
   KeyboardSensor,
@@ -19,12 +19,18 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useAuthStore } from "../../stores/auth";
+import { useSettingsStore } from "../../stores/settings";
 import { useSourcesStore, type ConcordSource } from "../../stores/sources";
+import { usePeerStore } from "../../stores/peerStore";
+import { useInstanceNameStore } from "../../stores/instanceName";
+import { useAvatarUrl } from "../../hooks/usePresence";
 import {
   SourceBrandIcon,
   inferSourceBrand,
   type SourceBrand,
 } from "../sources/sourceBrand";
+import { SourceContextMenu } from "./SourceContextMenu";
+import { disconnectSource } from "../../lib/disconnectSource";
 
 const SOURCE_RAIL_STORAGE_KEY_PREFIX = "concord_source_rail_order";
 const ADD_SOURCE_TILE_ID = "__add_source_tile__";
@@ -91,32 +97,72 @@ function normalizeRailOrder(sourceIds: string[], stored: string[] | null): strin
 function sourceTile(source: ConcordSource): {
   brand: SourceBrand;
   bg: string;
+  bgStyle: CSSProperties | undefined;
   icon: ReactNode;
   label: string;
 } {
   const label = source.instanceName ?? source.host;
   const brand = inferSourceBrand(source);
-  const bg = "bg-surface-container-high ring-1 ring-outline-variant/15";
+
+  // INS-069 — when the source advertises branding, paint the tile
+  // with a tinted background derived from `primaryColor` and an
+  // accent ring derived from `accentColor`. Falls back to the
+  // default surface-container styling when branding is absent.
+  // Uses `color-mix(in srgb, …)` so we don't have to hand-roll an
+  // RGB blend for the tint.
+  const branding = source.branding;
+  let bg: string;
+  let bgStyle: CSSProperties | undefined;
+  if (branding) {
+    bg = "ring-1";
+    bgStyle = {
+      backgroundColor: `color-mix(in srgb, ${branding.primaryColor} 22%, var(--color-surface-container-high))`,
+      // `boxShadow: inset 0 0 0 1px <accent>` would also work; we
+      // use the ring utility's `--tw-ring-color` analogue via a
+      // direct boxShadow to bypass tailwind's runtime needs.
+      boxShadow: `0 0 0 1px ${branding.accentColor}`,
+    };
+  } else {
+    bg = "bg-surface-container-high ring-1 ring-outline-variant/15";
+    bgStyle = undefined;
+  }
+
+  // Icon colour: when branding is set, prefer the accent colour so
+  // the icon stays visually keyed to the instance even if the
+  // primary tint is dim. Otherwise leave the default per-brand
+  // styling intact.
+  const iconColor = branding?.accentColor;
+
   switch (brand) {
     case "mozilla":
       return {
         brand,
         bg,
-        icon: <SourceBrandIcon brand={brand} size={28} />,
+        bgStyle,
+        icon: <SourceBrandIcon brand={brand} size={28} color={iconColor} />,
         label: `Mozilla — ${label}`,
       };
     case "matrix":
       return {
         brand,
         bg,
-        icon: <SourceBrandIcon brand={brand} size={28} className="text-on-surface" />,
+        bgStyle,
+        icon: (
+          <SourceBrandIcon
+            brand={brand}
+            size={28}
+            className={iconColor ? undefined : "text-on-surface"}
+            color={iconColor}
+          />
+        ),
         label: `Matrix — ${label}`,
       };
     default:
       return {
         brand,
         bg,
-        icon: <SourceBrandIcon brand={brand} size={28} />,
+        bgStyle,
+        icon: <SourceBrandIcon brand={brand} size={28} color={iconColor} />,
         label,
       };
   }
@@ -125,15 +171,22 @@ function sourceTile(source: ConcordSource): {
 function SortableSourceTile({
   source,
   onToggle,
-  onSourceOpen,
+  onContextMenu,
 }: {
   source: ConcordSource;
   onToggle: (id: string) => void;
-  onSourceOpen?: (sourceId: string) => void;
+  /**
+   * Fired on right-click (or long-press on touch). Receives the source
+   * and viewport-relative cursor coords so the parent can position a
+   * context menu. The previous behavior — context-click opens the
+   * source browser — moves to the menu's "Open" entry, which makes
+   * the destructive "Close connection" entry safer to surface.
+   */
+  onContextMenu: (source: ConcordSource, x: number, y: number) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: source.id });
-  const { bg, icon, label } = sourceTile(source);
+  const { bg, bgStyle, icon, label } = sourceTile(source);
   const constrainedTransform = transform ? { ...transform, x: 0 } : null;
 
   return (
@@ -153,17 +206,207 @@ function SortableSourceTile({
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          onSourceOpen?.(source.id);
+          onContextMenu(source, event.clientX, event.clientY);
         }}
-        title={label}
-        className={`group w-8 h-8 flex items-center justify-center transition-all duration-150 ${bg} ${
+        title={source.isOwner ? `${label} (owner)` : label}
+        data-testid={`source-tile-${source.id}`}
+        style={bgStyle}
+        className={`group relative w-8 h-8 flex items-center justify-center transition-all duration-150 ${bg} ${
           source.enabled
             ? "rounded-xl shadow-lg scale-100 text-on-surface"
             : "rounded-lg hover:rounded-xl scale-95 hover:scale-100 opacity-45 hover:opacity-80 grayscale"
         }`}
       >
         {icon}
+        {source.isOwner ? (
+          <span
+            data-testid={`source-owner-badge-${source.id}`}
+            className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-amber-400 ring-2 ring-surface flex items-center justify-center text-[8px] font-bold text-surface"
+            title="You own this server"
+            aria-label="Owner"
+          >
+            ★
+          </span>
+        ) : null}
       </button>
+    </div>
+  );
+}
+
+/**
+ * Local tile — synthetic, intrinsic Sources-rail entry that
+ * represents THIS device's hosted instance. The local source is a
+ * category of its own (not a Concord federation source, not a Matrix
+ * homeserver source), and it always exists from first boot.
+ *
+ * Inside the local source live one or more local servers — the
+ * auto-created **porch** (common landing pad for visitors) first,
+ * then any additional servers the user creates. Clicking this tile
+ * activates the local source so ChatLayout renders those servers in
+ * its normal server/channel/message panes.
+ *
+ * Visual contract:
+ *  - Fixed at the TOP of the rail (above sortable external sources).
+ *  - Renders even with zero external sources.
+ *  - Avatar = user's profile picture when available, else a
+ *    `home` material symbol.
+ *  - Bottom-right "home" badge so the user knows this is THEIR device
+ *    (NOT a friend's). Mirrors the `source-owner-badge` star pattern.
+ *  - Online dot in corner: green when at least one paired peer's
+ *    `lastSeen` is recent (≤60s), gray otherwise.
+ *  - NOT draggable / NOT removable.
+ *
+ * Label: the user's vanity instance name (via
+ * {@link useInstanceNameStore}) when set, else "local". The vanity
+ * name is also broadcast on the p2p network so peers see it on
+ * connect.
+ */
+function LocalTile({
+  onLocalOpen,
+}: {
+  onLocalOpen?: () => void;
+}) {
+  const userId = useAuthStore((s) => s.userId);
+  const avatarUrl = useAvatarUrl(userId);
+  // Peer list drives the "any paired peer online" dot. Loaded once
+  // here so the tile reflects current state without forcing every
+  // mount to re-IPC. The store is shared; `load()` is idempotent and
+  // sets `error: 'native-only'` on web builds (we tolerate that).
+  const knownPeers = usePeerStore((s) => s.knownPeers);
+  const loadPeers = usePeerStore((s) => s.load);
+  useEffect(() => {
+    void loadPeers();
+  }, [loadPeers]);
+
+  // A peer is "online" when its `lastSeen` is within the last 60s.
+  // The libp2p swarm-event mirror that lights this up live is a Phase
+  // follow-up; in the meantime `lastSeen` is the cheapest signal that
+  // does not require an additional IPC round-trip on every render.
+  const anyPeerOnline = useMemo(() => {
+    const now = Date.now();
+    return knownPeers.some((peer) => {
+      const t = Date.parse(peer.lastSeen);
+      if (Number.isNaN(t)) return false;
+      return now - t < 60_000;
+    });
+  }, [knownPeers]);
+
+  const instanceName = useInstanceNameStore((s) => s.name);
+  const label = instanceName.trim() || "local";
+
+  return (
+    <div
+      className="w-full flex items-center justify-center flex-shrink-0"
+      data-testid="local-tile-wrapper"
+    >
+      <button
+        type="button"
+        onClick={() => onLocalOpen?.()}
+        title={label}
+        data-testid="local-tile"
+        className="group relative w-8 h-8 flex items-center justify-center rounded-xl shadow-lg scale-100 text-on-surface bg-surface-container-high ring-1 ring-primary/40 transition-all duration-150 hover:ring-primary/60"
+        style={{
+          // Subtle inset tint so the local tile reads as "this device" vs
+          // the neutral remote-source tiles. Uses the primary token so
+          // it follows the active theme.
+          backgroundColor:
+            "color-mix(in srgb, var(--color-primary, #4f9eff) 14%, var(--color-surface-container-high))",
+        }}
+      >
+        {avatarUrl ? (
+          <img
+            src={avatarUrl}
+            alt=""
+            className="w-7 h-7 rounded-lg object-cover"
+            data-testid="local-tile-avatar"
+          />
+        ) : (
+          <span
+            className="material-symbols-outlined text-lg text-on-surface"
+            data-testid="local-tile-home-icon"
+          >
+            home
+          </span>
+        )}
+        {/* Home badge — overlapping bottom-right so the user knows
+            this is *their* device (not a friend's). Mirrors the
+            `source-owner-badge` star pattern, different icon. */}
+        <span
+          data-testid="local-tile-home-badge"
+          className="absolute -bottom-1 -right-1 w-3 h-3 rounded-full bg-primary ring-2 ring-surface flex items-center justify-center"
+          title={label}
+          aria-label={label}
+        >
+          <span className="material-symbols-outlined text-on-primary" style={{ fontSize: "8px" }}>
+            home
+          </span>
+        </span>
+        {/* Online indicator — green when at least one paired peer is
+            currently online via libp2p (Phase 5+ peer-store). */}
+        <span
+          data-testid={`local-tile-online-${anyPeerOnline ? "yes" : "no"}`}
+          className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full ring-2 ring-surface ${
+            anyPeerOnline ? "bg-green-500" : "bg-on-surface-variant/50"
+          }`}
+          aria-label={anyPeerOnline ? "Peer online" : "No peers online"}
+        />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Mobile local row — same intrinsic-tile semantics as the desktop
+ * LocalTile but rendered as a list row, matching the mobile source
+ * list visual contract.
+ */
+function MobileLocalRow({ onLocalOpen }: { onLocalOpen?: () => void }) {
+  const userId = useAuthStore((s) => s.userId);
+  const avatarUrl = useAvatarUrl(userId);
+  const knownPeers = usePeerStore((s) => s.knownPeers);
+  const loadPeers = usePeerStore((s) => s.load);
+  useEffect(() => {
+    void loadPeers();
+  }, [loadPeers]);
+  const anyPeerOnline = useMemo(() => {
+    const now = Date.now();
+    return knownPeers.some((peer) => {
+      const t = Date.parse(peer.lastSeen);
+      if (Number.isNaN(t)) return false;
+      return now - t < 60_000;
+    });
+  }, [knownPeers]);
+
+  const instanceName = useInstanceNameStore((s) => s.name);
+  const label = instanceName.trim() || "local";
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onLocalOpen?.()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onLocalOpen?.();
+        }
+      }}
+      data-testid="local-tile-mobile"
+      className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-container-high transition-colors cursor-pointer border-l-2 border-primary/40"
+    >
+      <span
+        className={`w-2 h-2 rounded-full flex-shrink-0 ${
+          anyPeerOnline ? "bg-green-500" : "bg-on-surface-variant/50"
+        }`}
+      />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium text-on-surface truncate">
+          {label}
+        </div>
+        <div className="text-xs text-on-surface-variant truncate">
+          {avatarUrl ? "This device" : "This device (sign in for avatar)"}
+        </div>
+      </div>
     </div>
   );
 }
@@ -185,6 +428,7 @@ export function SourcesPanel({
   onAddSource,
   onSourceSelect,
   onSourceOpen,
+  onLocalOpen,
   onExplore,
   mobile = false,
 }: {
@@ -192,6 +436,14 @@ export function SourcesPanel({
   onSourceSelect?: (sourceId: string) => void;
   /** Called when a tile is clicked — opens the source browser for that source. */
   onSourceOpen?: (sourceId: string) => void;
+  /**
+   * Called when the intrinsic "local" tile is clicked. The parent
+   * should activate the local source so ChatLayout renders the
+   * porch + any user-created local servers in its normal panes
+   * (rather than routing to a separate window). Optional so test
+   * mounts can omit the callback.
+   */
+  onLocalOpen?: () => void;
   onExplore?: () => void;
   mobile?: boolean;
 }) {
@@ -199,8 +451,67 @@ export function SourcesPanel({
   const rawSources = useSourcesStore((s) => s.sources);
   const toggleSource = useSourcesStore((s) => s.toggleSource);
   const setSourceOrder = useSourcesStore((s) => s.setSourceOrder);
+  const updateSource = useSourcesStore((s) => s.updateSource);
+  const openServerSettings = useSettingsStore((s) => s.openServerSettings);
+  const openSettings = useSettingsStore((s) => s.openSettings);
+
+  // Right-click / long-press surface. We keep the menu state local
+  // because nothing else in the app needs to inspect "is a source
+  // context menu open" — it's purely a per-panel affordance.
+  const [contextMenu, setContextMenu] = useState<{
+    source: ConcordSource;
+    x: number;
+    y: number;
+  } | null>(null);
 
   const sources = rawSources;
+
+  // INS-069 — lazy-fetch per-instance branding for any source whose
+  // `branding` field is undefined. This populates the rail tile with
+  // the upstream operator's chosen colours on first render after a
+  // migration (v5 → v6 sources have undefined branding) or for any
+  // source added before INS-069 shipped. We do NOT re-fetch when
+  // branding is already populated — operators rotate branding rarely
+  // and a stale cache is far cheaper than a fetch storm.
+  //
+  // Skipped for reticulum (no Concord well-known) and for hosts that
+  // can't be parsed as URLs (the discoverHomeserver fetch would 500).
+  useEffect(() => {
+    let cancelled = false;
+    const candidates = sources.filter(
+      (s) =>
+        s.branding === undefined &&
+        s.platform !== "reticulum" &&
+        typeof s.host === "string" &&
+        s.host.length > 0,
+    );
+    if (candidates.length === 0) return;
+    void (async () => {
+      const { discoverHomeserver } = await import("../../api/wellKnown");
+      for (const source of candidates) {
+        if (cancelled) return;
+        try {
+          const config = await discoverHomeserver(source.host);
+          if (cancelled) return;
+          if (config.branding) {
+            updateSource(source.id, { branding: config.branding });
+          }
+          // Note: when no branding is upstream, we leave `branding`
+          // undefined in the store so a future operator-side
+          // configuration becomes visible without a manual refresh.
+          // This is a deliberate trade-off vs. a "fetched, none found"
+          // sentinel — re-fetch traffic per source-tile mount is
+          // negligible and the UX win is stronger.
+        } catch {
+          // Ignore — discovery failures shouldn't block the rail.
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sources.length]);
 
   const isTouchDevice =
     typeof window !== "undefined" &&
@@ -286,10 +597,49 @@ export function SourcesPanel({
         key={source.id}
         source={source}
         onToggle={handleToggle}
-        onSourceOpen={onSourceOpen}
+        onContextMenu={(src, x, y) => setContextMenu({ source: src, x, y })}
       />
     );
   };
+
+  // Shared between desktop + mobile returns. Position:fixed inside the
+  // menu means it renders at viewport coords regardless of where in the
+  // tree we place it; we mount it inside both layouts so the parent
+  // doesn't need to know about it.
+  const handleCloseConnection = (sourceId: string) => {
+    // `disconnectSource` does the right thing whether the source is
+    // the active Matrix session (full logout: stop client, reset
+    // servers, clear localStorage, bindToUser(null)) or just one of
+    // many catalog entries (drop the row). See its docstring for the
+    // bug it was added to fix — without the session-aware teardown,
+    // disconnecting the source-you-logged-in-with left the chats
+    // visible because the live MatrixClient kept syncing.
+    disconnectSource(sourceId);
+  };
+  const handleOpenSettings = (source: ConcordSource) => {
+    if (source.platform === "concord") {
+      openServerSettings(source.id);
+    } else {
+      // Matrix / Reticulum / other: route to the Connections tab,
+      // where the per-source row lives. The user can adjust from
+      // there until per-source detail panes exist for those platforms.
+      openSettings("connections");
+    }
+  };
+  const contextMenuOverlay = contextMenu ? (
+    <SourceContextMenu
+      source={contextMenu.source}
+      x={contextMenu.x}
+      y={contextMenu.y}
+      onClose={() => setContextMenu(null)}
+      onOpen={(id) => onSourceOpen?.(id)}
+      onOpenSettings={(id) => {
+        const src = sources.find((s) => s.id === id);
+        if (src) handleOpenSettings(src);
+      }}
+      onCloseConnection={handleCloseConnection}
+    />
+  ) : null;
 
   if (mobile) {
     return (
@@ -301,6 +651,9 @@ export function SourcesPanel({
 
         {/* Source list */}
         <div className="flex-1 min-h-0 overflow-y-auto">
+          {/* Intrinsic Porch row — always FIRST, even when sources is empty.
+              Local-only; not part of useSourcesStore.sources. */}
+          <MobileLocalRow onLocalOpen={onLocalOpen} />
           {sources.map((source) => {
             // Outer container: <div role="button"> instead of <button>. HTML
             // forbids interactive elements nested inside <button>, and the
@@ -369,6 +722,7 @@ export function SourcesPanel({
             Add Source
           </button>
         </div>
+        {contextMenuOverlay}
       </div>
     );
   }
@@ -390,6 +744,14 @@ export function SourcesPanel({
       {(onExplore || sources.length > 0) && (
         <div className="w-8 h-px bg-outline-variant/20 flex-shrink-0 my-1" />
       )}
+
+      {/* Intrinsic Porch tile — always rendered at the TOP of the rail,
+          above the sortable sources. NOT a row in useSourcesStore.sources
+          (the porch is local, not a remote connection). NOT draggable —
+          intentionally outside the SortableContext below. */}
+      <div className="w-full flex flex-col items-center gap-1.5 pb-1.5 flex-shrink-0">
+        <LocalTile onLocalOpen={onLocalOpen} />
+      </div>
 
       {/* Source tiles — scrollable, top-down */}
       <DndContext
@@ -413,6 +775,7 @@ export function SourcesPanel({
           </div>
         </SortableContext>
       </DndContext>
+      {contextMenuOverlay}
     </div>
   );
 }

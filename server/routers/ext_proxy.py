@@ -19,17 +19,79 @@ from __future__ import annotations
 
 import logging
 import time
+from threading import Lock
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from database import get_db
 from routers.admin import _read_instance_settings, _write_instance_settings, require_admin
-from routers.servers import get_user_id
+from dependencies import get_user_id
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["ext-proxy"])
+
+
+# ---------------------------------------------------------------------------
+# Per-source token-bucket rate limiting
+#
+# Defense-in-depth: even a misbehaving extension iframe can't exceed the
+# server-side cap for a given (ext_id, provider) pair.
+# ---------------------------------------------------------------------------
+
+
+class TokenBucket:
+    def __init__(self, capacity: float, refill_per_sec: float):
+        self.capacity = capacity
+        self.tokens = capacity
+        self.refill_per_sec = refill_per_sec
+        self.last = time.monotonic()
+        self.lock = Lock()
+
+    def take(self) -> bool:
+        with self.lock:
+            now = time.monotonic()
+            self.tokens = min(
+                self.capacity, self.tokens + (now - self.last) * self.refill_per_sec
+            )
+            self.last = now
+            if self.tokens >= 1:
+                self.tokens -= 1
+                return True
+            return False
+
+
+# Steady-state requests per second per (ext_id, provider) pair.
+# burst = rate * 5 (five seconds of headroom).
+SOURCE_RATES: dict[str, float] = {
+    "opensky": 0.5,
+    "sentinel": 0.5,
+    "military-legacy": 1.0,
+    "airplanes-live": 1.0,
+    "wsdot": 1.0,
+    "511ny": 1.0,
+    "massdot": 1.0,
+    "firms": 0.5,
+    "launchlib": 0.5,
+    "cloudflare-radar": 0.5,
+    # existing providers with a default 1 rps cap
+    "nycdot": 1.0,
+}
+
+_BUCKETS: dict[tuple[str, str], TokenBucket] = {}
+
+
+def _get_bucket(ext_id: str, provider: str, rate_per_sec: float) -> TokenBucket:
+    key = (ext_id, provider)
+    if key not in _BUCKETS:
+        _BUCKETS[key] = TokenBucket(
+            capacity=rate_per_sec * 5, refill_per_sec=rate_per_sec
+        )
+    return _BUCKETS[key]
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +173,56 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "auth_kind": "none",
         "methods": ("GET",),
     },
+    # ------------------------------------------------------------------
+    # Worldview-map sources added 2026-04-30
+    # ------------------------------------------------------------------
+    "military-legacy": {
+        # Public military-aircraft feed from airplanes.live (no auth).
+        # Falls back to the same base as airplanes-live; the frontend
+        # differentiates by path (/v2/mil vs /v2/all).
+        "upstream": "https://api.airplanes.live",
+        "auth_kind": "none",
+        "methods": ("GET",),
+    },
+    "airplanes-live": {
+        "upstream": "https://api.airplanes.live",
+        "auth_kind": "none",
+        "methods": ("GET",),
+    },
+    "cloudflare-radar": {
+        # Requires a Cloudflare API token stored as cloudflare_radar_token.
+        # TODO: implement bearer_static auth_kind to forward the token.
+        # For now registered so __healthz probes work; auth is no-op.
+        "upstream": "https://api.cloudflare.com",
+        "auth_kind": "none",  # TODO: bearer_static with cloudflare_radar_token
+        "methods": ("GET",),
+    },
+    "wsdot": {
+        "upstream": "https://wsdot.wa.gov",
+        "auth_kind": "none",
+        "methods": ("GET",),
+    },
+    "511ny": {
+        "upstream": "https://511ny.org",
+        "auth_kind": "none",
+        "methods": ("GET",),
+    },
+    "massdot": {
+        "upstream": "https://mass511.com",
+        "auth_kind": "none",
+        "methods": ("GET",),
+    },
+    "firms": {
+        # NASA FIRMS fire data — public read, no server-side auth.
+        "upstream": "https://firms.modaps.eosdis.nasa.gov",
+        "auth_kind": "none",
+        "methods": ("GET",),
+    },
+    "launchlib": {
+        "upstream": "https://ll.thespacedevs.com",
+        "auth_kind": "none",
+        "methods": ("GET",),
+    },
 }
 
 
@@ -170,6 +282,62 @@ async def _get_oauth_token(provider: str, secrets: dict[str, str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Health probe
+#
+# IMPORTANT: this route MUST be registered BEFORE the main proxy route.
+# FastAPI/Starlette matches in registration order; the main proxy pattern
+# ``{ext_id}/{provider}/{path:path}`` would shadow ``{ext_id}/__healthz/{provider}``
+# if defined first (confirmed with live routing test).
+# ---------------------------------------------------------------------------
+
+
+def _resolve_upstream(provider: str) -> str | None:
+    """Return the base upstream URL for a provider, or None if unknown.
+
+    For providers with a dynamic upstream_builder, returns the static
+    base domain so a HEAD probe has a target (the builder needs secrets,
+    which we don't have here).
+    """
+    cfg = PROVIDERS.get(provider)
+    if not cfg:
+        return None
+    if cfg.get("upstream"):
+        return cfg["upstream"]
+    # sentinel-style: no static upstream, derive base from token_url domain
+    if cfg.get("token_url"):
+        parsed = urlparse(cfg["token_url"])
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return None
+
+
+@router.get("/api/ext-proxy/{ext_id}/__healthz/{provider}")
+async def proxy_healthz(
+    ext_id: str,
+    provider: str,
+    user_id: str = Depends(get_user_id),
+):
+    """Lightweight health probe used by the worldview-map health panel.
+
+    Returns 200 with ``{"ok": true, "status": <upstream_status>}`` if the
+    proxy can reach the upstream base URL.  4xx from the upstream root is
+    treated as reachable (root-level HEAD is commonly rejected with 405;
+    that does not indicate an outage).  Returns 502 on network error, 404
+    for unknown providers.
+    """
+    upstream = _resolve_upstream(provider)
+    if not upstream:
+        raise HTTPException(404, f"unknown provider {provider!r} for {ext_id}")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.head(upstream)
+            # Treat any response (including 4xx) as "reachable"; only 5xx means degraded.
+            # Root-level HEAD on most APIs returns 404 or 405 — not an outage signal.
+            return {"ok": r.status_code < 500, "status": r.status_code, "provider": provider}
+    except Exception as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # Proxy
 # ---------------------------------------------------------------------------
 
@@ -184,6 +352,7 @@ async def ext_proxy(
     path: str,
     request: Request,
     user_id: str = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
 ):
     """Forward a request from an installed extension to the configured
     upstream provider, attaching server-side credentials as needed.
@@ -193,6 +362,41 @@ async def ext_proxy(
         raise HTTPException(404, f"Unknown provider {provider!r}")
     if request.method.upper() not in cfg.get("methods", ("GET",)):
         raise HTTPException(405, f"Method {request.method} not allowed for {provider}")
+
+    # INS-066 W7: enforce manifest permission `fetch:external`. The
+    # extension MUST have declared this in its manifest at install time,
+    # validated against ALLOWED_PERMISSIONS. Extensions installed before
+    # INS-066 (legacy static catalog only — no DB row) are NOT subject
+    # to the gate, since they predate the permissions registry; this
+    # preserves backward compatibility for worldview-map and friends.
+    # New runtime-installed extensions go through the strict gate.
+    from routers.extensions import (  # local import: avoid circular at import time
+        get_extension_manifest,
+        manifest_has_permission,
+    )
+    manifest = await get_extension_manifest(ext_id, db)
+    if manifest is not None:
+        if not manifest_has_permission(manifest, "fetch:external"):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "permission_denied",
+                    "permission": "fetch:external",
+                    "extension_id": ext_id,
+                },
+            )
+
+    # Server-side rate cap — defense in depth against misbehaving iframes.
+    # Note: _BUCKETS is process-local; on a multi-worker deploy the effective
+    # rate per source is SOURCE_RATES[provider] * num_workers. Currently a
+    # single uvicorn worker is used (see server/Dockerfile CMD).
+    rate = SOURCE_RATES.get(provider, 1.0)
+    if not _get_bucket(ext_id, provider, rate).take():
+        raise HTTPException(
+            status_code=429,
+            detail=f"{provider}: server-side rate limit exceeded",
+            headers={"Retry-After": str(max(1, int(1 / rate)))},
+        )
 
     secrets = _ext_secrets(ext_id)
 

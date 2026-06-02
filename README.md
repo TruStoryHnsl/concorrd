@@ -8,7 +8,7 @@ A small-community chat platform that looks and feels like Discord but runs on in
 
 The same compiled React bundle ships as a web app and as a Tauri 2 desktop app. Native iOS/Android packages are in progress with full feature parity (no capability deltas between web and native).
 
-A separate experimental fork — [concord-beta](https://github.com/TruStoryHnsl/concord-beta) — is exploring native peer-to-peer mesh chat (Tauri + Rust + libp2p, Reticulum discovery, WireGuard tunnels for video). It shares the product vision but is a fundamentally different transport architecture and an independent codebase.
+Native peer-to-peer connectivity (Tauri + Rust + libp2p, Reticulum discovery, WireGuard tunnels for video) is being built directly into the main build — see the P2P-first native architecture roadmap in [PLAN.md](./PLAN.md) and [docs/architecture/p2p-design.md](docs/architecture/p2p-design.md). Desktop builds can host via a domain (like the docker deployment) **or** connect peer-to-peer with other Concord instances; mobile builds connect peer-to-peer or join an existing domain-accessible instance.
 
 ## Why
 
@@ -16,7 +16,7 @@ Discord is great until you remember someone else owns the kill switch. Concord i
 
 Most of the existing Matrix clients are excellent at being Matrix clients and bad at feeling like Discord. Most "self-hosted Discord" forks are great at feeling like Discord and bad at being open. Concord is a wrapper layer — a Discord-shaped server/invite/soundboard model on top of Matrix — so you get the federation and end-to-end story for free, and the UX still feels like the thing your friends already know how to use.
 
-Beyond chat, the longer-term direction is for concord to be the swiss-army knife for self-hosted comms — a single client that talks Matrix, federates with other concord instances, bridges in legacy networks where it's worth it, and (via concord-beta's mesh track) eventually carries traffic over Reticulum + WireGuard when there's no homeserver in the loop at all. Concord is infrastructure, not a service. Users should have privacy from the admin too.
+Beyond chat, the longer-term direction is for concord to be the swiss-army knife for self-hosted comms — a single client that talks Matrix, federates with other concord instances, bridges in legacy networks where it's worth it, and (via the main build's P2P mesh roadmap) eventually carries traffic over Reticulum + WireGuard when there's no homeserver in the loop at all. Concord is infrastructure, not a service. Users should have privacy from the admin too.
 
 Posture: personal-scale tool first, scaling later. Single-user and small-community deployments today; commercial polish (native apps, donation-based monetization, App Store distribution) is the path forward — but every functional capability stays free in the browser-accessible web UI.
 
@@ -122,6 +122,49 @@ cargo tauri dev      # development
 cargo tauri build    # produces a native installer for your OS
 ```
 
+#### Windows installer
+
+CI ([`.github/workflows/windows-build.yml`](.github/workflows/windows-build.yml)) builds an MSI and an NSIS `.exe` on every push to `main`. Grab the artifact:
+
+1. Open the latest **Windows build** run on [GitHub Actions](https://github.com/TruStoryHnsl/concord/actions/workflows/windows-build.yml).
+2. Download either `concord-windows-msi` or `concord-windows-nsis` from the run's Artifacts panel (14-day retention).
+3. Unzip; double-click the installer.
+
+You'll see **"Windows protected your PC"** on first launch. The build is unsigned (no code-signing cert yet), so SmartScreen warns on every download. Click **More info → Run anyway** to proceed. Once signing lands the warning goes away — tracked separately, not blocking on it for the open-source distribution.
+
+What the first launch looks like:
+
+- Installer drops Concord to `%PROGRAMFILES%\Concord\` (MSI) or `%LOCALAPPDATA%\Programs\Concord\` (NSIS / per-user install).
+- The app boots into a **Server Picker** screen (Join an existing server / Host your own). It does NOT pre-configure any server — you point it at a Concord or Matrix homeserver of your choice. Enter `concordchat.net` if you want to try the public instance.
+- Embedded chat database (tuwunel) lives at `%APPDATA%\concord\tuwunel\` and is preserved across reinstalls. App config (server URL, encryption keys) lives at `%APPDATA%\com.concord.chat\` and is wiped by uninstall.
+
+Building it yourself on Windows: see [`docs/native-apps/windows-install.md`](docs/native-apps/windows-install.md) for the full bootstrap (`scripts/win-dev-bootstrap.ps1`) + native build (`scripts/build_windows_native.ps1`).
+
+> Note: cross-compiling Windows installers from Linux is currently blocked by libsodium-sys-stable's POSIX-only build deps in the iota_stronghold tree. Use the Windows CI workflow or a real Windows host. `scripts/build_windows_wsl.sh` exits with a clear diagnostic if you try.
+
+#### Uninstalling Concord
+
+**Windows.** Open **Settings → Apps → Installed apps**, find **Concord**, and click **Uninstall**. The NSIS uninstaller removes:
+
+- The install dir (`%LOCALAPPDATA%\Programs\Concord\`).
+- The HKCU uninstall registry entry.
+- Per-user config under `%APPDATA%\com.concord.chat\` (settings, auth tokens, webkit cache).
+- Any legacy `%APPDATA%\Concord\` folder from pre-1.0 builds.
+
+The embedded chat database under `%APPDATA%\concord\tuwunel\` is **preserved** so a future reinstall picks up where you left off. To wipe chat history too, delete that folder manually after uninstall.
+
+Reinstalling over an existing version: the installer prompts to close any running Concord, then clears the install dir before extracting the new build. Older versions that hit "Concord already installed / uninstall fails" can run the new installer directly — it self-repairs.
+
+**macOS.** Drag `/Applications/Concord.app` to the Trash, then run the bundled uninstall helper from Terminal to clean per-user state:
+
+```bash
+/Applications/Concord.app/Contents/Resources/uninstall.sh
+```
+
+(Run it BEFORE dragging the .app to Trash, or unzip the .dmg again to recover the script.) The helper removes the .app bundle, `~/Library/Application Support/Concord`, `~/Library/Caches/com.concord.chat`, `~/Library/Logs/Concord`, `~/Library/Preferences/com.concord.chat.plist`, and the macOS launch-services cache for `com.concord.chat`.
+
+**Linux** (`.deb`/`.rpm`/AppImage). `.deb` and `.rpm` are managed by your package manager — `sudo apt remove concord` or `sudo dnf remove concord` cleans the install plus the postrm-script-managed cache. AppImage users delete the `.AppImage` file plus `~/.local/share/concord/` and `~/.config/concord/`.
+
 Day-to-day:
 
 ```bash
@@ -172,6 +215,30 @@ Optional services:
 | `/livekit/*` | LiveKit `:7880` | WebSocket signaling (path-stripped) |
 | `/downloads/*` | Caddy `file_server` | Forced `Content-Disposition: attachment` for desktop installers |
 
+## Installation
+
+Five distribution channels — one Docker stack for the server, four native installers for end users. All artifacts live on the [GitHub releases page](https://github.com/TruStoryHnsl/concord/releases/latest). The native installers are unsigned (project-owner policy: free distribution path only), so first-launch warnings from SmartScreen / Gatekeeper are expected and harmless.
+
+### Docker / self-hosted server
+
+The fastest path is the prebuilt stack archive published with each release as `concord-docker-stack-v0.X.Y.zip`. Unzip it, copy `.env.example` to `.env`, edit the two required values (`CONDUWUIT_SERVER_NAME` and `SITE_ADDRESS`), and run `docker compose up -d`. The compose file pulls prebuilt container images from `ghcr.io/trustoryhnsl/concord-web:<version>` and `ghcr.io/trustoryhnsl/concord-concord-api:<version>` (both tagged `latest` too), so a vanilla operator never has to build from source. For full configuration options including TURN, federation, and SMTP, see [Quickstart](#quickstart) above.
+
+### Windows native
+
+Download `Concord_<version>_x64-setup.exe` from the latest [Windows release](https://github.com/TruStoryHnsl/concord/releases?q=windows) and run it — the NSIS installer registers Concord under "Add or Remove Programs". If Windows reports "Concord is already installed" but the Start-menu entry has vanished, run `Uninstall Concord.exe` from the install directory (default `%LOCALAPPDATA%\Programs\Concord\`) to clean state, then re-run the installer. The app self-updates via Settings → About → "Check for updates" once installed.
+
+### macOS (Apple Silicon)
+
+Download `Concord_<version>_aarch64.dmg` from the latest [macOS Apple Silicon release](https://github.com/TruStoryHnsl/concord/releases?q=macos-arm64), open it, and drag `Concord.app` to `/Applications`. First launch will be blocked by Gatekeeper — right-click the app, choose Open, and confirm at the warning dialog. To uninstall: run `/Applications/Concord.app/Contents/Resources/uninstall.sh` (a small helper bundled with the app) to remove the app and scrub `~/Library/Application Support/concord/` and `~/Library/Preferences/com.concord.app.plist`.
+
+### macOS (Intel)
+
+Same flow as Apple Silicon — download the Intel-specific `Concord_<version>_x64.dmg` from the latest [macOS Intel release](https://github.com/TruStoryHnsl/concord/releases?q=macos-intel) and drag to `/Applications`. The embedded homeserver (`tuwunel`) is a separate x86_64 build, so do not install the arm64 .dmg on Intel hardware (it will refuse to launch). Uninstall is the same `uninstall.sh` helper inside `Concord.app/Contents/Resources/`.
+
+### Linux
+
+Download `concord_<version>_amd64.AppImage` from the latest [Linux release](https://github.com/TruStoryHnsl/concord/releases?q=linux), make it executable (`chmod +x concord_*_amd64.AppImage`), and run it directly. No system installation is performed; the AppImage is self-contained. To uninstall, delete the AppImage and scrub `~/.local/share/concord/` and `~/.config/concord/` to remove the embedded homeserver database and any cached credentials.
+
 ## Features
 
 - Text chat with rooms, threads, DMs, typing indicators, read receipts, media uploads
@@ -206,7 +273,7 @@ What's stable today:
 What's in progress:
 - Native mobile apps (iOS/Android, Tauri 2, full feature parity, donation-based monetization).
 - Embedded servitude module — host a concord server from inside the desktop/mobile app, no docker required for end users.
-- Universal sources panel — Matrix federation, other concord instances, and (via concord-beta) Reticulum mesh, all surfaced as first-class sources in the same UI.
+- Universal sources panel — Matrix federation, other concord instances, and Reticulum mesh (P2P, in progress), all surfaced as first-class sources in the same UI.
 - Game center — chat-integrated games (jackbox-style party games, card games, story games, tabletop emulator–style integration).
 - Mobile UI refresh — swipe-only navigation, dockable pill menu, hardware-state status bar, edge-tap shortcuts.
 
@@ -217,9 +284,7 @@ What's NOT supported:
 
 ## Related projects
 
-- **[concord-beta](https://github.com/TruStoryHnsl/concord-beta)** — experimental fork: native peer-to-peer mesh chat (Tauri + Rust + libp2p), Reticulum discovery, WireGuard P2P video. Independent codebase, same product vision. Treat current concord as production and concord-beta as research.
 - **[concord-extensions](https://github.com/TruStoryHnsl/concord-extensions)** — extension scaffolding (e.g. `worldview`) that runs against the concord client.
-- **[orrtellite](https://github.com/TruStoryHnsl/orrtellite)** — self-hosted Headscale + WireGuard mesh. Used as the connectivity substrate for the experimental beta track and for cross-machine homelab traffic.
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full release history and [PLAN.md](./PLAN.md) for the master development map.
 
@@ -229,4 +294,17 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md). Conventional commits + feature branche
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+**Fair Source.** Concord is licensed under the Functional Source License,
+Version 1.1 (`FSL-1.1-Apache-2.0`) — see [LICENSE](./LICENSE). You may freely
+use, modify, self-host, and share it for any purpose **except a Competing Use**
+(reselling Concord, or offering it to others as a paid/managed service). **Each
+release automatically converts to the Apache License 2.0 two years after it is
+published**, at which point that version becomes true open source with no
+restrictions.
+
+The Concord name and logo are trademarks and are **not** covered by the code
+license — see [TRADEMARKS.md](./TRADEMARKS.md). Contributions are accepted under
+the [Contributor License Agreement](./CLA.md).
+
+> Code released under prior MIT-tagged versions remains available under the MIT
+> License; the FSL applies to releases from the relicense forward.

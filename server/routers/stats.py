@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models import VoiceSession, MessageCount
-from routers.servers import get_user_id
+from dependencies import get_user_id
 
 logger = logging.getLogger(__name__)
 

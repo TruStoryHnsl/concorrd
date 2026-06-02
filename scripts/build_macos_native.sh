@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # build_macos_native.sh — Build Concord as a Universal macOS app via Tauri v2.
 #
-# Designed to run on orrpheus (M1 Pro, macOS 14+). Builds a fat binary that
-# runs on both Apple Silicon and Intel, then code-signs and notarizes it
-# with the Apple Developer ID Application certificate.
+# Designed to run on a macOS 14+ host (Apple Silicon or Intel). Builds a
+# fat binary that runs on both Apple Silicon and Intel, then code-signs
+# and notarizes it with the Apple Developer ID Application certificate.
 #
 # Required environment:
 #   APPLE_ID         — Apple ID email used for notarization
@@ -23,8 +23,8 @@
 #                      bundle_dmg.sh runs an AppleScript that talks to Finder,
 #                      and Finder cannot accept AppleEvents over SSH (errors
 #                      with -1712 "AppleEvent timed out"). Only set this when
-#                      running the script from a logged-in GUI session on
-#                      orrpheus, e.g. via Terminal.app at the keyboard.
+#                      running the script from a logged-in macOS GUI session,
+#                      e.g. via Terminal.app at the keyboard.
 #                      The default skips dmg so SSH-driven CI works.
 #
 # Usage:
@@ -70,7 +70,7 @@ require_env() {
 # Platform check
 # ----------------------------------------------------------------------------
 if [[ "$(uname -s)" != "Darwin" ]]; then
-    die "this script must run on macOS (orrpheus). Current uname: $(uname -s)" 1
+    die "this script must run on macOS. Current uname: $(uname -s)" 1
 fi
 
 # ----------------------------------------------------------------------------

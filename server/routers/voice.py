@@ -1,6 +1,8 @@
+import asyncio
 import hmac
 import logging
 import os
+import time
 from typing import Optional
 
 import httpx
@@ -14,7 +16,7 @@ from database import get_db
 from dependencies import require_server_member
 from errors import ConcordError
 from models import Channel, ServerMember
-from routers.servers import get_user_id
+from dependencies import get_user_id
 from services.livekit_tokens import generate_token, LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
 
 logger = logging.getLogger(__name__)
@@ -63,12 +65,71 @@ def _turn_secret() -> str:
     return os.getenv("TURN_SECRET", "").strip()
 
 
+def _is_rfc1918(host: str) -> bool:
+    """True if `host` is a literal RFC1918 / loopback / link-local IPv4
+    address. Such addresses are NEVER valid as a TURN_HOST advertised
+    to off-LAN clients — the browser cannot route to them.
+
+    Returns False for DNS names, IPv6, and public IPv4 addresses
+    (validation of public reachability happens at runtime via the
+    voice subsystem health check, not statically here).
+    """
+    try:
+        import ipaddress
+
+        addr = ipaddress.ip_address(host)
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+    except ValueError:
+        return False
+
+
 def _turn_domain() -> str:
-    return os.getenv("TURN_DOMAIN", "localhost").strip() or "localhost"
+    """Realm for TURN auth. Derived from INSTANCE_DOMAIN unless
+    explicitly overridden via the TURN_DOMAIN env var.
+    """
+    explicit = os.getenv("TURN_DOMAIN", "").strip()
+    if explicit and not _is_rfc1918(explicit):
+        return explicit
+    from config import INSTANCE_DOMAIN
+
+    return INSTANCE_DOMAIN or "localhost"
 
 
 def _turn_host() -> str:
-    return os.getenv("TURN_HOST", "").strip() or _turn_domain()
+    """Public hostname clients use to reach coturn.
+
+    Resolution order:
+    1. ``TURN_HOST`` env var IF it's a DNS name or public IP (operator
+       opted into a specific hostname).
+    2. ``turn.{INSTANCE_DOMAIN}`` derived from the canonical public URL.
+    3. The bare ``INSTANCE_DOMAIN`` if no subdomain pattern is wanted.
+
+    An RFC1918 / loopback ``TURN_HOST`` is IGNORED with a logged
+    warning — that value would have been advertised verbatim to every
+    browser as an ICE relay URL, which off-LAN browsers cannot route
+    to. Refusing it here prevents the silent-broken-voice failure mode
+    that has historically broken self-hosters' deployments without any
+    visible symptom in the API.
+    """
+    explicit = os.getenv("TURN_HOST", "").strip()
+    if explicit:
+        if _is_rfc1918(explicit):
+            logger.warning(
+                "Ignoring TURN_HOST=%s (private/loopback IPv4 address); "
+                "deriving from INSTANCE_DOMAIN instead. A LAN address as "
+                "TURN_HOST would be advertised to off-LAN clients as their "
+                "ICE relay URL — they can't route to it. Set TURN_HOST to a "
+                "public hostname (e.g. turn.<your-domain>) or unset it and "
+                "rely on PUBLIC_BASE_URL.",
+                explicit,
+            )
+        else:
+            return explicit
+    from config import INSTANCE_DOMAIN
+
+    if INSTANCE_DOMAIN:
+        return f"turn.{INSTANCE_DOMAIN}"
+    return _turn_domain()
 
 
 def _turn_port() -> int:
@@ -211,7 +272,46 @@ async def get_voice_token(
     The room_name should be the matrix_room_id of the voice channel.
     The user_id from the auth header is used as the participant identity.
     Verifies the user is a member of the server that owns this room.
+
+    Returns 503 only for hard-broken voice configurations the operator
+    must fix before any client can connect — TURN_SECRET unset (no
+    credentials to mint) or TURN_HOST resolving to an RFC1918 address
+    that off-LAN browsers can never reach. Soft failures (STUN probe
+    timeout, latency degradation, etc.) are recorded on
+    ``/api/hosting/status`` but do NOT block the endpoint: the api
+    container often probes from a different network namespace than
+    the browser, and many deployments rely on LiveKit's embedded SFU
+    + Google STUN as the primary path with the bundled TURN relay as
+    a fallback for restrictive NATs. Blocking on probe failure means
+    a working LAN-only voice call gets killed by a probe that has no
+    way to reach the relay from its own network.
     """
+    from services.voice_health import current_status
+
+    health = current_status()
+    # Only block on configurations a browser provably cannot use:
+    #   * TURN_SECRET unset -> no credentials can be minted
+    #   * TURN_HOST is RFC1918/loopback (encoded in turn_configured
+    #     remaining False even when the probe ran)
+    # For everything else (STUN timeout from the api container,
+    # transient relay restart, etc.) issue the token and let the
+    # browser try — Google STUN + direct LiveKit signaling cover the
+    # LAN happy path, and the operator-facing health endpoint
+    # surfaces the diagnostic for fix.
+    if (
+        health.last_checked_at
+        and not health.healthy
+        and not health.turn_configured
+    ):
+        raise ConcordError(
+            error_code="VOICE_SUBSYSTEM_UNAVAILABLE",
+            message=(
+                health.last_error
+                or "Voice subsystem is currently unreachable."
+            ),
+            status_code=503,
+        )
+
     # Look up which server owns this room and verify membership
     result = await db.execute(
         select(Channel).where(Channel.matrix_room_id == body.room_name)
@@ -404,6 +504,72 @@ class VoiceParticipant(BaseModel):
     name: str
 
 
+# TTL cache + single-flight for LiveKit's ListParticipants.
+#
+# Background: the client's ``useVoiceParticipants`` hook polls this
+# endpoint every 10 s per voice-room set. With M concurrent users and
+# N rooms each, the un-cached endpoint emits up to M×N
+# RoomService.ListParticipants RPCs to LiveKit every 10 s. Empirically
+# that produced bursts of hundreds of LiveKit calls per second
+# (visible in livekit-1 logs) and contributed to the chronic
+# background load that, combined with sslh's missing TCP keepalive,
+# led to the 2026-05-09 wedge of the TLS demuxer on :443.
+#
+# This cache collapses concurrent in-flight lookups for the same room
+# into one upstream call (single-flight via ``_participants_inflight``)
+# and serves repeat lookups within ``_PARTICIPANTS_TTL`` seconds from
+# memory. Module-level state is per-worker, which is acceptable: a
+# small worker count means a 5 s TTL still reduces total LiveKit RPC
+# volume by ~M× across users hitting the same worker.
+_PARTICIPANTS_TTL_S = 5.0
+_participants_cache: dict[str, tuple[float, list[dict]]] = {}
+_participants_inflight: dict[str, asyncio.Task[list[dict]]] = {}
+
+
+async def _fetch_room_participants_cached(room_id: str) -> list[dict]:
+    now = time.monotonic()
+    cached = _participants_cache.get(room_id)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+
+    existing = _participants_inflight.get(room_id)
+    if existing is not None and not existing.done():
+        return await existing
+
+    async def _do_fetch() -> list[dict]:
+        try:
+            lk_url = LIVEKIT_URL.replace("ws://", "http://").replace(
+                "wss://", "https://"
+            )
+            lk_client = livekit_api.LiveKitAPI(
+                lk_url, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
+            )
+            try:
+                resp = await lk_client.room.list_participants(
+                    livekit_api.ListParticipantsRequest(room=room_id)
+                )
+                data: list[dict] = [
+                    {"identity": p.identity, "name": p.name}
+                    for p in resp.participants
+                ]
+            finally:
+                await lk_client.aclose()
+            _participants_cache[room_id] = (
+                time.monotonic() + _PARTICIPANTS_TTL_S,
+                data,
+            )
+            return data
+        except Exception:
+            # Don't cache failures — let the next caller retry promptly.
+            return []
+        finally:
+            _participants_inflight.pop(room_id, None)
+
+    task = asyncio.create_task(_do_fetch())
+    _participants_inflight[room_id] = task
+    return await task
+
+
 @router.get("/participants")
 async def get_voice_participants(
     rooms: str = Query(
@@ -445,24 +611,11 @@ async def get_voice_participants(
         return {}
     room_ids = list(accessible_rooms)
 
-    # Convert ws:// → http:// for LiveKit REST API
-    lk_url = LIVEKIT_URL.replace("ws://", "http://").replace("wss://", "https://")
-    lk_client = livekit_api.LiveKitAPI(lk_url, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-
-    result: dict[str, list[dict]] = {}
-    try:
-        for room_id in room_ids:
-            try:
-                resp = await lk_client.room.list_participants(
-                    livekit_api.ListParticipantsRequest(room=room_id)
-                )
-                result[room_id] = [
-                    {"identity": p.identity, "name": p.name}
-                    for p in resp.participants
-                ]
-            except Exception:
-                result[room_id] = []
-    finally:
-        await lk_client.aclose()
-
-    return result
+    # Concurrent cache-or-fetch per room. Single-flight inside
+    # ``_fetch_room_participants_cached`` ensures concurrent requests
+    # for the same room share one upstream LiveKit RPC.
+    fetched = await asyncio.gather(
+        *(_fetch_room_participants_cached(room_id) for room_id in room_ids),
+        return_exceptions=False,
+    )
+    return dict(zip(room_ids, fetched))

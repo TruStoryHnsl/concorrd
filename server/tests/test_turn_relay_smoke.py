@@ -73,7 +73,7 @@ def test_decode_xor_address_ipv4_round_trip() -> None:
     smoke = _load_smoke_module()
     txid = b"abcdefghijkl"
     port = 49176
-    host = "162.195.121.21"
+    host = "203.0.113.10"
 
     xport = port ^ (smoke.MAGIC_COOKIE >> 16)
     xhost = int.from_bytes(socket.inet_aton(host), "big") ^ smoke.MAGIC_COOKIE

@@ -1,4 +1,4 @@
-# Podman compatibility overlay for local dev on orrion (rootless Podman).
+# Podman compatibility overlay for local dev under rootless Podman.
 # /var/run/docker.sock doesn't exist in rootless Podman — redirect the bind
 # mount to a dummy socket so the container create step succeeds.
 # The docker-socket-proxy runs as a no-op (alpine tail) and concord-api's

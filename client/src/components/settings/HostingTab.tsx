@@ -3,6 +3,10 @@ import { useAuthStore } from "../../stores/auth";
 import { getServerUrl } from "../../api/serverUrl";
 import { servitudeStatus, isTauri, type ServitudeState } from "../../api/servitude";
 import { AdminTab } from "./AdminTab";
+import { DataExportSection } from "./DataExportSection";
+import { DeploymentProfileSection } from "./DeploymentProfileSection";
+import { InstanceNameSection } from "./InstanceNameSection";
+import { VisibilitySection } from "./VisibilitySection";
 
 export type HostingStatus = "loading" | "running" | "stopped" | "error";
 
@@ -81,6 +85,37 @@ export function HostingTab() {
       </div>
 
       <AdminTab />
+
+      {/* Vanity instance name — replaces "local" on the source-rail
+          home tile and propagates into the libp2p Identify protocol
+          so peers can confirm they reached the right device. */}
+      <InstanceNameSection />
+
+      {/*
+        Deployment profile (Phase 7 — native default profile). Relocated
+        2026-05-30 from ProfileTab — operator-facing hosting concern, not
+        user profile. Renders the native/web toggle and the Phase-0
+        hosting status summary when the operator flips to web_first.
+      */}
+      <DeploymentProfileSection />
+
+      {/*
+        F-VIS — per-server mesh-hop visibility slider. Lets the
+        operator decide how far across the mesh each server they host
+        is advertised. Defaults: porch = 1 (direct paired only), home
+        = 0 (owner only until opt-in). Architecture B from the
+        2026-06-01 RFC-resolution filing.
+      */}
+      <VisibilitySection />
+
+      {/*
+        F1c — encrypted HOME-server data export to a trusted outside
+        instance. Lives under Hosting because the operator-facing
+        decision is "which trusted machine keeps a copy of my home
+        server's data and runs analyses on it?" — that's a hosting
+        concern, not a user-profile one.
+      */}
+      <DataExportSection />
     </div>
   );
 }

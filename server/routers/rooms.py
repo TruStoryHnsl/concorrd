@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import MATRIX_HOMESERVER_URL
 from database import get_db
 from models import Channel, DMConversation, Server, ServerMember
-from routers.servers import get_access_token, get_user_id
+from dependencies import get_access_token, get_user_id
 
 router = APIRouter(tags=["rooms"])
 
