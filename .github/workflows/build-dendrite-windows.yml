@@ -109,13 +109,13 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Checkout Concord (for patches)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: concord-src
           fetch-depth: 1
 
       - name: Checkout dendrite source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: matrix-org/dendrite
           ref: ${{ steps.resolve.outputs.version }}

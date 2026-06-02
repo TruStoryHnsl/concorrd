@@ -89,7 +89,7 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Checkout tuwunel source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: matrix-construct/tuwunel
           ref: ${{ steps.resolve.outputs.version }}
