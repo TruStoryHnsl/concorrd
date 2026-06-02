@@ -60,6 +60,7 @@
 //! bot consents to a trust edge, or whether bots get their own descriptor.
 //! That is a separate follow-up dispatch.
 
+pub mod local;
 pub mod protocol;
 pub mod trust_store;
 
@@ -990,9 +991,10 @@ mod serde_byte_array_64 {
 // Re-exports for downstream modules
 // ---------------------------------------------------------------------------
 
+pub use local::{build_local_descriptor, LocalDescriptorError};
 pub use protocol::{
     open_descriptor_stream, ConcordUserHandler, ConcordUserRequest, ConcordUserResponse,
-    CONCORD_USER_PROTOCOL_ID,
+    StrongholdDescriptorApi, CONCORD_USER_PROTOCOL_ID,
 };
 pub use trust_store::{
     add_edge as trust_store_add_edge, list_edges as trust_store_list_edges,
